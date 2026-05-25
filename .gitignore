@@ -70,6 +70,14 @@ resources/bin/win/ffprobe.exe
 # 顶层模型目录（与 resources/models 可能重复）
 models/
 
+# 资源目录中的临时文件
+resources/temp/
+resources/cache/
+resources/logs/
+
+# 构建输出目录
+build/
+
 # ── 4. 凭据 / 敏感配置 ─────────────────────────────────────
 # 环境变量凭据（如果将来使用）
 .env
