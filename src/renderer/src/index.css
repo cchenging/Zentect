@@ -1,0 +1,358 @@
+@import "tailwindcss";
+
+/* =========================================
+   V3 设计系统：深空紫蓝 + 霓虹青 + 玫瑰粉
+   ========================================= */
+
+/* =========================================
+   🌑 暗黑模式 (Dark Mode) - 默认加载
+   V3 配色：深空紫蓝基底，多层深蓝紫渐变
+========================================= */
+:root, .dark, body[theme-mode='dark'] {
+  /* --- 深空背景层级 --- */
+  --bg-deep: #0a0a14;
+  --bg-primary: #0f0f20;
+  --bg-secondary: #141428;
+  --bg-tertiary: #1a1a35;
+
+  /* --- 基础语义色 --- */
+  --background: #0a0a14;
+  --foreground: #e8e8f0;
+  --card: #141428;
+  --card-foreground: #e8e8f0;
+  --popover: #1a1a35;
+  --popover-foreground: #e8e8f0;
+
+  /* --- 强调色体系 --- */
+  --accent: #6366f1;             /* 深空紫蓝 (Indigo) */
+  --accent-rose: #e11d48;        /* 玫瑰粉 */
+  --accent-cyan: #06b6d4;        /* 霓虹青 */
+  --accent-purple: #8b5cf6;      /* 紫色辅助 */
+  --accent-warm: #f59e0b;        /* 暖色/警告 */
+  --accent-green: #22c55e;       /* 成功/完成 */
+
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --muted: #1e1e3a;
+  --muted-foreground: #8888aa;
+  --border: #2a2a4a;
+  --input: #1e1e3a;
+  --ring: #6366f1;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --error: #e11d48;
+  --info: #06b6d4;
+
+  /* --- 毛玻璃参数 --- */
+  --glass-bg: rgba(20, 20, 40, 0.78);
+  --glass-blur: 16px;
+  --glass-border: rgba(255, 255, 255, 0.06);
+
+  /* --- 发光阴影 --- */
+  --glow-accent: 0 0 20px rgba(99, 102, 241, 0.15);
+  --glow-cyan: 0 0 20px rgba(6, 182, 212, 0.15);
+  --glow-rose: 0 0 20px rgba(225, 29, 72, 0.15);
+
+  /* --- 渐变 --- */
+  --gradient-accent: linear-gradient(135deg, #6366f1, #8b5cf6);
+  --gradient-warm: linear-gradient(135deg, #6366f1, #e11d48);
+  --gradient-cyan: linear-gradient(135deg, #06b6d4, #6366f1);
+
+  --separator-border: transparent !important;
+  --focus-border: transparent !important;
+  --sash-size: 8px !important;
+  --sash-hover-size: 8px !important;
+
+  --semi-color-bg-0: #0a0a14 !important;
+  --semi-color-bg-1: #141428 !important;
+  --semi-color-bg-2: #141428 !important;
+  --semi-color-bg-3: #1e1e3a !important;
+  --semi-color-border: #2a2a4a !important;
+  --semi-color-text-0: #e8e8f0 !important;
+  --semi-color-text-1: #8888aa !important;
+  --semi-color-text-2: #8888aa !important;
+}
+
+/* =========================================
+   🌞 白天模式 (Light Mode)
+   V3 浅色变体：保留紫蓝品牌色
+========================================= */
+.light, body[theme-mode='light'] {
+  --bg-deep: #f0f0f8;
+  --bg-primary: #f5f5fc;
+  --bg-secondary: #eaeaf4;
+  --bg-tertiary: #e0e0ee;
+
+  --background: #f5f5fc;
+  --foreground: #1a1a2e;
+  --card: #ffffff;
+  --card-foreground: #1a1a2e;
+  --popover: #ffffff;
+  --popover-foreground: #1a1a2e;
+
+  --accent: #6366f1;
+  --accent-rose: #e11d48;
+  --accent-cyan: #0891b2;
+  --accent-purple: #8b5cf6;
+  --accent-warm: #d97706;
+  --accent-green: #16a34a;
+
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --muted: #e8e8f4;
+  --muted-foreground: #6b6b8a;
+  --border: #d4d4e8;
+  --input: #d4d4e8;
+  --ring: #6366f1;
+  --success: #16a34a;
+  --warning: #d97706;
+  --error: #dc2626;
+  --info: #0891b2;
+
+  --glass-bg: rgba(255, 255, 255, 0.78);
+  --glass-blur: 16px;
+  --glass-border: rgba(0, 0, 0, 0.06);
+
+  --glow-accent: 0 0 20px rgba(99, 102, 241, 0.1);
+  --glow-cyan: 0 0 20px rgba(6, 182, 212, 0.1);
+  --glow-rose: 0 0 20px rgba(225, 29, 72, 0.1);
+
+  --gradient-accent: linear-gradient(135deg, #6366f1, #8b5cf6);
+  --gradient-warm: linear-gradient(135deg, #6366f1, #e11d48);
+  --gradient-cyan: linear-gradient(135deg, #0891b2, #6366f1);
+
+  --semi-color-bg-0: #f5f5fc !important;
+  --semi-color-bg-1: #ffffff !important;
+  --semi-color-bg-2: #ffffff !important;
+  --semi-color-bg-3: #e8e8f4 !important;
+  --semi-color-border: #d4d4e8 !important;
+  --semi-color-text-0: #1a1a2e !important;
+  --semi-color-text-1: #6b6b8a !important;
+  --semi-color-text-2: #6b6b8a !important;
+}
+
+/* =========================================
+   Tailwind 引擎桥接
+========================================= */
+@theme {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-bg-main: var(--background);
+  --color-bg-sider: var(--card);
+  --color-bg-card: var(--card);
+  --color-bg-hover: var(--muted);
+  --color-border-line: var(--border);
+  --color-text-main: var(--foreground);
+  --color-text-sub: var(--muted-foreground);
+  --color-brand: var(--primary);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --color-info: var(--info);
+
+  /* V3 强调色 */
+  --color-accent: var(--accent);
+  --color-accent-rose: var(--accent-rose);
+  --color-accent-cyan: var(--accent-cyan);
+  --color-accent-purple: var(--accent-purple);
+  --color-accent-warm: var(--accent-warm);
+  --color-accent-green: var(--accent-green);
+
+  /* V3 背景层级 */
+  --color-bg-deep: var(--bg-deep);
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-tertiary: var(--bg-tertiary);
+}
+
+/* =========================================
+   V3 全局基础样式
+========================================= */
+body {
+  margin: 0; padding: 0; overflow: hidden; font-size: 12px;
+  font-family: 'Noto Sans SC', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--background) !important;
+  color: var(--foreground) !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root {
+  --font-size-mini: 10px;
+  --font-size-caption: 12px;
+  --font-size-body: 13px;
+  --font-size-normal: 14px;
+  --font-size-subtitle: 16px;
+  --font-size-title: 20px;
+}
+
+/* =========================================
+   V3 毛玻璃卡片
+========================================= */
+.glass-card {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+}
+
+.glass-card-sm {
+  background: var(--glass-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+}
+
+/* =========================================
+   V3 渐变按钮
+========================================= */
+.btn-gradient {
+  background: var(--gradient-accent);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  box-shadow: var(--glow-accent);
+  transition: all 0.2s ease;
+}
+.btn-gradient:hover {
+  box-shadow: 0 0 30px rgba(99, 102, 241, 0.3);
+  filter: brightness(1.1);
+}
+
+.btn-gradient-warm {
+  background: var(--gradient-warm);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  box-shadow: var(--glow-rose);
+}
+
+/* =========================================
+   V3 发光边框
+========================================= */
+.glow-border-accent {
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  box-shadow: var(--glow-accent);
+}
+.glow-border-cyan {
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  box-shadow: var(--glow-cyan);
+}
+.glow-border-rose {
+  border: 1px solid rgba(225, 29, 72, 0.3);
+  box-shadow: var(--glow-rose);
+}
+
+/* =========================================
+   V3 动画系统
+========================================= */
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(99, 102, 241, 0.2); }
+  50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.4); }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.3s ease-out;
+}
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 25%, rgba(255,255,255,0.05) 50%, transparent 75%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* =========================================
+   V3 徽章样式
+========================================= */
+.badge-accent {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
+  background: rgba(99, 102, 241, 0.15); color: #6366f1;
+  border: 1px solid rgba(99, 102, 241, 0.2);
+}
+.badge-cyan {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
+  background: rgba(6, 182, 212, 0.15); color: #06b6d4;
+  border: 1px solid rgba(6, 182, 212, 0.2);
+}
+.badge-rose {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
+  background: rgba(225, 29, 72, 0.15); color: #e11d48;
+  border: 1px solid rgba(225, 29, 72, 0.2);
+}
+.badge-success {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
+  background: rgba(34, 197, 94, 0.15); color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.2);
+}
+.badge-warm {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
+  background: rgba(245, 158, 11, 0.15); color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.2);
+}
+
+/* =========================================
+   Semi UI 覆盖
+========================================= */
+.semi-layout { background-color: transparent !important; }
+.semi-layout-sider { border-right-color: var(--border) !important; }
+
+/* =========================================
+   滚动条
+========================================= */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background-color: transparent; border-radius: 3px; }
+*:hover::-webkit-scrollbar-thumb { background-color: rgba(99, 102, 241, 0.2); }
+*:hover::-webkit-scrollbar-thumb:hover { background-color: rgba(99, 102, 241, 0.35); }
+
+/* =========================================
+   Allotment 布局覆盖
+========================================= */
+.allotment-module {
+  contain: strict;
+  --separator-border: var(--border) !important;
+  --focus-border: var(--primary) !important;
+  --sash-size: 10px !important;
+  --sash-hover-size: 4px !important;
+}
+div[class*="sash-module"] { background: transparent !important; }
+div[class*="sash-module"]::before, div[class*="sash-module"]::after { background-color: transparent !important; border: none !important; }
