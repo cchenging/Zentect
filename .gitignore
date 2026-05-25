@@ -37,6 +37,7 @@ dist-packages/
 .eslintcache
 
 # Electron 构建产物
+build/
 build/*.dmg
 build/*.exe
 build/*.AppImage
@@ -83,6 +84,8 @@ resources/*.gif
 resources/*.mp4
 resources/*.mov
 resources/*.avi
+resources/*.zip
+resources/bin/win/*.zip
 
 # ── 4. 凭据 / 敏感配置 ─────────────────────────────────────
 # 环境变量凭据（如果将来使用）
