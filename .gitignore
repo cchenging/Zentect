@@ -122,6 +122,31 @@ yarn-error.log*
 *.swp
 *.swo
 
+# 临时调试脚本
+check_db*.py
+test_demucs.py
+
+# 编译错误日志
+tsc-*-errors.txt
+
+# 临时媒体文件
+media_*.wav
+
+# 迁移脚本
+migrate_*.sql
+
 # ── 7. 包管理器冲突标记 ────────────────────────────────────
 # 如果团队统一使用 pnpm，建议移除 package-lock.json
 # package-lock.json
+
+# ── 8. 本地脚本和调试文件 ─────────────────────────────────
+scripts/
+debug-*.md
+
+# ── 9. Husky Git Hooks ────────────────────────────────────
+.husky/
+
+# ── 10. 包管理器配置 ──────────────────────────────────────
+.npmrc
+pnpm-workspace.yaml
+pnpm-lock.yaml
