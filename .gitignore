@@ -75,8 +75,14 @@ resources/temp/
 resources/cache/
 resources/logs/
 
-# 构建输出目录
-build/
+# 资源目录中不需要的媒体文件（保留 bin/ 和 models/）
+resources/*.png
+resources/*.jpg
+resources/*.jpeg
+resources/*.gif
+resources/*.mp4
+resources/*.mov
+resources/*.avi
 
 # ── 4. 凭据 / 敏感配置 ─────────────────────────────────────
 # 环境变量凭据（如果将来使用）
