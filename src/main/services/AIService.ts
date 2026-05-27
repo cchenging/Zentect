@@ -10,6 +10,8 @@ import { MediaRepository } from '../database/repositories/MediaRepository';
 import { PipelinePayload } from '../../shared/types';
 import { PipelineEngine } from '../engine/PipelineEngine';
 import { AppError, ErrorCode } from '../../shared/utils/AppError';
+import { MultiChannelPipeline } from '../core/MultiChannelPipeline';
+import { ProviderManager } from '../engine/config/ProviderManager';
 import * as fs from 'fs';
 import * as path from 'path';
 import { PathManager } from '../utils/pathManager';
@@ -27,13 +29,27 @@ export class AIService {
     await this.saveHistory(projectId, 'user', text);
 
     try {
-      const llm = LLMFactory.createFromConfig({ provider: payload.model || 'deepseek-chat', apiKey: '', model: payload.model || 'deepseek-chat', temperature: 0.7 } as any);
       const messages: Array<{ role: string; content: string }> = [
         { role: 'system', content: '你是一个AI视频剪辑助手，回答用户关于视频剪辑的问题。' },
         ...(context ? [{ role: 'user', content: `上下文: ${JSON.stringify(context)}` }] : []),
         { role: 'user', content: text }
       ];
-      const reply = await llm.chat(messages, payload.model || 'deepseek-chat', 0.7);
+
+      // 💥 OPT-5: 使用 MultiChannelPipeline 包裹 LLM 调用，主通道失败自动切换备用通道
+      const reply = await MultiChannelPipeline.executeWithFailover(
+        // 主通道
+        () => {
+          const primaryConfig = ProviderManager.getLLMConfig('chat');
+          const adapter = LLMFactory.createFromConfig(primaryConfig);
+          return adapter.chat(messages, primaryConfig.model, primaryConfig.temperature);
+        },
+        // 备用通道（降级到 proxy 通道）
+        () => {
+          const fallbackConfig = ProviderManager.getLLMConfig('chat', 'proxy');
+          const adapter = LLMFactory.createFromConfig(fallbackConfig);
+          return adapter.chat(messages, fallbackConfig.model, fallbackConfig.temperature);
+        }
+      );
 
       await this.saveHistory(projectId, 'assistant', reply.text || '');
       if (sender && !sender.isDestroyed()) {
@@ -49,14 +65,27 @@ export class AIService {
   public async generateScript(payload: any, sender: Electron.WebContents) {
     const { context } = payload;
     try {
-      const llm = LLMFactory.createFromConfig({ provider: payload.model || 'deepseek-chat', apiKey: '', model: payload.model || 'deepseek-chat', temperature: 0.8 } as any);
       const systemPrompt = '你是一个短视频剧本专家。请根据用户需求生成JSON格式的分镜脚本数组。';
       const messages: Array<{ role: string; content: string }> = [
         { role: 'system', content: systemPrompt },
         ...(context ? [{ role: 'user', content: `参考信息: ${JSON.stringify(context)}` }] : []),
         { role: 'user', content: payload.prompt || '请生成一个15秒短视频剧本' }
       ];
-      const script = await llm.chat(messages, payload.model || 'deepseek-chat', 0.8);
+
+      // 💥 OPT-5: 使用 MultiChannelPipeline 包裹 LLM 调用
+      const script = await MultiChannelPipeline.executeWithFailover(
+        () => {
+          const primaryConfig = ProviderManager.getLLMConfig('script');
+          const adapter = LLMFactory.createFromConfig(primaryConfig);
+          return adapter.chat(messages, primaryConfig.model, primaryConfig.temperature);
+        },
+        () => {
+          const fallbackConfig = ProviderManager.getLLMConfig('script', 'proxy');
+          const adapter = LLMFactory.createFromConfig(fallbackConfig);
+          return adapter.chat(messages, fallbackConfig.model, fallbackConfig.temperature);
+        }
+      );
+
       if (sender && !sender.isDestroyed()) {
         sender.send(IPC_CHANNELS.AI_SCRIPT_PROGRESS, { progress: 100 });
       }

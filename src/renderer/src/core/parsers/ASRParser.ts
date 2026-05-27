@@ -1,8 +1,9 @@
-import type { EditorNode, PipelineTask } from '../../../../shared/types';
-import type { INodeParser } from './types';
+import type { PipelineTask } from '../../../../shared/types';
+import type { PipelineNodeRef } from './types';
+import { INodeParser } from './types';
 
 export class ASRParser implements INodeParser {
-  parse(node: EditorNode, upstreamContext: Record<string, any>): PipelineTask | null {
+  parse(node: PipelineNodeRef, upstreamContext: Record<string, any>): PipelineTask | null {
     const mediaPath = upstreamContext.vocalPath || upstreamContext.mediaPath;
     if (!mediaPath) {
       console.warn(`[ASRParser] 节点 ${node.id} 缺少上游音频源`);

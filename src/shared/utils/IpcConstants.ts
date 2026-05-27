@@ -56,6 +56,11 @@ export const IPC_CHANNELS = {
   PROJECT_SAVE_CANVAS: 'project:save-canvas',
   PROJECT_UPDATE_SCRIPT_DELTA: 'project:update-script-delta',
 
+  // --- 草稿自动保存 ---
+  DRAFT_SHADOW_SAVE: 'draft:shadow-save',
+  DRAFT_SHADOW_FLUSH: 'draft:shadow-flush',
+  DRAFT_SYNC_TO_MAIN: 'draft:sync-to-main',
+
   // --- 系统与设置域 ---
   SETTINGS_GET: 'settings:get',                // alias of SYSTEM_SETTING_GET
   SETTINGS_SET: 'settings:set',                // alias of SYSTEM_SETTING_SET
@@ -116,6 +121,12 @@ export const IPC_CHANNELS = {
   EVENT_EXTRACTION_SUCCESS: 'event:extraction-success',
   EVENT_MEDIA_UPDATED: 'event:media-updated',
   EVENT_NODE_STATE_CHANGE: 'event:node-state-change',
+
+  // 💥 断层3+4修复：管线错误与流式安全数据推送通道
+  EVENT_PIPELINE_ERROR: 'event:pipeline-error',
+  EVENT_STREAM_SAFE_CHUNK: 'event:stream-safe-chunk',
+  // 故事板卡片精准流式推送通道
+  EVENT_STREAM_TO_SHOT_CARD: 'event:stream-to-shot-card',
 
   // V1.0: 文件系统
   SYSTEM_OPEN_PATH: 'system:open-path',

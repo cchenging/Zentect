@@ -4,7 +4,7 @@
   "description": "Zentect - AI-powered video editing tool",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev",
+    "dev": "chcp 65001 >nul 2>&1 & set ELECTRON_ENABLE_LOGGING=1& electron-vite dev",
     "build": "electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
@@ -35,7 +35,6 @@
     "@radix-ui/react-slider": "^1.3.6",
     "@radix-ui/react-slot": "^1.2.4",
     "@tanstack/react-query": "^5.100.9",
-    "@xyflow/react": "^12.10.2",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.9.0",
     "class-variance-authority": "^0.7.1",

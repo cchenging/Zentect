@@ -1,8 +1,9 @@
-import type { EditorNode, PipelineTask } from '../../../../shared/types';
+import type { PipelineTask } from '../../../../shared/types';
+import type { PipelineNodeRef } from './types';
 import type { INodeParser } from './types';
 
 export class ScriptGenParser implements INodeParser {
-  parse(node: EditorNode, upstreamContext: Record<string, any>): PipelineTask | null {
+  parse(node: PipelineNodeRef, upstreamContext: Record<string, any>): PipelineTask | null {
     return {
       nodeId: node.id,
       actionType: 'script-gen',

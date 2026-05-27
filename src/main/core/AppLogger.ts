@@ -3,37 +3,38 @@ import log from 'electron-log';
 import { LogSanitizer } from './LogSanitizer';
 
 // ============================================================
-// 💥 Windows 中文乱码终极修复：强制 Node.js 标准流使用 UTF-8
+// Windows 中文乱码修复
+// 根因：electron-log 默认的 console transport 使用 process.stdout.write
+//       直接写入 UTF-8 字节，但 Windows 终端默认 GBK 编码
+// 方案：自定义 writeFn 使用 console.log，Node.js 运行时会自动
+//       将 UTF-8 字符串转换为终端代码页编码
 // ============================================================
-if (process.platform === 'win32') {
-  // 强制 stdout/stderr 使用 UTF-8 编码，防止中文输出乱码
-  if (process.stdout && typeof process.stdout.setEncoding === 'function') {
-    process.stdout.setEncoding('utf8');
-  }
-  if (process.stderr && typeof process.stderr.setEncoding === 'function') {
-    process.stderr.setEncoding('utf8');
-  }
-}
 
-// 💥 工业级日志配置：文件存 INFO，控制台看 DEBUG
+// 日志级别配置
 log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
-log.transports.file.format = '[{y}-{m}-{d} {h}:{i}:{s}.{ms}] [{level}] [{category}] {text}';
-log.transports.console.format = '[{y}-{m}-{d} {h}:{i}:{s}.{ms}] [{level}] [{category}] {text}';
 
-// 修复控制台中文乱码：自定义 writeFn，使用 console 输出确保编码正确
-(log.transports.console as unknown as { writeFn: (msg: { message: { level: string; data: any[] } }) => void }).writeFn = ({ message }: { message: { level: string; data: any[] } }) => {
+// 自定义控制台输出：使用 console.log 确保 Windows 编码正确
+(log.transports.console as unknown as { writeFn: (msg: { message: { level: string; data: any[]; date: Date } }) => void }).writeFn = ({ message }: { message: { level: string; data: any[]; date: Date } }) => {
   const level = message.level;
   const data = message.data || [];
-  const text = data.map((d: any) => {
-    if (typeof d === 'string') return d;
-    try { return JSON.stringify(d); } catch { return String(d); }
+  const d = message.date;
+  const timestamp = d
+    ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}.${String(d.getMilliseconds()).padStart(3, '0')}`
+    : '';
+  const text = data.map((item: any) => {
+    if (typeof item === 'string') return item;
+    try { return JSON.stringify(item); } catch { return String(item); }
   }).join(' ');
 
-  if (level === 'error' || level === 'warn') {
-    console.error(text);
+  const line = `[${timestamp}] [${level}] ${text}`;
+  // 使用 console.log/error，Node.js 运行时自动处理 UTF-8 → 终端编码转换
+  if (level === 'error') {
+    console.error(line);
+  } else if (level === 'warn') {
+    console.warn(line);
   } else {
-    console.log(text);
+    console.log(line);
   }
 };
 

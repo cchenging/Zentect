@@ -14,7 +14,7 @@ import { NODE_MENU_CONFIG } from '../config/nodeMenu';
  */
 export const AppSidebar = () => {
   const { t } = useI18n();
-  const { projectId, addMediaItems, setActivePlaySource } = useEditorStore();
+  const { projectId, setActivePlaySource } = useEditorStore();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -25,7 +25,7 @@ export const AppSidebar = () => {
       <VideoImport
         projectId={projectId}
         onImportSuccess={(items) => {
-          addMediaItems(items);
+          // 导入视频直接播放，不添加到素材区
           if (items.length > 0) setActivePlaySource(items[0]);
         }}
       />
@@ -38,7 +38,7 @@ export const AppSidebar = () => {
       isComponent: false,
       items: cat.items
     }))
-  ], [t, projectId, addMediaItems, setActivePlaySource]);
+  ], [t, projectId, setActivePlaySource]);
 
   const handleMouseEnter = (id: string) => {
     if (hideTimeoutRef.current) clearTimeout(hideTimeoutRef.current);
@@ -51,7 +51,7 @@ export const AppSidebar = () => {
 
   const handleDragStart = (e: React.DragEvent, item: any) => {
     const label = t.editor?.nodes?.items?.[item.menuKey]?.title || item.menuKey;
-    e.dataTransfer.setData('application/reactflow/node', JSON.stringify({ type: item.type, label, data: item.data }));
+    e.dataTransfer.setData('application/json', JSON.stringify({ type: item.type, label, data: item.data }));
     e.dataTransfer.effectAllowed = 'move';
   };
 

@@ -5,6 +5,7 @@ import type { Shot } from '../../../../shared/types';
 import type { NodeStatusType } from '../constants';
 import { AppNotifier } from '../../core/AppNotifier';
 import { API } from '../../api';
+import { IPC_CHANNELS } from '../../../../shared/utils/IpcConstants';
 
 export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (set, get) => ({
   projectId: null,
@@ -62,6 +63,16 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
   updateShot: (id, payload) => {
     get().saveSnapshot();
     set((state) => ({ shots: state.shots.map(s => s.id === id ? { ...s, ...payload } : s), aiShots: state.aiShots.map(s => s.id === id ? { ...s, ...payload } : s) }));
+
+    // 故事板卡片变更触发 500ms 防抖影子 WAL 自动保存
+    const projectId = get().projectId;
+    if (projectId && typeof window !== 'undefined' && window.api?.ipc?.invoke) {
+      const snapshot = { shots: get().shots, aiShots: get().aiShots };
+      window.api.ipc.invoke(
+        IPC_CHANNELS.DRAFT_SHADOW_SAVE,
+        { projectId, draftJson: JSON.stringify(snapshot) }
+      ).catch(() => {});
+    }
   },
 
   removeShot: (id) => {
@@ -70,7 +81,20 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
   },
 
   setAiShots: (shots) => { get().saveSnapshot(); set({ aiShots: shots }); },
-  updateAiShot: (id, updates) => { get().saveSnapshot(); set((state) => ({ aiShots: state.aiShots.map(shot => shot.id === id ? { ...shot, ...updates } : shot) })); },
+  updateAiShot: (id, updates) => {
+    get().saveSnapshot();
+    set((state) => ({ aiShots: state.aiShots.map(shot => shot.id === id ? { ...shot, ...updates } : shot) }));
+
+    // AI 镜头卡片变更触发影子 WAL 自动保存
+    const projectId = get().projectId;
+    if (projectId && typeof window !== 'undefined' && window.api?.ipc?.invoke) {
+      const snapshot = { shots: get().shots, aiShots: get().aiShots };
+      window.api.ipc.invoke(
+        IPC_CHANNELS.DRAFT_SHADOW_SAVE,
+        { projectId, draftJson: JSON.stringify(snapshot) }
+      ).catch(() => {});
+    }
+  },
   insertOriginalShot: (newShot) => { get().saveSnapshot(); set((state) => ({ shots: [...state.shots, newShot].sort((a, b) => a.start - b.start) })); },
   updateRole: (id, updates) => set((state) => ({ roles: state.roles.map(role => role.id === id ? { ...role, ...updates } : role) })),
 

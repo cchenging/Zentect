@@ -1,19 +1,8 @@
-// 💥 Phase 2.2: 统一引用 shared 类型定义
-import type { Node, Edge, NodeChange, EdgeChange } from '@xyflow/react';
 import type { MediaItem, Shot, Role } from '../../../shared/types';
 import type { NodeStatusType, HydrationStatusType } from './constants';
-import { NODE_TYPES } from './constants';
 
 export type LeftTabType = 'workflow' | 'media' | 'audio' | 'text' | 'casting' | 'storyboard' | 'narration' | 'aiAssets';
 export type ItemType = 'media' | 'role' | 'shot' | null;
-
-export interface CharacterRelation {
-  id: string;
-  roleA: string;
-  roleB: string;
-  relationType: string;
-  description: string;
-}
 
 // --- 切片定义: UI Slice ---
 export interface UISlice {
@@ -131,60 +120,10 @@ export interface DataSlice {
   importNodeMedia: (nodeId: string) => Promise<void>;
 }
 
-// --- 节点强类型定义 (接入字典) ---
-export interface SourceNodeData {
-  [key: string]: unknown;
-  mediaId?: string;
-  status?: NodeStatusType;
-  label?: string;
-  progress?: number;
-}
+export type EditorState = UISlice & PlayerSlice & DataSlice & EditorSlice;
 
-export interface ProcessNodeData extends Record<string, unknown> {
-  label: string;
-  icon: string;
-  status: NodeStatusType;
-  accent: string;
-  metaLabel?: string;
-  progress?: number;
-  results?: any[];
-  content?: string;
-}
-
-export type FlowNode =
-  | Node<SourceNodeData, typeof NODE_TYPES.SOURCE>
-  | Node<ProcessNodeData, typeof NODE_TYPES.PROCESS>
-  | Node<any, typeof NODE_TYPES.VECTOR>
-  | Node<any, typeof NODE_TYPES.SCRIPT>
-  | Node<any, typeof NODE_TYPES.PLAYER>;
-
-export type FlowEdge = Edge<any>;
-
-// --- 切片定义: Canvas Slice (画布核心) ---
-export interface CanvasSlice {
-  nodes: FlowNode[];
-  edges: FlowEdge[];
-  hydrationStatus: HydrationStatusType;
-  activeWorkflowId: string | null;
-  isWorkflowLoading: boolean;
-  activeNode: { id: string; type: string } | null;
-
-  setNodes: (nodes: FlowNode[] | ((prev: FlowNode[]) => FlowNode[])) => void;
-  setEdges: (edges: FlowEdge[] | ((prev: FlowEdge[]) => FlowEdge[])) => void;
-  onNodesChange: (changes: NodeChange[]) => void;
-  onEdgesChange: (changes: EdgeChange[]) => void;
-  updateNodeData: (nodeId: string, data: Partial<FlowNode['data']>) => void;
-  updateNodeStatus: (nodeId: string, status: NodeStatusType, progress?: number, results?: any) => void; // 💥 正式纳入类型契约
-  setActiveNode: (id: string | null, type: string | null) => void;
-  addNode: (node: FlowNode) => void;
-  removeNode: (nodeId: string) => void;
-  duplicateNode: (nodeId: string) => void;
-  resetCanvas: () => void;
-  setHydrationStatus: (status: HydrationStatusType) => void;
-  switchWorkflow: (targetId: string, initialNodes?: FlowNode[], initialEdges?: FlowEdge[]) => Promise<void>;
-}
-
-export type EditorState = UISlice & PlayerSlice & DataSlice & CanvasSlice & EditorSlice;
+// --- 步骤状态类型 ---
+export type StepStatus = 'idle' | 'running' | 'completed' | 'failed';
 
 // --- 切片定义: Editor Slice (编辑器核心状态) ---
 export interface EditorSlice {
@@ -192,6 +131,10 @@ export interface EditorSlice {
   currentStep: number;
   isAutoMode: boolean;
   stepCompleted: boolean[];
+  /** 5个主步骤的执行状态 */
+  stepStatuses: StepStatus[];
+  /** 步骤1的4个子步骤执行状态 */
+  subStepStatuses: Record<string, StepStatus>;
 
   // 管线执行状态
   pipelineRunning: boolean;
@@ -225,6 +168,12 @@ export interface EditorSlice {
   setCurrentStep: (step: number) => void;
   setIsAutoMode: (auto: boolean) => void;
   setStepCompleted: (step: number, completed: boolean) => void;
+  /** 设置主步骤执行状态 */
+  setStepStatus: (step: number, status: StepStatus) => void;
+  /** 设置子步骤执行状态 */
+  setSubStepStatus: (key: string, status: StepStatus) => void;
+  /** 重置所有步骤状态 */
+  resetAllStepStatuses: () => void;
 
   // 管线操作
   setPipelineRunning: (running: boolean) => void;

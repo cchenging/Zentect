@@ -1,11 +1,10 @@
 import { useEditorStore } from '../store/useStore';
 import { AppNotifier } from './AppNotifier';
-import type { EditorNode, EditorEdge, PipelineTask, AIAction } from '../../../shared/types'; // 💥 统一引用
+import type { PipelineTask, AIAction } from '../../../shared/types';
 import { nodeParsers } from './parsers';
 import { AICommandRegistry } from './commands';
-import type { Node, Edge } from '@xyflow/react';
+import type { PipelineNodeRef } from './parsers/types';
 
-// 定义发往后端的纯净管线载荷
 export interface PipelinePayload {
   nodes: Array<{
     id: string;
@@ -73,21 +72,15 @@ export class ActionParser {
     }
   }
 
-  /**
-   * 将画布拓扑图编译为【确定性】的执行序列（带有溯源闭包打包）
-   * 编译器现在可以确保生成的 sequence 是 100% 后端引擎可识别的
-   */
-  static compileToSequence(nodes: EditorNode[], edges: EditorEdge[], targetNodeId?: string): PipelineTask[] {
+  static compileToSequence(nodes: PipelineNodeRef[], edges: { source: string; target: string }[], targetNodeId?: string): PipelineTask[] {
     const sequence: PipelineTask[] = [];
     const nodeMap = new Map(nodes.map(n => [n.id, n]));
-    
-    const state = useEditorStore.getState();
 
     let validNodes = nodes.filter(n => n.data?.actionType);
-    
+
     if (targetNodeId) {
       const target = nodeMap.get(targetNodeId);
-      validNodes = target && target.type === 'processNode' && target.data?.actionType ? [target] : [];
+      validNodes = target && target.data?.actionType ? [target] : [];
     }
 
     if (validNodes.length === 0) {
@@ -97,7 +90,7 @@ export class ActionParser {
 
     const inDegree = new Map<string, number>();
     const graph = new Map<string, string[]>();
-    
+
     validNodes.forEach(n => {
       inDegree.set(n.id, 0);
       graph.set(n.id, []);
@@ -120,7 +113,7 @@ export class ActionParser {
     while (queueIdx < queue.length) {
       const currentId = queue[queueIdx++];
       sortedNodeIds.push(currentId);
-      
+
       const neighbors = graph.get(currentId) || [];
       for (const neighbor of neighbors) {
         inDegree.set(neighbor, (inDegree.get(neighbor) || 0) - 1);
@@ -134,7 +127,6 @@ export class ActionParser {
       throw new Error("管线中存在循环连接(死循环)，请检查节点连线！");
     }
 
-    // 构建入边映射：一次遍历 O(E)，替代每次 O(E) 的 filter
     const incomingEdgesMap = new Map<string, Array<{ source: string }>>();
     for (const edge of edges) {
       const list = incomingEdgesMap.get(edge.target);
@@ -143,84 +135,29 @@ export class ActionParser {
     }
 
     for (const nodeId of sortedNodeIds) {
-      const node = nodeMap.get(nodeId);
-      if (!node) continue;
+      const node = nodeMap.get(nodeId)!;
+      const upstreamContext: Record<string, any> = {};
 
       const incomingEdges = incomingEdgesMap.get(nodeId) || [];
-      const dependsOnIds = incomingEdges.map(e => e.source);
-
-      const upstreamContext: Record<string, any> = {
-        dependsOn: dependsOnIds,
-      };
-      
-      for (const parentId of dependsOnIds) {
-        const parentNode = nodeMap.get(parentId);
-        if (!parentNode) continue;
-
-        if (parentNode.data?.results) {
-          Object.assign(upstreamContext, parentNode.data.results);
-        }
-
-        if (parentNode.data?.mediaId) {
-          const media = state.mediaItems.find(m => m.id === parentNode.data.mediaId);
-          if (media && media.filePath) {
-             upstreamContext.mediaPath = media.filePath;
-             upstreamContext.mediaWidth = media.width;
-             upstreamContext.mediaHeight = media.height;
-             upstreamContext.mediaFps = media.fps;
+      for (const inEdge of incomingEdges) {
+        const srcNode = nodeMap.get(inEdge.source);
+        if (srcNode) {
+          const srcTask = sequence.find(t => t.nodeId === srcNode.id);
+          if (srcTask?.result) {
+            Object.assign(upstreamContext, srcTask.result);
           }
         }
       }
 
-      const actionType: string = node.data?.actionType ?? '';
-      const parser = nodeParsers.get(actionType);
-      
-      if (!parser) {
-        console.warn(`[ActionParser] 未知节点类型，使用降级编译策略: ${actionType}`);
-        sequence.push({
-          nodeId: node.id,
-          actionType: actionType,
-          label: node.data?.label || '未知任务',
-          params: node.data?.params || {},
-          dependsOn: dependsOnIds,
-          mergedInputs: upstreamContext,
-        });
-        continue;
-      }
-
-      const task = parser.parse(node, upstreamContext);
-      if (task) {
-        sequence.push(task);
+      for (const [parserKey, parser] of Object.entries(nodeParsers)) {
+        const task = parser.parse(node, upstreamContext);
+        if (task) {
+          sequence.push(task);
+          break;
+        }
       }
     }
 
     return sequence;
-  }
-
-  /**
-   * 💥 拓扑图提纯：剥离前端视觉属性，只保留算力引擎需要的有向无环图(DAG)核心数据
-   */
-  static compile(nodes: Node[], edges: Edge[]): PipelinePayload {
-    if (!nodes || nodes.length === 0) {
-      throw new Error('当前工作流为空，无法执行计算。');
-    }
-
-    const cleanNodes = nodes.map(node => ({
-      id: node.id,
-      type: node.type || 'unknown',
-      data: node.data 
-    }));
-
-    const cleanEdges = edges.map(edge => ({
-      source: edge.source,
-      target: edge.target,
-      sourceHandle: edge.sourceHandle || undefined,
-      targetHandle: edge.targetHandle || undefined
-    }));
-
-    return {
-      nodes: cleanNodes,
-      edges: cleanEdges
-    };
   }
 }

@@ -19,7 +19,7 @@ interface ResumeInput {
 
 export class PipelineSuspendController {
   private suspensions = new Map<string, SuspendContext>()
-  private resumeResolvers = new Map<string, () => void>()
+  private resumeResolvers = new Map<string, { resolve: () => void; reject: (err: Error) => void }>()
   private eventBus = TaskEventBus.getInstance()
 
   suspend(
@@ -31,7 +31,7 @@ export class PipelineSuspendController {
   ): Promise<void> {
     const key = `${projectId}_${mediaId}`
 
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
       const suspendCtx: SuspendContext = {
         projectId,
         mediaId,
@@ -42,7 +42,7 @@ export class PipelineSuspendController {
       }
 
       this.suspensions.set(key, suspendCtx)
-      this.resumeResolvers.set(key, () => resolve())
+      this.resumeResolvers.set(key, { resolve, reject })
 
       this.eventBus.emitPipelineSuspended({ projectId, mediaId, stepId })
       this.eventBus.emitUserActionRequired({
@@ -60,6 +60,7 @@ export class PipelineSuspendController {
     })
   }
 
+  /** 恢复挂起的 Pipeline，调用 resolve 让 Promise 继续执行 */
   resume(input: ResumeInput): { success: boolean; message: string } {
     const key = `${input.projectId}_${input.mediaId}`
 
@@ -81,7 +82,7 @@ export class PipelineSuspendController {
 
     this.eventBus.emitPipelineResumed({ projectId: input.projectId, mediaId: input.mediaId })
 
-    resolver()
+    resolver.resolve()
 
     this.suspensions.delete(key)
     this.resumeResolvers.delete(key)
@@ -89,8 +90,14 @@ export class PipelineSuspendController {
     return { success: true, message: 'Pipeline 已恢复执行' }
   }
 
+  /** 放弃挂起的 Pipeline，必须 reject 挂起 Promise 防止死锁 */
   abandon(projectId: string, mediaId: string): void {
     const key = `${projectId}_${mediaId}`
+    const resolver = this.resumeResolvers.get(key)
+    if (resolver) {
+      // 必须 reject，否则 Promise 永远挂起导致 Pipeline 死锁
+      resolver.reject(new Error(`Pipeline 挂起已被放弃: project=${projectId}`))
+    }
     this.suspensions.delete(key)
     this.resumeResolvers.delete(key)
     AppLogger.warn(LOG_TAGS.ENGINE, `Pipeline 挂起已放弃: project=${projectId}`)

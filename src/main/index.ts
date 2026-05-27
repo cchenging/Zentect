@@ -2,14 +2,17 @@
 // Windows 中文乱码修复：在所有 import 之前强制设置控制台 UTF-8 编码
 if (process.platform === 'win32') {
   try { require('child_process').execSync('chcp 65001', { stdio: 'ignore' }); } catch {}
+  // 强制 Node.js 进程输出编码为 UTF-8
+  if (process.stdout) { try { (process.stdout as any).setEncoding('utf8'); } catch {} }
+  if (process.stderr) { try { (process.stderr as any).setEncoding('utf8'); } catch {} }
 }
 
-import { app, shell, BrowserWindow, ipcMain, protocol, screen, safeStorage } from 'electron'
-import { join } from 'path'
+import { app, shell, BrowserWindow, ipcMain, protocol, screen, safeStorage, session, net } from 'electron'
+import path from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import fs from 'fs'
-import { Readable } from 'stream'
+import { pathToFileURL } from 'url'
 
 // — 引入核心基建
 import { PathManager } from './utils/pathManager'
@@ -43,19 +46,30 @@ import { UsageStatsCollector } from './core/UsageStatsCollector'
 import { IPC_CHANNELS } from '../shared/utils/IpcConstants'
 import { runCli } from './cli/index'
 
-// — 修复 3：在 app 生命周期最顶端，注册自定义协议的特权与流媒体播放权限
+// — 注册自定义协议的特权与流媒体播放权限
+// standard=true：Chromium 按 RFC 3986 解析 URL，host 部分用于传递项目 ID
+// URL 格式：magic://{host}/{encoded_path}，其中 host 为项目 ID 或 "local"
+// Windows 绝对路径通过 URL pathname 传递，如 magic://local/G%3A/video/test.mp4
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'magic',
     privileges: {
-      standard: true,      // 标记为标准协议（支持相对路径解析）
-      secure: true,        // 标记为安全协议（等同于 https）
+      standard: true,      // 标准协议：支持 Range 请求、流式视频播放
+      secure: true,        // 标记为安全协议
       supportFetchAPI: true,
-      stream: true,        // — 允许视频 <video> 标签正常缓冲播放
-      bypassCSP: true      // 绕过内容安全策略
+      stream: true,        // 允许视频 <video> 标签流式播放
+      bypassCSP: true
     }
   }
 ]);
+
+// — 启用 Chromium HEVC (H.265) 硬件解码支持
+// 大量 MP4 文件使用 HEVC 编码，Chromium 默认不开启，需显式启用
+app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport');
+// — 启用 GPU 加速视频解码
+app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,VaapiVideoEncoder');
+// — 允许不安全的本地 HTTP 资源（开发模式）
+app.commandLine.appendSwitch('allow-insecure-localhost', 'true');
 
 let currentView = 'home'
 let homeSize = { width: 1440, height: 900 }
@@ -170,7 +184,7 @@ class AppBootstrap {
       autoHideMenuBar: true,
       icon: icon,
       webPreferences: {
-        preload: join(__dirname, '../preload/index.js'),
+        preload: path.join(__dirname, '../preload/index.js'),
         sandbox: true,
         webSecurity: true,
         contextIsolation: true,
@@ -203,7 +217,7 @@ class AppBootstrap {
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       this.mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
     } else {
-      this.mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+      this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
     }
 
     // — 统一管理：原生窗口按钮事件（仅限主窗口控制）
@@ -283,7 +297,12 @@ class AppBootstrap {
       // 步骤 4: 停止 AIDaemon facade (兜底)
       AIDaemon.getInstance().stop()
 
-      // 步骤 5: 安全关闭数据库读写句柄
+      // 步骤 5: 基础设施层收尾 — 静默清理磁盘冷资产碎片
+      import('./utils/CacheGarbageCollector').then(({ CacheGarbageCollector }) => {
+        CacheGarbageCollector.runSilentGC();
+      }).catch(() => {});
+
+      // 步骤 6: 安全关闭数据库读写句柄
       const db = SQLiteConnection.getInstance().getDB()
       if (db) db.close()
 
@@ -344,65 +363,119 @@ app.whenReady().then(async () => {
     AppLogger.info(LOG_TAGS.BOOTSTRAP, `safeStorage 可用: ${ssAvailable} | 平台: ${process.platform}`);
   } catch { AppLogger.warn(LOG_TAGS.BOOTSTRAP, 'safeStorage 状态检测异常'); }
 
-  // — 魔法引擎：拦截所有 magic:// 请求，动态解析为物理文件！
-  // 工业级架构：Node.js 流转 Web ReadableStream + Range 请求支持 + 路径安全沙盒
-  protocol.handle('magic', async (request) => {
+  // — 魔法引擎：拦截所有 magic:// 请求，动态解析为物理文件
+  // 架构：使用 Electron 官方推荐的 net.fetch + pathToFileURL 方案
+  // 优势：自动支持 Range 请求、流式传输、正确的 MIME 类型，无需手工处理
+  const sesh = session.defaultSession;
+  sesh.protocol.handle('magic', async (request) => {
     try {
-      // 1. 解码 URL
-      const encodedPath = request.url.replace(/^magic:\/\//i, '');
+      // 1. 解析 URL（standard=true 时，Chromium 按 RFC 3986 解析）
+      // URL 格式：magic://local/G%3A/%E8%A7%86%E9%A2%91/test.mp4
+      const urlObj = new URL(request.url);
+      const encodedPath = urlObj.pathname;
+
+      // 2. 解码路径
       let decodedPath: string;
       try {
         decodedPath = decodeURIComponent(encodedPath);
       } catch {
         return new Response('Invalid URL encoding', { status: 400 });
       }
+      if (decodedPath.startsWith('/')) decodedPath = decodedPath.slice(1);
 
-      // 2. 解析路径
+      // 3. 路径安全校验
       const projectsRoot = PathManager.getProjectsRootPath();
+      const cacheRoot = PathManager.getCacheRootPath?.() || path.join(projectsRoot, '..', 'zentect-cache');
+      const homeDir = app.getPath('home');
       let resolvedPath: string;
 
       if (/^[A-Za-z]:[\\/]/.test(decodedPath)) {
-        // Windows 绝对路径（兼容旧数据）
-        resolvedPath = decodedPath.replace(/\//g, '\\');
-      } else {
-        // 相对路径：{projectId}/relative/path
-        const slashIdx = decodedPath.indexOf('/');
-        if (slashIdx === -1) return new Response('Missing projectId', { status: 400 });
-
-        const projectId = decodedPath.substring(0, slashIdx);
-        const relativePath = decodedPath.substring(slashIdx + 1);
-
-        // 安全校验：路径穿越
-        if (projectId.includes('..') || relativePath.includes('..')) {
+        resolvedPath = path.resolve(decodedPath.replace(/\//g, '\\'));
+        const allowedRoots = [
+          path.resolve(projectsRoot), path.resolve(cacheRoot), path.resolve(homeDir),
+          path.join(homeDir, 'Videos'), path.join(homeDir, 'Music'),
+          path.join(homeDir, 'Pictures'), path.join(homeDir, 'Desktop'), path.join(homeDir, 'Downloads'),
+        ].filter(Boolean);
+        const systemDrive = (process.env.SystemDrive || 'C:').toLowerCase();
+        const driveLetter = resolvedPath.substring(0, 2).toLowerCase();
+        const isAllowed = allowedRoots.some(root =>
+          resolvedPath.toLowerCase().startsWith(root.toLowerCase() + path.sep)
+        ) || (driveLetter !== systemDrive && /^[a-z]:[\\]/i.test(resolvedPath));
+        if (!isAllowed) {
+          AppLogger.warn(LOG_TAGS.SYSTEM, `[magic://] 路径越权拒绝: ${resolvedPath}`);
           return new Response('Forbidden', { status: 403 });
         }
-
-        resolvedPath = join(projectsRoot, projectId, relativePath);
+      } else if (decodedPath.startsWith('/')) {
+        resolvedPath = path.resolve(decodedPath);
+        const allowedRoots = [path.resolve(projectsRoot), path.resolve(cacheRoot), path.resolve(homeDir)].filter(Boolean);
+        const isAllowed = allowedRoots.some(root =>
+          resolvedPath.toLowerCase().startsWith(root.toLowerCase() + path.sep)
+        );
+        if (!isAllowed) return new Response('Forbidden', { status: 403 });
+      } else {
+        const slashIdx = decodedPath.indexOf('/');
+        if (slashIdx === -1) return new Response('Missing projectId', { status: 400 });
+        const projectId = decodedPath.substring(0, slashIdx);
+        const relativePath = decodedPath.substring(slashIdx + 1);
+        if (projectId.includes('..') || relativePath.includes('..')) return new Response('Forbidden', { status: 403 });
+        resolvedPath = path.resolve(path.join(projectsRoot, projectId, relativePath));
+        const resolvedRoot = path.resolve(projectsRoot);
+        if (!resolvedPath.startsWith(resolvedRoot + path.sep) && resolvedPath !== resolvedRoot) {
+          return new Response('Forbidden', { status: 403 });
+        }
       }
 
-      // 3. 安全校验：越权访问
-      const pathModule = require('path');
-      resolvedPath = pathModule.resolve(resolvedPath);
-      const resolvedRoot = pathModule.resolve(projectsRoot);
-      if (!resolvedPath.startsWith(resolvedRoot + pathModule.sep) && resolvedPath !== resolvedRoot) {
-        return new Response('Forbidden', { status: 403 });
+      // 4. 非原生格式：FFmpeg 边转边播
+      const ext = path.extname(resolvedPath).toLowerCase();
+      const NON_NATIVE_VIDEO_EXTS = ['.mkv', '.avi', '.mov', '.wmv', '.flv', '.ts', '.rmvb', '.rm', '.3gp', '.vob'];
+      if (NON_NATIVE_VIDEO_EXTS.includes(ext)) {
+        const ffmpegExe = PathManager.getBinPath(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+        if (ffmpegExe && fs.existsSync(ffmpegExe)) {
+          try {
+            const ffmpegArgs = [
+              '-i', resolvedPath, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+              '-c:a', 'aac', '-b:a', '128k',
+              '-movflags', 'frag_keyframe+empty_moov', '-f', 'mp4', '-pipe:1'
+            ];
+            AppLogger.info(LOG_TAGS.SYSTEM, `[magic://] FFmpeg 流式转码: ${resolvedPath}`);
+            const ffmpegProc = require('child_process').spawn(ffmpegExe, ffmpegArgs, { windowsHide: true });
+            let procKilled = false;
+            const webStream = new ReadableStream({
+              start(ctrl) {
+                ffmpegProc.stdout.on('data', (chunk: Buffer) => { if (!procKilled) ctrl.enqueue(new Uint8Array(chunk)); });
+                ffmpegProc.stdout.on('end', () => { ctrl.close(); });
+                ffmpegProc.stdout.on('error', (err: Error) => { ctrl.error(err); });
+              },
+              cancel() { procKilled = true; if (!ffmpegProc.killed) ffmpegProc.kill('SIGTERM'); },
+            });
+            ffmpegProc.on('error', () => {});
+            ffmpegProc.on('close', (code: number) => {
+              if (code !== 0 && code !== null) AppLogger.warn(LOG_TAGS.SYSTEM, `[magic://] FFmpeg 转码退出: code=${code}`);
+            });
+            return new Response(webStream as any, {
+              headers: { 'Content-Type': 'video/mp4', 'Accept-Ranges': 'none', 'Cache-Control': 'no-cache' },
+            });
+          } catch (transcodeErr) {
+            AppLogger.warn(LOG_TAGS.SYSTEM, `[magic://] FFmpeg 转码异常`, transcodeErr);
+          }
+        }
       }
 
-      // 4. 异步获取文件信息
+      // 5. 原生格式：手工处理 Range 请求（net.fetch 不支持 Range，必须手工实现）
       const stat = await fs.promises.stat(resolvedPath);
       if (!stat.isFile()) return new Response('Not a file', { status: 400 });
 
-      // 5. Content-Type 映射
-      const ext = pathModule.extname(resolvedPath).toLowerCase();
       const MIME_TYPES: Record<string, string> = {
         '.mp4': 'video/mp4', '.webm': 'video/webm', '.ogg': 'video/ogg',
-        '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.oga': 'audio/ogg',
+        '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.aac': 'audio/aac',
+        '.flac': 'audio/flac', '.m4a': 'audio/mp4',
         '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
         '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
+        '.bmp': 'image/bmp', '.ico': 'image/x-icon',
       };
       const contentType = MIME_TYPES[ext] || 'application/octet-stream';
 
-      // 6. Range 请求处理（视频/音频拖动进度条）
+      // 5.1 Range 请求处理（视频播放必须支持，否则 Chromium 无法 seek/缓冲）
       const rangeHeader = request.headers.get('range');
       if (rangeHeader) {
         const parts = rangeHeader.replace(/bytes=/, '').split('-');
@@ -414,10 +487,17 @@ app.whenReady().then(async () => {
         }
 
         const chunkSize = end - start + 1;
-        const nodeStream = fs.createReadStream(resolvedPath, { start, end });
-        const webStream = Readable.toWeb(nodeStream) as ReadableStream;
+        const nodeStream = fs.createReadStream(resolvedPath, { start, end, highWaterMark: 256 * 1024 });
+        const webStream = new ReadableStream({
+          start(ctrl) {
+            nodeStream.on('data', (chunk: Buffer) => { ctrl.enqueue(new Uint8Array(chunk)); });
+            nodeStream.on('end', () => { ctrl.close(); });
+            nodeStream.on('error', (err) => { ctrl.error(err); });
+          },
+          cancel() { nodeStream.destroy(); },
+        });
 
-        return new Response(webStream as any, {
+        return new Response(webStream, {
           status: 206,
           headers: {
             'Content-Range': `bytes ${start}-${end}/${stat.size}`,
@@ -429,9 +509,16 @@ app.whenReady().then(async () => {
         });
       }
 
-      // 7. 完整文件流式传输
-      const nodeStream = fs.createReadStream(resolvedPath, { highWaterMark: 64 * 1024 });
-      const webStream = Readable.toWeb(nodeStream) as ReadableStream;
+      // 5.2 完整文件请求（非视频或首次加载）
+      const fsStream = fs.createReadStream(resolvedPath, { highWaterMark: 256 * 1024 });
+      const webStream = new ReadableStream({
+        start(ctrl) {
+          fsStream.on('data', (chunk: Buffer) => { ctrl.enqueue(new Uint8Array(chunk)); });
+          fsStream.on('end', () => { ctrl.close(); });
+          fsStream.on('error', (err) => { ctrl.error(err); });
+        },
+        cancel() { fsStream.destroy(); },
+      });
 
       return new Response(webStream as any, {
         headers: {
@@ -444,31 +531,68 @@ app.whenReady().then(async () => {
     } catch (err: any) {
       if (err.code === 'ENOENT') return new Response('Not found', { status: 404 });
       if (err.code === 'EACCES') return new Response('Forbidden', { status: 403 });
-      AppLogger.warn(LOG_TAGS.SYSTEM, '[magic://] 文件未找到', { path: request.url });
+      AppLogger.warn(LOG_TAGS.SYSTEM, `[magic://] 处理异常: ${err?.message}`);
       return new Response('Internal error', { status: 500 });
     }
   })
-
-  // — atom 协议：用于加载本地图片（与 magic:// 使用相同的流式架构）
   protocol.handle('atom', async (request) => {
     try {
-      let filePath = request.url.replace('atom://', '');
-      try { filePath = decodeURIComponent(filePath); } catch {}
+      // 提取路径（与 magic:// 相同的解析逻辑）
+      let rawPath = request.url;
+      if (rawPath.startsWith('atom://')) {
+        rawPath = rawPath.slice('atom://'.length);
+      } else if (rawPath.startsWith('atom:')) {
+        rawPath = rawPath.slice('atom:'.length);
+      }
+      while (rawPath.startsWith('/')) { rawPath = rawPath.slice(1); }
+      try { rawPath = decodeURIComponent(rawPath); } catch {}
 
-      const pathModule = require('path');
-      filePath = pathModule.resolve(filePath);
+      const filePath = path.resolve(rawPath);
+
+      // 安全校验：与 magic:// 相同的白名单策略
+      const projectsRoot = PathManager.getProjectsRootPath();
+      const cacheRoot = PathManager.getCacheRootPath?.() || path.join(projectsRoot, '..', 'zentect-cache');
+      const homeDir = app.getPath('home');
+      const allowedRoots = [
+        path.resolve(projectsRoot),
+        path.resolve(cacheRoot),
+        path.resolve(homeDir),
+        path.join(homeDir, 'Videos'),
+        path.join(homeDir, 'Music'),
+        path.join(homeDir, 'Pictures'),
+        path.join(homeDir, 'Desktop'),
+        path.join(homeDir, 'Downloads'),
+      ].filter(Boolean);
+      const systemDrive = (process.env.SystemDrive || 'C:').toLowerCase();
+      const driveLetter = filePath.substring(0, 2).toLowerCase();
+      const isAllowed = allowedRoots.some(root =>
+        filePath.toLowerCase().startsWith(root.toLowerCase() + path.sep)
+      ) || (driveLetter !== systemDrive && /^[a-z]:[\\]/i.test(filePath));
+      if (!isAllowed) {
+        AppLogger.warn(LOG_TAGS.SYSTEM, `[atom://] 路径越权拒绝: ${filePath}`);
+        return new Response('Forbidden', { status: 403 });
+      }
+
       const stat = await fs.promises.stat(filePath);
       if (!stat.isFile()) return new Response('Not a file', { status: 400 });
 
-      const ext = pathModule.extname(filePath).toLowerCase();
+      const ext = path.extname(filePath).toLowerCase();
       const MIME: Record<string, string> = {
         '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
         '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
         '.ico': 'image/x-icon',
       };
 
+      // 手工 ReadableStream 包装，避免 Readable.toWeb 兼容问题
       const nodeStream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
-      const webStream = Readable.toWeb(nodeStream) as ReadableStream;
+      const webStream = new ReadableStream({
+        start(ctrl) {
+          nodeStream.on('data', (chunk: Buffer) => { ctrl.enqueue(new Uint8Array(chunk)); });
+          nodeStream.on('end', () => { ctrl.close(); });
+          nodeStream.on('error', (err) => { ctrl.error(err); });
+        },
+        cancel() { nodeStream.destroy(); },
+      });
 
       return new Response(webStream as any, {
         headers: {

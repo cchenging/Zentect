@@ -6,15 +6,18 @@ import { safeStorage } from 'electron';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../shared/utils/LogConstants';
 
+// ⚠️ 安全注意：以下硬编码值仅作为 safeStorage 不可用时的回退方案
+// Electron 桌面应用打包后无法读取环境变量，因此保留硬编码回退
+// 生产环境中 safeStorage（OS 密钥链）始终优先（v2 格式），v1 仅用于兼容旧数据
 function deriveLegacyKey(secret: string): Buffer {
   return crypto.scryptSync(
     os.userInfo().username + os.arch() + os.platform() + secret,
-    'salt_magic_2026',
+    'salt_magic_2026', // 回退盐值，safeStorage 可用时不会使用
     32
   );
 }
 
-/** 所有历史遗留密钥（按优先级从上到下尝试解密） */
+/** 所有历史遗留密钥（按优先级从上到下尝试解密），仅用于 v1 格式兼容 */
 const LEGACY_SECRETS = [
   'Zentect_Studio_Secret',    // 当前密钥
   'MagicOne_Studio_Secret',   // 项目改名前的旧密钥

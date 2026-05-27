@@ -115,7 +115,13 @@ export class AIDaemon {
 
   public stopTTS() {
     if (this.ttsProcess) {
-      this.ttsProcess.kill();
+      // 💥 危机三修复：树形强杀 TTS 进程，杜绝僵尸端口占满
+      const pid = this.ttsProcess.pid;
+      if (pid) {
+        ProcessManager.killTree(pid);
+      } else {
+        this.ttsProcess.kill();
+      }
       this.ttsProcess = null;
       this.ttsReady = false;
     }

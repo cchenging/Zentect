@@ -49,14 +49,26 @@ export interface RenderResult {
 export class FFmpegRenderer {
   private ffmpegExe: string;
   private isAborted = false;
+  /** 当前正在运行的 FFmpeg 子进程引用，abort 时需要 kill */
+  private activeChild: import('child_process').ChildProcess | null = null;
 
   constructor() {
     this.ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
   }
 
-  /** 终止当前渲染 */
+  /** 终止当前渲染，kill 子进程防止僵尸进程 */
   abort(): void {
     this.isAborted = true;
+    if (this.activeChild && !this.activeChild.killed) {
+      this.activeChild.kill('SIGTERM');
+      // Windows 下 SIGTERM 可能不生效，强制 kill
+      setTimeout(() => {
+        if (this.activeChild && !this.activeChild.killed) {
+          this.activeChild.kill('SIGKILL');
+        }
+      }, 2000);
+      AppLogger.warn(LOG_TAGS.EXPORT, '[FFmpegRenderer] 已终止 FFmpeg 子进程');
+    }
     AppLogger.warn(LOG_TAGS.EXPORT, '[FFmpegRenderer] 收到中止信号');
   }
 
@@ -259,21 +271,26 @@ export class FFmpegRenderer {
     await this.execFfmpeg(args);
   }
 
-  /** 执行 FFmpeg 命令并等待完成 */
+  /** 执行 FFmpeg 命令并等待完成，abort 时可终止子进程 */
   private execFfmpeg(args: string[]): Promise<void> {
     return new Promise((resolve, reject) => {
       const safeArgs = args.filter(a => a !== undefined && a !== null).map(String);
       const child = spawn(this.ffmpegExe, safeArgs, { windowsHide: true });
+      this.activeChild = child; // 记录引用，abort 时可 kill
 
       let stderr = '';
       child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
 
       child.on('close', (code) => {
+        this.activeChild = null; // 进程结束，清除引用
         if (code === 0) resolve();
         else reject(new Error(`FFmpeg exited with code ${code}: ${stderr.slice(-500)}`));
       });
 
-      child.on('error', (err) => reject(err));
+      child.on('error', (err) => {
+        this.activeChild = null;
+        reject(err);
+      });
       ProcessManager.register(child, 'FFmpeg-Render');
     });
   }

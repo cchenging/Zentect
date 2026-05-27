@@ -21,7 +21,7 @@ export const PIPELINE_ROUTES: Record<string, PipelineRouteEntry> = {
     active: true,
     acceptable: true,
     deprecated: false,
-    description: 'V1.1+ DAG 引擎（ReactFlow 专业模式）',
+    description: 'V1.1+ DAG 引擎（专业模式）',
   },
   'compat-extraction': {
     adapter: 'ExtractionPipeline',

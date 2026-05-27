@@ -1,7 +1,16 @@
 // 📁 路径: src/renderer/src/store/slices/editorSlice.ts
 // 编辑器核心状态切片 - 步骤工作区/管线执行/ASR/VLM/文案/TTS/匹配
 import type { StateCreator } from 'zustand';
-import type { EditorSlice } from '../storeTypes';
+import type { EditorSlice, StepStatus } from '../storeTypes';
+
+/** 初始步骤状态 */
+const INITIAL_STEP_STATUSES: StepStatus[] = ['idle', 'idle', 'idle', 'idle', 'idle'];
+const INITIAL_SUB_STEP_STATUSES: Record<string, StepStatus> = {
+  frames: 'idle',
+  audio: 'idle',
+  whisper: 'idle',
+  faces: 'idle',
+};
 
 /** 创建编辑器切片 */
 export const createEditorSlice: StateCreator<EditorSlice, [], [], EditorSlice> = (set, _get) => ({
@@ -9,6 +18,8 @@ export const createEditorSlice: StateCreator<EditorSlice, [], [], EditorSlice> =
   currentStep: 1,
   isAutoMode: false, // 默认手动模式
   stepCompleted: [false, false, false, false, false],
+  stepStatuses: [...INITIAL_STEP_STATUSES],
+  subStepStatuses: { ...INITIAL_SUB_STEP_STATUSES },
 
   // ===== 管线执行状态 =====
   pipelineRunning: false,
@@ -46,6 +57,27 @@ export const createEditorSlice: StateCreator<EditorSlice, [], [], EditorSlice> =
       const arr = [...s.stepCompleted];
       arr[step - 1] = completed;
       return { stepCompleted: arr };
+    }),
+
+  /** 设置主步骤执行状态 */
+  setStepStatus: (step, status) =>
+    set((s) => {
+      const arr = [...s.stepStatuses] as StepStatus[];
+      arr[step - 1] = status;
+      return { stepStatuses: arr };
+    }),
+
+  /** 设置子步骤执行状态 */
+  setSubStepStatus: (key, status) =>
+    set((s) => ({
+      subStepStatuses: { ...s.subStepStatuses, [key]: status },
+    })),
+
+  /** 重置所有步骤状态 */
+  resetAllStepStatuses: () =>
+    set({
+      stepStatuses: [...INITIAL_STEP_STATUSES],
+      subStepStatuses: { ...INITIAL_SUB_STEP_STATUSES },
     }),
 
   // ===== 管线操作 =====

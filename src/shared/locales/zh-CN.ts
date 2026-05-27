@@ -54,6 +54,18 @@ export const zhCN = {
     SYS_MIGRATE_FAILED: '文件迁移失败，请检查权限',
     UNKNOWN_ERROR: '发生未知错误',
 
+    // --- 引擎核心错误码 (Layer 5 ExceptionHub I18N 契约) ---
+    'engine_errors.AI_AUTH_FAILED_TITLE': 'AI 鉴权失败',
+    'engine_errors.AI_AUTH_FAILED_PROMPT': '您的 API Key 无效或已过期。请前往 [设置 -> AI 配置] 检查您的密钥。',
+    'engine_errors.AI_QUOTA_LIMIT_TITLE': 'AI 服务超限',
+    'engine_errors.AI_QUOTA_LIMIT_PROMPT': '大模型通道请求频率过高或额度耗尽。该节点已被安全挂起，您可以稍后重试或切换通道。',
+    'engine_errors.NETWORK_TIMEOUT_TITLE': '网络连接超时',
+    'engine_errors.NETWORK_TIMEOUT_PROMPT': '网络极度不稳定导致请求中断。请检查本地网络拓扑或代理连接状态。',
+    'engine_errors.DAEMON_CONTRACT_BROKEN_TITLE': '资产契约破损',
+    'engine_errors.DAEMON_CONTRACT_BROKEN_PROMPT': 'AI 返回的结构化契约因截断或幻觉发生破损。节点已进入安全熔断状态。',
+    'engine_errors.DAEMON_OFFLINE_TITLE': 'AI 本地微服务中断',
+    'engine_errors.DAEMON_OFFLINE_AUTOHAL_PROMPT': 'AI 本地微服务崩溃，正在后台为您自动重启...',
+
     // --- 项目名称验证专用 ---
     PROJECT_NAME_EMPTY: '项目名称不能为空',
     PROJECT_NAME_TOO_LONG: '项目名称太长了（最多50个字符）',

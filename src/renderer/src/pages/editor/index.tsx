@@ -1,13 +1,16 @@
 // 📁 路径: src/renderer/src/pages/editor/index.tsx
 // 编辑器页面 - V3 原型对齐 + 完整5步工作区 + 管线事件流绑定
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { getSafeMediaUrl } from '../../utils/formatUrl';
 import {
   Loader2, AlertTriangle, RefreshCcw, Play, Sparkles, ChevronRight,
-  Volume2, Film, Music, Image, Pause, Check, Edit3, Sliders, Video
+  Volume2, Film, Music, Image, Pause, Check, Edit3, Sliders, Video,
+  Search, PictureInPicture, PenLine, Mic, Clapperboard, Clock, CheckCircle2,
+  Maximize, Square
 } from 'lucide-react';
-import { ReactFlowProvider } from '@xyflow/react';
 import { useStore } from '../../store/useStore';
+import { AppNotifier } from '../../core/AppNotifier';
 import { TopBar } from './components/top-bar';
 import { VideoImport } from './components/VideoImport';
 import { API } from '../../api';
@@ -16,14 +19,15 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 
 /** 步骤定义 */
 const STEPS = [
-  { key: 1, label: '素材分析', icon: '🔍' },
-  { key: 2, label: '画面描述', icon: '🖼️' },
-  { key: 3, label: '解说文案', icon: '✍️' },
-  { key: 4, label: '配音合成', icon: '🎙️' },
-  { key: 5, label: '镜头匹配', icon: '🎬' },
+  { key: 1, label: '素材分析', icon: Search },
+  { key: 2, label: '画面描述', icon: PictureInPicture },
+  { key: 3, label: '解说文案', icon: PenLine },
+  { key: 4, label: '配音合成', icon: Mic },
+  { key: 5, label: '镜头匹配', icon: Clapperboard },
 ];
 
 /** 素材库标签 */
+
 const MEDIA_TABS = [
   { key: 'all', label: '全部' },
   { key: 'video', label: '视频', icon: <Film size={12} /> },
@@ -111,7 +115,7 @@ function mapPipelineResultToState(result: Record<string, any>, store: any) {
     }
 
     // 步骤5: 镜头匹配
-    if (nodeId.includes('match') || nodeId.includes('align')) {
+    if (nodeId.includes('match') || nodeId.includes('align') || nodeId.includes('semantic')) {
       const matches = nodeResult.matches || nodeResult.results || [];
       if (matches.length > 0) {
         store.setMatchResults(matches.map((m: any) => ({
@@ -120,6 +124,15 @@ function mapPipelineResultToState(result: Record<string, any>, store: any) {
           score: m.score || m.confidence || 0,
           thumbnail: m.thumbnail || m.coverPath || m.framePath || '',
           confirmed: m.confirmed || false
+        })));
+      } else if (nodeResult.segments && nodeResult.segments.length > 0) {
+        // 兼容后端 semantic-analyze 返回的 segments 格式
+        store.setMatchResults(nodeResult.segments.map((seg: any, idx: number) => ({
+          shotId: seg.shotId || seg.id || `shot_${idx}`,
+          mediaId: seg.mediaId || seg.frameId || '',
+          score: seg.score || seg.confidence || seg.similarity || 0,
+          thumbnail: seg.thumbnail || seg.coverPath || seg.framePath || '',
+          confirmed: seg.confirmed || false
         })));
       }
     }
@@ -144,6 +157,7 @@ export default function Editor() {
   const pipelineNode = useStore((s) => s.pipelineNode);
   const pipelineError = useStore((s) => s.pipelineError);
   const stepCompleted = useStore((s) => s.stepCompleted);
+  const stepStatuses = useStore((s) => s.stepStatuses);
 
   const asrLines = useStore((s) => s.asrLines);
   const frameCount = useStore((s) => s.frameCount);
@@ -168,6 +182,7 @@ export default function Editor() {
   const setPipelineError = useStore((s) => s.setPipelineError);
   const resetPipeline = useStore((s) => s.resetPipeline);
   const setStepCompleted = useStore((s) => s.setStepCompleted);
+  const setStepStatus = useStore((s) => s.setStepStatus);
   const updateAsrLine = useStore((s) => s.updateAsrLine);
   const updateVlmDescription = useStore((s) => s.updateVlmDescription);
   const setVlmEditing = useStore((s) => s.setVlmEditing);
@@ -189,6 +204,8 @@ export default function Editor() {
   // 分隔条拖拽状态
   const [isDragging, setIsDragging] = useState(false);
   const [leftWidth, setLeftWidth] = useState(30); // 左侧宽度百分比
+  const [videoLoading, setVideoLoading] = useState(false);
+  const [videoError, setVideoError] = useState<string | null>(null);
   const MIN_LEFT_WIDTH = 280; // 最小宽度 px
   const MAX_LEFT_WIDTH = 800; // 最大宽度 px
 
@@ -266,54 +283,168 @@ export default function Editor() {
     };
   }, []);
 
-  /** 获取步骤状态 */
+  /** 监听素材提取完成事件 - 自动模式下推进到步骤2 */
+  useEffect(() => {
+    const unsub = API.events.onExtractionSuccess((payload: any) => {
+      const state = useStore.getState();
+      // 标记步骤1完成
+      state.setStepCompleted(1, true);
+      state.setStepStatus(1, 'completed');
+      state.setPipelineRunning(false);
+
+      if (state.isAutoMode) {
+        // 自动模式：推进到步骤2并启动
+        state.setCurrentStep(2);
+        state.setStepStatus(2, 'running');
+        state.setPipelineRunning(true);
+        API.engine.runPipeline({
+          projectId: state.projectId!,
+          sequence: [{ actionType: 'vision-extract', nodeId: 'vlm-1', label: '画面描述' }],
+          sourceMedia: state.mediaItems?.[0]?.filePath || '',
+        })
+          .then((result: any) => {
+            if (result) {
+              const pipelineData = result?.data || result;
+              mapPipelineResultToState(pipelineData, useStore.getState());
+            }
+            state.setStepCompleted(2, true);
+            state.setStepStatus(2, 'completed');
+            // 继续自动推进步骤3
+            if (useStore.getState().isAutoMode) {
+              useStore.getState().setCurrentStep(3);
+              useStore.getState().setStepStatus(3, 'running');
+              return API.engine.runPipeline({
+                projectId: state.projectId!,
+                sequence: [{ actionType: 'script-gen', nodeId: 'script-1', label: '解说文案' }],
+                sourceMedia: state.mediaItems?.[0]?.filePath || '',
+              });
+            }
+          })
+          .then((result: any) => {
+            if (result) {
+              const pipelineData = result?.data || result;
+              mapPipelineResultToState(pipelineData, useStore.getState());
+            }
+            if (useStore.getState().isAutoMode) {
+              useStore.getState().setStepCompleted(3, true);
+              useStore.getState().setStepStatus(3, 'completed');
+              useStore.getState().setCurrentStep(4);
+            }
+          })
+          .catch((err: any) => {
+            state.setPipelineError(err?.message || '自动管线执行失败');
+            state.setPipelineRunning(false);
+          })
+          .finally(() => {
+            useStore.getState().setPipelineRunning(false);
+          });
+      }
+      // 手动模式：停留在步骤1，等待用户点击"下一步"
+    });
+
+    return () => {
+      if (unsub && typeof unsub === 'function') unsub();
+    };
+  }, []);
+
+  /** 获取步骤状态（融合 stepCompleted 和 stepStatuses） */
   const getStepStatus = (step: number) => {
-    if (stepCompleted[step - 1]) return 'done';
+    const execStatus = stepStatuses[step - 1];
+    if (execStatus === 'completed' || stepCompleted[step - 1]) return 'done';
+    if (execStatus === 'running') return 'running';
     if (step === currentStep) return 'active';
     return 'pending';
   };
 
-  /** 一键智能创作 */
-  const handleSmartCreate = useCallback(async () => {
-    setIsAutoMode(true);
-    setCurrentStep(1);
+  /** 步骤编号到管线节点序列的映射 */
+  const STEP_SEQUENCES: Record<number, { actionType: string; nodeId: string; label: string }[]> = useMemo(() => ({
+    2: [{ actionType: 'vision-extract', nodeId: 'vlm-1', label: '画面描述' }],
+    3: [{ actionType: 'script-gen', nodeId: 'script-1', label: '解说文案' }],
+    4: [{ actionType: 'tts-synthesize', nodeId: 'tts-1', label: '配音合成' }],
+    5: [{ actionType: 'semantic-analyze', nodeId: 'match-1', label: '镜头匹配' }],
+  }), []);
+
+  /** 执行指定步骤（步骤2-5通过引擎管线执行） */
+  const handleRunStep = useCallback(async (step: number) => {
+    if (!id) return;
+    const sequence = STEP_SEQUENCES[step];
+    if (!sequence) {
+      AppNotifier.error(`步骤 ${step} 未配置管线节点`);
+      return;
+    }
+    setStepStatus(step, 'running');
     setPipelineRunning(true);
     resetPipeline();
     try {
-      if (id) {
-        const result = await API.engine.runPipeline({ projectId: id, mode: 'auto' });
-        if (result) {
-          // 将管线结果映射到各步骤状态
-          const pipelineData = result.data || result;
-          mapPipelineResultToState(pipelineData, useStore.getState());
-          for (let i = 1; i <= 5; i++) setStepCompleted(i, true);
-          setCurrentStep(5);
-        }
+      const result = await API.engine.runPipeline({
+        projectId: id,
+        sequence,
+        sourceMedia: mediaItems[0]?.filePath || '',
+      });
+      if (result) {
+        const pipelineData = result?.data || result;
+        mapPipelineResultToState(pipelineData, useStore.getState());
       }
+      setStepCompleted(step, true);
+      setStepStatus(step, 'completed');
+
+      // 自动模式：完成后自动推进到下一步并启动
+      if (isAutoMode && step < 5) {
+        setCurrentStep(step + 1);
+        handleRunStep(step + 1);
+      }
+      // 手动模式：停留在当前步骤，等待用户点击"下一步"
     } catch (err: any) {
-      setPipelineError(err?.message || '管线执行失败');
+      setStepStatus(step, 'failed');
+      setPipelineError(err?.message || '步骤执行失败');
     } finally {
       setPipelineRunning(false);
     }
-  }, [id]);
+  }, [id, isAutoMode, STEP_SEQUENCES, mediaItems]);
 
-  /** 保存并继续 */
-  const handleSaveAndNext = useCallback(async () => {
-    if (currentStep < 5) {
-      try {
-        if (id) {
-          const result = await API.engine.runPipeline({ projectId: id, mode: 'step', step: currentStep });
-          // 将当前步骤的管线结果映射到状态
-          const pipelineData = result?.data || result;
-          mapPipelineResultToState(pipelineData, useStore.getState());
-        }
-        setStepCompleted(currentStep, true);
-        setCurrentStep(currentStep + 1);
-      } catch (err: any) {
-        setPipelineError(err?.message || '步骤执行失败');
+  /** 启动当前步骤 */
+  const handleStart = useCallback(async () => {
+    if (currentStep === 1) {
+      // 步骤1：素材提取，通过 API.media.process 触发
+      const state = useStore.getState();
+      const activeMedia = state.mediaItems?.[0];
+      const projectId = state.projectId;
+      if (!projectId || !activeMedia?.filePath) {
+        AppNotifier.error('请先导入视频素材');
+        return;
       }
+      const config = state.extractionConfig;
+      setStepStatus(1, 'running');
+      setPipelineRunning(true);
+      try {
+        await API.media.process(projectId, activeMedia, {
+          targetLanguage: config.targetLanguage || 'zh-CN',
+          frames: config.frames.enabled ? {
+            enabled: true,
+            mode: config.frames.mode,
+            [config.frames.mode === 'scene' ? 'sceneThreshold' : 'fps']: config.frames.value
+          } : { enabled: false },
+          audio: config.audio,
+          whisper: config.whisper,
+          faces: config.faces,
+        });
+        AppNotifier.info('素材提取任务已加入队列');
+      } catch (err: any) {
+        setStepStatus(1, 'failed');
+        setPipelineError(err?.message || '素材提取启动失败');
+        setPipelineRunning(false);
+      }
+      return;
     }
-  }, [id, currentStep]);
+    handleRunStep(currentStep);
+  }, [currentStep, handleRunStep, setStepStatus, setPipelineRunning, setPipelineError]);
+
+  /** 下一步（手动模式：确认当前步骤结果，推进到下一步） */
+  const handleNextStep = useCallback(() => {
+    if (currentStep < 5) {
+      setCurrentStep(currentStep + 1);
+    }
+  }, [currentStep]);
 
   /** 中止管线 */
   const handleAbortPipeline = useCallback(async () => {
@@ -321,12 +452,14 @@ export default function Editor() {
     setPipelineRunning(false);
   }, []);
 
-  /** 视频导入：通过系统文件对话框选择视频文件并导入到项目 */
+  /** 视频导入：通过系统文件对话框选择视频文件并导入到项目，直接在播放器播放 */
   const handleVideoImport = useCallback(async () => {
     if (!id) return;
     try {
+      setVideoError(null);
       const filePaths: string[] = await API.system.openMediaDialog();
       if (filePaths && filePaths.length > 0) {
+        setVideoLoading(true);
         const newItems = await API.media.import(id, filePaths);
         if (Array.isArray(newItems) && newItems.length > 0) {
           addMediaItems(newItems);
@@ -334,15 +467,20 @@ export default function Editor() {
         }
       }
     } catch (err: any) {
-      setPipelineError(err?.message || '视频导入失败');
+      setVideoLoading(false);
+      setVideoError(err?.message || '视频导入失败');
     }
-  }, [id, addMediaItems, setActivePlaySource]);
+  }, [id, setActivePlaySource]);
 
-  /** 播放/暂停 */
+  /** 播放/暂停切换 */
   const togglePlay = useCallback(() => {
     if (videoRef.current) {
-      if (isPlaying) { videoRef.current.pause(); } else { videoRef.current.play(); }
-      setIsPlaying(!isPlaying);
+      if (isPlaying) {
+        videoRef.current.pause();
+      } else {
+        // 捕获 play() 的 Promise，防止 AbortError
+        videoRef.current.play().catch(() => {});
+      }
     }
   }, [isPlaying]);
 
@@ -354,9 +492,8 @@ export default function Editor() {
   };
 
   return (
-    <ReactFlowProvider>
-      <div className="flex flex-col h-screen w-screen bg-bg-deep text-foreground overflow-hidden">
-        <TopBar />
+    <div className="flex flex-col h-screen w-screen bg-bg-deep text-foreground overflow-hidden">
+      <TopBar />
 
         {/* 主体两栏：左侧播放器+文件区 | 分隔条 | 右侧编辑区 */}
         <div className="flex-1 flex overflow-hidden p-2 gap-0 editor-body" style={{ cursor: isDragging ? 'col-resize' : undefined, userSelect: isDragging ? 'none' : undefined }}>
@@ -373,18 +510,54 @@ export default function Editor() {
             }}
           >
 
-            {/* 视频播放器 55% */}
-            <div className="glass-card overflow-hidden flex flex-col" style={{ flex: '55 1 0' }}>
-              <div className="flex-1 bg-[#07070f] rounded-xl flex items-center justify-center relative m-2.5 mb-1">
-                {(activePlaySource?.filePath || (mediaItems.length > 0 && mediaItems[0]?.filePath)) ? (
-                  <video 
-                    ref={videoRef} 
-                    className="w-full h-full object-contain"
-                    src={activePlaySource?.filePath || mediaItems[0]?.filePath}
-                    onTimeUpdate={() => { if (videoRef.current) setCurrentTime(videoRef.current.currentTime); }}
-                    onLoadedMetadata={() => { if (videoRef.current) setVideoDuration(videoRef.current.duration); }}
-                    onEnded={() => setIsPlaying(false)} 
-                  />
+            {/* 视频播放器 - 16:9 比例 */}
+            <div className="glass-card overflow-hidden flex flex-col shrink-0">
+              <div className="w-full bg-[#07070f] rounded-xl flex items-center justify-center relative m-2.5 mb-1"
+                style={{ aspectRatio: '16 / 9' }}>
+                {activePlaySource?.filePath ? (
+                  <>
+                    <video 
+                      ref={videoRef} 
+                      className="w-full h-full object-contain"
+                      src={getSafeMediaUrl(activePlaySource.filePath)}
+                      onCanPlay={() => { setVideoLoading(false); setVideoError(null); }}
+                      onError={(e) => {
+                        setVideoLoading(false);
+                        const vid = e.currentTarget;
+                        const err = vid.error;
+                        let msg = '视频加载失败';
+                        if (err) {
+                          switch (err.code) {
+                            case 1: msg = '视频加载被中止'; break;
+                            case 2: msg = '网络错误，无法加载视频'; break;
+                            case 3: msg = '视频解码失败（格式可能不受支持）'; break;
+                            case 4: msg = '视频格式不支持播放'; break;
+                          }
+                        }
+                        setVideoError(msg);
+                        console.error('[VideoPlayer] 加载失败:', msg, 'src:', vid.src, 'error:', err);
+                      }}
+                      onTimeUpdate={() => { if (videoRef.current) setCurrentTime(videoRef.current.currentTime); }}
+                      onLoadedMetadata={() => { if (videoRef.current) setVideoDuration(videoRef.current.duration); }}
+                      onEnded={() => setIsPlaying(false)} 
+                      onPlay={() => setIsPlaying(true)}
+                      onPause={() => setIsPlaying(false)}
+                    />
+                    {videoLoading && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#07070f]/80">
+                        <Loader2 size={28} className="animate-spin text-accent/60" />
+                        <span className="text-[11px] text-muted-foreground mt-2">正在加载视频...</span>
+                      </div>
+                    )}
+                    {videoError && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#07070f]/80">
+                        <AlertTriangle size={28} className="text-red-400/60" />
+                        <span className="text-[11px] text-red-400/80 mt-2">{videoError}</span>
+                        <button onClick={handleVideoImport}
+                          className="text-[10px] text-accent hover:underline cursor-pointer mt-1">重新导入</button>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <div className="flex flex-col items-center gap-4">
                     <div className="w-[300px] h-[120px] border-2 border-dashed border-border rounded-xl flex flex-col items-center justify-center gap-2 cursor-pointer hover:border-accent hover:bg-accent/5 transition-all"
@@ -400,7 +573,7 @@ export default function Editor() {
               <div className="flex items-center gap-3 px-4 py-2 shrink-0">
                 <button onClick={togglePlay}
                   className="w-[22px] h-[22px] rounded-full bg-accent/20 flex items-center justify-center text-accent hover:bg-accent/30 transition-colors cursor-pointer outline-none">
-                  {isPlaying ? <Pause size={11} fill="currentColor" /> : <Play size={11} fill="currentColor" />}
+                  {isPlaying ? <Square size={10} fill="currentColor" /> : <Play size={11} fill="currentColor" />}
                 </button>
                 <div className="flex-1 h-[3px] bg-muted rounded-full overflow-hidden cursor-pointer"
                   onClick={(e) => {
@@ -417,14 +590,26 @@ export default function Editor() {
                 <button className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer outline-none">
                   <Volume2 size={14} />
                 </button>
+                <button onClick={() => {
+                  const container = videoRef.current?.parentElement;
+                  if (container) {
+                    if (document.fullscreenElement) {
+                      document.exitFullscreen();
+                    } else {
+                      container.requestFullscreen();
+                    }
+                  }
+                }} className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer outline-none">
+                  <Maximize size={14} />
+                </button>
               </div>
             </div>
 
-            {/* 成功文件展示区域 45% - 管线处理后的结果素材 */}
-            <div className="glass-card overflow-hidden flex flex-col" style={{ flex: '45 1 0' }}>
+            {/* 成功文件展示区域 - 填充剩余空间 */}
+            <div className="glass-card overflow-hidden flex flex-col flex-1 min-h-0">
               <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border/30 shrink-0">
                 <span className="text-[12px] font-semibold">成功文件</span>
-                <span className="text-[10px] text-muted-foreground">共 {mediaItems.length} 项</span>
+                <span className="text-[10px] text-muted-foreground">共 {mediaItems.filter((m: any) => m.type !== 'video').length} 项</span>
               </div>
               {/* 分类标签 */}
               <div className="flex items-center gap-1 px-3.5 pt-1.5 pb-0 shrink-0">
@@ -446,19 +631,17 @@ export default function Editor() {
                   </button>
                 ))}
               </div>
-              {/* 横向滚动卡片展示区 */}
+              {/* 横向滚动卡片展示区 - 只展示管线产出物，过滤掉原始视频 */}
               <div className="flex-1 overflow-x-auto overflow-y-hidden px-3.5 py-3">
-                {mediaItems.length > 0 ? (
+                {mediaItems.filter((m: any) => m.type !== 'video').length > 0 ? (
                   <div className="flex gap-2.5 h-full items-start">
-                    {mediaItems.map((item: any) => (
+                    {mediaItems.filter((m: any) => m.type !== 'video').map((item: any) => (
                       <div key={item.id} 
                         className={`min-w-[120px] glass-card-sm overflow-hidden cursor-pointer hover:border-accent/30 transition-all ${activePlaySource?.id === item.id ? 'border-accent' : ''}`}
                         onClick={() => setActivePlaySource(item)}>
                         <div className="w-full h-[68px] bg-bg-secondary flex items-center justify-center relative">
                           {item.coverPath || item.thumbnail ? (
-                            <img src={item.coverPath || item.thumbnail} className="w-full h-full object-cover" />
-                          ) : item.type === 'video' ? (
-                            <Video size={20} className="text-muted-foreground/30" />
+                            <img src={getSafeMediaUrl(item.coverPath || item.thumbnail)} className="w-full h-full object-cover" />
                           ) : item.type === 'audio' ? (
                             <Music size={20} className="text-muted-foreground/30" />
                           ) : (
@@ -466,7 +649,7 @@ export default function Editor() {
                           )}
                           {/* 类型标签 */}
                           <span className="absolute top-1.5 right-1.5 text-[8px] px-1 py-0.5 rounded bg-black/50 text-white/70">
-                            {item.type === 'video' ? '视频' : item.type === 'audio' ? '音频' : '帧'}
+                            {item.type === 'audio' ? '音频' : '帧'}
                           </span>
                           {/* 时长 */}
                           {item.duration && (
@@ -515,14 +698,18 @@ export default function Editor() {
                     <button onClick={() => setCurrentStep(step.key)}
                       className={`flex items-center gap-1.5 cursor-pointer outline-none transition-all ${
                         getStepStatus(step.key) === 'active' ? 'text-accent' :
-                        getStepStatus(step.key) === 'done' ? 'text-accent-green' : 'text-muted-foreground'
+                        getStepStatus(step.key) === 'done' ? 'text-accent-green' :
+                        getStepStatus(step.key) === 'running' ? 'text-primary' : 'text-muted-foreground'
                       }`}>
                       <div className={`w-[22px] h-[22px] rounded-md flex items-center justify-center text-[11px] font-bold ${
                         getStepStatus(step.key) === 'active' ? 'bg-accent text-white shadow-sm shadow-accent/30' :
                         getStepStatus(step.key) === 'done' ? 'bg-accent-green/20 text-accent-green' :
+                        getStepStatus(step.key) === 'running' ? 'bg-primary/20 text-primary' :
                         'bg-muted text-muted-foreground'
                       }`}>
-                        {getStepStatus(step.key) === 'done' ? '✓' : step.key}
+                        {getStepStatus(step.key) === 'done' ? <Check size={12} /> :
+                         getStepStatus(step.key) === 'running' ? <Loader2 size={12} className="animate-spin" /> :
+                         step.key}
                       </div>
                       <span className="text-[11px] font-medium hidden xl:inline">{step.label}</span>
                     </button>
@@ -603,7 +790,7 @@ export default function Editor() {
                       {/* 音频分离状态 */}
                       <div className="flex items-center gap-3">
                         <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${audioSeparated ? 'bg-accent-green/10' : 'bg-muted/30'}`}>
-                          <span className="text-lg">{audioSeparated ? '✅' : '⏳'}</span>
+                          {audioSeparated ? <CheckCircle2 size={18} className="text-accent-green" /> : <Clock size={18} className="text-muted-foreground" />}
                         </div>
                         <div>
                           <div className="text-[13px] font-semibold">音频分离</div>
@@ -614,7 +801,7 @@ export default function Editor() {
                       {/* 关键帧提取状态 */}
                       <div className="flex items-center gap-3">
                         <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${frameCount > 0 ? 'bg-accent-green/10' : 'bg-muted/30'}`}>
-                          <span className="text-lg">{frameCount > 0 ? '✅' : '⏳'}</span>
+                          {frameCount > 0 ? <CheckCircle2 size={18} className="text-accent-green" /> : <Clock size={18} className="text-muted-foreground" />}
                         </div>
                         <div>
                           <div className="text-[13px] font-semibold">关键帧提取</div>
@@ -843,21 +1030,26 @@ export default function Editor() {
             <div className="flex items-center justify-between px-4 py-2 border-t border-border/30 shrink-0">
               <span className="text-[12px] text-muted-foreground">
                 步骤 {currentStep}/5 · {STEPS[currentStep - 1].label}
+                {stepStatuses[currentStep - 1] === 'completed' && <span className="text-green-500 ml-1">已完成</span>}
+                {stepStatuses[currentStep - 1] === 'failed' && <span className="text-destructive ml-1">失败</span>}
               </span>
               <div className="flex items-center gap-2">
-                <button onClick={handleSmartCreate} disabled={pipelineRunning}
+                {/* 启动按钮：执行当前步骤 */}
+                <button onClick={handleStart} disabled={pipelineRunning || stepStatuses[currentStep - 1] === 'running'}
                   className="h-8 px-4 rounded-lg bg-gradient-to-r from-accent to-accent-purple text-white text-[11px] font-semibold shadow-md shadow-accent/20 hover:brightness-110 transition-all cursor-pointer outline-none flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed">
-                  <Sparkles size={13} /> {pipelineRunning ? '创作中...' : '一键智能创作'}
+                  <Play size={13} /> {pipelineRunning ? '执行中...' : '启动'}
                 </button>
-                <button onClick={handleSaveAndNext} disabled={currentStep >= 5 || pipelineRunning}
-                  className="h-8 px-4 rounded-lg bg-bg-secondary border border-border/50 text-[11px] font-medium hover:border-accent/40 hover:text-accent transition-all cursor-pointer outline-none disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5">
-                  保存并继续 <ChevronRight size={13} />
-                </button>
+                {/* 下一步按钮：手动模式下，当前步骤已完成时显示 */}
+                {!isAutoMode && stepStatuses[currentStep - 1] === 'completed' && currentStep < 5 && (
+                  <button onClick={handleNextStep}
+                    className="h-8 px-4 rounded-lg bg-bg-secondary border border-border/50 text-[11px] font-medium hover:border-accent/40 hover:text-accent transition-all cursor-pointer outline-none flex items-center gap-1.5">
+                    下一步 <ChevronRight size={13} />
+                  </button>
+                )}
               </div>
             </div>
           </div>
         </div>
-      </div>
-    </ReactFlowProvider>
+    </div>
   );
 }

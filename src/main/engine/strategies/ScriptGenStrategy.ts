@@ -3,6 +3,7 @@ import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
 import { LLMFactory } from '../adapters/LLMFactory';
 import { AppLogger } from '../../core/AppLogger';
 import { LexiconFilter } from '../lexicon/LexiconFilter';
+import { NetworkPipeline } from '../../core/NetworkPipeline';
 
 export interface ScriptGenInput {
   modelName?: string;
@@ -111,8 +112,8 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
 
     let rawShots: Array<{ shotId: string; text: string; duration: number }> = [];
     try {
-      const cleanJson = (response.text || '').replace(/```json/g, '').replace(/```/g, '').trim();
-      rawShots = JSON.parse(cleanJson);
+      // 💥 Layer 4: 强制流经数据清洗防线，阻断脏资产向状态层渗透
+      rawShots = NetworkPipeline.strictParseJson(response.text || '');
       if (!Array.isArray(rawShots)) {
         throw new Error('大模型未返回预期的数组格式');
       }

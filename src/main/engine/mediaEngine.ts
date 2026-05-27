@@ -266,6 +266,33 @@ export class MediaEngine {
       result.shots.push({ id: `shot_text_${Date.now()}_${index}`, mediaId, start: tStart, end: tEnd, originalText: text, aiText: text, contextFrames: matchedFrames, coverPath: matchedFrames.length > 0 ? matchedFrames[0] : (availableFrames[0]?.path || ''), roleId: '', visionText: '', audioEmotion: '' } as any);
       lastEndTime = tEnd;
     });
+
+    // 纯视觉帧组装：当没有台词数据但有抽帧时，按时间间隔将帧组装为镜头
+    if (result.shots.length === 0 && availableFrames.length > 0) {
+      const intervalSec = 5; // 每5秒一个镜头
+      let shotIndex = 0;
+      for (let timeStart = 0; timeStart < availableFrames[availableFrames.length - 1].time + intervalSec; timeStart += intervalSec) {
+        const timeEnd = timeStart + intervalSec;
+        const matchedFrames = availableFrames.filter(f => f.time >= timeStart && f.time < timeEnd).map(f => f.path);
+        if (matchedFrames.length > 0) {
+          result.shots.push({
+            id: `shot_visual_${Date.now()}_${shotIndex}`,
+            mediaId,
+            start: timeStart,
+            end: timeEnd,
+            originalText: '',
+            aiText: '',
+            contextFrames: matchedFrames,
+            coverPath: matchedFrames[0],
+            roleId: '',
+            visionText: '',
+            audioEmotion: ''
+          } as any);
+          shotIndex++;
+        }
+      }
+    }
+
     return result;
   }
 

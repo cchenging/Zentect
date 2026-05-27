@@ -179,13 +179,11 @@ export class ExtractionPipeline {
                     // 💥 向遥测系统发射视觉索引信号
                     MainNotifier.sendTaskProgress(this.currentMediaId, 'indexing_vision', 70, 'indexing_vision');
                     try {
-                        roles = await (VisionProcessor as any).scanFaces(validFrames, facesDir);
+                        roles = await VisionProcessor.scanFaces(validFrames, facesDir);
                         
-                        // 💥 新增战役节点：人脸聚类！
                         if (roles.length > 0) {
                             this.transition('TASK_CLUSTER_FACES', 80, 'Running HDBSCAN unsupervised face clustering');
-                            clustersMap = await (VisionProcessor as any).clusterFaces(mediaId, roles);
-                            // 💥 发射视觉索引完成信号
+                            clustersMap = await VisionProcessor.clusterFaces(mediaId, roles);
                             MainNotifier.sendTaskProgress(this.currentMediaId, 'indexing_vision', 80, 'indexing_vision');
                         }
                     } catch (e: any) {
@@ -242,22 +240,19 @@ export class ExtractionPipeline {
                 });
             }
 
-            // 💥 终极战役节点：提取多模态 CLIP 语义！
+            // CLIP 语义提取 + 语义流生成（降级安全：任何失败都不影响主流程）
             if (assembledShots.length > 0) {
                  this.transition('TASK_EXTRACT_SEMANTICS', 90, 'Building high-dimensional CLIP semantic index');
-                 // 💥 发射 CLIP 语义提取信号
                  MainNotifier.sendTaskProgress(this.currentMediaId, 'indexing_vision', 90, 'indexing_vision');
-                 await (VisionProcessor as any).extractSemantics(mediaId, assembledShots);
+                 try {
+                     await VisionProcessor.extractSemantics(mediaId, assembledShots);
 
-                 // =========================================================================
-                 // 🌟 宪法级升维：注入 video-analyzer 级别的上下文语义流
-                 // =========================================================================
-                 this.transition('TASK_SEMANTIC_FLOW', 95, 'Generating temporal semantic flow via Vision LLM');
-                 MainNotifier.sendTaskProgress(this.currentMediaId, 'analyzing_flow', 95, 'analyzing_flow');
-                 
-                 // 重写 assembledShots，为其注入 semanticDescription 字段
-                 assembledShots = await (VisionProcessor as any).generateSemanticFlow(assembledShots);
-                 // =========================================================================
+                     this.transition('TASK_SEMANTIC_FLOW', 95, 'Generating temporal semantic flow via Vision LLM');
+                     MainNotifier.sendTaskProgress(this.currentMediaId, 'analyzing_flow', 95, 'analyzing_flow');
+                     assembledShots = await VisionProcessor.generateSemanticFlow(assembledShots);
+                 } catch (e: any) {
+                     AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[NODE_DOWNGRADE] Semantic extraction degrading, continuing without CLIP index', { mediaId: this.currentMediaId, error: e.message });
+                 }
             }
 
             this.transition('TASK_SUCCESS', 100, 'Pipeline extraction completed successfully', 'NODE_SUCCESS');
@@ -275,7 +270,7 @@ export class ExtractionPipeline {
                 MainNotifier.sendTaskProgress(this.currentMediaId, 'error', 0, 'error');
                 throw new AppError(ErrorCode.SYS_UNKNOWN, 'TASK_ABORTED');
             }
-            AppLogger.error(LOG_TAGS.MEDIA_ENGINE, '[NODE_FATAL] Pipeline execution crashed', { mediaId: this.currentMediaId, error: error });
+            AppLogger.error(LOG_TAGS.MEDIA_ENGINE, '[NODE_FATAL] Pipeline execution crashed', { mediaId: this.currentMediaId, error: error?.message || String(error) });
             MainNotifier.sendTaskProgress(this.currentMediaId, 'error', 0, 'error');
             throw error instanceof AppError ? error : new AppError(ErrorCode.AI_PROCESS_FAILED, error.message);
         }

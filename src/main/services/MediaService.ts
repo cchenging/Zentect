@@ -6,9 +6,16 @@ import { LOG_TAGS } from '../../shared/utils/LogConstants';
 import { MediaItem } from '../../shared/types';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 import { ProjectService } from './ProjectService';
 import { VideoProcessor } from '../engine/media/VideoProcessor';
 import { DICT } from '../../shared/locales/dictionary';
+
+/** Chromium 原生支持的视频容器格式 */
+const NATIVE_VIDEO_FORMATS = ['mp4', 'webm', 'ogg'];
+
+/** 需要转码的视频格式 */
+const TRANSCODE_FORMATS = ['mkv', 'avi', 'mov', 'wmv', 'flv', 'ts', 'rmvb', 'rm', '3gp', 'vob'];
 
 export class MediaService {
   private repo = new MediaRepository();
@@ -32,7 +39,7 @@ export class MediaService {
         const ext = fileName.split('.').pop()?.toLowerCase() || '';
 
         let type: MediaItem['type'] = DICT.MEDIA_TYPE.IMAGE as MediaItem['type'];
-        if (['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) {
+        if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'ts', 'rmvb', 'rm', '3gp', 'vob'].includes(ext)) {
           type = DICT.MEDIA_TYPE.VIDEO as MediaItem['type'];
         } else if (['mp3', 'wav', 'aac', 'flac', 'm4a'].includes(ext)) {
           type = DICT.MEDIA_TYPE.AUDIO as MediaItem['type'];
@@ -40,16 +47,44 @@ export class MediaService {
 
         let metadata: any = { formattedTime: '00:00:00', duration: 0, width: 0, height: 0, fps: 0 };
         let pureCoverName = '';
+        let playableFilePath = filePath; // 最终用于播放的文件路径
+
+        // 非原生格式自动转码为 MP4，确保 Chromium 可播放
+        if (type === 'video' && TRANSCODE_FORMATS.includes(ext)) {
+          AppLogger.info(LOG_TAGS.MEDIA, `检测到非原生格式 .${ext}，启动 FFmpeg 转码: ${fileName}`);
+          const transcodedPath = await this.transcodeToMp4(filePath, projectId, mediaId);
+          if (transcodedPath) {
+            playableFilePath = transcodedPath;
+            AppLogger.info(LOG_TAGS.MEDIA, `转码完成: ${fileName} -> MP4`);
+          } else {
+            AppLogger.warn(LOG_TAGS.MEDIA, `转码失败，保留原始路径: ${fileName}`);
+          }
+        }
+
+        // MP4 文件检测 HEVC 编码，Chromium 不支持 HEVC 播放，需转码为 H.264
+        if (type === 'video' && ext === 'mp4') {
+          const isHevc = await this.detectHevcCodec(filePath);
+          if (isHevc) {
+            AppLogger.info(LOG_TAGS.MEDIA, `检测到 HEVC 编码 MP4，启动转码: ${fileName}`);
+            const transcodedPath = await this.transcodeToMp4(filePath, projectId, mediaId);
+            if (transcodedPath) {
+              playableFilePath = transcodedPath;
+              AppLogger.info(LOG_TAGS.MEDIA, `HEVC 转码完成: ${fileName} -> H.264 MP4`);
+            } else {
+              AppLogger.warn(LOG_TAGS.MEDIA, `HEVC 转码失败，保留原始路径: ${fileName}`);
+            }
+          }
+        }
 
         if (type === 'video') {
-          metadata = await VideoProcessor.extractMetadata(filePath);
-          pureCoverName = await VideoProcessor.generateCover(filePath, PathManager.getProjectThumbnailsDir(projectId), mediaId);
+          metadata = await VideoProcessor.extractMetadata(playableFilePath);
+          pureCoverName = await VideoProcessor.generateCover(playableFilePath, PathManager.getProjectThumbnailsDir(projectId), mediaId);
         }
 
         const relativeCoverPath = pureCoverName ? `thumbnails/${pureCoverName}` : '';
         const mediaItem: MediaItem & { duration: number, width: number, height: number, fps: number } = {
           id: mediaId, projectId, type, name: fileName,
-          filePath, coverPath: relativeCoverPath,
+          filePath: playableFilePath, coverPath: relativeCoverPath,
           status: 'parsed',
           duration: metadata.duration || 0,
           width: metadata.width || 0, height: metadata.height || 0, fps: metadata.fps || 0
@@ -69,6 +104,106 @@ export class MediaService {
       }
     }
     return results;
+  }
+
+  /**
+   * 检测视频文件是否使用 HEVC (H.265) 编码
+   * 通过 ffprobe 检测视频流编码名称
+   */
+  private async detectHevcCodec(filePath: string): Promise<boolean> {
+    const ffprobeExe = PathManager.getBinPath(process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+    if (!fs.existsSync(ffprobeExe)) {
+      AppLogger.warn(LOG_TAGS.MEDIA, 'ffprobe 不存在，跳过 HEVC 检测');
+      return false;
+    }
+
+    return new Promise((resolve) => {
+      const args = [
+        '-v', 'quiet',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=codec_name',
+        '-of', 'csv=p=0',
+        filePath
+      ];
+
+      const proc = spawn(ffprobeExe, args, { windowsHide: true });
+      let output = '';
+
+      proc.stdout?.on('data', (data: Buffer) => { output += data.toString(); });
+      proc.stderr?.on('data', () => {});
+
+      proc.on('close', (code) => {
+        if (code === 0) {
+          const codecName = output.trim().toLowerCase();
+          const isHevc = codecName.includes('hevc') || codecName.includes('h265') || codecName.includes('libx265');
+          if (isHevc) {
+            AppLogger.info(LOG_TAGS.MEDIA, `检测到 HEVC 编码: codec=${codecName} file=${filePath.split(/[\\/]/).pop()}`);
+          }
+          resolve(isHevc);
+        } else {
+          resolve(false);
+        }
+      });
+
+      proc.on('error', () => { resolve(false); });
+    });
+  }
+
+  /**
+   * 将非原生格式视频转码为 MP4（H.264 + AAC），确保 Chromium 可播放
+   */
+  private async transcodeToMp4(sourcePath: string, projectId: string, mediaId: string): Promise<string | null> {
+    const ffmpegExe = PathManager.getBinPath(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+    if (!fs.existsSync(ffmpegExe)) {
+      AppLogger.warn(LOG_TAGS.MEDIA, 'FFmpeg 不存在，无法转码');
+      return null;
+    }
+
+    const outputDir = path.join(PathManager.getProjectDir(projectId), 'extractions', 'transcoded');
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    const outputPath = path.join(outputDir, `${mediaId}.mp4`);
+
+    // 如果已经转码过，直接返回
+    if (fs.existsSync(outputPath)) return outputPath;
+
+    return new Promise((resolve) => {
+      const args = [
+        '-i', sourcePath,
+        '-c:v', 'libx264',       // H.264 视频编码
+        '-preset', 'fast',        // 快速转码
+        '-crf', '23',             // 质量平衡
+        '-c:a', 'aac',            // AAC 音频编码
+        '-b:a', '128k',           // 音频码率
+        '-movflags', '+faststart', // 流式播放优化
+        '-y',                     // 覆盖输出
+        outputPath
+      ];
+
+      const proc = spawn(ffmpegExe, args, { windowsHide: true });
+      let stderrOutput = '';
+
+      proc.stderr?.on('data', (data: Buffer) => {
+        stderrOutput += data.toString();
+      });
+
+      proc.on('close', (code) => {
+        if (code === 0 && fs.existsSync(outputPath)) {
+          resolve(outputPath);
+        } else {
+          AppLogger.error(LOG_TAGS.MEDIA, `FFmpeg 转码失败 (exit code: ${code})`, { stderr: stderrOutput.slice(-500) });
+          // 清理不完整文件
+          try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
+          resolve(null);
+        }
+      });
+
+      proc.on('error', (err) => {
+        AppLogger.error(LOG_TAGS.MEDIA, `FFmpeg 进程启动失败`, err);
+        resolve(null);
+      });
+    });
   }
 
   /**

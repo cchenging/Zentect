@@ -21,6 +21,7 @@ import { FFmpegRenderer } from '../engine/media/FFmpegRenderer'
 import { BatchQueueEngine } from '../engine/BatchQueueEngine'
 import { PublishService } from '../services/PublishService';
 import { PathManager } from '../utils/pathManager';
+import { ExceptionHub } from '../core/ExceptionHub';
 import * as path from 'path';
 import type { PipelinePayload } from '../../shared/types';
 
@@ -84,11 +85,34 @@ export class EngineController {
           payload as PipelinePayload,
           (progressData) => {
             event.sender.send(IPC_CHANNELS.ENGINE_PIPELINE_PROGRESS, progressData);
+
+            // 当进度状态为 shot-data 时，额外推送到故事板卡片通道
+            if (progressData.status === 'shot-data' && progressData.results?.shotId) {
+              try {
+                if (!event.sender.isDestroyed()) {
+                  event.sender.send(IPC_CHANNELS.EVENT_STREAM_TO_SHOT_CARD, {
+                    shotId: progressData.results.shotId,
+                    safeText: JSON.stringify(progressData.results.data),
+                  });
+                }
+              } catch { /* 推送失败不影响主流程 */ }
+            }
           }
         );
         return { data: result, message: '工作流执行圆满完成' };
       } catch (error: any) {
         AppLogger.error(LOG_TAGS.SYSTEM, `工作流执行崩盘`, error);
+
+        // 💥 断层3修复：异常归一化后推送 EVENT_PIPELINE_ERROR 到前端
+        try {
+          const i18nPayload = ExceptionHub.normalize(error);
+          event.sender.send(IPC_CHANNELS.EVENT_PIPELINE_ERROR, {
+            nodeId: error?.nodeId || 'unknown',
+            titleKey: i18nPayload.titleKey,
+            promptKey: i18nPayload.promptKey,
+          });
+        } catch { /* 推送失败不影响主流程 */ }
+
         throw error;
       } finally {
         this.engines.delete(pid);
@@ -173,11 +197,34 @@ export class EngineController {
           pid,
           (progressData) => {
             event.sender.send(IPC_CHANNELS.ENGINE_PIPELINE_PROGRESS, progressData);
+
+            // 当进度状态为 shot-data 时，额外推送到故事板卡片通道
+            if (progressData.status === 'shot-data' && progressData.results?.shotId) {
+              try {
+                if (!event.sender.isDestroyed()) {
+                  event.sender.send(IPC_CHANNELS.EVENT_STREAM_TO_SHOT_CARD, {
+                    shotId: progressData.results.shotId,
+                    safeText: JSON.stringify(progressData.results.data),
+                  });
+                }
+              } catch { /* 推送失败不影响主流程 */ }
+            }
           }
         );
         return { data: result, message: 'DAG 工作流执行完成' };
       } catch (error: any) {
         AppLogger.error(LOG_TAGS.ENGINE, `DAG 工作流执行失败`, error);
+
+        // 💥 断层3修复：异常归一化后推送 EVENT_PIPELINE_ERROR 到前端
+        try {
+          const i18nPayload = ExceptionHub.normalize(error);
+          event.sender.send(IPC_CHANNELS.EVENT_PIPELINE_ERROR, {
+            nodeId: error?.nodeId || 'unknown',
+            titleKey: i18nPayload.titleKey,
+            promptKey: i18nPayload.promptKey,
+          });
+        } catch { /* 推送失败不影响主流程 */ }
+
         throw error;
       } finally {
         this.engines.delete(pid);

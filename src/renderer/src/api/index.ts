@@ -143,6 +143,10 @@ export const API = {
     // V1.1: Pipeline 参数更新
     updateParams: (projectId: string, params: Record<string, number>) =>
       invokeSafe(IPC_CHANNELS.PIPELINE_UPDATE_PARAMS, { projectId, params }),
+
+    // 💥 断层2修复：DAG 工作流执行 — 从 WorkflowService 加载 DAG 并拓扑排序执行
+    runDagWorkflow: (projectId: string) =>
+      invokeSafe(IPC_CHANNELS.ENGINE_RUN_DAG_WORKFLOW, { projectId }),
   },
 
   // V1.1: 工作流画布持久化域

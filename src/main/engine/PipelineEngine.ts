@@ -16,6 +16,9 @@ import { PathManager } from '../utils/pathManager';
 import { generateStateHash } from '../utils/crypto';
 import { WorkflowService } from '../services/WorkflowService';
 import { SettingsRepository } from '../database/repositories/SettingsRepository';
+import { EngineStateGuard } from '../core/EngineStateGuard';
+import { ExceptionHub } from '../core/ExceptionHub';
+import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -42,7 +45,8 @@ export class PipelineEngine {
 
   public abort() {
     this.isAborted = true;
-    AppLogger.warn(LOG_TAGS.SCHEDULER, '🛑 收到全局熔断指令');
+    EngineStateGuard.forceReset(); // 💥 全局熔断时清空所有算力锁
+    AppLogger.warn(LOG_TAGS.SCHEDULER, '🛑 收到全局熔断指令，算力锁已全部清空');
   }
 
   /** V1.1: 从 Settings 读取 R/S/T/P 参数，注入到 ExecutionContext */
@@ -117,6 +121,13 @@ export class PipelineEngine {
         }
 
         try {
+          // 算力互斥锁：阻断并发重叠
+          if (!EngineStateGuard.acquire(nodeId, actionType)) {
+            AppLogger.warn(LOG_TAGS.SCHEDULER, `[V1.1] 节点 ${nodeId} 被算力互斥锁拦截，跳过本次执行`);
+            // 不标记 completed，下游节点不会被调度，避免读到 undefined 数据
+            return;
+          }
+
           const task: PipelineTask = {
             nodeId,
             actionType,
@@ -134,8 +145,15 @@ export class PipelineEngine {
             });
           }
         } catch (error: any) {
+          // 💥 Layer 5 异常归一化：将原始错误转换为 I18N Key 契约载荷
+          const i18nPayload = ExceptionHub.normalize(error);
+          AppLogger.error(LOG_TAGS.SCHEDULER, `[V1.1] 节点 ${nodeId} 异常归一化: ${i18nPayload.titleKey}`, error);
+
           if (!strategy.isRecoverable) throw error;
           AppLogger.warn(LOG_TAGS.SCHEDULER, `[V1.1] 节点 ${nodeId} 可恢复失败:`, error.message);
+        } finally {
+          // 💥 铁律释放算力锁
+          EngineStateGuard.release(nodeId);
         }
       });
 
@@ -241,8 +259,14 @@ export class PipelineEngine {
       }
 
       try {
+        // 💥 Layer 3 状态守卫：算力互斥锁，阻断并发重叠
+        if (!EngineStateGuard.acquire(task.nodeId, actionType)) {
+          AppLogger.warn(LOG_TAGS.SCHEDULER, `[状态红线] 节点 ${task.nodeId} 被算力互斥锁拦截，跳过`);
+          continue;
+        }
+
         const result = await this.executeNodeTask(strategy, task, context, onProgressUpdate);
-        
+
         // 💥 recoverable 节点降级检测：节点返回 _failed 但 Pipeline 继续
         if (result && result._failed === true && strategy.isRecoverable) {
           const nodeType = strategy.nodeType;
@@ -257,9 +281,23 @@ export class PipelineEngine {
           continue;
         }
       } catch (error: any) {
-        // 非 recoverable 节点崩溃 → 致命，终止整条 Pipeline
-        AppLogger.error(LOG_TAGS.SCHEDULER, `工作流在节点 [${task.nodeId}] 发生致命异常`, error);
+        // 💥 Layer 5 异常归一化：将原始错误转换为 I18N Key 契约载荷
+        const i18nPayload = ExceptionHub.normalize(error);
+        AppLogger.error(LOG_TAGS.SCHEDULER, `工作流在节点 [${task.nodeId}] 发生致命异常 (I18N: ${i18nPayload.titleKey})`, error);
+
+        // 💥 通过进度回调下发 I18N 载荷到前端
+        onProgressUpdate({
+          nodeId: task.nodeId,
+          progress: 100,
+          status: 'error',
+          message: i18nPayload.titleKey,
+          results: ExceptionHub.toIPCPayload(i18nPayload),
+        });
+
         throw error;
+      } finally {
+        // 💥 铁律释放算力锁
+        EngineStateGuard.release(task.nodeId);
       }
     }
 
@@ -280,6 +318,21 @@ export class PipelineEngine {
         message: `节点运行中...`,
         results
       });
+
+      // 当节点产出包含 shotId 的数据时，额外推送到故事板卡片通道
+      if (progress === 100 && Array.isArray(results)) {
+        for (const item of results) {
+          if (item && item.shotId) {
+            onProgressUpdate({
+              nodeId: `shot:${item.shotId}`,
+              progress: 100,
+              status: 'shot-data',
+              message: `镜头卡片数据就绪`,
+              results: { shotId: item.shotId, data: item },
+            });
+          }
+        }
+      }
     });
   }
 

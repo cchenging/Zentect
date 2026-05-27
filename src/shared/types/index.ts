@@ -30,55 +30,6 @@ export interface MediaItem {
 }
 
 /**
- * 2. 画布拓扑实体 (基于 React Flow 扩展)
- */
-export interface EditorNodeData {
-  actionType?: string;
-  label?: string;
-  icon?: string;
-  accent?: string;
-  status?: string;
-  progress?: number;
-  metaLabel?: string;
-  results?: any;
-  content?: string;
-  params?: Record<string, unknown>;
-  mediaId?: string;
-  title?: string;
-  fps?: number;
-  strategy?: string;
-  threshold?: number;
-  modelSize?: string;
-  voiceType?: string;
-  model?: string;
-  llmEngine?: string;
-  scriptStyle?: string;
-  customPrompt?: string;
-  temperature?: number;
-  systemPrompt?: string;
-  dimensions?: number;
-  previewUrls?: string[];
-}
-
-export interface EditorNode {
-  id: string;
-  type: string;
-  position: { x: number; y: number };
-  data: EditorNodeData;
-}
-
-export interface EditorEdge {
-  id: string;
-  source: string;
-  target: string;
-  sourceHandle?: string;
-  targetHandle?: string;
-  animated?: boolean;
-  style?: Record<string, unknown>;
-  type?: string;
-}
-
-/**
  * 3. 任务与管线载荷 (后端执行契约)
  */
 export interface PipelineTask {

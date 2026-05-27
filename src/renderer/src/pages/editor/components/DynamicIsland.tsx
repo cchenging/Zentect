@@ -1,6 +1,5 @@
 import React from 'react';
-import { useReactFlow } from '@xyflow/react';
-import { Play, Square, ZoomIn, ZoomOut, Maximize2, Loader2 } from 'lucide-react';
+import { Play, Square, Loader2 } from 'lucide-react';
 import { usePipelineExecutor } from '../hooks/usePipelineExecutor';
 
 interface IslandBtnProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
@@ -24,20 +23,11 @@ const IslandBtn: React.FC<IslandBtnProps> = ({ icon: Icon, active, danger, child
 };
 
 export const DynamicIsland = () => {
-  const { zoomIn, zoomOut, fitView } = useReactFlow();
   const { execute, abort, isRunning } = usePipelineExecutor();
 
   return (
     <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center p-1.5 gap-1 bg-zinc-900/60 backdrop-blur-2xl border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.4)] ring-1 ring-white/5 rounded-2xl">
       
-      <div className="flex items-center gap-0.5">
-        <IslandBtn icon={ZoomIn} onClick={() => zoomIn()} aria-label="放大" title="放大 (+)" />
-        <IslandBtn icon={ZoomOut} onClick={() => zoomOut()} aria-label="缩小" title="缩小 (-)" />
-        <IslandBtn icon={Maximize2} onClick={() => fitView({ duration: 600 })} aria-label="适应屏幕" title="适应屏幕" />
-      </div>
-
-      <div className="w-px h-6 bg-gradient-to-b from-transparent via-white/20 to-transparent mx-2" />
-
       <div className="flex items-center gap-1">
         {isRunning ? (
           <IslandBtn icon={Square} onClick={abort} aria-label="中止运算" danger>中止运算</IslandBtn>

@@ -7,27 +7,26 @@ import { LOG_TAGS } from '../../../shared/utils/LogConstants';
 
 export class VisionProcessor {
   /**
-   * 💥 核心动作：极速抽取关键帧，供视觉大模型 (VLM) 分析
+   * 极速抽取关键帧，供视觉大模型 (VLM) 分析
    * @param mode 'fps' 按秒抽帧 | 'scene' 按转场镜头抽帧
    */
   public static async extractKeyframes(
     inputVideoPath: string,
     outputDir: string,
     mode: 'fps' | 'scene' = 'fps',
-    value: number = 1, // 如果是 fps 模式，1 代表每秒1帧
+    value: number = 1,
     onProgress?: (p: number, msg: string) => void
   ): Promise<string[]> {
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] Extracting frames from ${inputVideoPath} (Mode: ${mode})`);
-    
+
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true });
     }
 
     const outputPattern = path.join(outputDir, 'frame_%04d.jpg');
     let vfFilter = `fps=${value}`;
-    
+
     if (mode === 'scene') {
-      // 场景检测算法：利用 FFmpeg 的 select 滤镜，提取画面变化超过阈值(如0.3)的帧
       vfFilter = `select='gt(scene,${value})',showinfo`;
     }
 
@@ -35,8 +34,8 @@ export class VisionProcessor {
       '-y',
       '-i', inputVideoPath,
       '-vf', vfFilter,
-      '-vsync', 'vfr', // 可变帧率输出
-      '-q:v', '2',     // 高质量 JPEG
+      '-vsync', 'vfr',
+      '-q:v', '2',
       outputPattern
     ];
 
@@ -50,7 +49,6 @@ export class VisionProcessor {
       }
     });
 
-    // 收集生成的图片路径并按时间排序
     const files = fs.readdirSync(outputDir)
       .filter(f => f.endsWith('.jpg'))
       .sort()
@@ -58,5 +56,143 @@ export class VisionProcessor {
 
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] Extracted ${files.length} frames.`);
     return files;
+  }
+
+  /**
+   * 人脸扫描：调用 AIDaemon 视觉服务检测帧中的人脸
+   * @param frames 帧图片路径列表
+   * @param facesDir 人脸输出目录
+   * @returns 检测到的人脸角色列表
+   */
+  public static async scanFaces(frames: string[], facesDir: string): Promise<any[]> {
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: scanning ${frames.length} frames`);
+
+    if (!frames || frames.length === 0) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[VisionProcessor] scanFaces: no frames provided, returning empty');
+      return [];
+    }
+
+    if (!fs.existsSync(facesDir)) {
+      fs.mkdirSync(facesDir, { recursive: true });
+    }
+
+    // 尝试调用 AIDaemon 人脸扫描服务
+    try {
+      const { AIDaemon } = await import('../../core/AIDaemon');
+      const roles: any[] = [];
+      // 批量处理帧，每批最多 10 帧
+      const batchSize = 10;
+      for (let i = 0; i < frames.length; i += batchSize) {
+        const batch = frames.slice(i, i + batchSize);
+        try {
+          const result = await AIDaemon.instance.request('/api/vision', {
+            method: 'POST',
+            body: JSON.stringify({ frames: batch, outputDir: facesDir })
+          });
+          if (result && Array.isArray(result.faces)) {
+            roles.push(...result.faces);
+          }
+        } catch (e: any) {
+          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces batch ${i} failed: ${e.message}`);
+        }
+      }
+      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: found ${roles.length} faces`);
+      return roles;
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: AIDaemon unavailable, returning empty. ${e.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * 人脸聚类：将检测到的人脸按特征聚类为角色
+   * @param mediaId 媒体ID
+   * @param faces 检测到的人脸列表
+   * @returns 人脸到聚类ID的映射
+   */
+  public static async clusterFaces(mediaId: string, faces: any[]): Promise<Record<string, string>> {
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] clusterFaces: clustering ${faces.length} faces for ${mediaId}`);
+
+    if (!faces || faces.length === 0) {
+      return {};
+    }
+
+    // 尝试调用 AIDaemon 人脸聚类服务
+    try {
+      const { AIDaemon } = await import('../../core/AIDaemon');
+      const result = await AIDaemon.instance.request('/api/cluster_faces', {
+        method: 'POST',
+        body: JSON.stringify({ mediaId, faces })
+      });
+      if (result && result.clustersMap) {
+        return result.clustersMap;
+      }
+      return {};
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] clusterFaces: AIDaemon unavailable, returning empty. ${e.message}`);
+      return {};
+    }
+  }
+
+  /**
+   * CLIP 语义提取：为镜头构建高维语义索引
+   * @param mediaId 媒体ID
+   * @param shots 已组装的镜头列表
+   * @returns 语义提取结果
+   */
+  public static async extractSemantics(mediaId: string, shots: any[]): Promise<any> {
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] extractSemantics: extracting for ${shots.length} shots of ${mediaId}`);
+
+    if (!shots || shots.length === 0) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[VisionProcessor] extractSemantics: no shots provided');
+      return { sceneDescriptions: '', segments: [] };
+    }
+
+    // 尝试调用 AIDaemon CLIP 语义提取服务
+    try {
+      const { AIDaemon } = await import('../../core/AIDaemon');
+      const result = await AIDaemon.instance.request('/api/extract_semantics', {
+        method: 'POST',
+        body: JSON.stringify({ mediaId, shots })
+      });
+      return result || { sceneDescriptions: '', segments: [] };
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] extractSemantics: AIDaemon unavailable, degrading gracefully. ${e.message}`);
+      return { sceneDescriptions: '', segments: [] };
+    }
+  }
+
+  /**
+   * 语义流生成：通过 Vision LLM 生成时序语义描述
+   * @param shots 已组装的镜头列表
+   * @returns 注入了 semanticDescription 的镜头列表
+   */
+  public static async generateSemanticFlow(shots: any[]): Promise<any[]> {
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] generateSemanticFlow: generating for ${shots.length} shots`);
+
+    if (!shots || shots.length === 0) {
+      return shots || [];
+    }
+
+    // 尝试调用 LLM 生成语义流
+    try {
+      const { LLMFactory } = await import('../adapters/LLMFactory');
+      const adapter = LLMFactory.create('visual');
+      const frameDescriptions = shots.map((s: any, i: number) =>
+        `镜头${i + 1}: ${s.visionText || s.originalText || '无描述'}`
+      ).join('\n');
+
+      const prompt = `请根据以下镜头描述，生成连贯的时序语义流分析：\n${frameDescriptions}`;
+      const result = await adapter.chat([{ role: 'user', content: prompt }]);
+
+      // 将语义描述注入到每个镜头中
+      return shots.map((shot: any) => ({
+        ...shot,
+        semanticDescription: result || ''
+      }));
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] generateSemanticFlow: LLM unavailable, degrading gracefully. ${e.message}`);
+      return shots;
+    }
   }
 }

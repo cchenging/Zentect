@@ -5,6 +5,7 @@ import { JobRepository } from '../database/repositories/JobRepository';
 import { ProjectRepository } from '../database/repositories/ProjectRepository';
 import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
 import { AppError, ErrorCode } from '../../shared/utils/AppError';
+import { DraftShadowGuard } from '../core/DraftShadowGuard';
 
 export class ProjectController {
   private projectService = new ProjectService();
@@ -117,6 +118,22 @@ export class ProjectController {
         text: job.message || '引擎重连中...',
         startTime: new Date(job.createdAt).getTime()
       }));
+    });
+
+    // 💥 OPT-4: 草稿影子 WAL 自动保存
+    IpcRouter.handle(IPC_CHANNELS.DRAFT_SHADOW_SAVE, async (_, payload: { projectId: string; draftJson: string }) => {
+      DraftShadowGuard.persistShadowSnapshot(payload.projectId, payload.draftJson);
+      return { success: true };
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.DRAFT_SHADOW_FLUSH, async (_, payload: { projectId: string; draftJson: string }) => {
+      DraftShadowGuard.flushImmediate(payload.projectId, payload.draftJson);
+      return { success: true };
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.DRAFT_SYNC_TO_MAIN, async (_, payload: { projectId: string; draftJson: string }) => {
+      DraftShadowGuard.flushImmediate(payload.projectId, payload.draftJson);
+      return { success: true };
     });
   }
 }

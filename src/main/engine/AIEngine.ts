@@ -3,6 +3,7 @@
 import { WebContents } from 'electron';
 import { FrameExtractor } from './capabilities/FrameExtractor';
 import { TTSProvider } from './capabilities/TTSProvider';
+import { NetworkPipeline } from '../core/NetworkPipeline';
 import { ProcessManager } from '../utils/processManager';
 import { PathManager } from '../utils/pathManager';
 import { SQLiteConnection } from '../database/core/SQLiteConnection';
@@ -352,9 +353,13 @@ export class AIEngine {
     
     if (!response.success) throw new Error(this.translateHttpError(new Error(response.error)));
 
-    let content = (response.text || '').replace(/```json/gi, '').replace(/```/g, '').trim();
+    // 💥 Layer 4: 强制流经数据清洗防线，阻断脏资产向状态层渗透
     let aiSentences: any[] = [];
-    try { aiSentences = JSON.parse(content); } catch(e) { throw new Error('模型返回数据格式破坏！'); }
+    try {
+      aiSentences = NetworkPipeline.strictParseJson(response.text || '');
+    } catch(e) {
+      throw new Error('模型返回数据格式破坏！');
+    }
 
     const finalShots: any[] = [];
     let idx = 0;

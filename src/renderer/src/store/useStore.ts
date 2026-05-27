@@ -4,7 +4,6 @@ import type { EditorState } from './storeTypes';
 import { createUISlice } from './slices/uiSlice';
 import { createPlayerSlice } from './slices/playerSlice';
 import { createDataSlice } from './slices/dataSlice';
-import { createCanvasSlice } from './slices/canvasSlice';
 import { createEditorSlice } from './slices/editorSlice';
 
 export * from './storeTypes';
@@ -16,12 +15,10 @@ export const useStore = create<EditorState>()(
       ...createUISlice(...a),
       ...createPlayerSlice(...a),
       ...createDataSlice(...a),
-      ...createCanvasSlice(...a),
       ...createEditorSlice(...a),
     })),
     { name: 'Zentect-Store' }
   )
 );
 
-// 💥 导出独立的业务持久化 Store 引用（给守护进程用）
 export const useEditorStore = useStore;
