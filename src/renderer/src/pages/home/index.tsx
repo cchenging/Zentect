@@ -2,51 +2,81 @@
 // 首页 - V3 设计系统风格，对齐原型
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Play, Search, LayoutGrid, List, FolderOpen } from 'lucide-react';
+import { Play, Search, LayoutGrid, List, FolderOpen, Upload } from 'lucide-react';
 import { useProjectManager } from './hooks/useProjectManager';
+import { useWorkflowImport } from './hooks/useWorkflowImport';
 import type { ProjectRecord } from './types';
+import { ProjectCard } from './components/ProjectCard';
 import { RenameModal } from './components/RenameModal';
 import { DeleteModal } from './components/DeleteModal';
+import { ParticleEngine } from '../../components/ParticleEngine';
 import { API } from '../../api';
 import { FrontendLogger } from '../../utils/logger';
+import { AppNotifier } from '../../core/AppNotifier';
 
 export const Home: React.FC = () => {
   const navigate = useNavigate();
 
   const {
     filteredProjects, searchText, setSearchText,
-    createProject, deleteProject, renameProject
+    createProject, deleteProject, renameProject, duplicateProject
   } = useProjectManager();
 
+  const { importWorkflow, isImporting } = useWorkflowImport();
+
   const [renameVisible, setRenameVisible] = useState(false);
-  const [currentEditProj, _setCurrentEditProj] = useState<ProjectRecord | null>(null);
+  const [currentEditProj, setCurrentEditProj] = useState<ProjectRecord | null>(null);
   const [deleteVisible, setDeleteVisible] = useState(false);
-  const [currentDeleteProj, _setCurrentDeleteProj] = useState<{ id: string; name: string } | null>(null);
+  const [currentDeleteProj, setCurrentDeleteProj] = useState<{ id: string; name: string } | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchOpen, setSearchOpen] = useState(false);
 
   useEffect(() => {
     API.system.switchView('home');
-    API.system.resizeWindow(1440, 900).catch(console.error);
+    API.system.resizeWindow(1280, 800).catch(console.error);
   }, []);
 
-  /** 创建新项目 */
-  const handleCreateProject = async (typeCode: string = 'Auto') => {
+  /** 创建新项目 — 导航到编辑器 */
+  const handleCreateProject = async (typeCode: string = 'video') => {
     const traceId = FrontendLogger.generateTraceId();
     FrontendLogger.info('HomeManager', `User requested to create project`, traceId, { type: typeCode });
     const now = new Date();
     const smartName = `MO_${typeCode}_${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
     try {
-      const newId = await createProject(smartName);
+      const newId = await createProject('video');
       if (newId) navigate(`/editor/${newId}`);
     } catch (error: any) {
       FrontendLogger.error('HomeManager', `Failed to create project`, traceId, error.message);
     }
   };
 
-  const handleProjectClick = useCallback((id: string) => navigate(`/editor/${id}`), [navigate]);
-  const handleRenameConfirm = useCallback(async (id: string, newName: string) => { await renameProject(id, newName); }, [renameProject]);
+  /** 点击已有项目 — 统一导航到 Editor */
+  const handleProjectClick = useCallback((id: string, _type?: string) => {
+    navigate(`/editor/${id}`);
+  }, [navigate]);
+  const handleRenameConfirm = useCallback(async (id: string, newName: string) => { await renameProject(id, newName); setRenameVisible(false); }, [renameProject]);
   const handleDeleteConfirm = useCallback((id: string) => { deleteProject(id); setDeleteVisible(false); }, [deleteProject]);
+
+  const handleRenameClick = useCallback((proj: ProjectRecord) => {
+    setCurrentEditProj(proj);
+    setRenameVisible(true);
+  }, []);
+
+  const handleDeleteClick = useCallback((id: string, name: string) => {
+    setCurrentDeleteProj({ id, name });
+    setDeleteVisible(true);
+  }, []);
+
+  /** 导出项目备份 */
+  const handleExportClick = useCallback(async (id: string, name: string) => {
+    try {
+      const filePath = await API.project.exportProject(id);
+      AppNotifier.success(`项目「${name}」已导出备份`);
+      FrontendLogger.info('HomeManager', `Project exported: ${name}`, '', { filePath });
+    } catch (err: any) {
+      AppNotifier.error(err.message || '导出失败');
+    }
+  }, []);
 
   /** 切换搜索框 */
   const toggleSearch = () => {
@@ -69,21 +99,34 @@ export const Home: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full w-full bg-bg-primary text-foreground overflow-hidden [-webkit-app-region:no-drag]">
+    <div className="flex flex-col h-full w-full bg-bg-primary text-foreground overflow-hidden relative [-webkit-app-region:no-drag]">
+      {/* 蒲公英粒子背景 */}
+      <ParticleEngine className="w-full h-full" />
 
-      <div className="flex-1 overflow-y-auto px-8 pt-8 pb-12">
-        <div className="max-w-[996px]">
+      <div className="flex-1 overflow-y-auto px-6 pt-4 pb-12">
+        <div className="w-full">
 
           {/* ===== Hero 开始创作卡片 ===== */}
-          <div className="glass-card p-8 flex items-center justify-between gap-10 mb-8 hover:border-accent/40 transition-colors">
+          <div className="glass-card p-6 flex items-center justify-between gap-10 mb-6 hover:border-accent/40 transition-colors">
             <div className="flex flex-col items-start gap-3.5 shrink-0">
-              <button
-                onClick={() => handleCreateProject('Auto')}
-                className="h-[60px] px-9 rounded-2xl bg-gradient-to-r from-accent to-accent-rose text-white text-lg font-bold flex items-center gap-2.5 shadow-lg shadow-accent/20 hover:shadow-accent/30 hover:-translate-y-0.5 active:scale-[0.97] transition-all cursor-pointer outline-none relative overflow-hidden"
-              >
-                <Play size={22} fill="currentColor" />
-                开始创作
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                    onClick={() => handleCreateProject('Auto')}
+                    className="h-[60px] px-9 rounded-2xl bg-gradient-to-r from-accent to-accent-rose text-white text-lg font-bold flex items-center gap-2.5 shadow-lg shadow-accent/20 hover:shadow-accent/30 hover:-translate-y-0.5 active:scale-[0.97] transition-all cursor-pointer outline-none relative overflow-hidden animate-button-pulse"
+                  >
+                  <Play size={22} fill="currentColor" />
+                  开始创作
+                </button>
+                <button
+                  onClick={importWorkflow}
+                  disabled={isImporting}
+                  className="h-[60px] px-7 rounded-2xl border border-border/50 bg-bg-secondary/50 text-foreground text-sm font-semibold flex items-center gap-2 hover:border-accent/40 hover:bg-bg-secondary transition-all cursor-pointer outline-none disabled:opacity-50"
+                  title="导入本地工作流文件（.json）"
+                >
+                  <Upload size={19} />
+                  {isImporting ? '导入中...' : '导入工作流'}
+                </button>
+              </div>
               <span className="text-[13px] text-muted-foreground">点击创建新项目，进入创作工作台</span>
             </div>
             <div className="flex-1 text-right">
@@ -160,33 +203,18 @@ export const Home: React.FC = () => {
                 </div>
               </div>
             ) : viewMode === 'grid' ? (
-              /* 网格视图 - 5列 */
-              <div className="grid grid-cols-5 gap-4">
+              /* 网格视图 - 5列，使用 ProjectCard 组件 */
+              <div className="grid grid-cols-5 gap-x-4 gap-y-8">
                 {filteredProjects.map(proj => (
-                  <div
+                  <ProjectCard
                     key={proj.id}
-                    onClick={() => handleProjectClick(proj.id)}
-                    className="glass-card-sm overflow-hidden cursor-pointer hover:border-accent/40 hover:-translate-y-[3px] hover:shadow-lg hover:shadow-accent/10 transition-all group"
-                  >
-                    {/* 封面 */}
-                    <div className="w-full aspect-video bg-bg-tertiary flex items-center justify-center relative overflow-hidden">
-                      {proj.coverPath ? (
-                        <img src={`atom://${proj.coverPath}`} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        <Play size={36} className="text-muted-foreground opacity-40" />
-                      )}
-                      {proj.duration && (
-                        <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded bg-black/70 text-[11px] font-medium text-white">
-                          {proj.duration}
-                        </span>
-                      )}
-                    </div>
-                    {/* 元信息 */}
-                    <div className="px-3.5 py-3">
-                      <div className="text-sm font-semibold truncate">{proj.name}</div>
-                      <div className="text-xs text-muted-foreground mt-1">{formatDate(proj.createdAt || proj.updatedAt || '')}</div>
-                    </div>
-                  </div>
+                    project={proj}
+                    onClick={(id) => handleProjectClick(id, proj.type)}
+                    onRename={handleRenameClick}
+                    onDuplicate={duplicateProject}
+                    onDelete={handleDeleteClick}
+                    onExport={handleExportClick}
+                  />
                 ))}
               </div>
             ) : (
@@ -195,7 +223,7 @@ export const Home: React.FC = () => {
                 {filteredProjects.map(proj => (
                   <div
                     key={proj.id}
-                    onClick={() => handleProjectClick(proj.id)}
+                    onClick={() => handleProjectClick(proj.id, proj.type)}
                     className="flex items-center gap-4 px-4 py-3 glass-card-sm cursor-pointer hover:border-accent/40 hover:bg-muted/30 transition-all"
                   >
                     <div className="w-12 h-9 rounded-md bg-bg-tertiary flex items-center justify-center shrink-0">

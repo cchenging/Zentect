@@ -6,7 +6,11 @@ import { TaskRepository } from '../database/repositories/TaskRepository';
 import { AppLogger } from './AppLogger';
 import { LOG_TAGS } from '../../shared/utils/LogConstants';
 
+/** 主进程通知器：统一管理 IPC 推送与任务状态持久化 */
 export class MainNotifier {
+  /** 任务仓库单例，避免高频场景重复实例化造成 GC 压力 */
+  private static taskRepo = new TaskRepository();
+
   static getMainWindow(): BrowserWindow | null {
     const windows = BrowserWindow.getAllWindows();
     return windows.length > 0 ? windows[0] : null;
@@ -23,17 +27,17 @@ export class MainNotifier {
     }
   }
 
+  /** 推送任务进度到渲染进程并持久化 */
   static notifyTaskProgress(mediaId: string, projectId: string, code: string, percent: number, status: string = DICT.TASK_STATUS.RUNNING) {
-    const taskRepo = new TaskRepository();
-    taskRepo.upsertTask({ mediaId, projectId, status, progress: percent, text: code });
+    MainNotifier.taskRepo.upsertTask({ mediaId, projectId, status, progress: percent, text: code });
 
     const payload = { mediaId, code, percent, status };
     this.safeSend(this.getMainWindow(), IPC_CHANNELS.EVENT_TASK_PROGRESS, payload);
   }
 
+  /** 推送任务完成事件到渲染进程并持久化 */
   static notifyTaskCompleted(mediaId: string, projectId: string, result: any) {
-    const taskRepo = new TaskRepository();
-    taskRepo.upsertTask({ mediaId, projectId, status: DICT.TASK_STATUS.COMPLETED, progress: 100, text: 'TASK_SUCCESS' });
+    MainNotifier.taskRepo.upsertTask({ mediaId, projectId, status: DICT.TASK_STATUS.COMPLETED, progress: 100, text: 'TASK_SUCCESS' });
 
     const payload: TaskCompletedPayload = { mediaId, projectId, result };
     // 💥 替换为 safeSend
@@ -52,11 +56,9 @@ export class MainNotifier {
     this.safeSend(this.getMainWindow(), eventName, payload);
   }
 
-  // 💥 新增：任务进度信号发射器（直接发送到 'system:taskProgress' 频道）
   static sendTaskProgress(mediaId: string, code: string, percent: number, status: string) {
     const window = MainNotifier.getMainWindow();
-    // 💥 替换为 safeSend
-    this.safeSend(window, 'system:taskProgress', {
+    this.safeSend(window, IPC_CHANNELS.EVENT_TASK_PROGRESS, {
       mediaId, code, percent, status
     });
   }

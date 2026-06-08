@@ -7,14 +7,16 @@ import { PathManager } from '../utils/pathManager';
 import { Validator } from '../../shared/utils/Validator';
 import { AppError, ErrorCode } from '../../shared/utils/AppError';
 import { SQLiteConnection } from '../database/core/SQLiteConnection';
+import { AppLogger } from '../core/AppLogger';
+import { LOG_TAGS } from '../../shared/utils/LogConstants';
 import * as fsSync from 'fs';
 
 export class ProjectService {
   private repo = new ProjectRepository();
   private taskRepo = new TaskRepository();
 
-  private readonly HYDRATE_FIELDS = ['coverPath', 'cover', 'audioPath', 'avatar', 'vocalsPath', 'bgmPath'];
-  private readonly HYDRATE_ARRAY_FIELDS = ['contextFrames'];
+  private readonly HYDRATE_FIELDS = ['coverPath', 'cover', 'audioPath', 'avatar', 'vocalsPath', 'bgmPath', 'filePath', 'extractedAudio', 'extractedVocals', 'extractedBgm', 'imagePath'];
+  private readonly HYDRATE_ARRAY_FIELDS = ['contextFrames', 'frames'];
 
   // 💥 内部工具 1：生成绝对安全的系统级 ID
   private generateSafeId(prefix: string = 'proj'): string {
@@ -59,9 +61,23 @@ export class ProjectService {
   public hydratePaths(data: any, projectId: string) {
     if (!data) return data;
     const prefix = `magic://${projectId}/`;
+    const projectDir = PathManager.getProjectDir(projectId);
+    
     const transform = (val: any) => {
-      if (typeof val === 'string' && !val.startsWith('http') && !val.startsWith('magic://') && !path.isAbsolute(val)) {
-          if (val.includes('/') || val.includes('\\')) return `${prefix}${val.replace(/\\/g, '/')}`;
+      if (typeof val === 'string' && !val.startsWith('http') && !val.startsWith('magic://')) {
+        // 如果是绝对路径，转换成相对于项目目录的路径
+        if (path.isAbsolute(val)) {
+          const relative = path.relative(projectDir, val).replace(/\\/g, '/');
+          // 跨盘符路径：path.relative 仍返回绝对路径，使用 magic://local/ 格式
+          if (path.isAbsolute(relative)) {
+            return `magic://local/${relative.replace(/\\/g, '/')}`;
+          }
+          return `${prefix}${relative}`;
+        }
+        // 如果是相对路径，直接加上 magic:// 前缀
+        if (val.includes('/') || val.includes('\\')) {
+          return `${prefix}${val.replace(/\\/g, '/')}`;
+        }
       }
       return val;
     };
@@ -69,30 +85,74 @@ export class ProjectService {
         if (!item) return;
         this.HYDRATE_FIELDS.forEach(field => { if (item[field]) item[field] = transform(item[field]); });
         this.HYDRATE_ARRAY_FIELDS.forEach(field => { if (Array.isArray(item[field])) item[field] = item[field].map(transform); });
+        
+        // 处理 mediaItem 内部的 extractedAudio、extractedVocals、extractedBgm 和 frames
+        if (item.extractedAudio) item.extractedAudio = transform(item.extractedAudio);
+        if (item.extractedVocals) item.extractedVocals = transform(item.extractedVocals);
+        if (item.extractedBgm) item.extractedBgm = transform(item.extractedBgm);
+        if (Array.isArray(item.frames)) item.frames = item.frames.map(transform);
     };
     if (data.mediaItems) data.mediaItems.forEach(processItem);
+    if (data.media) processItem(data.media);
     if (data.roles) data.roles.forEach(processItem);
     if (data.shots) data.shots.forEach(processItem);
     if (data.aiShots) data.aiShots.forEach(processItem);
+    /** 💥 处理 vlmFrames 中的 url 路径转换 */
+    if (Array.isArray(data.vlmFrames)) {
+      data.vlmFrames.forEach((frame: any) => {
+        if (frame && frame.url) frame.url = transform(frame.url);
+      });
+    }
     return data;
   }
 
   public dehydratePaths(data: any, projectId: string) {
     if (!data) return data;
     const prefix = `magic://${projectId}/`;
+    const projectDir = PathManager.getProjectDir(projectId);
+    
     const transform = (val: any) => {
-      if (typeof val === 'string' && val.startsWith(prefix)) return val.replace(prefix, '');
+      if (typeof val === 'string') {
+        if (val.startsWith(prefix)) {
+          return val.replace(prefix, '');
+        } else if (val.startsWith('magic://local/')) {
+          // 还原跨盘符绝对路径：magic://local/F:/Videos/test.mp4 → F:\Videos\test.mp4
+          return val.replace('magic://local/', '').replace(/\//g, '\\');
+        } else if (path.isAbsolute(val)) {
+          // 把绝对路径转成相对路径
+          const relative = path.relative(projectDir, val).replace(/\\/g, '/');
+          /** 💥 关键修复：跨盘符时 path.relative 返回绝对路径，
+           *  需转为 magic://local/ 格式保证可移植性 */
+          if (path.isAbsolute(relative)) {
+            return `magic://local/${val.replace(/\\/g, '/')}`;
+          }
+          return relative;
+        }
+      }
       return val;
     };
     const processItem = (item: any) => {
         if (!item) return;
         this.HYDRATE_FIELDS.forEach(field => { if (item[field]) item[field] = transform(item[field]); });
         this.HYDRATE_ARRAY_FIELDS.forEach(field => { if (Array.isArray(item[field])) item[field] = item[field].map(transform); });
+        
+        // 处理 mediaItem 内部的 extractedAudio、extractedVocals、extractedBgm 和 frames
+        if (item.extractedAudio) item.extractedAudio = transform(item.extractedAudio);
+        if (item.extractedVocals) item.extractedVocals = transform(item.extractedVocals);
+        if (item.extractedBgm) item.extractedBgm = transform(item.extractedBgm);
+        if (Array.isArray(item.frames)) item.frames = item.frames.map(transform);
     };
     if (data.mediaItems) data.mediaItems.forEach(processItem);
+    if (data.media) processItem(data.media);
     if (data.roles) data.roles.forEach(processItem);
     if (data.shots) data.shots.forEach(processItem);
     if (data.aiShots) data.aiShots.forEach(processItem);
+    /** 💥 处理 vlmFrames 中的 url 路径转换 */
+    if (Array.isArray(data.vlmFrames)) {
+      data.vlmFrames.forEach((frame: any) => {
+        if (frame && frame.url) frame.url = transform(frame.url);
+      });
+    }
     return data;
   }
 
@@ -107,14 +167,17 @@ export class ProjectService {
     return true; 
   }
 
-  public getList() { return this.repo.findAll().map(p => ({ ...p })); }
-  public getRecent() { return this.repo.findAll().slice(0, 5).map(p => ({ ...p })); }
+  public getList() {
+    return this.repo.findAll().map(p => {
+      const project = { ...p };
+      if (project.coverPath && typeof project.coverPath === 'string' && !project.coverPath.startsWith('http') && !project.coverPath.startsWith('magic://')) {
+        project.coverPath = `magic://${project.id}/${project.coverPath.replace(/\\/g, '/')}`;
+      }
+      return project;
+    });
+  }
+  public getRecent() { return this.getList().slice(0, 5); }
 
-  /**
-   * 🚀 重构后的核心创建逻辑：接管 ID 与命名权
-   * @param payload 创建参数 { name?: string, type?: string }
-   * @returns 项目数据对象
-   */
   public async createProject(payload: { name?: string, type?: string }) {
     // 1. 生成物理安全的 ID
     const safeId = this.generateSafeId('proj');
@@ -148,14 +211,6 @@ export class ProjectService {
     const insertedRecord = this.repo.insert(projectData);
 
     return insertedRecord;
-  }
-
-  /**
-   * @deprecated 保留向后兼容，内部调用新的 createProject
-   */
-  public async createProjectLegacy(name: string = '未命名项目'): Promise<string> {
-    const result = await this.createProject({ name, type: 'video' });
-    return result.id;
   }
 
   public async deleteProject(id: string): Promise<void> {
@@ -242,5 +297,48 @@ export class ProjectService {
      // TODO: 接下来执行克隆模板 Nodes 和 Edges 的代码
      
      return { success: true, projectId: projectData.id, name: projectData.name };
+  }
+
+  /**
+   * 导出项目备份
+   * 将项目数据导出为 JSON 备份文件，保存到用户指定的目录
+   * @param id 项目 ID
+   * @returns 备份文件路径
+   */
+  public async exportProject(id: string): Promise<string> {
+    const project = await this.repo.getById(id);
+    if (!project) {
+      throw new AppError(ErrorCode.DATABASE_ERROR, `项目不存在: ${id}`);
+    }
+
+    const projectData = await this.loadData(id);
+    const projectPath = PathManager.getProjectPath(id);
+
+    const exportData = {
+      project: {
+        id: project.id,
+        name: project.name,
+        type: project.type,
+        created_at: project.created_at,
+        updated_at: project.updated_at,
+      },
+      data: projectData,
+      exportedAt: new Date().toISOString(),
+      version: '1.0.0',
+    };
+
+    const exportDir = PathManager.getExportPath();
+    await fs.mkdir(exportDir, { recursive: true });
+
+    const safeName = project.name.replace(/[<>:"/\\|?*]/g, '_');
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const exportFileName = `${safeName}_${timestamp}.zentect.json`;
+    const exportFilePath = path.join(exportDir, exportFileName);
+
+    await fs.writeFile(exportFilePath, JSON.stringify(exportData, null, 2), 'utf-8');
+
+    AppLogger.info(LOG_TAGS.PROJECT, `项目 ${project.name} 导出成功: ${exportFilePath}`);
+
+    return exportFilePath;
   }
 }

@@ -8,6 +8,8 @@ import { useEditorStore } from '../../../../store/useStore';
 import { useI18n } from '../../../../store/useI18n';
 import { WindowControls } from '../../../../components/window-controls';
 import { ExportModal } from './components/ExportModal';
+import { API } from '../../../../api';
+import { AppNotifier } from '../../../../core/AppNotifier';
 
 /** 保存状态指示器 */
 const SaveStatus: React.FC = () => {
@@ -44,9 +46,20 @@ export const TopBar: React.FC = React.memo(() => {
     setIsEditing(true);
   };
 
-  /** 确认编辑 */
-  const confirmEdit = () => {
-    // TODO: 调用 API 更新项目名
+  /** 确认编辑：持久化项目名到后端 */
+  const confirmEdit = async () => {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== projectName) {
+      const projectId = useEditorStore.getState().projectId;
+      if (projectId) {
+        try {
+          await API.project.rename(projectId, trimmed);
+          useEditorStore.getState().setProjectMeta(projectId, trimmed);
+        } catch (err: any) {
+          AppNotifier.error(`项目名更新失败: ${err.message || '未知错误'}`);
+        }
+      }
+    }
     setIsEditing(false);
   };
 

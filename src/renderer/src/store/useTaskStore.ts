@@ -21,6 +21,10 @@ interface TaskState {
  * 全局任务遥测站：
  * 通过 EventBridge 接收主进程推送，不直接注册底层 IPC 监听
  */
+
+/** 保存 subscribe 返回的取消订阅函数，用于精确移除监听器 */
+let taskProgressUnsub: (() => void) | null = null;
+
 export const useTaskStore = create<TaskState>((set, get) => ({
   tasks: {},
   _initialized: false,
@@ -51,7 +55,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
 
     const bridge = EventBridge.getInstance();
 
-    bridge.subscribe(IPC_CHANNELS.EVENT_TASK_PROGRESS, (payload: TaskProgressPayload) => {
+    taskProgressUnsub = bridge.subscribe(IPC_CHANNELS.EVENT_TASK_PROGRESS, (payload: TaskProgressPayload) => {
       get().setTaskProgress(payload);
 
       const mediaId = (payload as any).mediaId;
@@ -70,8 +74,11 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     });
   },
 
+  /** 精确移除任务进度监听器，兜底清理频道所有监听 */
   cleanupIpcListeners: () => {
     set({ _initialized: false });
+    taskProgressUnsub?.();
+    taskProgressUnsub = null;
     EventBridge.getInstance().removeAllForChannel(IPC_CHANNELS.EVENT_TASK_PROGRESS);
   }
 }));

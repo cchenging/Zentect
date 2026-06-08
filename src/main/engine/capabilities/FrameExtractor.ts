@@ -32,6 +32,9 @@ export class FrameExtractor {
       throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, `物理文件丢失: ${cleanSourcePath}`)
     }
 
+    // P0-2: ffprobe 前置探针 — 校验视频流存在、时长>0、编码兼容
+    await this.probeVideo(cleanSourcePath)
+
     if (!fs.existsSync(outputDir)) {
       fs.mkdirSync(outputDir, { recursive: true })
     }
@@ -44,12 +47,14 @@ export class FrameExtractor {
     const outputPattern = path.join(outputDir, 'frame_%04d.jpg')
     const args: string[] = ['-y', '-i', cleanSourcePath]
 
+    // P2: 统一参数基准 q:v 3、scale=640:-1
     if (strategy === 'iframe' || strategy === 'keyframe') {
-      args.push('-vf', "select='eq(pict_type,I)'", '-vsync', 'vfr', '-q:v', '2')
+      // P0-1: I帧策略加兜底 — 优先I帧，GOP>150帧时每150帧强制采样
+      args.push('-vf', "select='eq(pict_type,I)+not(mod(n,150))',scale=640:-1", '-vsync', 'vfr', '-q:v', '3')
     } else if (strategy === 'scene') {
-      args.push('-vf', `select='gt(scene,${threshold})'`, '-vsync', 'vfr', '-q:v', '2')
+      args.push('-vf', `select='gt(scene,${threshold})',scale=640:-1`, '-vsync', 'vfr', '-q:v', '3')
     } else {
-      args.push('-vf', `fps=${fps}`, '-q:v', '2')
+      args.push('-vf', `fps=${fps},scale=640:-1`, '-q:v', '3')
     }
     args.push(outputPattern)
 
@@ -59,6 +64,55 @@ export class FrameExtractor {
     AppLogger.info(LOG_TAGS.AI_ENGINE, `[FrameExtractor] 产出 ${files.length} 帧`, { outputDir })
 
     return { frames: files.map((f) => path.join(outputDir, f)) }
+  }
+
+  /**
+   * P0-2: ffprobe 前置探针 — 校验视频流存在、时长>0、编码格式兼容
+   */
+  private probeVideo(filePath: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const ffprobeExe = PathManager.getBinPath(
+        process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe'
+      )
+      if (!fs.existsSync(ffprobeExe)) {
+        AppLogger.warn(LOG_TAGS.AI_ENGINE, '[FrameExtractor] ffprobe 不可用，跳过前置探针')
+        return resolve()
+      }
+
+      const child = spawn(ffprobeExe, [
+        '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', filePath
+      ], { windowsHide: true })
+
+      let stdout = ''
+      child.stdout.on('data', (data: Buffer) => { stdout += data.toString() })
+
+      child.on('close', (code: number | null) => {
+        if (code !== 0) {
+          return reject(
+            new AppError(ErrorCode.SYS_UNKNOWN, `ffprobe 无法解析视频文件: ${filePath}`)
+          )
+        }
+        try {
+          const data = JSON.parse(stdout)
+          const videoStream = data.streams?.find((s: any) => s.codec_type === 'video')
+          if (!videoStream) {
+            return reject(new AppError(ErrorCode.SYS_UNKNOWN, '文件中未检测到视频流'))
+          }
+          const duration = parseFloat(data.format?.duration) || 0
+          if (duration <= 0) {
+            return reject(new AppError(ErrorCode.SYS_UNKNOWN, '视频时长无效 (≤0)'))
+          }
+          AppLogger.info(LOG_TAGS.AI_ENGINE, `[FrameExtractor] ffprobe OK: ${videoStream.codec_name}, ${duration}s, ${videoStream.width}x${videoStream.height}`)
+          resolve()
+        } catch {
+          reject(new AppError(ErrorCode.SYS_UNKNOWN, 'ffprobe 返回数据解析失败'))
+        }
+      })
+
+      child.on('error', (err: Error) => {
+        reject(new AppError(ErrorCode.SYS_UNKNOWN, `ffprobe 启动失败: ${err.message}`))
+      })
+    })
   }
 
   private runFFmpeg(ffmpegExe: string, args: string[]): Promise<void> {
@@ -73,6 +127,9 @@ export class FrameExtractor {
 
       child.on('close', (code: number | null) => {
         if (code !== 0) {
+          // P0-2: 非零退出时记录 stderr 最后 500 字符到 AppLogger.error
+          const tail = errorLog.slice(-500)
+          AppLogger.error(LOG_TAGS.AI_ENGINE, `[FrameExtractor] FFmpeg 非零退出(${code})`, { tail })
           if (
             errorLog.includes('received no packets') ||
             errorLog.includes('Nothing was written')
@@ -83,7 +140,7 @@ export class FrameExtractor {
           reject(
             new AppError(
               ErrorCode.SYS_UNKNOWN,
-              `FFmpeg 崩溃(${code})。日志: ${errorLog.slice(-200)}`
+              `FFmpeg 崩溃(${code})。日志: ${tail}`
             )
           )
         } else {
@@ -92,6 +149,7 @@ export class FrameExtractor {
       })
 
       child.on('error', (err: Error) => {
+        AppLogger.error(LOG_TAGS.AI_ENGINE, `[FrameExtractor] FFmpeg 进程异常: ${err.message}`)
         reject(new AppError(ErrorCode.SYS_UNKNOWN, `FFmpeg 唤醒失败: ${err.message}`))
       })
 

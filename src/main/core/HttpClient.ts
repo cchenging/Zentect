@@ -11,6 +11,19 @@ interface HttpClientConfig {
 export class HttpClient {
   private config: Required<HttpClientConfig>
 
+  /** 💥 静态单例实例，供静态 post/get 桥梁方法复用 */
+  private static defaultInstance: HttpClient = new HttpClient({ timeoutMs: 90000 });
+
+  /** 💥 静态桥梁方法：治愈 VisionProcessor 等处的 HttpClient.post is not a function 崩溃 */
+  public static async post(url: string, data: any): Promise<any> {
+    return this.defaultInstance.post(url, data);
+  }
+
+  /** 💥 静态桥梁方法：治愈外部静态调用 HttpClient.get 的运行时阻断 */
+  public static async get(url: string): Promise<any> {
+    return this.defaultInstance.get(url);
+  }
+
   constructor(config: HttpClientConfig = {}) {
     this.config = {
       baseURL: config.baseURL || '',
@@ -20,7 +33,7 @@ export class HttpClient {
     }
   }
 
-  /** 带超时/重试/AgorController 的 POST 请求 */
+  /** 带超时/重试/AbortController 的 POST 请求 */
   async post<T = any>(path: string, body: unknown): Promise<T> {
     const url = this.buildUrl(path)
     let lastError: Error | undefined

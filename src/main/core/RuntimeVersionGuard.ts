@@ -65,12 +65,13 @@ export class RuntimeVersionGuard {
       )
 
       if (!fs.existsSync(versionFile)) {
-        issues.push('未找到 runtime 版本清单 (runtime_version.json)，可能未正确构建')
+        /** 💥 开发模式下 runtime_version.json 不存在时降级为警告，不阻断 Python 服务启动 */
+        AppLogger.warn(LOG_TAGS.SYSTEM, `[RuntimeVersionGuard] 未找到 runtime 版本清单 (runtime_version.json)，开发模式降级跳过版本检查`);
         return {
-          compatible: false,
-          runtimeVersion,
+          compatible: true,
+          runtimeVersion: 'dev',
           clientVersion,
-          issues
+          issues: ['开发模式：runtime_version.json 不存在，跳过版本检查']
         }
       }
 

@@ -153,21 +153,39 @@ export class AIDaemon {
     throw new Error('AI 运行时启动超时 (30秒)！');
   }
 
+  /** 检查 Python AI 运行时是否在线 */
+  public isOnline(): boolean {
+    const status = this.runtimeManager.getStatus();
+    return this.isReady && status.online;
+  }
+
   /** 向 Python 运行时发 POST 请求 */
   public async post(endpoint: string, payload: any, options?: { timeout?: number; retries?: number }): Promise<any> {
     await this.waitForReady();
 
     const status = this.runtimeManager.getStatus();
     if (!status.online) {
-      throw new Error('AI 运行时处于离线状态，无法处理请求');
+      throw new Error('AI 运行时处于离线状态，无法处理请求。请确认 AI Daemon 已启动（端口 ' + this.port + '）');
     }
 
     const url = `http://127.0.0.1:${this.port}${endpoint}`;
     const maxRetries = options?.retries ?? 2;
     const timeoutMs = options?.timeout ?? 60000;
 
+    let lastError: Error | null = null;
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        /** 每次重试前先做一次快速健康检查（5秒超时），确保 daemon 存活 */
+        if (attempt > 0) {
+          const isHealthy = await this.quickHealthCheck();
+          if (!isHealthy) {
+            AppLogger.warn(LOG_TAGS.AI_DAEMON, `[${endpoint}] 重试前健康检查失败，尝试重启 AI Daemon...`);
+            this.restartDaemon();
+            await new Promise(r => setTimeout(r, 3000));
+          }
+        }
+
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
         const res = await fetch(url, {
@@ -179,19 +197,90 @@ export class AIDaemon {
         clearTimeout(timeoutId);
         if (!res.ok) {
           const errText = await res.text().catch(() => '未返回详细错误');
-          throw new Error(`HTTP ${res.status} - ${errText}`);
+          const errMsg = `HTTP ${res.status} - ${errText}`;
+          /** 服务端返回 5xx → 可重试 */
+          if (res.status >= 500 && attempt < maxRetries) {
+            lastError = new Error(errMsg);
+            const delay = 2000 * (attempt + 1);
+            AppLogger.warn(LOG_TAGS.AI_DAEMON,
+              `服务端错误 ${res.status} [${endpoint}]，${delay}ms 后重试 (${attempt + 1}/${maxRetries})`);
+            await new Promise(r => setTimeout(r, delay));
+            continue;
+          }
+          throw new Error(errMsg);
         }
         return await res.json();
       } catch (e: any) {
-        if (attempt < maxRetries) {
-          const delay = 1000 * (attempt + 1);
-          AppLogger.warn(LOG_TAGS.AI_DAEMON, `请求失败 [${endpoint}]，${delay}ms 后重试 (${attempt + 1}/${maxRetries})`, e.message);
+        lastError = e;
+
+        /** 网络层错误分类：提供更精准的错误诊断 */
+        const errorCode = e.cause?.code || '';
+        const isConnectionRefused = errorCode === 'ECONNREFUSED';
+        const isConnectionReset = errorCode === 'ECONNRESET';
+        const isTimeout = errorCode === 'ETIMEDOUT' || e.name === 'AbortError';
+        const isNetworkError = isConnectionRefused || isConnectionReset || isTimeout ||
+          e.message?.includes('fetch failed') ||
+          e.message?.includes('Network Error') ||
+          e.message?.includes('远程主机强迫关闭');
+
+        if (attempt < maxRetries && (isNetworkError || isTimeout)) {
+          const delay = isConnectionReset ? 3000 * (attempt + 1) : 1000 * (attempt + 1);
+          const reason = isConnectionRefused ? '连接被拒绝 (端口未监听)'
+            : isConnectionReset ? '连接被重置 (进程可能崩溃)'
+            : isTimeout ? '请求超时'
+            : '网络异常';
+          AppLogger.warn(LOG_TAGS.AI_DAEMON,
+            `${reason} [${endpoint}]，${delay}ms 后重试 (${attempt + 1}/${maxRetries})`);
           await new Promise(r => setTimeout(r, delay));
         } else {
-          AppLogger.error(LOG_TAGS.AI_DAEMON, `❌ 请求失败 [${endpoint}] (已重试 ${maxRetries} 次):`, e);
+          AppLogger.error(LOG_TAGS.AI_DAEMON,
+            `❌ 请求失败 [${endpoint}] (已重试 ${maxRetries} 次): ${e.message}`);
+
+          /** 抛出带友好提示和解决方案的错误 */
+          if (isConnectionRefused) {
+            throw new Error(
+              `AI 运行时服务未启动 (端口 ${this.port})，请检查：\n` +
+              `1. 确认 Python 环境已安装必要依赖\n` +
+              `2. 在设置中检查 AI 服务端口配置\n` +
+              `3. 尝试重启应用或手动启动 AI Daemon`
+            );
+          }
+          if (isConnectionReset) {
+            throw new Error(
+              `AI 运行时服务异常崩溃 (端口 ${this.port})，连接已被重置。\n` +
+              `可能原因：模型加载失败、显存不足、或 Python 进程异常退出。\n` +
+              `建议：重启应用后重试，或检查系统资源。`
+            );
+          }
+          if (isTimeout) {
+            throw new Error(
+              `AI 运行时服务响应超时 (${timeoutMs / 1000}秒)，请检查：\n` +
+              `1. 系统资源是否充足 (CPU/内存/显存)\n` +
+              `2. 模型文件是否完整\n` +
+              `3. 尝试降低处理参数后重试`
+            );
+          }
           throw e;
         }
       }
+    }
+    /** 所有重试已用完，抛出最后错误 */
+    throw lastError || new Error(`AI Daemon 请求失败: ${endpoint}`);
+  }
+
+  /** 快速健康检查 (3秒超时)，用于重试前确认 daemon 存活 */
+  private async quickHealthCheck(): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`http://127.0.0.1:${this.port}/health`, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      return res.ok;
+    } catch {
+      return false;
     }
   }
 

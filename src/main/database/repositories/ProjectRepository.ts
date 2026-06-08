@@ -1,5 +1,7 @@
+// 📁 路径: src/main/database/repositories/ProjectRepository.ts
 import { SQLiteConnection } from '../core/SQLiteConnection';
 import { PROJECT_SQL } from '../queries/ProjectQueries';
+import { AppLogger } from '../../core/AppLogger';
 
 export class ProjectRepository {
   private get db() { return SQLiteConnection.getInstance().getDB(); }
@@ -45,7 +47,7 @@ export class ProjectRepository {
   }
 
   public findById(id: string): any {
-    return this.db.prepare(PROJECT_SQL.FIND_BY_ID).get({ id });
+    return this.findQuickProjectById(id);
   }
 
   public create(id: string, name: string) {
@@ -129,7 +131,23 @@ export class ProjectRepository {
     const project = this.findById(projectId);
     if (!project) return null;
 
-    const mediaItems = this.db.prepare(PROJECT_SQL.GET_ALL_MEDIA).all({ projectId }).map((m: any) => ({
+    // 从 metadata 中恢复数据
+    let metadata: any = {};
+    if (project.metadata) {
+      try {
+        metadata = typeof project.metadata === 'string' ? JSON.parse(project.metadata) : project.metadata;
+      } catch (e) {
+        console.error('[Repo] 解析 metadata 失败:', e);
+      }
+    }
+
+    const rawMediaRows = this.db.prepare(PROJECT_SQL.GET_ALL_MEDIA).all({ projectId });
+    console.log(`[DEBUG][Repo] projectId=${projectId}, rawMediaRows count=${rawMediaRows.length}`);
+    if (rawMediaRows.length > 0) {
+      console.log(`[DEBUG][Repo] first raw row:`, JSON.stringify(rawMediaRows[0]));
+    }
+
+    let mediaItems = rawMediaRows.map((m: any) => ({
       id: m.id, name: m.name, type: m.type, filePath: m.file_path, coverPath: m.cover_path,
       duration: m.duration, width: m.width, height: m.height, fps: m.fps, status: m.status || 'parsed',
       frames: m.frames ? JSON.parse(m.frames) : undefined, extractedAudio: m.extracted_audio || undefined,
@@ -137,9 +155,25 @@ export class ProjectRepository {
       extractedText: m.extracted_text || undefined, extractDuration: m.extract_duration ? parseFloat(m.extract_duration) : undefined,
       narrationScript: m.narration_script ? JSON.parse(m.narration_script) : undefined
     }));
+    console.log(`[DEBUG][Repo] mapped mediaItems count=${mediaItems.length}`);
+
+    // 💥 关键修复：DB 中的数据（管线最新结果）优先于 metadata 中的旧数据
+    // metadata 中的 mediaItems 可能包含过时的 frames（如旧策略的 211 帧），
+    // 而 DB 中已被管线更新为新值（如 13 帧），应始终以 DB 为准
+    if (metadata.mediaItems && Array.isArray(metadata.mediaItems) && metadata.mediaItems.length > 0) {
+      const rawMediaMap = new Map(mediaItems.map((m: any) => [m.id, m]));
+      mediaItems = metadata.mediaItems.map((m: any) => {
+        const raw = rawMediaMap.get(m.id);
+        if (raw) {
+          // DB 数据优先：frames、extractedAudio 等管线产出字段始终以 DB 为准
+          return { ...m, ...raw };
+        }
+        return m;
+      });
+    }
 
     const roles = this.db.prepare(PROJECT_SQL.GET_ALL_ROLES).all({ projectId }).map((r: any) => ({
-      id: r.id, systemId: r.system_id, name: r.name, pronoun: r.pronoun, avatar: r.avatar, description: r.description,
+      id: r.id, systemId: r.systemId, name: r.name, pronoun: r.pronoun, description: r.description,
       voiceId: r.voice_id, mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : []
     }));
 
@@ -152,38 +186,66 @@ export class ProjectRepository {
     }));
 
     return {
-      projectId, 
-      projectName: project.name, 
-      canvasData: project.canvasData,  // 💥 Phase 1.3: 返回画布 JSON 数据
-      mediaItems, 
+      projectId,
+      projectName: project.name,
+      canvasData: project.canvasData,
+      mediaItems,
       roles,
-      shots: allShots.filter((s: any) => !s.id.startsWith('ai_shot_')), 
-      aiShots: allShots.filter((s: any) => s.id.startsWith('ai_shot_'))
+      shots: allShots.filter((s: any) => !s.id.startsWith('ai_shot_')),
+      aiShots: allShots.filter((s: any) => s.id.startsWith('ai_shot_')),
+      // 把 metadata 中的其他字段也返回，方便 hydrate
+      // 💥 关键修复：排除 mediaItems（已在上面精确合并），防止 ...metadata 覆盖带 frames 的数据
+      ...Object.fromEntries(Object.entries(metadata).filter(([key]) => key !== 'mediaItems'))
     };
   }
 
   public saveFullProjectData(projectId: string, data: any) {
     const transaction = this.db.transaction(() => {
-      // 💥 Phase 1.3: 如果前端传入了 canvasData，保存到 projects 表
+      /** 💥 关键修复：合并现有 metadata 而非覆盖，防止不同调用方写入的字段互相覆盖 */
+      const project = this.findById(projectId);
+      let existingMetadata: any = {};
+      if (project?.metadata) {
+        try {
+          existingMetadata = typeof project.metadata === 'string'
+            ? JSON.parse(project.metadata) : project.metadata;
+        } catch {}
+      }
+
+      const metadata: any = { ...existingMetadata };
+      if (data.asrLines) metadata.asrLines = data.asrLines;
+      if (data.frameCount !== undefined) metadata.frameCount = data.frameCount;
+      /** 💥 持久化帧路径数组，确保重进项目帧数据不丢失 */
+      if (data.framePaths && Array.isArray(data.framePaths) && data.framePaths.length > 0) {
+        metadata.framePaths = data.framePaths;
+      }
+      if (data.audioSeparated !== undefined) metadata.audioSeparated = data.audioSeparated;
+      if (data.subStepStatuses) metadata.subStepStatuses = data.subStepStatuses;
+      if (data.subStepProgresses) metadata.subStepProgresses = data.subStepProgresses;
+      if (data.stepStatuses) metadata.stepStatuses = data.stepStatuses;
+      if (data.stepCompleted) metadata.stepCompleted = data.stepCompleted;
+      /** 💥 持久化当前步骤，确保重进后能继续下一步 */
+      if (data.currentStep) metadata.currentStep = data.currentStep;
+      if (data.storyboardMode) metadata.storyboardMode = data.storyboardMode;
+      /** 💥 持久化抽帧配置，确保重进项目后参数不丢失 */
+      if (data.extractionConfig) metadata.extractionConfig = data.extractionConfig;
+      /** 💥 持久化 VLM 画面描述数据，确保重进项目后步骤2数据不丢失 */
+      if (data.vlmFrames && Array.isArray(data.vlmFrames) && data.vlmFrames.length > 0) {
+        metadata.vlmFrames = data.vlmFrames;
+      }
+
+      // 保存 mediaItems 到 metadata（因为 media 表主要用于视频，而关键帧和音频是临时的）
+      if (data.mediaItems && Array.isArray(data.mediaItems)) {
+        metadata.mediaItems = data.mediaItems;
+      }
+
+      const metadataString = JSON.stringify(metadata);
+      this.db.prepare(`UPDATE projects SET metadata = ? WHERE id = ?`).run(metadataString, projectId);
+
       if (data.canvasData) {
         this.db.prepare(PROJECT_SQL.UPDATE_CANVAS_DATA).run({ 
           id: projectId, 
           canvasData: data.canvasData 
         });
-      }
-
-      if (data.mediaItems && Array.isArray(data.mediaItems)) {
-        const insertMedia = this.db.prepare(PROJECT_SQL.UPSERT_MEDIA);
-        for (const item of data.mediaItems) {
-          insertMedia.run({
-            id: item.id, projectId, episodeNum: 1, type: item.type, name: item.name, filePath: item.filePath,
-            coverPath: item.coverPath || '', duration: item.duration, status: item.status, width: item.width || 0,
-            height: item.height || 0, fps: item.fps || 0, frames: item.frames ? JSON.stringify(item.frames) : null,
-            extractedAudio: item.extractedAudio || null, extractedVocals: item.extractedVocals || null,
-            extractedBgm: item.extractedBgm || null, extractedText: item.extractedText || null,
-            extractDuration: item.extractDuration || null, narrationScript: item.narrationScript ? JSON.stringify(item.narrationScript) : null
-          });
-        }
       }
 
       if (data.roles && Array.isArray(data.roles)) {
@@ -201,8 +263,12 @@ export class ProjectRepository {
       if (data.shots || data.aiShots) {
         this.db.prepare(PROJECT_SQL.HARD_DELETE_SHOTS).run({ projectId });
         const insertShot = this.db.prepare(PROJECT_SQL.INSERT_SHOT_FULL);
+        /** 💥 关键修复：去重 shots 和 aiShots 中相同 id 的条目，防止 UNIQUE constraint failed */
         const allShots = [...(Array.isArray(data.shots) ? data.shots : []), ...(Array.isArray(data.aiShots) ? data.aiShots : [])];
+        const seenIds = new Set<string>();
         for (const shot of allShots) {
+          if (seenIds.has(shot.id)) continue;
+          seenIds.add(shot.id);
           insertShot.run({
             id: shot.id, projectId, episodeNum: 1, timeCode: shot.time || shot.time_code || '', duration: shot.duration || '',
             aiText: shot.aiText || shot.ai_text || '', originalText: shot.originalText || shot.original_text || '',
@@ -249,13 +315,89 @@ export class ProjectRepository {
 
   /**
    * 仅更新画布数据
-   * @param projectId 项目ID
-   * @param canvasData 画布数据JSON字符串
    */
   public updateCanvasDataOnly(projectId: string, canvasData: string) {
-    this.db.prepare(PROJECT_SQL.UPDATE_CANVAS_DATA).run({ 
-      id: projectId, 
-      canvasData: canvasData 
+    this.db.prepare(PROJECT_SQL.UPDATE_CANVAS_DATA).run({
+      id: projectId,
+      canvasData: canvasData
     });
+  }
+
+  /**
+   * 更新项目封面
+   */
+  public updateCover(projectId: string, coverPath: string) {
+    this.db.prepare(PROJECT_SQL.UPDATE_COVER).run({
+      projectId,
+      coverPath
+    });
+  }
+
+  /** 💥【持久化打通 1】：完工写盘大闸。将生成的 ASR 字幕、音轨文件物理路径安全持久化更新入 projects 主表 */
+  public updateQuickCardMetadata(projectId: string, extractedData: any): boolean {
+    try {
+      // 💥 关键修复：合并现有 metadata（不再粗暴覆盖整个列！）
+      const project = this.findById(projectId);
+      let existingMetadata: any = {};
+      if (project?.metadata) {
+        try {
+          existingMetadata = typeof project.metadata === 'string'
+            ? JSON.parse(project.metadata) : project.metadata;
+        } catch {}
+      }
+
+      const metadataString = JSON.stringify({
+        ...existingMetadata,
+        videoPath: extractedData.videoPath || existingMetadata.videoPath || '',
+        vocalPath: extractedData.vocalPath || existingMetadata.vocalPath || '',
+        backgroundPath: extractedData.backgroundPath || existingMetadata.backgroundPath || '',
+        asrLines: extractedData.asrLines || existingMetadata.asrLines || [],
+        frameCount: extractedData.frameCount || existingMetadata.frameCount || 0,
+        /** 💥 持久化帧路径数组，确保重进项目帧预览不丢失 */
+        framePaths: extractedData.framePaths || existingMetadata.framePaths || [],
+        updatedAt: Date.now()
+      });
+
+      // 极致性能：直接强刷主表的元数据列，消灭 [JobScheduler] 状态回写失败
+      const result = this.db.prepare(`
+        UPDATE projects 
+        SET metadata = ?, video_path = ?, status = 'analyzed' 
+        WHERE id = ?
+      `).run(metadataString, extractedData.videoPath || '', projectId);
+
+      AppLogger.info(`[SQLite 磁盘底座] 项目 [${projectId}] 核心影音资产在 100% 完工时安全写盘成功！`);
+      return result.changes > 0;
+    } catch (error: any) {
+      console.error('[SQLite 完工状态回写意外流产]:', error);
+      return false;
+    }
+  }
+
+  /** 💥【持久化打通 2】：自愈拉盘大闸。重新进场第一毫秒，完美还原 assets 状态，阻击 undefined 发生 */
+  public findQuickProjectById(id: string): any {
+    try {
+      const project = this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
+      if (!project) return null;
+
+      // 如果有历史遗留的独立轨道资产，做向前兼容，保底令前端接收到的 shots 绝非 undefined
+      let shots = [];
+      try {
+        shots = this.db.prepare('SELECT * FROM project_shots WHERE project_id = ?').all(id) || [];
+      } catch {
+        const meta = (project as any).metadata ? JSON.parse((project as any).metadata) : {};
+        shots = meta.shots || [];
+      }
+
+      return {
+        id: (project as any).id,
+        name: (project as any).name,
+        videoPath: (project as any).video_path,
+        metadata: (project as any).metadata,
+        shots: shots
+      };
+    } catch (error) {
+      console.error('[SQLite 仓储层读盘崩溃]:', error);
+      return null;
+    }
   }
 }

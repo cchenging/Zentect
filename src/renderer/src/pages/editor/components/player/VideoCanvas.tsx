@@ -39,10 +39,10 @@ export const VideoCanvas = () => {
            {activeShots.map((shot, idx) => (
              <div 
                key={idx} 
-               onClick={() => videoRef.current && (videoRef.current.currentTime = shot.timestamp)}
+               onClick={() => videoRef.current && (videoRef.current.currentTime = shot.start)}
                className="h-14 aspect-video bg-zinc-900 rounded border border-zinc-700 hover:border-blue-500 cursor-pointer transition-all flex-shrink-0 overflow-hidden relative group"
              >
-                <img src={shot.thumbnail} className="w-full h-full object-cover opacity-60 group-hover:opacity-100" />
+                <img src={getSafeMediaUrl(shot.coverPath || shot.imagePath)} className="w-full h-full object-cover opacity-60 group-hover:opacity-100" />
                 <span className="absolute bottom-0.5 right-1 text-[9px] font-mono text-zinc-400 bg-black/40 px-1 rounded">
                   {idx + 1} 
                 </span>

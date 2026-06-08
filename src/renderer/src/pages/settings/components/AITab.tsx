@@ -3,10 +3,11 @@
 // 专注于 LLM 供应商配置 + 管线模型映射 + TTS 配置
 // 本地模型管理已移至独立 ModelTab
 import React, { useState } from 'react';
-import { Eye, EyeOff, Server, Play, ExternalLink, ChevronDown, ChevronUp, Zap } from 'lucide-react';
+import { Eye, EyeOff, Server, Play, ExternalLink, ChevronDown, ChevronUp, Zap, AlertCircle } from 'lucide-react';
 import { Input } from '../../../components/ui/input';
 import { Button } from '../../../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
+import { FormField } from '../../../components/ui/form-field';
 
 interface AITabProps {
   data: any;
@@ -37,22 +38,40 @@ const PIPELINE_NODES = [
 ] as const;
 
 /**
- * 密码输入字段组件
+ * 密码输入字段组件（含内联校验）
  */
 const PasswordField = ({ label, value, onChange, onCheck, linkUrl, placeholder = "sk-...", forceShow }: any) => {
   const [localShow, setLocalShow] = useState(false);
+  const [touched, setTouched] = useState(false);
   const isRevealed = forceShow || localShow;
   const hasValue = !!value;
 
+  const validateApiKey = (val: string): string | null => {
+    if (touched && (!val || val.trim() === '')) {
+      return 'API Key 不能为空';
+    }
+    if (val && val.trim().length < 10) {
+      return 'API Key 格式不正确，长度不足';
+    }
+    return null;
+  };
+
+  const error = validateApiKey(value);
+  const isValid = touched && hasValue && !error;
+
   return (
-    <div className="w-full flex flex-col gap-1.5">
+    <FormField label={label} error={error} valid={isValid}>
       <div className="flex items-center gap-2">
-        <span className="text-xs text-muted-foreground font-medium">{label}</span>
-        {hasValue && !isRevealed && <span className="badge-success">已配置</span>}
-      </div>
-      <div className="flex items-center gap-2">
+        {hasValue && !isRevealed && <span className="badge-success shrink-0">已配置</span>}
         <div className="relative flex-1">
-          <Input type={isRevealed ? 'text' : 'password'} value={value} onChange={onChange} placeholder={placeholder} className="text-xs bg-bg-secondary h-9 pr-8 w-full border-border/50" />
+          <Input
+            type={isRevealed ? 'text' : 'password'}
+            value={value || ''}
+            onChange={(e) => { onChange(e); if (!touched) setTouched(true); }}
+            onBlur={() => setTouched(true)}
+            placeholder={placeholder}
+            className={`text-xs bg-bg-secondary h-9 pr-8 w-full border-border/50 ${error ? 'border-accent-rose/50' : ''}`}
+          />
           {!forceShow && (
             <button type="button" onClick={() => setLocalShow(!localShow)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground outline-none cursor-pointer">
               {isRevealed ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -69,7 +88,7 @@ const PasswordField = ({ label, value, onChange, onCheck, linkUrl, placeholder =
           <a href="#" onClick={(e) => { e.preventDefault(); window.open(linkUrl, '_blank'); }} className="text-accent hover:underline cursor-pointer">点击获取</a>
         </div>
       )}
-    </div>
+    </FormField>
   );
 };
 

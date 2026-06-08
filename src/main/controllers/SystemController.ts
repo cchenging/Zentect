@@ -69,8 +69,10 @@ export class SystemController {
     IpcRouter.handle(IPC_CHANNELS.SYSTEM_RESIZE, async (_, width: number, height: number) => {
       const win = BrowserWindow.getFocusedWindow();
       if (win && width && height) {
-        win.setMinimumSize(1024, 720);
-        win.setSize(width, height, true);
+        // 保持窗口最小尺寸限制，不重置为更小的值
+        const [currentMinWidth, currentMinHeight] = win.getMinimumSize();
+        win.setMinimumSize(Math.max(currentMinWidth, 1280), Math.max(currentMinHeight, 750));
+        win.setSize(Math.max(width, 1280), Math.max(height, 750), true);
         win.center();
         return true;
       }

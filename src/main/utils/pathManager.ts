@@ -122,8 +122,8 @@ export class PathManager {
     return dir;
   }
 
-  // 项目专属副产物目录 (Frames, Audio, Faces, Whisper)
-  public static getProjectExtractionsDir(projectId: string, subType: 'frames' | 'faces' | 'audio' | 'whisper'): string {
+  // 项目专属副产物目录 (Frames, Audio, Faces, Whisper, Transcoded)
+  public static getProjectExtractionsDir(projectId: string, subType: 'frames' | 'faces' | 'audio' | 'whisper' | 'transcoded'): string {
     const dir = path.join(this.getProjectDir(projectId), 'extractions', subType);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     return dir;

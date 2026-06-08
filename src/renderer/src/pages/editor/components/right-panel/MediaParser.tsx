@@ -1,6 +1,6 @@
 // 📁 路径: src/renderer/src/pages/editor/components/right-panel/MediaParser.tsx
 // 媒体解析面板 - 步骤卡片化改造：每个子步骤独立启动按钮+状态显示
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Film, ScanFace, ListMusic, Mic, Cpu, XCircle, RefreshCw, Loader2, AlertCircle, CheckCircle2, Play, RotateCcw } from 'lucide-react';
 import { useStore } from '../../../../store/useStore';
 import { useTaskStore } from '../../../../store/useTaskStore';
@@ -12,8 +12,10 @@ import { Slider } from '../../../../components/ui/slider';
 import { AppNotifier } from '../../../../core/AppNotifier';
 import { getSafeMediaUrl } from '../../../../utils/formatUrl';
 import { API } from '../../../../api';
+import { IPC_CHANNELS } from '../../../../../../shared/utils/IpcConstants';
 import { FrontendLogger } from '../../../../utils/logger';
 import type { StepStatus } from '../../../../store/storeTypes';
+import { FrameExtractConfig } from '../inspectors/configs/FrameExtractConfig';
 
 /** 状态对应的颜色和图标映射 */
 const STATUS_STYLE: Record<StepStatus, { bg: string; text: string; border: string }> = {
@@ -120,7 +122,7 @@ StepCard.displayName = 'StepCard';
 
 export const MediaParser: React.FC = () => {
   const { selectedItemId, mediaItems: mediaItemsStore, projectId, extractionConfig, updateExtractionConfig,
-    subStepStatuses, setSubStepStatus, setStepStatus, isAutoMode } = useStore();
+    subStepStatuses, setSubStepStatus, setStepStatus, setPipelineError, isAutoMode } = useStore();
   const { tasks } = useTaskStore();
   const { t } = useI18n();
 
@@ -132,6 +134,57 @@ export const MediaParser: React.FC = () => {
   const activeMedia = useMemo(() => mediaItems.find(m => m.id === selectedItemId), [mediaItems, selectedItemId]);
   const activeTask = activeMedia ? tasks[activeMedia.id] : null;
   const isAnyRunning = Object.values(subStepStatuses).some(s => s === 'running');
+
+  /** 监听提取进度事件，映射 stateCode → subStepStatus
+   *  注意：useTaskProgress hook 已全局处理此事件，此处仅处理 mediaId 过滤逻辑 */
+  useEffect(() => {
+    /** 处理任务进度回调，仅当 mediaId 匹配时进行子步骤状态映射 */
+    const handler = (_event: any, payload: any) => {
+      const { mediaId: taskMediaId, code, percent, status } = payload;
+      if (!taskMediaId || !activeMedia) return;
+      if (taskMediaId !== activeMedia.id) return;
+
+      const CODE_TO_STEP: Record<string, string> = {
+        extracting_frames: 'frames',
+        extracting_audio: 'audio',
+        separating_audio: 'audio',
+        parsing_text: 'whisper',
+        transcribing: 'whisper',
+        indexing_vision: 'faces',
+        scanning_faces: 'faces',
+        clustering_faces: 'faces',
+        analyzing_flow: 'faces',
+      };
+
+      const stepKey = CODE_TO_STEP[code];
+      if (stepKey) {
+        if (status === 'error') {
+          setSubStepStatus(stepKey, 'failed');
+        } else if (percent >= 100 || status === 'completed') {
+          setSubStepStatus(stepKey, 'completed');
+        } else {
+          setSubStepStatus(stepKey, 'running');
+        }
+      }
+
+      if (code === 'completed' || status === 'completed' || percent >= 100) {
+        setStepStatus(1, 'completed');
+      }
+      if (status === 'error') {
+        setPipelineError(payload.error || `素材提取失败: ${code}`);
+      }
+    };
+
+    window.api.ipc.on(IPC_CHANNELS.EVENT_TASK_PROGRESS, handler);
+
+    return () => {
+      try {
+        if (typeof window.api?.ipc?.removeListener === 'function') {
+          window.api.ipc.removeListener(IPC_CHANNELS.EVENT_TASK_PROGRESS, handler);
+        }
+      } catch {}
+    };
+  }, [activeMedia?.id]);
 
   /** 引擎选项配置 */
   const ENGINE_OPTIONS = useMemo(() => ({
@@ -166,7 +219,11 @@ export const MediaParser: React.FC = () => {
     frames: stepKey === 'frames' ? {
       enabled: true,
       mode: extractionConfig.frames.mode,
-      [extractionConfig.frames.mode === 'scene' ? 'sceneThreshold' : 'fps']: extractionConfig.frames.value
+      sceneThreshold: extractionConfig.frames.value || 0.28,
+      minFrameInterval: extractionConfig.frames.minFrameInterval ?? 4,
+      fps: extractionConfig.frames.fps ?? 2,
+      scale: extractionConfig.frames.scale ?? 1024,
+      quality: extractionConfig.frames.quality ?? 3,
     } : { enabled: false },
     audio: stepKey === 'audio' ? { ...extractionConfig.audio, enabled: true } : { enabled: false },
     whisper: stepKey === 'whisper' ? { ...extractionConfig.whisper, enabled: true } : { enabled: false },
@@ -179,7 +236,11 @@ export const MediaParser: React.FC = () => {
     frames: extractionConfig.frames.enabled ? {
       enabled: true,
       mode: extractionConfig.frames.mode,
-      [extractionConfig.frames.mode === 'scene' ? 'sceneThreshold' : 'fps']: extractionConfig.frames.value
+      sceneThreshold: extractionConfig.frames.value || 0.28,
+      minFrameInterval: extractionConfig.frames.minFrameInterval ?? 4,
+      fps: extractionConfig.frames.fps ?? 2,
+      scale: extractionConfig.frames.scale ?? 1024,
+      quality: extractionConfig.frames.quality ?? 3,
     } : { enabled: false },
     audio: extractionConfig.audio,
     whisper: extractionConfig.whisper,
@@ -255,48 +316,6 @@ export const MediaParser: React.FC = () => {
     updateExtractionConfig({ [key]: value });
   }, [updateExtractionConfig]);
 
-  /** 监听任务完成，更新子步骤状态 */
-  React.useEffect(() => {
-    if (!activeMedia?.id || !activeTask) return;
-
-    // 从任务进度码映射到子步骤
-    const code = (activeTask as any).code || '';
-    const status = activeTask.status;
-
-    if (status === 'completed' || (activeTask as any).percent >= 100) {
-      // 全部完成
-      ['frames', 'audio', 'whisper', 'faces'].forEach(key => {
-        if (subStepStatuses[key] === 'running') {
-          setSubStepStatus(key, 'completed');
-        }
-      });
-      setStepStatus(1, 'completed');
-      setStepStatus(1, true as any); // 兼容 stepCompleted
-    } else if (status === 'error' || status === 'failed') {
-      // 根据进度码判断哪个步骤失败
-      if (code.includes('extracting_frames') || code.includes('frame')) {
-        setSubStepStatus('frames', 'failed');
-      } else if (code.includes('audio') || code.includes('separate')) {
-        setSubStepStatus('audio', 'failed');
-      } else if (code.includes('parsing_text') || code.includes('whisper') || code.includes('asr')) {
-        setSubStepStatus('whisper', 'failed');
-      } else if (code.includes('vision') || code.includes('face') || code.includes('indexing')) {
-        setSubStepStatus('faces', 'failed');
-      }
-    } else if (status === 'running') {
-      // 根据进度码更新当前运行步骤
-      if (code.includes('extracting_frames')) {
-        setSubStepStatus('frames', 'running');
-      } else if (code.includes('audio') || code.includes('separate')) {
-        setSubStepStatus('audio', 'running');
-      } else if (code.includes('parsing_text') || code.includes('whisper')) {
-        setSubStepStatus('whisper', 'running');
-      } else if (code.includes('vision') || code.includes('face') || code.includes('indexing')) {
-        setSubStepStatus('faces', 'running');
-      }
-    }
-  }, [activeTask, activeMedia?.id]);
-
   /** 获取子步骤结果摘要 */
   const getSubStepSummary = useCallback((key: string): string => {
     const state = useStore.getState();
@@ -362,27 +381,7 @@ export const MediaParser: React.FC = () => {
             onStart={() => handleStartSubStep('frames')}
             onRetry={() => handleStartSubStep('frames')}
           >
-            <div className="flex flex-col gap-1.5">
-              <span className="text-muted-foreground text-[11px] font-medium">{t.mediaParser?.frames?.strategy || '切片策略'}</span>
-              <Select value={extractionConfig.frames.mode} onValueChange={(val: 'fps' | 'scene') => handleConfigChange('frames', { ...extractionConfig.frames, mode: val, value: val === 'scene' ? 0.3 : 1 })} disabled={isAnyRunning}>
-                <SelectTrigger className="w-full h-8 text-[12px] bg-background border-border"><SelectValue /></SelectTrigger>
-                <SelectContent className="bg-popover border-border text-[12px]">
-                  {ENGINE_OPTIONS.frames.map(opt => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-2 mt-1">
-              <div className="flex justify-between items-center">
-                <span className="text-muted-foreground text-[11px] font-medium">
-                  {extractionConfig.frames.mode === 'scene' ? (t.mediaParser?.frames?.sensitivity || '灵敏度 (越小越敏感)') : (t.mediaParser?.frames?.density || '密度 (越大越密)')}
-                </span>
-                <span className="text-primary font-mono text-[11px] font-bold bg-primary/10 px-1.5 rounded">{extractionConfig.frames.value}</span>
-              </div>
-              <Slider
-                value={[extractionConfig.frames.value]} min={extractionConfig.frames.mode === 'scene' ? 0.1 : 1} max={extractionConfig.frames.mode === 'scene' ? 0.6 : 10} step={extractionConfig.frames.mode === 'scene' ? 0.1 : 1}
-                onValueChange={(vals) => handleConfigChange('frames', { ...extractionConfig.frames, value: vals[0] })} disabled={isAnyRunning} className="w-full cursor-pointer py-2"
-              />
-            </div>
+            <FrameExtractConfig />
           </StepCard>
 
           {/* 音频双轨剥离 */}

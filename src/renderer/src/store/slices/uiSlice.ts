@@ -18,7 +18,16 @@ declare module '../storeTypes' {
     isSettingsOpen: boolean;
     extractionConfig: {
       targetLanguage: string;
-      frames: { enabled: boolean; mode: 'fps' | 'scene'; value: number; };
+      frames: {
+        enabled: boolean;
+        mode: 'VLM_OPTIMIZED' | 'UNIFORM_FPS' | 'FAST_KEYFRAME' | 'PRECISE_SINGLE';
+        sceneThreshold: number;
+        quality: number;
+        scale: number;
+        fps: number;
+        minFrameInterval?: number;
+        timePoint?: number;
+      };
       audio: { enabled: boolean; engine: 'mdx-net' | 'spleeter'; };
       whisper: { enabled: boolean; engine: 'sensevoice' | 'whisper-v3'; };
       faces: { enabled: boolean; engine: 'insightface' | 'mediapipe'; };
@@ -49,6 +58,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
   selectedItemId: null,
   selectedItemType: null,
   projectRatio: '16/9',
+  videoFps: 30,
   canvasZoom: 100,
   isCanvasFit: true,
   isFullscreen: false,
@@ -70,7 +80,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
 
   extractionConfig: {
     targetLanguage: 'zh-CN',
-    frames: { enabled: true, mode: 'scene', value: 0.3 },
+    frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, fps: 2, scale: 1024, minFrameInterval: 4 },
     audio: { enabled: true, engine: 'mdx-net' },
     whisper: { enabled: true, engine: 'sensevoice' },
     faces: { enabled: true, engine: 'insightface' }
@@ -99,6 +109,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
   }),
 
   setProjectRatio: (ratio) => set({ projectRatio: ratio }),
+  setVideoFps: (fps) => set({ videoFps: fps }),
   setCanvasZoom: (zoom) => set({ canvasZoom: zoom }),
   setIsCanvasFit: (isFit) => set({ isCanvasFit: isFit }),
   setIsFullscreen: (isFull) => set({ isFullscreen: isFull }),

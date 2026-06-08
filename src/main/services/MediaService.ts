@@ -1,5 +1,6 @@
 // 📁 路径: src/main/services/MediaService.ts
 import { MediaRepository } from '../database/repositories/MediaRepository';
+import { ProjectRepository } from '../database/repositories/ProjectRepository';
 import { PathManager } from '../utils/pathManager';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../shared/utils/LogConstants';
@@ -19,13 +20,14 @@ const TRANSCODE_FORMATS = ['mkv', 'avi', 'mov', 'wmv', 'flv', 'ts', 'rmvb', 'rm'
 
 export class MediaService {
   private repo = new MediaRepository();
+  private projectService = new ProjectService();
+  private projectRepo = new ProjectRepository();
 
   /**
    * 🚀 导入媒体文件到项目
    */
   public async importMedia(projectId: string, filePaths: string[]): Promise<MediaItem[]> {
     const results: MediaItem[] = [];
-    const projectService = new ProjectService();
 
     for (const filePath of filePaths) {
       if (!fs.existsSync(filePath)) {
@@ -93,12 +95,17 @@ export class MediaService {
         // 通过仓储层写入
         this.repo.insertMedia(mediaItem);
 
+        // 同步更新项目封面（用于首页卡片展示）
+        if (relativeCoverPath) {
+          this.projectRepo.updateCover(projectId, relativeCoverPath);
+        }
+
         // 返回给前端前，组装前端需要的字段
         const frontendMediaItem: MediaItem = {
           id: mediaItem.id, projectId: mediaItem.projectId, name: mediaItem.name, type: mediaItem.type,
           filePath: mediaItem.filePath, coverPath: mediaItem.coverPath, duration: metadata.formattedTime, status: 'parsed'
         };
-        results.push(projectService.hydratePaths({ mediaItems: [frontendMediaItem] }, projectId).mediaItems[0]);
+        results.push(this.projectService.hydratePaths({ mediaItems: [frontendMediaItem] }, projectId).mediaItems[0]);
       } catch (error) {
         AppLogger.error(LOG_TAGS.MEDIA, `导入媒体失败: ${filePath}`, error);
       }
@@ -159,10 +166,7 @@ export class MediaService {
       return null;
     }
 
-    const outputDir = path.join(PathManager.getProjectDir(projectId), 'extractions', 'transcoded');
-    if (!fs.existsSync(outputDir)) {
-      fs.mkdirSync(outputDir, { recursive: true });
-    }
+    const outputDir = PathManager.getProjectExtractionsDir(projectId, 'transcoded');
     const outputPath = path.join(outputDir, `${mediaId}.mp4`);
 
     // 如果已经转码过，直接返回
@@ -210,7 +214,21 @@ export class MediaService {
    * 按项目获取媒体列表
    */
   public async getMediaByProject(projectId: string) {
-    return await this.repo.getByProject(projectId);
+    const medias = await this.repo.getByProject(projectId);
+    return this.projectService.hydratePaths({ mediaItems: medias }, projectId).mediaItems;
+  }
+
+  /** 根据 mediaId 获取单个媒体资产 */
+  public async getMediaById(mediaId: string) {
+    return this.repo.findById(mediaId);
+  }
+
+  /**
+   * 更新媒体信息（提取结果等）
+   */
+  public async updateMedia(mediaId: string, data: any) {
+    this.repo.updateMedia(mediaId, data);
+    return true;
   }
 
   /**

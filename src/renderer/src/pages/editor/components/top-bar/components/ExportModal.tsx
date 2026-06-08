@@ -75,6 +75,73 @@ export const ExportModal: React.FC = () => {
     setOpen(true);
   };
 
+  /** 将秒数格式化为 SRT 时间格式 (HH:MM:SS,mmm) */
+  const formatSrtTime = (seconds: number): string => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const ms = Math.round((seconds % 1) * 1000);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+  };
+
+  /** 将秒数格式化为 ASS 时间格式 (H:MM:SS.cc) */
+  const formatAssTime = (seconds: number): string => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const cs = Math.round((seconds % 1) * 100);
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
+  };
+
+  /** 根据 shots 数据生成 SRT 格式字幕内容 */
+  const generateSRT = (shots: any[]): string => {
+    return shots
+      .filter((shot) => shot.text || shot.aiText || shot.ttsText)
+      .map((shot, idx) => {
+        const text = shot.aiText || shot.ttsText || shot.text || '';
+        const start = shot.start ?? 0;
+        const end = shot.end ?? (start + (shot.duration ?? 3));
+        return `${idx + 1}\n${formatSrtTime(start)} --> ${formatSrtTime(end)}\n${text}\n`;
+      })
+      .join('\n');
+  };
+
+  /** 根据 shots 数据生成 ASS 格式字幕内容 */
+  const generateASS = (shots: any[], projectName: string): string => {
+    const header = `[Script Info]
+Title: ${projectName}
+ScriptType: v4.00+
+WrapStyle: 0
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Microsoft YaHei,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,1,2,10,10,30,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+    const dialogues = shots
+      .filter((shot) => shot.text || shot.aiText || shot.ttsText)
+      .map((shot) => {
+        const text = (shot.aiText || shot.ttsText || shot.text || '').replace(/\n/g, '\\N');
+        const start = shot.start ?? 0;
+        const end = shot.end ?? (start + (shot.duration ?? 3));
+        return `Dialogue: 0,${formatAssTime(start)},${formatAssTime(end)},Default,,0,0,0,,${text}`;
+      })
+      .join('\n');
+    return header + dialogues;
+  };
+
+  /** 根据 scriptParagraphs 数据生成文案 TXT 内容 */
+  const generateTXT = (paragraphs: any[]): string => {
+    return paragraphs
+      .map((p) => p.text || p.content || p.narration || '')
+      .filter((text) => text.trim())
+      .join('\n\n');
+  };
+
   const executeExport = async () => {
     if (!exportVideo && !exportJianying && !exportAudio && !exportSubtitle && !exportTxt) {
       AppNotifier.warn('请勾选输出管线');
@@ -99,25 +166,54 @@ export const ExportModal: React.FC = () => {
         shots: JSON.parse(JSON.stringify(targetShots)),
         mediaItems: JSON.parse(JSON.stringify(state.mediaItems)),
         isAiMode: isAiExport,
-        activeShots: JSON.parse(JSON.stringify(targetShots))
+        activeShots: JSON.parse(JSON.stringify(targetShots)),
+        subtitleFormat,
+        audioFormat,
       };
 
       const tasks: Promise<any>[] = [];
       if (exportJianying) tasks.push(API.export.jianying(payload));
       if (exportVideo) tasks.push(API.export.localVideo({ ...payload, format: videoFormat }));
+      /** 音频导出：复用 localVideo 通道，传入 audioOnly 标记和音频格式 */
+      if (exportAudio) tasks.push(API.export.localVideo({ ...payload, format: audioFormat, audioOnly: true }));
+      /** 字幕导出：前端生成字幕内容，通过 IPC 写入文件 */
+      if (exportSubtitle) {
+        const subtitleContent = subtitleFormat === 'ass'
+          ? generateASS(targetShots, state.projectName || 'untitled')
+          : generateSRT(targetShots);
+        tasks.push(API.export.subtitle({
+          ...payload,
+          content: subtitleContent,
+          format: subtitleFormat,
+          exportPath: currentExportPath,
+        }));
+      }
+      /** 文案 TXT 导出：前端生成文本内容，通过 IPC 写入文件 */
+      if (exportTxt) {
+        const txtContent = generateTXT(state.scriptParagraphs || []);
+        tasks.push(API.export.txt({
+          ...payload,
+          content: txtContent,
+          exportPath: currentExportPath,
+        }));
+      }
 
       /** 模拟导出进度 */
       const progressInterval = setInterval(() => {
         setExportProgress(prev => Math.min(prev + Math.random() * 15, 90));
       }, 500);
+      let intervalCleared = false;
 
-      await Promise.all(tasks);
-
-      clearInterval(progressInterval);
-      setExportProgress(100);
-
-      AppNotifier.success('TASK_EXPORT_SUCCESS');
-      setOpen(false);
+      try {
+        await Promise.all(tasks);
+        clearInterval(progressInterval);
+        intervalCleared = true;
+        setExportProgress(100);
+        AppNotifier.success('TASK_EXPORT_SUCCESS');
+        setOpen(false);
+      } finally {
+        if (!intervalCleared) clearInterval(progressInterval);
+      }
     } catch (e: any) {
       AppNotifier.error(e.message);
     } finally {

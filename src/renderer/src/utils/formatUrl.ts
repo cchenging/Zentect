@@ -57,5 +57,28 @@ export const getSafeMediaUrl = (rawPath?: string | null): string => {
     .replace(/\?/g, '%3F');
 
   // 6. 核心修复：强制铸造为绕过跨域限制的特权协议！
-  return `magic://${safeEncodedPath}`;
+  // 使用 magic://local/ 前缀确保盘符(G%3A)位于 pathname 而非 host
+  return `magic://local/${safeEncodedPath}`;
+}
+
+/**
+ * 安全格式化 magic:// URL，清洗双重编码和斜杠异常
+ * 用于播放器组件加载前对 URL 做防御性清洗
+ */
+export const formatMagicUrl = (rawSrc: string): string => {
+  if (!rawSrc || !rawSrc.startsWith('magic://')) return rawSrc;
+
+  try {
+    let decodedPath = decodeURIComponent(rawSrc.replace('magic://local/', '').replace('magic://', ''));
+
+    decodedPath = decodedPath.replace(/\\/g, '/');
+    if (decodedPath.startsWith('/')) {
+      decodedPath = decodedPath.substring(1);
+    }
+
+    return `magic://local/${decodedPath}`;
+  } catch (e) {
+    console.error('formatMagicUrl 解析失败', e);
+    return rawSrc;
+  }
 }

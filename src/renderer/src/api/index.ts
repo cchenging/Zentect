@@ -63,7 +63,10 @@ export const API = {
   media: {
     // 💥 关键修复区：解除对象花括号，直接多参数透传，拯救主进程解构崩溃
     import: (projectId: string, filePaths: string[]) => invokeSafe<any[]>(IPC_CHANNELS.MEDIA_IMPORT, projectId, filePaths),
+    update: (mediaId: string, data: any) => invokeSafe(IPC_CHANNELS.MEDIA_UPDATE, mediaId, data),
     process: (projectId: string, activeMedia: any, config: any) => invokeSafe(IPC_CHANNELS.MEDIA_PROCESS, projectId, activeMedia, config),
+    /** 轻量抽帧：只执行抽帧，不跑全管线，用于前端即时反馈闭环 */
+    extractFrames: (payload: { mediaId: string; projectId: string; strategy: string; fps: number; sceneThreshold: number; scale: number; quality: number; minFrameInterval?: number; timePoint?: number }) => invokeSafe<{ success: boolean; frameCount: number; previewUrls: string[] }>(IPC_CHANNELS.MEDIA_EXTRACT_FRAMES, payload),
     cancelProcess: (mediaId: string) => invokeSafe(IPC_CHANNELS.MEDIA_CANCEL, mediaId),
     delete: (projectId: string, mediaId: string) => invokeSafe(IPC_CHANNELS.MEDIA_DELETE, projectId, mediaId),
     getByProject: (projectId: string) => invokeSafe<any[]>(IPC_CHANNELS.MEDIA_GET_BY_PROJECT, projectId),
@@ -77,6 +80,8 @@ export const API = {
     runSingleTTS: (projectId: string, shot: any) => invokeSafe(IPC_CHANNELS.AI_RUN_SINGLE_TTS, projectId, shot),
     runGlobalTTS: (projectId: string, shots: any[]) => invokeSafe(IPC_CHANNELS.AI_RUN_GLOBAL_TTS, projectId, shots),
     visionSingle: (data: any) => invokeSafe(IPC_CHANNELS.AI_VISION_SINGLE, data),
+    /** 画面描述：直接调用 VLM 分析帧图片 */
+    visionExtract: (projectId: string, mediaPath: string, mediaId: string, framePaths?: string[]) => invokeSafe(IPC_CHANNELS.AI_VISION_EXTRACT, { projectId, mediaPath, mediaId, framePaths }),
     emotionSingle: (data: any) => invokeSafe(IPC_CHANNELS.AI_EMOTION_SINGLE, data),
     generateAiScript: (data: any) => invokeSafe(IPC_CHANNELS.AI_GENERATE_SCRIPT, data),
     streamText: (payload: any) => window.api.ai.streamText(payload),
@@ -90,6 +95,10 @@ export const API = {
     mp4Render: (payload: any) => invokeSafe(IPC_CHANNELS.EXPORT_MP4_RENDER, payload),
     /** V1.2: 发布素材包生成 */
     publishPackage: (payload: any) => invokeSafe(IPC_CHANNELS.EXPORT_PUBLISH_PACKAGE, payload),
+    /** 字幕文件导出 (SRT/ASS) */
+    subtitle: (payload: any) => invokeSafe(IPC_CHANNELS.EXPORT_SUBTITLE, payload),
+    /** 文案 TXT 导出 */
+    txt: (payload: any) => invokeSafe(IPC_CHANNELS.EXPORT_TXT, payload),
   },
 
   project: {
@@ -110,6 +119,8 @@ export const API = {
     duplicate: (id: string) => invokeSafe(IPC_CHANNELS.PROJECT_DUPLICATE, id),
     instantiate: (payload: any) => invokeSafe(IPC_CHANNELS.PROJECT_INSTANTIATE, payload),
     import: async () => { console.warn('[API] project.import 尚未实现 IPC 通道'); return null; },
+    /** 导出项目备份 */
+    exportProject: (id: string) => invokeSafe<string>(IPC_CHANNELS.PROJECT_EXPORT, id),
   },
 
   tasks: {
@@ -192,7 +203,11 @@ export const API = {
       });
     },
     onExtractionSuccess: (listener: (payload: any) => void) => {
-      window.api.events.onExtractionSuccess(listener);
+      window.api.ipc.on(IPC_CHANNELS.EVENT_EXTRACTION_SUCCESS, (_, data) => listener(data));
+    },
+    /** 移除素材提取完成事件监听 */
+    offExtractionSuccess: () => {
+      window.api.ipc.removeAllListeners(IPC_CHANNELS.EVENT_EXTRACTION_SUCCESS);
     },
     onMediaUpdated: (listener: (payload: any) => void) => {
       window.api.events.onMediaUpdated(listener);

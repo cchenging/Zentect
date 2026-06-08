@@ -1,41 +1,134 @@
 // 📁 路径：src/main/engine/media/AudioProcessor.ts
 import path from 'path';
 import fs from 'fs';
+import { spawn } from 'child_process';
+import { PathManager } from '../../utils/pathManager';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
 
 export class AudioProcessor {
-  // FFmpeg 典型的日志输出正则
   private static FFMPEG_DURATION_REGEX = /Duration: (\d{2}:\d{2}:\d{2}\.\d{2})/;
   private static FFMPEG_TIME_REGEX = /time=(\d{2}:\d{2}:\d{2}\.\d{2})/;
 
-  /**
-   * 💥 动作 1：从任意视频提取纯音频 (16kHz, 单声道，最适合给 Whisper 识别)
-   */
-  public static async extractAudioForASR(
-    inputPath: string, 
-    outputPath: string, 
-    onProgress?: (p: number, msg: string) => void
-  ): Promise<string> {
-    AppLogger.info('AudioProcessor', `Extracting audio for ASR from ${inputPath}`);
+  /** 从视频中提取音频轨道为 16kHz WAV，供 ASR 识别使用 */
+  public static async separateAudio(
+    inputPath: string,
+    outputPath: string,
+    mediaId: string,
+    inPoint?: number,
+    outPoint?: number,
+    signal?: AbortSignal
+  ): Promise<boolean | string> {
+    const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
+    if (!fs.existsSync(ffmpegExe)) {
+      AppLogger.warn('AudioProcessor', 'FFmpeg not found, skipping audio extraction');
+      return false;
+    }
 
-    // 如果输出目录不存在，自动创建
+    if (!fs.existsSync(inputPath)) {
+      AppLogger.warn('AudioProcessor', `Input file not found: ${inputPath}`);
+      return false;
+    }
+
     const outDir = path.dirname(outputPath);
     if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
-    // FFmpeg 指令：-vn 去视频, -acodec pcm_s16le 转换为 16bit WAV, -ar 16000 采样率, -ac 1 单声道
-    const args = [
-      '-y', // 覆盖输出文件
-      '-i', inputPath,
-      '-vn', 
-      '-acodec', 'pcm_s16le',
-      '-ar', '16000',
-      '-ac', '1',
-      outputPath
-    ];
+    const args = ['-y'];
+    if (inPoint !== undefined) args.push('-ss', inPoint.toString());
+    if (outPoint !== undefined) args.push('-to', outPoint.toString());
+    args.push('-i', inputPath, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', outputPath);
+
+    return new Promise((resolve) => {
+      const child = spawn(ffmpegExe, args, { windowsHide: true });
+      let stderr = '';
+
+      child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+
+      if (signal) {
+        const onAbort = () => { child.kill('SIGKILL'); resolve(false); };
+        signal.addEventListener('abort', onAbort);
+        child.on('close', () => signal.removeEventListener('abort', onAbort));
+      }
+
+      child.on('close', (code) => {
+        if (code !== 0 && code !== null) {
+          /** FFmpeg 返回非零且无音频流时，说明视频没有音频轨道 */
+          if (stderr.includes('does not contain any stream') || stderr.includes('Output file #0 does not contain any stream')) {
+            AppLogger.info('AudioProcessor', `No audio track in: ${inputPath}`);
+          } else {
+            AppLogger.warn('AudioProcessor', `FFmpeg audio extraction failed with code ${code}`);
+          }
+          resolve(false);
+          return;
+        }
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+          resolve(outputPath);
+        } else {
+          resolve(false);
+        }
+      });
+
+      child.on('error', () => resolve(false));
+      ProcessManager.register(child, 'FFmpeg-音频提取');
+    });
+  }
+
+  /** 调用 Demucs/Spleeter 分离人声和背景音 */
+  public static async separateVocalsBgm(
+    inputAudioPath: string,
+    outputDir: string
+  ): Promise<{ vocals: string; bgm: string } | null> {
+    if (!fs.existsSync(inputAudioPath)) return null;
+
+    const outBaseDir = path.join(outputDir, 'separated');
+    if (!fs.existsSync(outBaseDir)) fs.mkdirSync(outBaseDir, { recursive: true });
+
+    /** 尝试调用 AI Daemon 的人声分离接口 */
+    try {
+      const { HttpClient } = await import('../../core/HttpClient');
+      const result = await HttpClient.post('http://127.0.0.1:34567/api/separate', {
+        audioPath: inputAudioPath,
+        outputDir: outBaseDir,
+      });
+      if (result?.vocals && result?.bgm) return result;
+    } catch {
+      AppLogger.info('AudioProcessor', 'AI Daemon 人声分离不可用，使用 FFmpeg 降级方案');
+    }
+
+    /** 降级方案：用 FFmpeg 提取原始音轨作为人声（无分离） */
+    const vocalsPath = path.join(outBaseDir, 'vocals.wav');
+    const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
+    if (!fs.existsSync(ffmpegExe)) return null;
+
+    return new Promise((resolve) => {
+      const args = ['-y', '-i', inputAudioPath, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', vocalsPath];
+      const child = spawn(ffmpegExe, args, { windowsHide: true });
+      child.on('close', (code) => {
+        if (code === 0 && fs.existsSync(vocalsPath)) {
+          resolve({ vocals: vocalsPath, bgm: '' });
+        } else {
+          resolve(null);
+        }
+      });
+      child.on('error', () => resolve(null));
+      ProcessManager.register(child, 'FFmpeg-降级音频');
+    });
+  }
+
+  /** 从视频中提取纯音频（16kHz 单声道 WAV），供 ASR 识别 */
+  public static async extractAudioForASR(
+    inputPath: string,
+    outputPath: string,
+    onProgress?: (p: number, msg: string) => void
+  ): Promise<string> {
+    const outDir = path.dirname(outputPath);
+    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+    const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
+    const args = ['-y', '-i', inputPath, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', outputPath];
 
     await ProcessManager.spawnSafe({
-      command: 'ffmpeg', // 注意：生产环境需替换为打包后的 ffmpeg-static 绝对路径
+      command: ffmpegExe,
       args,
       onProgress,
       totalDurationRegex: this.FFMPEG_DURATION_REGEX,
@@ -45,42 +138,29 @@ export class AudioProcessor {
     return outputPath;
   }
 
-  /**
-   * 💥 动作 2：人声与背景音分离 (调用 Spleeter 或 UVR5 的 CLI)
-   */
+  /** 调用 Spleeter 分离人声和背景音 */
   public static async separateVocals(
     inputAudioPath: string,
     outputDir: string,
     engine: 'spleeter' | 'uvr5' = 'spleeter',
     onProgress?: (p: number, msg: string) => void
-  ): Promise<{ vocalPath: string, bgmPath: string }> {
-    AppLogger.info('AudioProcessor', `Separating vocals using ${engine}`);
-    
+  ): Promise<{ vocalPath: string; bgmPath: string }> {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-    // 演示：这里以调用本地 Python 的 Spleeter 为例
-    // 实际项目中，你需要确保 Python 环境就绪，或者打包为 exe
-    const args = [
-      '-m', 'spleeter', 'separate',
-      '-i', inputAudioPath,
-      '-p', 'spleeter:2stems',
-      '-o', outputDir
-    ];
+    const args = ['-m', 'spleeter', 'separate', '-i', inputAudioPath, '-p', 'spleeter:2stems', '-o', outputDir];
 
     await ProcessManager.spawnSafe({
       command: 'python',
       args,
       onProgress: (p, msg) => {
-        // Spleeter 输出不规律，我们做个模拟平滑进度或直接透传
         if (onProgress) onProgress(p > 0 ? p : 50, `AI 引擎分离中: ${msg}`);
       }
     });
 
-    // Spleeter 默认会在 outputDir 建立以原文件名为名字的文件夹，内部包含 vocals.wav 和 accompaniment.wav
     const baseName = path.basename(inputAudioPath, path.extname(inputAudioPath));
-    const vocalPath = path.join(outputDir, baseName, 'vocals.wav');
-    const bgmPath = path.join(outputDir, baseName, 'accompaniment.wav');
-
-    return { vocalPath, bgmPath };
+    return {
+      vocalPath: path.join(outputDir, baseName, 'vocals.wav'),
+      bgmPath: path.join(outputDir, baseName, 'accompaniment.wav'),
+    };
   }
 }

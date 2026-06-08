@@ -18,6 +18,7 @@ export class JobScheduler {
   private static instance: JobScheduler;
   private repo = new JobRepository();
   private isRunning = false;
+  private processNextTimer: NodeJS.Timeout | null = null;
   private projectService = new ProjectService(); // — 实例化 ProjectService
   private memoryBlacklist: Set<string> = new Set();
   private blacklistCleanupTimer: NodeJS.Timeout | null = null;
@@ -83,11 +84,16 @@ export class JobScheduler {
     await this.processNext();
   }
 
+  /** 停止调度引擎，清理所有定时器 */
   public stop() {
     this.isRunning = false;
     if (this.blacklistCleanupTimer) {
       clearInterval(this.blacklistCleanupTimer);
       this.blacklistCleanupTimer = null;
+    }
+    if (this.processNextTimer) {
+      clearTimeout(this.processNextTimer);
+      this.processNextTimer = null;
     }
     AppLogger.warn(LOG_TAGS.SCHEDULER, `调度引擎已挂起`);
   }
@@ -137,12 +143,40 @@ export class JobScheduler {
           const updatedMedia = await mediaRepo.findById(job.targetId);
           if (updatedMedia) {
             updatedMedia.status = 'parsed';
-            updatedMedia.frames = result.frames || [];
-            updatedMedia.extractedAudio = result.audioPath;
-            updatedMedia.extractedVocals = result.vocalsPath;
-            updatedMedia.extractedBgm = result.bgmPath;
             
-            await mediaRepo.update(updatedMedia.id, updatedMedia);
+            // 💥 把绝对路径转换成相对于项目根目录的相对路径
+            const projectDir = PathManager.getProjectDir(job.projectId);
+            
+            // 转换 frames 数组
+            /** 💥 关键修复：只有本次管线实际执行了抽帧时才更新 frames，
+             *  否则会用空数组覆盖 DB 中已有的帧数据 */
+            if (result.frames && Array.isArray(result.frames) && result.frames.length > 0) {
+              updatedMedia.frames = result.frames.map((framePath: string) => {
+                if (path.isAbsolute(framePath)) {
+                  return path.relative(projectDir, framePath).replace(/\\/g, '/');
+                }
+                return framePath;
+              });
+            }
+            
+            // 转换音频路径（只有本次管线实际产出了音频才更新，避免覆盖已有数据）
+            if (result.audioPath) {
+              updatedMedia.extractedAudio = path.isAbsolute(result.audioPath)
+                ? path.relative(projectDir, result.audioPath).replace(/\\/g, '/')
+                : result.audioPath;
+            }
+            if (result.vocalsPath) {
+              updatedMedia.extractedVocals = path.isAbsolute(result.vocalsPath)
+                ? path.relative(projectDir, result.vocalsPath).replace(/\\/g, '/')
+                : result.vocalsPath;
+            }
+            if (result.bgmPath) {
+              updatedMedia.extractedBgm = path.isAbsolute(result.bgmPath)
+                ? path.relative(projectDir, result.bgmPath).replace(/\\/g, '/')
+                : result.bgmPath;
+            }
+            
+            mediaRepo.updateMedia(updatedMedia.id, updatedMedia);
 
             const hydratedPayload = this.projectService.hydratePaths({
               media: updatedMedia,
@@ -185,7 +219,68 @@ export class JobScheduler {
     }
 
     if (this.isRunning) {
-      setTimeout(() => this.processNext(), 1000);
+      this.processNextTimer = setTimeout(() => this.processNext(), 1000);
+    }
+  }
+
+  /** 💥【大减法重构】：建立去画布纯净执行流，直连本地 Python 后台 */
+  public async executeLinearQuickPipeline(projectId: string, videoPath: string, window: Electron.BrowserWindow) {
+    try {
+      AppLogger.info(`[线性向导中枢] ⚙️ 开始激活极速提取分析流. 项目: ${projectId}`);
+      
+      // 1. 发送第一颗信号，点亮前台进度
+      window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 5, status: 'processing' });
+
+      const pythonPort = require('./AIDaemon').AIDaemon.getInstance?.().getPort?.() || 9885;
+
+      // 2. 呼叫 Python 执行音轨提取与重度分离
+      window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 15, status: 'processing', nodeName: '正在分离视频音轨，提取人声中...' });
+
+      const httpClient = require('./HttpClient').HttpClient;
+      const separateRes = await httpClient.post(`http://127.0.0.1:${pythonPort}/audio/separate`, {
+        videoPath,
+        projectId
+      });
+
+      if (!separateRes?.data?.success) {
+        throw new Error(separateRes?.data?.error || 'Python 音频分离模块遭遇内核阻断');
+      }
+
+      const { vocalPath, backgroundPath } = separateRes.data;
+
+      // 3. 呼叫 SenseVoice 模型提取语音识别 (ASR)
+      window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 55, status: 'processing', nodeName: '音轨分离成功！正在呼叫本地 SenseVoice 大模型转录文字...' });
+
+      const asrRes = await httpClient.post(`http://127.0.0.1:${pythonPort}/audio/asr`, {
+        audioPath: vocalPath,
+        projectId
+      });
+
+      const asrLines = asrRes?.data?.asrLines || [];
+
+      // 4. 💥【并线合并】：向前端派发 100% 极速向导标准的纯净成果包
+      const finalCleanPayload = {
+        progress: 100,
+        status: 'success',
+        results: {
+          vocalPath,
+          backgroundPath,
+          asrLines,
+          frameCount: asrRes?.data?.frameCount || 0
+        }
+      };
+
+      console.log('====== [MAIN PROCESS SEND 核心大包] ======', JSON.stringify(finalCleanPayload));
+      window.webContents.send('QUICK_PIPELINE_PROGRESS', finalCleanPayload);
+      AppLogger.info(`[线性向导中枢] 🎉 全业务数据链全线胜利通车！`);
+
+    } catch (err: any) {
+      AppLogger.error(`[线性向导中枢致命崩溃]: ${err.message}`);
+      window.webContents.send('QUICK_PIPELINE_PROGRESS', {
+        progress: 0,
+        status: 'error',
+        error: err.message || '本步算力抢占发生熔断'
+      });
     }
   }
 }

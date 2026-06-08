@@ -84,6 +84,10 @@ export class MigrationManager {
     addCol('projects', 'type', "TEXT DEFAULT 'video'");
     addCol('projects', 'path', 'TEXT');
     addCol('projects', 'status', "TEXT DEFAULT 'active'");
+    addCol('projects', 'metadata', 'TEXT');
+    addCol('projects', 'video_path', 'TEXT');
+    addCol('projects', 'is_draft', 'INTEGER NOT NULL DEFAULT 1');
+    addCol('projects', 'current_step', "TEXT NOT NULL DEFAULT 'import'");
 
     addCol('chat_history', 'action_payload', 'TEXT');
 

@@ -22,7 +22,7 @@ export const Settings: React.FC = () => {
   } = useSettingsManager();
 
   useEffect(() => {
-    API.system.resizeWindow(1440, 900).catch(console.error);
+    API.system.resizeWindow(1280, 800).catch(console.error);
   }, []);
 
   if (!config) {

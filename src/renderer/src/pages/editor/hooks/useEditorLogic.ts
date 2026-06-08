@@ -1,11 +1,10 @@
-// 📁 src/renderer/src/pages/editor/hooks/useEditorLogic.ts
+// 📁 路径: src/renderer/src/pages/editor/hooks/useEditorLogic.ts
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore, useEditorStore } from '../../../store/useStore';
 import { DraftService } from '../../../services/DraftService';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 import { AppNotifier } from '../../../core/AppNotifier';
-import { API } from '../../../api';
 
 export const useEditorHydration = (id: string | undefined) => {
   const navigate = useNavigate();
@@ -18,47 +17,74 @@ export const useEditorHydration = (id: string | undefined) => {
 
     let isMounted = true;
     const store = useEditorStore.getState();
+
+    // 进场前，第一毫秒清空内存残留，防止串工程污染
     store.resetProjectState();
 
-    const init = async () => {
-      useStore.getState().setHydrationStatus('LOADING');
+    const initWorkspace = async () => {
+      useStore.getState().setHydrationStatus?.('LOADING');
       try {
+        // 1. 获取工程核心物理基本元数据
         const projectRes = await window.api.ipc.invoke(IPC_CHANNELS.PROJECT_GET_BY_ID, id);
         const currentProject = projectRes?.data || projectRes;
-        if (!currentProject) throw new Error(`在数据库中未找到 ID 为 [${id}] 的项目`);
+        if (!currentProject) throw new Error(`在底座数据库中未识别到工程: ${id}`);
 
         if (isMounted) {
           store.setProjectMeta(currentProject.id, currentProject.name);
-          useEditorStore.setState({ projectPath: currentProject.path });
         }
 
-        // 加载媒体资产列表
-        if (isMounted) {
-          try {
-            const loadedMedia = await API.media.getByProject(id);
-            if (Array.isArray(loadedMedia) && loadedMedia.length > 0) {
-              useEditorStore.getState().setMediaItems(loadedMedia);
-              const firstVideo = loadedMedia.find((m: any) => m.type === 'video');
-              if (firstVideo) {
-                useEditorStore.getState().setActivePlaySource(firstVideo);
-              }
+        // 2. 强拉持久化数据库，调取基于主表 metadata 的最新真实工程快照
+        const loadRes = await window.api.ipc.invoke(IPC_CHANNELS.PROJECT_LOAD_DATA, id);
+        const projectSnapshot = loadRes?.data || loadRes;
+
+        console.log('====== [HYDRO项目进场大快照] ======', projectSnapshot);
+
+        if (projectSnapshot && isMounted) {
+          // 自愈清洗大闸：强推反序列化拉流，拒绝被 undefined 幽灵冲刷前台
+          store.hydrateProjectData(projectSnapshot);
+
+          // 💥 激活播放器源：优先使用 mediaItems 中的视频，其次回退到 projects.video_path
+          const mediaItems = projectSnapshot.mediaItems || [];
+          const videoMedia = mediaItems.find((m: any) => m.type === 'video' || m.filePath);
+          if (videoMedia) {
+            store.setActivePlaySource?.(videoMedia);
+          } else {
+            const restoredVideoPath = projectSnapshot.videoPath || projectSnapshot.video_path || '';
+            if (restoredVideoPath) {
+              store.setActivePlaySource?.({
+                id: 'main-video-source',
+                name: '原始导入多媒体文件',
+                filePath: restoredVideoPath,
+                path: restoredVideoPath,
+                type: 'video'
+              });
             }
-          } catch (e) {
-            console.warn('[Hydration] 加载媒体资产失败，不影响画布启动:', e);
           }
+
+          // 💥 同步反解元数据列中的 ASR 数组，让左下方资产面板（TextPool）瞬间复活！
+          if (projectSnapshot.metadata) {
+            try {
+              const meta = typeof projectSnapshot.metadata === 'string'
+                ? JSON.parse(projectSnapshot.metadata)
+                : projectSnapshot.metadata;
+              if (meta.asrLines) store.setAsrLines?.(meta.asrLines);
+            } catch {}
+          }
+
+          console.log(`[工作台自愈水合大胜利] 🛠️ 全量本地资产已完美水合归位！mediaItems=${mediaItems.length}`);
         }
 
-        if (isMounted) useStore.getState().setHydrationStatus('READY');
-      } catch (error) {
-        console.error('[Editor Hydration Error]:', error);
+        if (isMounted) useStore.getState().setHydrationStatus?.('READY');
+      } catch (error: any) {
+        console.error('[左右工作区水合异常]:', error);
         if (isMounted) {
-          AppNotifier.error('项目数据加载异常，已安全重置');
-          useStore.getState().setHydrationStatus('ERROR');
+          AppNotifier.error(`项目数据恢复失败: ${error.message || '未知'}`);
+          useStore.getState().setHydrationStatus?.('ERROR');
         }
       }
     };
 
-    init();
+    initWorkspace();
 
     return () => {
       isMounted = false;
@@ -66,12 +92,28 @@ export const useEditorHydration = (id: string | undefined) => {
   }, [id, navigate]);
 };
 
+/** 页面卸载前自动保存项目快照到草稿服务 */
 export const useEditorAutoSave = (id: string | undefined) => {
   useEffect(() => {
     if (!id) return;
 
     const handleBeforeUnload = () => {
-      DraftService.saveDraft(id, JSON.stringify({})).catch(() => {});
+      const storeState = useEditorStore.getState();
+      const snapshot = {
+        shots: storeState.shots,
+        aiShots: storeState.aiShots,
+        roles: storeState.roles,
+        mediaItems: storeState.mediaItems,
+        asrLines: storeState.asrLines,
+        frameCount: storeState.frameCount,
+        audioSeparated: storeState.audioSeparated,
+        subStepStatuses: storeState.subStepStatuses,
+        subStepProgresses: storeState.subStepProgresses,
+        stepStatuses: storeState.stepStatuses,
+        stepCompleted: storeState.stepCompleted,
+        storyboardMode: storeState.storyboardMode
+      };
+      DraftService.saveDraft(id, JSON.stringify(snapshot)).catch(() => {});
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
@@ -79,6 +121,7 @@ export const useEditorAutoSave = (id: string | undefined) => {
   }, [id]);
 };
 
+/** 定时将本地草稿同步到主进程 */
 export const useSyncDaemon = () => {
   useEffect(() => {
     if (!window.api?.ipc?.invoke) return;

@@ -8,10 +8,10 @@ import { SimplePipelineRunner } from '../engine/SimplePipelineRunner';
 import { AIEngine } from '../engine/AIEngine';
 import { PipelineRecoveryService } from '../pipeline/PipelineRecoveryService';
 import { PipelineSuspendController } from '../pipeline/PipelineSuspendController';
+import { ProjectService } from '../services/ProjectService';
 import { LocalAiGateway } from '../engine/LocalAiGateway';
 import { HealthService } from '../services/HealthService';
 import { WorkflowService } from '../services/WorkflowService';
-// import { LicenseService } from '../services/LicenseService';
 import { RoleRepository } from '../database/repositories/RoleRepository';
 import { TTSProvider } from '../engine/capabilities/TTSProvider';
 import { AppLogger } from '../core/AppLogger';
@@ -22,6 +22,8 @@ import { BatchQueueEngine } from '../engine/BatchQueueEngine'
 import { PublishService } from '../services/PublishService';
 import { PathManager } from '../utils/pathManager';
 import { ExceptionHub } from '../core/ExceptionHub';
+import { ProjectRepository } from '../database/repositories/ProjectRepository';
+import { JobScheduler } from '../core/JobScheduler';
 import * as path from 'path';
 import type { PipelinePayload } from '../../shared/types';
 
@@ -32,8 +34,9 @@ const V1_PIPELINE_PAYLOAD_SCHEMA = z.object({
 });
 
 export class EngineController {
-  private static engines = new Map<string, PipelineEngine>();
-  private static simpleRunners = new Map<string, SimplePipelineRunner>();
+  private projectService = new ProjectService();
+  private engines = new Map<string, PipelineEngine>();
+  private simpleRunners = new Map<string, SimplePipelineRunner>();
   private static suspendController = new PipelineSuspendController();
 
   static register() {
@@ -72,9 +75,35 @@ export class EngineController {
       }
     );
 
-    // V1.1+: DAG PipelineEngine — 节点可编排 (保留现有逻辑不变)
-    IpcRouter.handle(IPC_CHANNELS.ENGINE_RUN_PIPELINE, async (event, payload: { projectId: string; workflowId?: string; sequence: any[]; sourceMedia?: string }) => {
-      const pid = payload.projectId || 'default';
+    // V1.1+: DAG PipelineEngine + 极速向导分流
+    IpcRouter.handle(IPC_CHANNELS.ENGINE_RUN_PIPELINE, async (event, payload: any) => {
+      const { projectId, isQuickMode, extractedData, isSaveAction } = payload;
+      const window = event.sender.getOwnerBrowserWindow();
+
+      // A. 前端发来的完工落盘信号
+      if (isSaveAction || payload.action === 'SAVE_QUICK_DATA') {
+        const projectRepo = new ProjectRepository();
+        const success = projectRepo.updateQuickCardMetadata(projectId, extractedData);
+        return { success, message: success ? 'SQLite 持久化大成功' : '写盘失败' };
+      }
+
+      // B. 右下角按钮触发运行 — 极速线性管道
+      if (isQuickMode || payload.action === 'RUN_LINEAR_PIPELINE') {
+        const projectRepo = new ProjectRepository();
+        const currentProject = projectRepo.findQuickProjectById(projectId);
+        if (!currentProject || !currentProject.videoPath) {
+          return { success: false, error: '未检测到工作区导入的有效多媒体路径' };
+        }
+        JobScheduler.getInstance().executeLinearQuickPipeline(
+          projectId, 
+          currentProject.videoPath, 
+          window
+        );
+        return { success: true, message: 'Zentect 线性内核异步唤醒成功' };
+      }
+
+      // C. 传统 DAG 画布管线执行
+      const pid = projectId || 'default';
       AppLogger.info(LOG_TAGS.SYSTEM, `接收到画布执行指令，工程 ID: ${pid}`);
 
       const engine = new PipelineEngine();

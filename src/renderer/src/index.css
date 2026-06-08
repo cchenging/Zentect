@@ -11,9 +11,13 @@
 :root, .dark, body[theme-mode='dark'] {
   /* --- 深空背景层级 --- */
   --bg-deep: #0a0a14;
+  --bg-deepest: #07071a;
   --bg-primary: #0f0f20;
   --bg-secondary: #141428;
   --bg-tertiary: #1a1a35;
+  --bg-hover: #252540;
+  --bg-elevated: #2d2d4a;
+  --bg-immersive: #0a0a1e;
 
   /* --- 基础语义色 --- */
   --background: #0a0a14;
@@ -24,24 +28,30 @@
   --popover-foreground: #e8e8f0;
 
   /* --- 强调色体系 --- */
-  --accent: #6366f1;             /* 深空紫蓝 (Indigo) */
-  --accent-rose: #e11d48;        /* 玫瑰粉 */
-  --accent-cyan: #06b6d4;        /* 霓虹青 */
-  --accent-purple: #8b5cf6;      /* 紫色辅助 */
-  --accent-warm: #f59e0b;        /* 暖色/警告 */
-  --accent-green: #22c55e;       /* 成功/完成 */
+  --accent: #6366f1;
+  --accent-rose: #e11d48;
+  --accent-cyan: #00e5ff;
+  --accent-purple: #8b5cf6;
+  --accent-warm: #f59e0b;
+  --accent-green: #22c55e;
 
   --primary: #6366f1;
   --primary-foreground: #ffffff;
   --muted: #1e1e3a;
   --muted-foreground: #8888aa;
+
+  /* --- 边框体系 --- */
   --border: #2a2a4a;
+  --border-default: rgba(255,255,255,0.08);
+  --border-emphasis: rgba(255,255,255,0.15);
+  --border-input: rgba(255,255,255,0.10);
+  --border-focus: var(--accent);
   --input: #1e1e3a;
   --ring: #6366f1;
   --success: #22c55e;
   --warning: #f59e0b;
   --error: #e11d48;
-  --info: #06b6d4;
+  --info: #00e5ff;
 
   /* --- 毛玻璃参数 --- */
   --glass-bg: rgba(20, 20, 40, 0.78);
@@ -50,13 +60,81 @@
 
   /* --- 发光阴影 --- */
   --glow-accent: 0 0 20px rgba(99, 102, 241, 0.15);
-  --glow-cyan: 0 0 20px rgba(6, 182, 212, 0.15);
+  --glow-cyan: 0 0 20px rgba(0, 229, 255, 0.15);
   --glow-rose: 0 0 20px rgba(225, 29, 72, 0.15);
+
+  /* --- 阴影体系 --- */
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+  --shadow-xl: 0 12px 40px rgba(0,0,0,0.6);
 
   /* --- 渐变 --- */
   --gradient-accent: linear-gradient(135deg, #6366f1, #8b5cf6);
   --gradient-warm: linear-gradient(135deg, #6366f1, #e11d48);
-  --gradient-cyan: linear-gradient(135deg, #06b6d4, #6366f1);
+  --gradient-cyan: linear-gradient(135deg, #00e5ff, #6366f1);
+
+  /* --- 字体体系 --- */
+  --font-display: 'Outfit', 'PingFang SC', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+  /* --- 字重 --- */
+  --font-weight-light: 300;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  /* --- 行高 --- */
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.625;
+  --line-height-loose: 1.75;
+  --line-height-heading: 1.2;
+  --line-height-display: 1.1;
+
+  /* --- 间距体系 --- */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+  --space-3xl: 48px;
+
+  /* --- 圆角体系 --- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 14px;
+  --radius-full: 9999px;
+
+  /* --- z-index 体系 --- */
+  --z-base: 0;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-overlay: 300;
+  --z-modal: 400;
+  --z-popover: 500;
+  --z-toast: 600;
+  --z-tooltip: 700;
+  --z-max: 999;
+
+  /* --- 动效函数 --- */
+  --ease-out: cubic-bezier(0,0,0.2,1);
+  --ease-elastic: cubic-bezier(0.68,-0.55,0.27,1.55);
+  --ease-sharp: cubic-bezier(0.4,0,0.6,1);
+  --ease-smooth: cubic-bezier(0.4,0,0.2,1);
+
+  /* --- 过渡时长 --- */
+  --transition-fast: 100ms;
+  --transition-base: 200ms;
+  --transition-slow: 300ms;
+
+  /* --- 布局尺寸 --- */
+  --sidebar-width: 220px;
+  --sidebar-collapsed: 64px;
+  --topbar-height: 48px;
+  --stepnav-height: 36px;
 
   --separator-border: transparent !important;
   --focus-border: transparent !important;
@@ -79,9 +157,13 @@
 ========================================= */
 .light, body[theme-mode='light'] {
   --bg-deep: #f0f0f8;
+  --bg-deepest: #e8e8f4;
   --bg-primary: #f5f5fc;
   --bg-secondary: #eaeaf4;
   --bg-tertiary: #e0e0ee;
+  --bg-hover: #d8d8ec;
+  --bg-elevated: #ccccde;
+  --bg-immersive: #f0f0f8;
 
   --background: #f5f5fc;
   --foreground: #1a1a2e;
@@ -101,7 +183,13 @@
   --primary-foreground: #ffffff;
   --muted: #e8e8f4;
   --muted-foreground: #6b6b8a;
+
+  /* --- 边框体系 --- */
   --border: #d4d4e8;
+  --border-default: rgba(0,0,0,0.08);
+  --border-emphasis: rgba(0,0,0,0.15);
+  --border-input: rgba(0,0,0,0.10);
+  --border-focus: var(--accent);
   --input: #d4d4e8;
   --ring: #6366f1;
   --success: #16a34a;
@@ -114,8 +202,14 @@
   --glass-border: rgba(0, 0, 0, 0.06);
 
   --glow-accent: 0 0 20px rgba(99, 102, 241, 0.1);
-  --glow-cyan: 0 0 20px rgba(6, 182, 212, 0.1);
+  --glow-cyan: 0 0 20px rgba(8, 145, 178, 0.1);
   --glow-rose: 0 0 20px rgba(225, 29, 72, 0.1);
+
+  /* --- 阴影体系 --- */
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
+  --shadow-xl: 0 12px 40px rgba(0,0,0,0.15);
 
   --gradient-accent: linear-gradient(135deg, #6366f1, #8b5cf6);
   --gradient-warm: linear-gradient(135deg, #6366f1, #e11d48);
@@ -173,9 +267,13 @@
 
   /* V3 背景层级 */
   --color-bg-deep: var(--bg-deep);
+  --color-bg-deepest: var(--bg-deepest);
   --color-bg-primary: var(--bg-primary);
   --color-bg-secondary: var(--bg-secondary);
   --color-bg-tertiary: var(--bg-tertiary);
+  --color-bg-hover: var(--bg-hover);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-bg-immersive: var(--bg-immersive);
 }
 
 /* =========================================
@@ -191,13 +289,27 @@ body {
 }
 
 :root {
-  --font-size-mini: 10px;
-  --font-size-caption: 12px;
-  --font-size-body: 13px;
-  --font-size-normal: 14px;
-  --font-size-subtitle: 16px;
+  --font-size-xs: 10px;
+  --font-size-sm: 11px;
+  --font-size-base: 12px;
+  --font-size-body: 14px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 24px;
   --font-size-title: 20px;
+  --font-size-subtitle: 16px;
+  --font-size-normal: 14px;
+  --font-size-caption: 12px;
+  --font-size-mini: 10px;
 }
+
+/* --- 图标尺寸 --- */
+.icon-sm { width: 14px; height: 14px; }
+.icon-md { width: 16px; height: 16px; }
+.icon-lg { width: 20px; height: 20px; }
+.icon-xl { width: 24px; height: 24px; }
+.icon-2xl { width: 32px; height: 32px; }
 
 /* =========================================
    V3 毛玻璃卡片
@@ -280,6 +392,15 @@ body {
   50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.4); }
 }
 
+@keyframes breathe {
+  0%, 100% { box-shadow: 0 0 8px rgba(99, 102, 241, 0.15), 0 0 16px rgba(99, 102, 241, 0.05); }
+  50% { box-shadow: 0 0 16px rgba(99, 102, 241, 0.3), 0 0 32px rgba(99, 102, 241, 0.15); }
+}
+@keyframes button-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(99, 102, 241, 0.2), 0 4px 16px rgba(99, 102, 241, 0.1); }
+  50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.4), 0 4px 24px rgba(99, 102, 241, 0.2); }
+}
+
 .animate-fade-in-up {
   animation: fadeInUp 0.3s ease-out;
 }
@@ -293,6 +414,12 @@ body {
 }
 .animate-pulse-glow {
   animation: pulse-glow 2s ease-in-out infinite;
+}
+.animate-breathe {
+  animation: breathe 2s ease-in-out infinite;
+}
+.animate-button-pulse {
+  animation: button-pulse 2s ease-in-out infinite;
 }
 
 /* =========================================
@@ -356,3 +483,25 @@ body {
 }
 div[class*="sash-module"] { background: transparent !important; }
 div[class*="sash-module"]::before, div[class*="sash-module"]::after { background-color: transparent !important; border: none !important; }
+
+/* =========================================
+   系统"减少动态效果"适配 (prefers-reduced-motion)
+========================================= */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0ms !important;
+    animation-delay: 0ms !important;
+    transition-duration: 0ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+  .animate-breathe,
+  .animate-pulse-glow,
+  .animate-button-pulse,
+  .animate-shimmer {
+    animation: none !important;
+    box-shadow: none !important;
+  }
+}

@@ -43,6 +43,25 @@ export const PlayerControls: React.FC = () => {
     parseDuration(activePlaySource.duration) : videoDuration;
 
   const [isMuted, setIsMuted] = useState(false);
+  const [volume, setVolume] = useState(80);
+
+  /** 音量变更处理 */
+  const handleVolumeChange = (value: number[]) => {
+    if (!value || value.length === 0) return;
+    const v = value[0];
+    setVolume(v);
+    setIsMuted(v === 0);
+    const videoEl = document.querySelector('video') as HTMLVideoElement | null;
+    if (videoEl) videoEl.volume = v / 100;
+  };
+
+  /** 静音切换处理 */
+  const handleMuteToggle = () => {
+    const newMuted = !isMuted;
+    setIsMuted(newMuted);
+    const videoEl = document.querySelector('video') as HTMLVideoElement | null;
+    if (videoEl) videoEl.muted = newMuted;
+  };
 
   useEffect(() => {
     if (displayDuration > 0) setDuration(displayDuration);
@@ -102,11 +121,7 @@ export const PlayerControls: React.FC = () => {
         />
       </div>
 
-      <div className="flex-1 flex items-center gap-2 font-mono tabular-nums tracking-wider whitespace-nowrap min-w-max">
-        <span className="text-white/90 text-[11px] font-semibold shrink-0">{formatTimecode(currentTime)}</span>
-        <span className="text-white/40 text-[10px] shrink-0">/ {formatTimecode(displayDuration)}</span>
-      </div>
-
+      {/* 播放/暂停按钮 */}
       <div className="shrink-0 flex items-center justify-center">
         <Button
           variant="ghost"
@@ -118,93 +133,118 @@ export const PlayerControls: React.FC = () => {
         </Button>
       </div>
 
-      <div className="flex-1 flex justify-end items-center gap-1.5">
-        <Button
-          variant="ghost" size="icon"
-          onClick={() => setIsMuted(!isMuted)}
-          className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-colors"
-        >
-          {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
-        </Button>
-
-        <div className="w-[1px] h-4 bg-white/10 mx-1" />
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 data-[state=open]:bg-white/10 transition-colors" title={`${t.editor?.tooltip_ratio || '画幅'}: ${projectRatio}`}>
-              <MonitorPlay size={14} />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" sideOffset={8} className="w-32 z-50 bg-[#1a1a1a] border-white/10">
-            {
-              [
-                { v: '16:9', l: t.editor?.ratio_16_9 || '16:9' },
-                { v: '9:16', l: t.editor?.ratio_9_16 || '9:16' },
-                { v: '4:3', l: t.editor?.ratio_4_3 || '4:3' },
-                { v: '1:1', l: t.editor?.ratio_1_1 || '1:1' }
-              ].map(opt => (
-                <DropdownMenuItem
-                  key={opt.v}
-                  onClick={() => setProjectRatio(opt.v as any)}
-                  className={`flex items-center justify-between cursor-pointer focus:bg-white/10 ${projectRatio === opt.v ? 'text-primary font-medium' : 'text-white/80'}`}
-                >
-                  <span className="text-[11px]">{opt.l}</span>
-                  {projectRatio === opt.v && <Check size={12} className="text-primary" />}
-                </DropdownMenuItem>
-              ))
-            }
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        <div className="w-[1px] h-4 bg-white/10 mx-1" />
-
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="ghost" size="icon" className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 data-[state=open]:bg-white/10 transition-colors" title={t.editor?.tooltip_zoom || '缩放'}>
-              <ZoomIn size={14} />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="end" sideOffset={8} className="w-[200px] p-4 z-50 flex flex-col gap-4 bg-[#1a1a1a] border-white/10">
-            <div className="flex justify-between items-center">
-              <span className="text-white/90 text-[11px] font-medium">{t.editor?.zoom_title || '画布缩放'}</span>
-              <span className="font-mono text-[10px] text-white/40 bg-black/40 border border-white/5 px-1.5 py-0.5 rounded">{isCanvasFit ? t.editor?.zoom_fit_short || '自适应' : `${canvasZoom}%`}</span>
-            </div>
-
-            <Slider
-              value={[isCanvasFit ? 100 : canvasZoom]}
-              min={25} max={400} step={1}
-              onValueChange={handleZoomSliderChange}
-              className="w-full cursor-pointer"
-            />
-
-            <div className="flex gap-2 mt-1">
-               <Button
-                 variant={isCanvasFit ? "default" : "outline"}
-                 size="sm"
-                 onClick={() => { setIsCanvasFit(true); setCanvasZoom(100); }}
-                 className={`flex-1 h-7 text-[10px] ${isCanvasFit ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-white/60 border-white/10 hover:bg-white/10 hover:text-white'}`}
-               >
-                 {t.editor?.zoom_fit || '自适应'}
-               </Button>
-               <Button
-                 variant={!isCanvasFit && canvasZoom === 100 ? "default" : "outline"}
-                 size="sm"
-                 onClick={() => { setIsCanvasFit(false); setCanvasZoom(100); }}
-                 className={`flex-1 h-7 text-[10px] ${!isCanvasFit && canvasZoom === 100 ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-white/60 border-white/10 hover:bg-white/10 hover:text-white'}`}
-               >
-                 {t.editor?.zoom_100 || '100%'}
-               </Button>
-            </div>
-          </PopoverContent>
-        </Popover>
-
-        <div className="w-[1px] h-4 bg-white/10 mx-1" />
-
-        <Button variant="ghost" size="icon" onClick={handleFullscreen} className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-colors" title={t.editor?.tooltip_fullscreen || '全屏'}>
-          <Maximize size={14} />
-        </Button>
-
+      {/* 时间显示 */}
+      <div className="flex items-center gap-2 font-mono tabular-nums tracking-wider whitespace-nowrap min-w-max">
+        <span className="text-white/90 text-[11px] font-semibold shrink-0">{formatTimecode(currentTime)}</span>
+        <span className="text-white/40 text-[10px] shrink-0">/ {formatTimecode(displayDuration)}</span>
       </div>
+
+      <div className="flex-1" />
+
+      {/* 缩放 */}
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button variant="ghost" size="icon" className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 data-[state=open]:bg-white/10 transition-colors" title={t.editor?.tooltip_zoom || '缩放'}>
+            <ZoomIn size={14} />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" sideOffset={8} className="w-[200px] p-4 z-50 flex flex-col gap-4 bg-[#1a1a1a] border-white/10">
+          <div className="flex justify-between items-center">
+            <span className="text-white/90 text-[11px] font-medium">{t.editor?.zoom_title || '画布缩放'}</span>
+            <span className="font-mono text-[10px] text-white/40 bg-black/40 border border-white/5 px-1.5 py-0.5 rounded">{isCanvasFit ? t.editor?.zoom_fit_short || '自适应' : `${canvasZoom}%`}</span>
+          </div>
+
+          <Slider
+            value={[isCanvasFit ? 100 : canvasZoom]}
+            min={25} max={400} step={1}
+            onValueChange={handleZoomSliderChange}
+            className="w-full cursor-pointer"
+          />
+
+          <div className="flex gap-2 mt-1">
+             <Button
+               variant={isCanvasFit ? "default" : "outline"}
+               size="sm"
+               onClick={() => { setIsCanvasFit(true); setCanvasZoom(100); }}
+               className={`flex-1 h-7 text-[10px] ${isCanvasFit ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-white/60 border-white/10 hover:bg-white/10 hover:text-white'}`}
+             >
+               {t.editor?.zoom_fit || '自适应'}
+             </Button>
+             <Button
+               variant={!isCanvasFit && canvasZoom === 100 ? "default" : "outline"}
+               size="sm"
+               onClick={() => { setIsCanvasFit(false); setCanvasZoom(100); }}
+               className={`flex-1 h-7 text-[10px] ${!isCanvasFit && canvasZoom === 100 ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-white/60 border-white/10 hover:bg-white/10 hover:text-white'}`}
+             >
+               {t.editor?.zoom_100 || '100%'}
+             </Button>
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      <div className="w-[1px] h-4 bg-white/10 mx-1" />
+
+      {/* 画幅 */}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 data-[state=open]:bg-white/10 transition-colors" title={`${t.editor?.tooltip_ratio || '画幅'}: ${projectRatio}`}>
+            <MonitorPlay size={14} />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" sideOffset={8} className="w-32 z-50 bg-[#1a1a1a] border-white/10">
+          {
+            [
+              { v: '16:9', l: t.editor?.ratio_16_9 || '16:9' },
+              { v: '9:16', l: t.editor?.ratio_9_16 || '9:16' },
+              { v: '4:3', l: t.editor?.ratio_4_3 || '4:3' },
+              { v: '1:1', l: t.editor?.ratio_1_1 || '1:1' }
+            ].map(opt => (
+              <DropdownMenuItem
+                key={opt.v}
+                onClick={() => setProjectRatio(opt.v as any)}
+                className={`flex items-center justify-between cursor-pointer focus:bg-white/10 ${projectRatio === opt.v ? 'text-primary font-medium' : 'text-white/80'}`}
+              >
+                <span className="text-[11px]">{opt.l}</span>
+                {projectRatio === opt.v && <Check size={12} className="text-primary" />}
+              </DropdownMenuItem>
+            ))
+          }
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <div className="w-[1px] h-4 bg-white/10 mx-1" />
+
+      {/* 音量 */}
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button
+            variant="ghost" size="icon"
+            onClick={handleMuteToggle}
+            className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-colors"
+          >
+            {isMuted || volume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="end" sideOffset={8} className="w-[140px] p-3 z-50 flex flex-col gap-2 bg-[#1a1a1a] border-white/10">
+          <div className="flex justify-between items-center">
+            <span className="text-white/90 text-[11px] font-medium">音量</span>
+            <span className="font-mono text-[10px] text-white/40">{isMuted ? '0' : volume}%</span>
+          </div>
+          <Slider
+            value={[isMuted ? 0 : volume]}
+            min={0} max={100} step={1}
+            onValueChange={handleVolumeChange}
+            className="w-full cursor-pointer"
+          />
+        </PopoverContent>
+      </Popover>
+
+      <div className="w-[1px] h-4 bg-white/10 mx-1" />
+
+      {/* 全屏 */}
+      <Button variant="ghost" size="icon" onClick={handleFullscreen} className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-colors" title={t.editor?.tooltip_fullscreen || '全屏'}>
+        <Maximize size={14} />
+      </Button>
     </div>
   );
 };

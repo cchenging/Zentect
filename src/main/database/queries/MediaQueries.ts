@@ -4,20 +4,40 @@ export const MEDIA_SQL = {
   INSERT: `
     INSERT INTO media_assets (
       id, project_id, episode_num, type, name, file_path, cover_path, duration, status,
-      width, height, fps, create_time, update_time, is_deleted
+      width, height, fps, frames, extracted_audio, extracted_vocals, extracted_bgm,
+      extracted_text, extract_duration, narration_script, create_time, update_time, is_deleted
     ) VALUES (
-      @id, @projectId, 1, @type, @name, @filePath, @coverPath, @duration, 'ready',
-      @width, @height, @fps, datetime('now', 'localtime'), datetime('now', 'localtime'), 0
+      @id, @projectId, 1, @type, @name, @filePath, @coverPath, @duration, @status,
+      @width, @height, @fps, @frames, @extractedAudio, @extractedVocals, @extractedBgm,
+      @extractedText, @extractDuration, @narrationScript, datetime('now', 'localtime'), datetime('now', 'localtime'), 0
     )
   `,
 
   FIND_BY_ID: `
-    SELECT id, name, file_path as filePath, project_id as projectId
+    SELECT
+      id,
+      project_id as projectId,
+      type,
+      name,
+      file_path as filePath,
+      cover_path as coverPath,
+      duration,
+      status,
+      width,
+      height,
+      fps,
+      frames,
+      extracted_audio as extractedAudio,
+      extracted_vocals as extractedVocals,
+      extracted_bgm as extractedBgm,
+      extracted_text as extractedText,
+      extract_duration as extractDuration,
+      narration_script as narrationScript
     FROM media_assets
     WHERE id = @id AND is_deleted = 0
   `,
 
-  UPDATE_STATUS: `
+  UPDATE: `
     UPDATE media_assets
     SET name = @name,
         status = @status,
@@ -25,7 +45,9 @@ export const MEDIA_SQL = {
         extracted_audio = @extractedAudio,
         extracted_vocals = @extractedVocals,
         extracted_bgm = @extractedBgm,
+        extracted_text = @extractedText,
         extract_duration = @extractDuration,
+        narration_script = @narrationScript,
         update_time = datetime('now', 'localtime')
     WHERE id = @id AND is_deleted = 0
   `,
@@ -68,7 +90,9 @@ export const MEDIA_SQL = {
       extracted_audio as extractedAudio,
       extracted_vocals as extractedVocals,
       extracted_bgm as extractedBgm,
-      extract_duration as extractDuration
+      extracted_text as extractedText,
+      extract_duration as extractDuration,
+      narration_script as narrationScript
     FROM media_assets
     WHERE project_id = @projectId AND is_deleted = 0
     ORDER BY create_time DESC

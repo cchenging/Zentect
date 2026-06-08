@@ -30,7 +30,6 @@ export const CONFIG_KEYS = {
   UI_THEME: 'ui.theme',
   UI_FONT_SIZE: 'ui.fontSize',
 
-  FEATURE_QUICKCARD_ENABLED: 'feature.quickcard.enabled',
   FEATURE_EDITOR_ENABLED: 'feature.editor.enabled',
   FEATURE_JOBQUEUE_ENABLED: 'feature.jobqueue.enabled',
   FEATURE_CLI_ENABLED: 'feature.cli.enabled',

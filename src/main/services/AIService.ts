@@ -116,8 +116,8 @@ export class AIService {
   public async getNodeOutput(projectId: string, nodeId: string, type: string) {
     if (!projectId || !nodeId) throw new Error("缺少必要参数");
 
-    const projectDir = PathManager.getProjectDir(projectId);
-    const outputDir = path.join(projectDir, 'nodes', nodeId, type || 'frames');
+    /** 统一走 PathManager 标准路径，确保目录自动创建和路径一致性 */
+    const outputDir = PathManager.getNodeBaseDir(projectId, nodeId, (type as 'frames' | 'audio' | 'whisper') || 'frames');
 
     if (!fs.existsSync(outputDir)) return [];
 

@@ -4,6 +4,10 @@ import { AIService } from '../services/AIService';
 import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../shared/utils/LogConstants';
+import { VisionExtractStrategy } from '../engine/strategies/VisionExtractStrategy';
+import { PathManager } from '../utils/pathManager';
+import * as path from 'path';
+import * as fs from 'fs';
 
 export class AIController {
   private aiService = new AIService();
@@ -58,6 +62,78 @@ export class AIController {
 
     IpcRouter.handle(IPC_CHANNELS.AI_VISION_SINGLE, async (_, data) => {
       return await this.aiService.visionSingle(data);
+    });
+
+    /** 画面描述：复用步骤1已有帧，直接 VLM 分析，不再重新抽帧 */
+    IpcRouter.handle(IPC_CHANNELS.AI_VISION_EXTRACT, async (_, payload: { projectId: string; mediaPath: string; mediaId: string; framePaths?: string[] }) => {
+      const { projectId, mediaPath, mediaId, framePaths } = payload;
+
+      /** 将 magic:// 帧路径还原为物理绝对路径 */
+      const projectDir = PathManager.getProjectDir(projectId);
+      const dehydrate = (p: string): string => {
+        if (!p.startsWith('magic://')) return p;
+        const prefix = `magic://${projectId}/`;
+        if (p.startsWith(prefix)) {
+          const rel = p.replace(prefix, '');
+          return path.isAbsolute(rel) ? rel : path.join(projectDir, rel);
+        } else if (p.startsWith('magic://local/')) {
+          return p.replace('magic://local/', '').replace(/\//g, '\\');
+        }
+        return path.join(projectDir, p.replace(/^magic:\/\/[^/]+\//, ''));
+      };
+
+      /** 获取可用的帧图片物理路径列表 */
+      let physicalFrames: string[] = [];
+      if (framePaths && framePaths.length > 0) {
+        physicalFrames = framePaths.map(dehydrate).filter((p: string) => {
+          try { return fs.existsSync(p); } catch { return false; }
+        });
+      }
+
+      if (physicalFrames.length === 0) {
+        throw new Error('画面描述失败：未找到已提取的关键帧，请先完成步骤1「素材分析」');
+      }
+
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 复用步骤1已有帧 ${physicalFrames.length} 张，跳过 FFmpeg 抽帧`);
+
+      /** 直接调用 VLM 分析已有帧图片 */
+      const { LLMFactory } = await import('../engine/adapters/LLMFactory');
+      const { adapter, modelName } = LLMFactory.createAdapter('visual');
+      const model = modelName || 'qwen-vl-max';
+
+      const BATCH_SIZE = 10;
+      const allDescriptions: string[] = [];
+
+      for (let batchStart = 0; batchStart < physicalFrames.length; batchStart += BATCH_SIZE) {
+        const batchFrames = physicalFrames.slice(batchStart, batchStart + BATCH_SIZE);
+        const batchNum = Math.floor(batchStart / BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(physicalFrames.length / BATCH_SIZE);
+
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] VLM 批次 ${batchNum}/${totalBatches}，帧 ${batchStart + 1}-${batchStart + batchFrames.length}`);
+
+        const imageContents = batchFrames.map(framePath => {
+          const base64 = fs.readFileSync(framePath, 'base64');
+          return { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } };
+        });
+
+        const messages = [
+          { role: 'system', content: '你是一个专业的视频画面解析引擎。请严格按照时间顺序，详细描述这些连续画面中发生的动作、人物神态、环境和景别。每帧描述单独一行，以序号开头。' },
+          { role: 'user', content: [{ type: 'text', text: `请解析以下视频关键帧（第${batchStart + 1}-${batchStart + batchFrames.length}帧），并生成场景描述：` }, ...imageContents] }
+        ];
+
+        const rawResult = await adapter.chat(messages, model, 0.2);
+        const resultText = typeof rawResult === 'string' ? rawResult : (rawResult as any).text || '';
+        allDescriptions.push(resultText);
+      }
+
+      const sceneDescriptions = allDescriptions.join('\n');
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 完成，描述长度: ${sceneDescriptions.length}，帧数: ${physicalFrames.length}`);
+
+      return {
+        framesCount: physicalFrames.length,
+        sceneDescriptions,
+        framePaths: framePaths || physicalFrames,
+      };
     });
 
     IpcRouter.handle(IPC_CHANNELS.AI_EMOTION_SINGLE, async (_, data) => {

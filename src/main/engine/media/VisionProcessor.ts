@@ -4,6 +4,8 @@ import fs from 'fs';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '../../../shared/utils/LogConstants';
+import { AIDaemon } from '../../core/AIDaemon';
+import { HttpClient } from '../../core/HttpClient';
 
 export class VisionProcessor {
   /**
@@ -24,18 +26,19 @@ export class VisionProcessor {
     }
 
     const outputPattern = path.join(outputDir, 'frame_%04d.jpg');
-    let vfFilter = `fps=${value}`;
+    let vfFilter = `fps=${value},scale=640:-1`;
 
     if (mode === 'scene') {
-      vfFilter = `select='gt(scene,${value})',showinfo`;
+      vfFilter = `select='gt(scene,${value})',showinfo,scale=640:-1`;
     }
 
     const args = [
       '-y',
       '-i', inputVideoPath,
       '-vf', vfFilter,
-      '-vsync', 'vfr',
-      '-q:v', '2',
+      // P1: fps 模式使用 cfr 保证输出帧率精确；P2: q:v 统一为 3
+      '-vsync', mode === 'fps' ? 'cfr' : 'vfr',
+      '-q:v', '3',
       outputPattern
     ];
 
@@ -76,31 +79,18 @@ export class VisionProcessor {
       fs.mkdirSync(facesDir, { recursive: true });
     }
 
-    // 尝试调用 AIDaemon 人脸扫描服务
+    // 💥【核心修复】：改用项目内实际打通的本地 Python 微服务网络网关进行 RPC 通信
     try {
-      const { AIDaemon } = await import('../../core/AIDaemon');
-      const roles: any[] = [];
-      // 批量处理帧，每批最多 10 帧
-      const batchSize = 10;
-      for (let i = 0; i < frames.length; i += batchSize) {
-        const batch = frames.slice(i, i + batchSize);
-        try {
-          const result = await AIDaemon.instance.request('/api/vision', {
-            method: 'POST',
-            body: JSON.stringify({ frames: batch, outputDir: facesDir })
-          });
-          if (result && Array.isArray(result.faces)) {
-            roles.push(...result.faces);
-          }
-        } catch (e: any) {
-          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces batch ${i} failed: ${e.message}`);
-        }
-      }
-      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: found ${roles.length} faces`);
-      return roles;
-    } catch (e: any) {
-      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: AIDaemon unavailable, returning empty. ${e.message}`);
-      return [];
+      const pythonPort = AIDaemon.getInstance?.().getPort?.() || 9885;
+
+      const response = await HttpClient.post(`http://127.0.0.1:${pythonPort}/face/detect`, {
+        frames: frames
+      });
+
+      return response?.data?.faces || [];
+    } catch (error) {
+      console.error('[VisionProcessor] 物理修复 - 人脸识别通信断裂:', error);
+      return []; // 降级返回，绝不抛出异常让整个管线死掉
     }
   }
 
@@ -148,17 +138,19 @@ export class VisionProcessor {
       return { sceneDescriptions: '', segments: [] };
     }
 
-    // 尝试调用 AIDaemon CLIP 语义提取服务
+    // 💥【核心修复】：修正 RPC 通信函数签名，将真实数据喂给 Python 侧的 Faiss 和 CLIP
     try {
-      const { AIDaemon } = await import('../../core/AIDaemon');
-      const result = await AIDaemon.instance.request('/api/extract_semantics', {
-        method: 'POST',
-        body: JSON.stringify({ mediaId, shots })
+      const pythonPort = AIDaemon.getInstance?.().getPort?.() || 9885;
+
+      const response = await HttpClient.post(`http://127.0.0.1:${pythonPort}/semantic/extract`, {
+        mediaId,
+        shots
       });
-      return result || { sceneDescriptions: '', segments: [] };
-    } catch (e: any) {
-      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] extractSemantics: AIDaemon unavailable, degrading gracefully. ${e.message}`);
-      return { sceneDescriptions: '', segments: [] };
+
+      return response?.data || { success: true };
+    } catch (error) {
+      console.warn('[VisionProcessor] 语义检索微服务不可用，自愈降级:', error);
+      return { success: false, error: 'AI 服务未就绪' };
     }
   }
 

@@ -9,8 +9,9 @@ import { AppError, ErrorCode } from '../../../shared/utils/AppError';
 export class MediaRepository {
   private get db() { return SQLiteConnection.getInstance().getDB(); }
 
-  public insertMedia(media: MediaItem & { duration: number, width: number, height: number, fps: number }) {
-    this.db.prepare(MEDIA_SQL.INSERT).run({
+  public insertMedia(media: MediaItem & { duration: number, width: number, height: number, fps: number, [key: string]: any }) {
+    console.log(`[DEBUG][MediaRepo] insertMedia projectId=${media.projectId}, id=${media.id}, filePath=${media.filePath}`);
+    const result = this.db.prepare(MEDIA_SQL.INSERT).run({
       id: media.id,
       projectId: media.projectId,
       type: media.type,
@@ -18,10 +19,19 @@ export class MediaRepository {
       filePath: media.filePath,
       coverPath: media.coverPath,
       duration: media.duration,
-      width: media.width,
-      height: media.height,
-      fps: media.fps
+      status: media.status || 'ready',
+      width: media.width || 0,
+      height: media.height || 0,
+      fps: media.fps || 0,
+      frames: media.frames ? JSON.stringify(media.frames) : null,
+      extractedAudio: media.extractedAudio || null,
+      extractedVocals: media.extractedVocals || null,
+      extractedBgm: media.extractedBgm || null,
+      extractedText: media.extractedText || null,
+      extractDuration: media.extractDuration || null,
+      narrationScript: media.narrationScript ? JSON.stringify(media.narrationScript) : null
     });
+    console.log(`[DEBUG][MediaRepo] insertMedia result changes=${result.changes}, lastInsertRowid=${result.lastInsertRowid}`);
   }
 
   public findById(id: string): any {
@@ -30,14 +40,15 @@ export class MediaRepository {
     if (row) {
       return {
         ...row,
-        frames: row.frames ? JSON.parse(row.frames) : undefined
+        frames: row.frames ? JSON.parse(row.frames) : undefined,
+        narrationScript: row.narrationScript ? JSON.parse(row.narrationScript) : undefined
       };
     }
     return null;
   }
 
-  public update(id: string, media: any): void {
-    this.db.prepare(MEDIA_SQL.UPDATE_STATUS).run({
+  public updateMedia(id: string, media: any): void {
+    this.db.prepare(MEDIA_SQL.UPDATE).run({
       id: id,
       name: media.name,
       status: media.status,
@@ -45,7 +56,9 @@ export class MediaRepository {
       extractedAudio: media.extractedAudio || null,
       extractedVocals: media.extractedVocals || null,
       extractedBgm: media.extractedBgm || null,
-      extractDuration: media.extractDuration || null
+      extractedText: media.extractedText || null,
+      extractDuration: media.extractDuration || null,
+      narrationScript: media.narrationScript ? JSON.stringify(media.narrationScript) : null
     });
   }
 
@@ -62,10 +75,25 @@ export class MediaRepository {
   public getByProject(projectId: string): any[] {
     try {
       const medias = this.db.prepare(MEDIA_SQL.GET_BY_PROJECT).all({ projectId });
-      // 解析 frames JSON 字段
+      // 完整解析所有字段，并做下划线到驼峰的映射
       return medias.map((row: any) => ({
-        ...row,
-        frames: row.frames ? JSON.parse(row.frames) : undefined
+        id: row.id,
+        name: row.name,
+        type: row.type,
+        filePath: row.file_path,
+        coverPath: row.cover_path,
+        duration: row.duration,
+        width: row.width,
+        height: row.height,
+        fps: row.fps,
+        status: row.status || 'parsed',
+        frames: row.frames ? JSON.parse(row.frames) : undefined,
+        extractedAudio: row.extracted_audio || undefined,
+        extractedVocals: row.extracted_vocals || undefined,
+        extractedBgm: row.extracted_bgm || undefined,
+        extractedText: row.extracted_text || undefined,
+        extractDuration: row.extract_duration ? parseFloat(row.extract_duration) : undefined,
+        narrationScript: row.narration_script ? JSON.parse(row.narration_script) : undefined
       }));
     } catch (e: any) {
       AppLogger.error(LOG_TAGS.DATABASE, `获取项目媒体列表崩溃：${e.message}`);

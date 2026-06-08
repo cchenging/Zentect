@@ -1,11 +1,11 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sun, Moon, Bell, Settings as SettingsIcon } from 'lucide-react';
+import { Sun, Moon, Settings as SettingsIcon } from 'lucide-react';
 import { useEditorStore } from '../../store/useStore';
 import { UI_CONFIG } from '../../constants/ui';
 import { useI18n } from '../../store/useI18n';
-import { AppNotifier } from '../../core/AppNotifier';
 import { WindowControls } from '../window-controls';
+import { NotificationPanel } from '../notification-panel';
 
 /**
  * 首页标题栏
@@ -34,15 +34,7 @@ export const TitleBar: React.FC = () => {
             {theme === 'dark' ? <Sun size={UI_CONFIG.ICON_SIZE} /> : <Moon size={UI_CONFIG.ICON_SIZE} />}
           </button>
 
-          <button
-            className={`${UI_CONFIG.ICON_BTN_SIZE} flex items-center justify-center bg-transparent border-none rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer outline-none relative`}
-            onClick={() => AppNotifier.info('通知功能开发中')}
-            aria-label="通知"
-            title={t.common?.notifications || '通知'}
-          >
-            <Bell size={UI_CONFIG.ICON_SIZE} />
-            <span className="absolute top-[5px] right-[5px] w-1.5 h-1.5 bg-red-500 rounded-full border border-background"></span>
-          </button>
+          <NotificationPanel />
 
           <button
             className={`${UI_CONFIG.ICON_BTN_SIZE} flex items-center justify-center bg-transparent border-none rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer outline-none`}

@@ -11,12 +11,12 @@ import { ShotEditor } from './ShotEditor';
  * @param seconds - 秒数
  * @returns 格式化后的时间码字符串
  */
-const formatDuration = (seconds: number) => {
+const formatDuration = (seconds: number, fps: number = 30) => {
   if (isNaN(seconds) || seconds < 0) return '00:00:00:00';
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
-  const f = Math.floor((seconds % 1) * 30);
+  const f = Math.floor((seconds % 1) * fps);
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}:${f.toString().padStart(2, '0')}`;
 };
 
@@ -25,7 +25,7 @@ const formatDuration = (seconds: number) => {
  * 显示项目的基本信息，包括名称、时长、分辨率、帧率和路径
  */
 const ProjectGlobalProps: React.FC = () => {
-  const { projectName, projectRatio, videoDuration } = useEditorStore();
+  const { projectName, projectRatio, videoDuration, videoFps } = useEditorStore();
   const absolutePath = useEditorStore(s => (s as any).projectPath) || '路径解析失败'; 
   const { t } = useI18n();
 
@@ -43,7 +43,7 @@ const ProjectGlobalProps: React.FC = () => {
         {/* 视频时长 */}
         <div className="flex justify-between items-center">
           <span className="text-body text-muted-foreground shrink-0 w-20">{t.editor?.prop_duration || '时长'}</span>
-          <span className="text-body text-foreground font-mono tabular-nums text-right">{formatDuration(videoDuration)}</span>
+          <span className="text-body text-foreground font-mono tabular-nums text-right">{formatDuration(videoDuration, videoFps)}</span>
         </div>
         {/* 分辨率 */}
         <div className="flex justify-between items-center">
@@ -53,7 +53,7 @@ const ProjectGlobalProps: React.FC = () => {
         {/* 帧率 */}
         <div className="flex justify-between items-center">
           <span className="text-body text-muted-foreground shrink-0 w-20">{t.editor?.prop_fps || '帧率'}</span>
-          <span className="text-body text-foreground font-mono text-right">30.00 fps</span>
+          <span className="text-body text-foreground font-mono text-right">{videoFps.toFixed(2)} fps</span>
         </div>
         
         {/* 分隔线 */}

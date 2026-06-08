@@ -96,6 +96,13 @@ export class ProjectController {
       return await this.projectService.duplicateProject(id);
     });
 
+    IpcRouter.handle(IPC_CHANNELS.PROJECT_EXPORT, async (_, id: string) => {
+      if (!id) {
+        throw new AppError(ErrorCode.FS_PATH_INVALID, 'Project ID is required');
+      }
+      return await this.projectService.exportProject(id);
+    });
+
     // 💥 实例化模板
     IpcRouter.handle(IPC_CHANNELS.PROJECT_INSTANTIATE, async (_, payload: any) => {
       const templateId = payload?.templateId;

@@ -1,6 +1,6 @@
 import type { PipelineTask } from '../../../../shared/types';
 import type { PipelineNodeRef } from './types';
-import { INodeParser } from './types';
+import type { INodeParser } from './types';
 
 export class ASRParser implements INodeParser {
   parse(node: PipelineNodeRef, upstreamContext: Record<string, any>): PipelineTask | null {

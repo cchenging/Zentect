@@ -18,6 +18,7 @@ interface ProjectCardProps {
   onRename: (proj: ProjectRecord) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string, name: string) => void;
+  onExport?: (id: string, name: string) => void;
 }
 
 // 内存级超高速截断引擎
@@ -64,19 +65,19 @@ const formatBytes = (bytes?: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
 
-export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRename, onDuplicate, onDelete }) => {
+export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRename, onDuplicate, onDelete, onExport }) => {
   const { t } = useI18n();
 
-  const coverUrl = project.coverPath ? (project.coverPath.startsWith('file://') ? project.coverPath : `file:///${project.coverPath.replace(/\\/g, '/')}`) : '';
+  const coverUrl = project.coverPath || '';
   const displayName = truncateMiddleSmart(project.name);
 
   return (
     // 容器增加了柔和的间距和动画过渡
-    <div className="group flex flex-col w-[128px] shrink-0 cursor-pointer gap-2.5 hover:z-40 [-webkit-app-region:no-drag] transition-all duration-300">
-      
+    <div className="group flex flex-col w-[190px] shrink-0 cursor-pointer gap-2.5 hover:z-40 [-webkit-app-region:no-drag] transition-all duration-300">
+
       {/* 💥 美学重构 1：封面大圆角 (rounded-xl) + 柔和边框 + 独立 Hover 层 (group/cover) */}
-      <div 
-        className="w-[128px] h-[128px] shrink-0 bg-secondary/30 rounded-xl overflow-hidden border border-border/60 relative shadow-sm group-hover:shadow-md transition-all duration-300 group/cover"
+      <div
+        className="w-full aspect-video shrink-0 bg-secondary/30 rounded-xl overflow-hidden border border-border/60 relative shadow-sm group-hover:shadow-md transition-all duration-300 group/cover"
         onClick={() => onClick(project.id)}
       >
         {coverUrl ? (
@@ -114,6 +115,11 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRe
               <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onDuplicate(project.id); }} className="text-xs gap-2.5 py-2 cursor-pointer rounded-md">
                 <AppIcon name="Copy" size={13} className="text-muted-foreground" />
                 {t.common?.duplicate || t.common?.copy || '创建副本'}
+              </DropdownMenuItem>
+              
+              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onExport?.(project.id, project.name); }} className="text-xs gap-2.5 py-2 cursor-pointer rounded-md">
+                <AppIcon name="Download" size={13} className="text-muted-foreground" />
+                导出备份
               </DropdownMenuItem>
               
               <DropdownMenuSeparator className="bg-border/50" />

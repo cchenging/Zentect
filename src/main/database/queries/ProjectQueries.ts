@@ -1,7 +1,7 @@
 export const PROJECT_SQL = {
   // --- 基础读写 ---
   FIND_ALL: `
-    SELECT id, name, category, cover_path as coverPath, duration, create_time as createdAt, update_time as updatedAt 
+    SELECT id, name, type, category, cover_path as coverPath, duration, create_time as createdAt, update_time as updatedAt
     FROM projects WHERE is_deleted = 0 ORDER BY create_time DESC, update_time DESC
   `,
   FIND_BY_ID: `\n    SELECT id, name, category, cover_path as coverPath, duration, \n           canvas_data as canvasData,\n           create_time as createdAt, update_time as updatedAt \n    FROM projects WHERE id = @id AND is_deleted = 0\n  `,
@@ -84,5 +84,12 @@ export const PROJECT_SQL = {
   UPDATE_SHOT_AUDIO: `UPDATE shots SET audio_emotion = @audioEmotion, update_time = datetime("now", "localtime") WHERE id = @id`,
   
   // 💥 Phase 1.2: 新增画布数据更新语句
-  UPDATE_CANVAS_DATA: `\n    UPDATE projects \n    SET canvas_data = @canvasData, update_time = datetime('now', 'localtime') \n    WHERE id = @id AND is_deleted = 0\n  `
+  UPDATE_CANVAS_DATA: `\n    UPDATE projects \n    SET canvas_data = @canvasData, update_time = datetime('now', 'localtime') \n    WHERE id = @id AND is_deleted = 0\n  `,
+
+  // 💥 更新项目封面
+  UPDATE_COVER: `
+    UPDATE projects
+    SET cover_path = @coverPath, update_time = datetime('now', 'localtime')
+    WHERE id = @projectId AND is_deleted = 0
+  `
 };

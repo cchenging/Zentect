@@ -43,16 +43,50 @@ export const IPCBridge: React.FC = () => {
       }
     };
 
+    /** 💥 收听主进程的全局异步事件大闸，触发全量数据水合 */
+    const handleGlobalPipelineNotify = (_event: any, payload: any) => {
+      if (!payload) return;
+      const storeState = useStore.getState();
+
+      console.log('[IPCBridge 核心总线] 捕获主进程算力波段信号:', payload.type || payload);
+
+      if (
+        payload.type === 'AUDIO_SEPARATE_SUCCESS' ||
+        payload.status === 'success' ||
+        payload.progress === 100
+      ) {
+        window.api.ipc.invoke(IPC_CHANNELS.PROJECT_LOAD_DATA, storeState.projectId)
+          .then((freshData) => {
+            if (freshData) {
+              storeState.hydrateProjectData({
+                shots: freshData.shots || [],
+                aiShots: freshData.aiShots || [],
+                roles: freshData.roles || [],
+                audioSeparated: true,
+                mediaItems: freshData.mediaItems || storeState.mediaItems
+              });
+              AppNotifier.success('🎵 音频流与视频轨道数据已实时同步！');
+            }
+          }).catch((err) => console.error('[IPCBridge] 水合崩溃:', err));
+      }
+    };
+
     window.api.ipc.on(IPC_CHANNELS.EVENT_PIPELINE_ERROR, handlePipelineError);
     window.api.ipc.on(IPC_CHANNELS.EVENT_STREAM_TO_SHOT_CARD, handleStreamToShotCard);
+    window.api.ipc.on('NOTIFY_PIPELINE_EVENT', handleGlobalPipelineNotify);
+    window.api.ipc.on(IPC_CHANNELS.PROJECT_SAVE_CANVAS, handleGlobalPipelineNotify);
 
     return () => {
       if (typeof window.api.ipc.removeListener === 'function') {
         window.api.ipc.removeListener(IPC_CHANNELS.EVENT_PIPELINE_ERROR, handlePipelineError);
         window.api.ipc.removeListener(IPC_CHANNELS.EVENT_STREAM_TO_SHOT_CARD, handleStreamToShotCard);
+        window.api.ipc.removeListener('NOTIFY_PIPELINE_EVENT', handleGlobalPipelineNotify);
+        window.api.ipc.removeListener(IPC_CHANNELS.PROJECT_SAVE_CANVAS, handleGlobalPipelineNotify);
       } else if (typeof window.api.ipc.removeAllListeners === 'function') {
         window.api.ipc.removeAllListeners(IPC_CHANNELS.EVENT_PIPELINE_ERROR);
         window.api.ipc.removeAllListeners(IPC_CHANNELS.EVENT_STREAM_TO_SHOT_CARD);
+        window.api.ipc.removeAllListeners('NOTIFY_PIPELINE_EVENT');
+        window.api.ipc.removeAllListeners(IPC_CHANNELS.PROJECT_SAVE_CANVAS);
       }
     };
   }, [updateShot, t]);

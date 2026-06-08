@@ -5,108 +5,246 @@ import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '../../../shared/utils/LogConstants';
 import { AppError, ErrorCode } from '../../../shared/utils/AppError';
 import { detectFromASRJson } from '../media/MediaLanguageDetector';
+import { PathManager } from '../../utils/pathManager';
+import { ProcessManager } from '../../utils/processManager';
 import * as path from 'path';
 import * as fs from 'fs';
+import { spawn } from 'child_process';
 
-export class LocalWhisperStrategy implements ITextExtractor {
-  
+export class LocalWhisperStrategy {
+
   /**
-   * 💥 巴别塔升级：新增 language 参数支持跨语种重组
+   * 语音识别主入口：优先使用 Python AIDaemon（SenseVoice），
+   * 不可用时自动降级到本地 whisper-cli.exe 推理
    */
   public async transcribe(audioPath: string, outDir: string, mediaId: string, language: string = 'zh'): Promise<TextExtractResult> {
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 启动巴别塔听写协议，目标语言提示: ${language}`, { mediaId });
-    
-    try {
-      const whisperOutPath = path.join(outDir, `transcript_${mediaId}.json`);
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 启动听写协议，目标语言: ${language}`, { mediaId });
 
-      // 💥 宪法修正：将 language 注入请求载荷，确保外文视频能被正确识别
-      const response = await AIDaemon.getInstance().post('/api/transcribe', {
-        audio_path: audioPath,
-        output_json_path: whisperOutPath,
-        language: language === 'zh-CN' ? 'zh' : (language === 'en-US' ? 'en' : 'auto')
-      });
-
-      if (response && response.success) {
-        const pythonOut = JSON.parse(fs.readFileSync(whisperOutPath, 'utf-8'));
-
-        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR 极限侦察] Python 母舰输出探测 (前200字): ${JSON.stringify(pythonOut).substring(0, 200)}`);
-
-        // 💥 宪法防线：多层级数据结构兼容
-        // SenseVoiceSmall 经常返回单元素数组 [{text:...}] 或 直接的对象
-        let rawData = Array.isArray(pythonOut) ? pythonOut[0] : pythonOut;
-        if (rawData.data) rawData = rawData.data; // 适配部分框架包装
-
-        const formatSrtTime = (sec: number) => {
-          const d = new Date(Math.max(0, sec) * 1000);
-          return `${String(Math.floor(sec / 3600)).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')},${String(d.getUTCMilliseconds()).padStart(3, '0')}`;
-        };
-
-        // 💥 极限清洗函数：彻底杜绝尖括号截断白屏
-        const cleanText = (raw: any) => {
-          if (typeof raw !== 'string' || !raw) return '';
-          // 1. 刮除控制符
-          let text = raw.replace(/<\|.*?\|>/g, '');
-          // 2. 移除可能残留的开头/结尾控制符残骸
-          text = text.replace(/^[<|]+|[>|]+$/g, '');
-          // 3. 转义普通尖括号，保护 React 渲染层
-          return text.replace(/</g, '＜').replace(/>/g, '＞').trim();
-        };
-
-        // 如果没有时间戳（SenseVoice 特性），启动 NLP 伪切分引擎
-        const rawText = rawData.text || rawData.content || '';
-        const cleanedFullText = cleanText(rawText);
-
-        if (!cleanedFullText || cleanedFullText.length < 1) {
-            AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR 异常] 清洗后文本为空，请检查视频是否有声或 Python 解析逻辑`);
-        }
-
-        // 构造最终符合时间轴引擎的 DTO
-        const finalTranscription: Array<{ timestamps: { from: string; to: string }; text: string; emotion: any }> = [];
-        const sentences = cleanedFullText.split(/([。！？；.!?;\n]+)/).filter(Boolean);
-        let currentStart = 0;
-        let accumulated = "";
-
-        for (let i = 0; i < sentences.length; i++) {
-          accumulated += sentences[i];
-          if (/^[。！？；.!?;\n]+$/.test(sentences[i]) || i === sentences.length - 1) {
-             const t = accumulated.trim();
-             if (t) {
-                const dur = Math.max(2, t.length / 4); // 粗略推算时长
-                finalTranscription.push({
-                  timestamps: { from: formatSrtTime(currentStart), to: formatSrtTime(currentStart + dur) },
-                  text: t,
-                  emotion: rawData.emotion || 'NEUTRAL'
-                });
-                currentStart += dur;
-             }
-             accumulated = "";
-          }
-        }
-
-        const finalJson = {
-          language: rawData.language || language,
-          transcription: finalTranscription
-        };
-        
-        fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
-        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Success] 成功解析并伪切分 ${finalTranscription.length} 段台词`);
-
-        // 🔍 语言检测：检查是否为外语或无台词影片
-        const langCheck = detectFromASRJson(finalJson);
-        if (langCheck.status !== 'zh') {
-          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR 语言检测] ${langCheck.message}`, { status: langCheck.status });
-          // 将检测结果写入 JSON 供上层决策
-          finalJson['_languageCheck'] = { status: langCheck.status, message: langCheck.message };
-          fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
-        }
-
-        return { whisperJsonPath: whisperOutPath };
-      } else {
-        throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'ASR 微服务处理失败');
-      }
-    } catch (error: any) {
-      AppLogger.error(LOG_TAGS.MEDIA_ENGINE, `[ASR Fatal] 听写链路崩溃:`, error);
-      throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, `算力引擎异常: ${error.message}`);
+    /** 检查音频文件是否存在 */
+    if (!fs.existsSync(audioPath)) {
+      throw new AppError(ErrorCode.FS_PATH_INVALID, `ASR 音频文件不存在: ${audioPath}`);
     }
+    const audioStat = fs.statSync(audioPath);
+    if (audioStat.size === 0) {
+      throw new AppError(ErrorCode.FS_PATH_INVALID, `ASR 音频文件为空 (0 字节): ${audioPath}`);
+    }
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 音频文件大小: ${(audioStat.size / 1024).toFixed(1)} KB`);
+
+    await fs.promises.mkdir(outDir, { recursive: true });
+    const whisperOutPath = path.join(outDir, `transcript_${mediaId}.json`);
+
+    /** 优先尝试 Python AIDaemon（SenseVoice ONNX） */
+    try {
+      const daemon = AIDaemon.getInstance();
+      if (daemon.isOnline()) {
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，使用 SenseVoice 推理`);
+        return await this.transcribeViaDaemon(daemon, audioPath, whisperOutPath, language);
+      }
+    } catch (daemonErr: any) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 调用失败，准备降级`, { error: daemonErr.message });
+    }
+
+    /** 降级：使用本地 whisper-cli.exe 推理 */
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 降级到本地 whisper-cli.exe 推理`);
+    return await this.transcribeViaLocalWhisper(audioPath, whisperOutPath, language);
+  }
+
+  /**
+   * 通过 Python AIDaemon（SenseVoice）执行语音识别
+   */
+  private async transcribeViaDaemon(daemon: AIDaemon, audioPath: string, whisperOutPath: string, language: string): Promise<TextExtractResult> {
+    const response = await daemon.post('/api/transcribe', {
+      audio_path: audioPath,
+      output_json_path: whisperOutPath,
+      language: language === 'zh-CN' ? 'zh' : (language === 'en-US' ? 'en' : 'auto')
+    }, {
+      timeout: 120000,
+      retries: 2,
+    });
+
+    if (response && response.success) {
+      return this.parseAndWriteResult(whisperOutPath, language);
+    } else {
+      throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'ASR 微服务处理失败');
+    }
+  }
+
+  /**
+   * 使用本地 whisper-cli.exe 执行语音识别（无需 Python）
+   */
+  private async transcribeViaLocalWhisper(audioPath: string, whisperOutPath: string, language: string): Promise<TextExtractResult> {
+    /** whisper-cli.exe 位于 resources/models/whisper/ 目录下 */
+    const whisperDir = PathManager.getModelPath('whisper', '');
+    const whisperExe = path.join(whisperDir, 'whisper-cli.exe');
+    const modelPath = PathManager.getModelPath('whisper', 'ggml-base.bin');
+
+    if (!fs.existsSync(whisperExe)) {
+      throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, `whisper-cli.exe 不存在: ${whisperExe}`);
+    }
+    if (!fs.existsSync(modelPath)) {
+      throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, `Whisper 模型不存在: ${modelPath}`);
+    }
+
+    /** whisper-cli 输出 SRT 格式到文件 */
+    const outputSrtPath = whisperOutPath.replace('.json', '.srt');
+    const langCode = language === 'zh-CN' ? 'zh' : (language === 'en-US' ? 'en' : 'auto');
+
+    const args = [
+      '-m', modelPath,
+      '-f', audioPath,
+      '-l', langCode,
+      '--output-srt',
+      '--output-file', whisperOutPath.replace('.json', ''),
+    ];
+
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Local] whisper-cli 启动`, { exe: whisperExe, model: modelPath, lang: langCode });
+
+    /** 执行 whisper-cli 推理 */
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn(whisperExe, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      ProcessManager.register(proc, 'asr-whisper-local');
+
+      let stderr = '';
+      proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+      proc.stdout.on('data', () => {}); // 消费 stdout 防止阻塞
+
+      proc.on('close', (code: number) => {
+        if (code !== 0) {
+          AppLogger.error(LOG_TAGS.MEDIA_ENGINE, `[ASR Local] whisper-cli 异常退出 (code: ${code})`, { stderr: stderr.slice(-500) });
+          reject(new Error(`whisper-cli 退出码: ${code}`));
+        } else {
+          resolve();
+        }
+      });
+      proc.on('error', (err) => reject(err));
+    });
+
+    /** 解析 SRT 输出并转为项目内部 JSON 格式 */
+    const srtPath = fs.existsSync(outputSrtPath) ? outputSrtPath : whisperOutPath.replace('.json', '.srt');
+    if (!fs.existsSync(srtPath)) {
+      throw new AppError(ErrorCode.AI_PROCESS_FAILED, `whisper-cli 未生成 SRT 文件: ${srtPath}`);
+    }
+
+    const srtContent = fs.readFileSync(srtPath, 'utf-8');
+    const transcription = this.parseSrt(srtContent);
+
+    const finalJson = {
+      language: language === 'auto' ? 'zh' : language,
+      transcription
+    };
+
+    fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Local] whisper-cli 识别完成，${transcription.length} 段台词`);
+
+    /** 语言检测 */
+    const langCheck = detectFromASRJson(finalJson);
+    if (langCheck.status !== 'zh') {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR 语言检测] ${langCheck.message}`, { status: langCheck.status });
+    }
+
+    /** 清理 SRT 临时文件 */
+    try { fs.unlinkSync(srtPath); } catch {}
+
+    return { whisperJsonPath: whisperOutPath };
+  }
+
+  /**
+   * 解析 SRT 格式字幕为项目内部 transcription 格式
+   */
+  private parseSrt(srtContent: string): Array<{ timestamps: { from: string; to: string }; text: string; emotion: string }> {
+    const result: Array<{ timestamps: { from: string; to: string }; text: string; emotion: string }> = [];
+    const blocks = srtContent.trim().split(/\n\s*\n/);
+
+    for (const block of blocks) {
+      const lines = block.trim().split('\n');
+      if (lines.length < 3) continue;
+
+      /** SRT 时间行格式：00:00:01,234 --> 00:00:05,678 */
+      const timeMatch = lines[1]?.match(/(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})/);
+      if (!timeMatch) continue;
+
+      const from = timeMatch[1].replace(',', ',');
+      const to = timeMatch[2].replace(',', ',');
+      const text = lines.slice(2).join(' ').trim();
+
+      if (text) {
+        /** 清洗尖括号控制符 */
+        const cleaned = text.replace(/<\|.*?\|>/g, '').replace(/</g, '＜').replace(/>/g, '＞').trim();
+        if (cleaned) {
+          result.push({ timestamps: { from, to }, text: cleaned, emotion: 'NEUTRAL' });
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * 解析 Python Daemon 返回的 JSON 并写入最终格式
+   */
+  private parseAndWriteResult(whisperOutPath: string, language: string): TextExtractResult {
+    const pythonOut = JSON.parse(fs.readFileSync(whisperOutPath, 'utf-8'));
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR] Python 输出探测 (前200字): ${JSON.stringify(pythonOut).substring(0, 200)}`);
+
+    let rawData = Array.isArray(pythonOut) ? pythonOut[0] : pythonOut;
+    if (rawData.data) rawData = rawData.data;
+
+    const formatSrtTime = (sec: number) => {
+      const d = new Date(Math.max(0, sec) * 1000);
+      return `${String(Math.floor(sec / 3600)).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')},${String(d.getUTCMilliseconds()).padStart(3, '0')}`;
+    };
+
+    const cleanText = (raw: any) => {
+      if (typeof raw !== 'string' || !raw) return '';
+      let text = raw.replace(/<\|.*?\|>/g, '');
+      text = text.replace(/^[<|]+|[>|]+$/g, '');
+      return text.replace(/</g, '＜').replace(/>/g, '＞').trim();
+    };
+
+    const rawText = rawData.text || rawData.content || '';
+    const cleanedFullText = cleanText(rawText);
+
+    if (!cleanedFullText || cleanedFullText.length < 1) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR 异常] 清洗后文本为空`);
+    }
+
+    const finalTranscription: Array<{ timestamps: { from: string; to: string }; text: string; emotion: any }> = [];
+    const sentences = cleanedFullText.split(/([。！？；.!?;\n]+)/).filter(Boolean);
+    let currentStart = 0;
+    let accumulated = "";
+
+    for (let i = 0; i < sentences.length; i++) {
+      accumulated += sentences[i];
+      if (/^[。！？；.!?;\n]+$/.test(sentences[i]) || i === sentences.length - 1) {
+        const t = accumulated.trim();
+        if (t) {
+          const dur = Math.max(2, t.length / 4);
+          finalTranscription.push({
+            timestamps: { from: formatSrtTime(currentStart), to: formatSrtTime(currentStart + dur) },
+            text: t,
+            emotion: rawData.emotion || 'NEUTRAL'
+          });
+          currentStart += dur;
+        }
+        accumulated = "";
+      }
+    }
+
+    const finalJson = {
+      language: rawData.language || language,
+      transcription: finalTranscription
+    };
+
+    fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Success] 成功解析 ${finalTranscription.length} 段台词`);
+
+    const langCheck = detectFromASRJson(finalJson);
+    if (langCheck.status !== 'zh') {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR 语言检测] ${langCheck.message}`, { status: langCheck.status });
+      finalJson['_languageCheck'] = { status: langCheck.status, message: langCheck.message };
+      fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
+    }
+
+    return { whisperJsonPath: whisperOutPath };
   }
 }

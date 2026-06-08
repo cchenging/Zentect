@@ -20,8 +20,8 @@ import { useNotificationCenter } from './services/NotificationCenter';
 // ==========================================================
 const Home = React.lazy(() => import('./pages/home').then(m => ({ default: m.Home })));
 const Editor = React.lazy(() => import('./pages/editor'));
-const QuickCard = React.lazy(() => import('./pages/quickcard'));
 const ModelsPage = React.lazy(() => import('./pages/models'));
+const UserSettingsPage = React.lazy(() => import('./pages/user-settings'));
 
 function App() {
   const theme = useEditorStore((state) => state.theme);
@@ -96,9 +96,9 @@ function App() {
             </Route>
             <Route path="/editor/:id" element={<Editor />} />
             <Route path="/editor/new" element={<Editor />} />
-            <Route path="/quickcard" element={<QuickCard />} />
-            <Route path="/quickcard/:id" element={<QuickCard />} />
+
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/user-settings" element={<UserSettingsPage />} />
           </Routes>
         </Suspense>
       </HashRouter>

@@ -39,7 +39,6 @@ import { UserController } from './controllers/UserController'
 import { ModelController } from './controllers/ModelController'
 import { SettingsController } from './controllers/SettingsController'
 import { SettingsRepository } from './database/repositories/SettingsRepository'
-// import { LicenseService } from './services/LicenseService'
 import { CrashReporter } from './core/CrashReporter'
 import { TelemetryOptInGate } from './core/TelemetryOptInGate'
 import { UsageStatsCollector } from './core/UsageStatsCollector'
@@ -58,7 +57,8 @@ protocol.registerSchemesAsPrivileged([
       secure: true,        // 标记为安全协议
       supportFetchAPI: true,
       stream: true,        // 允许视频 <video> 标签流式播放
-      bypassCSP: true
+      bypassCSP: true,
+      corsEnabled: true
     }
   }
 ]);
@@ -72,7 +72,7 @@ app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,VaapiVideoEnc
 app.commandLine.appendSwitch('allow-insecure-localhost', 'true');
 
 let currentView = 'home'
-let homeSize = { width: 1440, height: 900 }
+let homeSize = { width: 1280, height: 800 }
 let editorSize: { width: number, height: number } | null = null
 
 /**
@@ -174,7 +174,7 @@ class AppBootstrap {
       width: homeSize.width,
       height: homeSize.height,
       minWidth: 1280,
-      minHeight: 800,
+      minHeight: 750,
       center: true,
       show: false,
       title: 'Zentect',
@@ -248,14 +248,14 @@ class AppBootstrap {
       currentView = targetView
 
       if (targetView === 'home') {
-        win.setMinimumSize(972, 648)
+        win.setMinimumSize(1280, 750)
         if (!isMaximized) {
           win.setBounds({ width: homeSize.width, height: homeSize.height }, true)
           win.center()
         }
       } else if (targetView === 'editor') {
         // — 按照你的代码宪法：编辑器最小宽度 1180
-        win.setMinimumSize(1180, 720)
+        win.setMinimumSize(1280, 750)
         
         if (!isMaximized) {
           // — 标准化检测：如果 stored 数据（editorSize）不存在、或宽度小于 1180、或高度小于 720
@@ -371,6 +371,7 @@ app.whenReady().then(async () => {
     try {
       // 1. 解析 URL（standard=true 时，Chromium 按 RFC 3986 解析）
       // URL 格式：magic://local/G%3A/%E8%A7%86%E9%A2%91/test.mp4
+      // URL 格式：magic://proj_xxx/thumbnails/media_xxx.jpg（host 为项目 ID）
       const urlObj = new URL(request.url);
       const encodedPath = urlObj.pathname;
 
@@ -383,8 +384,15 @@ app.whenReady().then(async () => {
       }
       if (decodedPath.startsWith('/')) decodedPath = decodedPath.slice(1);
 
+      // 2.5 如果 host 是项目 ID（非 local），将 host 拼接到路径前
+      const host = urlObj.host;
+      if (host && host !== 'local' && !decodedPath.startsWith(host + '/')) {
+        decodedPath = host + '/' + decodedPath;
+      }
+
       // 3. 路径安全校验
       const projectsRoot = PathManager.getProjectsRootPath();
+      /** 所有产物统一存放在项目目录下，cacheRoot 仅保留兼容旧数据 */
       const cacheRoot = PathManager.getCacheRootPath?.() || path.join(projectsRoot, '..', 'zentect-cache');
       const homeDir = app.getPath('home');
       let resolvedPath: string;

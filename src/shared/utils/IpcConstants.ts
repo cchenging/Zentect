@@ -22,7 +22,9 @@ export const IPC_CHANNELS = {
 
   // --- 媒体管理 ---
   MEDIA_IMPORT: 'media:import',
+  MEDIA_UPDATE: 'media:update',
   MEDIA_PROCESS: 'media:process',
+  MEDIA_EXTRACT_FRAMES: 'media:extractFrames',
   MEDIA_CANCEL: 'media:cancelProcess',
   MEDIA_DELETE: 'media:delete',
   MEDIA_GET_BY_PROJECT: 'media:getByProject',
@@ -55,6 +57,7 @@ export const IPC_CHANNELS = {
   PROJECT_INSTANTIATE: 'project:instantiate',
   PROJECT_SAVE_CANVAS: 'project:save-canvas',
   PROJECT_UPDATE_SCRIPT_DELTA: 'project:update-script-delta',
+  PROJECT_EXPORT: 'project:export',
 
   // --- 草稿自动保存 ---
   DRAFT_SHADOW_SAVE: 'draft:shadow-save',
@@ -87,6 +90,7 @@ export const IPC_CHANNELS = {
   AI_RUN_SINGLE_TTS: 'ai:runSingleTTS',
   AI_RUN_GLOBAL_TTS: 'ai:runGlobalTTS',
   AI_VISION_SINGLE: 'ai:visionSingle',
+  AI_VISION_EXTRACT: 'vision:extract',
   AI_EMOTION_SINGLE: 'ai:emotionSingle',
   AI_GENERATE_SCRIPT: 'ai:generateAiScript',
   AI_STREAM_TEXT: 'ai:streamText',
@@ -112,6 +116,8 @@ export const IPC_CHANNELS = {
   EXPORT_LOCAL_VIDEO: 'export:video',          // alias of EXPORT_VIDEO
   EXPORT_MP4_RENDER: 'export:mp4Render',       // V1.2 FFmpeg 渲染
   EXPORT_PUBLISH_PACKAGE: 'export:publishPackage', // V1.2 发布素材包
+  EXPORT_SUBTITLE: 'export:subtitle',             // 字幕文件导出 (SRT/ASS)
+  EXPORT_TXT: 'export:txt',                       // 文案 TXT 导出
   EXPORT_PROGRESS: 'export:progress',
 
   // --- 后端向前端的主动推送 ---
