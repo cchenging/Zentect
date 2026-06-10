@@ -69,10 +69,15 @@ export const usePipelineExecutor = () => {
 
       // 前台数据完成最终注水
       storeState.setExtractedData?.(finalPayload);
-      
-      // 同步驱动计数徽章
-      useEditorStore.setState({ frameCount: actualExtractedImages.length });
-      AppNotifier.success(`⚙️ 智能分析中心：资产切片无损入库，共生成 ${actualExtractedImages.length} 个高清分镜！`);
+
+      // 仅在帧提取节点（nodeId 含 frame/extract/vision）且有帧数据时弹出"资产切片入库"通知
+      // 避免 TTS/Script 等步骤完工时误弹此通知
+      const nodeId: string = payload.nodeId || '';
+      const isFrameNode = nodeId.includes('frame') || nodeId.includes('extract') || nodeId.includes('vision');
+      if (isFrameNode && actualExtractedImages.length > 0) {
+        useEditorStore.setState({ frameCount: actualExtractedImages.length });
+        AppNotifier.success(`⚙️ 智能分析中心：资产切片无损入库，共生成 ${actualExtractedImages.length} 个高清分镜！`);
+      }
 
       // 呼叫主进程对齐 SQLite，落库成功后彻底治愈重进项目丢失
       window.api.ipc.invoke(IPC_CHANNELS.ENGINE_RUN_PIPELINE, {

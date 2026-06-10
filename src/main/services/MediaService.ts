@@ -50,31 +50,33 @@ export class MediaService {
         let metadata: any = { formattedTime: '00:00:00', duration: 0, width: 0, height: 0, fps: 0 };
         let pureCoverName = '';
         let playableFilePath = filePath; // 最终用于播放的文件路径
+        let needsTranscode = false; // 是否需要异步转码
 
         // 非原生格式自动转码为 MP4，确保 Chromium 可播放
         if (type === 'video' && TRANSCODE_FORMATS.includes(ext)) {
-          AppLogger.info(LOG_TAGS.MEDIA, `检测到非原生格式 .${ext}，启动 FFmpeg 转码: ${fileName}`);
-          const transcodedPath = await this.transcodeToMp4(filePath, projectId, mediaId);
-          if (transcodedPath) {
-            playableFilePath = transcodedPath;
-            AppLogger.info(LOG_TAGS.MEDIA, `转码完成: ${fileName} -> MP4`);
-          } else {
-            AppLogger.warn(LOG_TAGS.MEDIA, `转码失败，保留原始路径: ${fileName}`);
-          }
+          AppLogger.info(LOG_TAGS.MEDIA, `检测到非原生格式 .${ext}，标记异步转码: ${fileName}`);
+          needsTranscode = true;
         }
 
         // MP4 文件检测 HEVC 编码，Chromium 不支持 HEVC 播放，需转码为 H.264
         if (type === 'video' && ext === 'mp4') {
           const isHevc = await this.detectHevcCodec(filePath);
           if (isHevc) {
-            AppLogger.info(LOG_TAGS.MEDIA, `检测到 HEVC 编码 MP4，启动转码: ${fileName}`);
-            const transcodedPath = await this.transcodeToMp4(filePath, projectId, mediaId);
-            if (transcodedPath) {
-              playableFilePath = transcodedPath;
-              AppLogger.info(LOG_TAGS.MEDIA, `HEVC 转码完成: ${fileName} -> H.264 MP4`);
-            } else {
-              AppLogger.warn(LOG_TAGS.MEDIA, `HEVC 转码失败，保留原始路径: ${fileName}`);
-            }
+            AppLogger.info(LOG_TAGS.MEDIA, `检测到 HEVC 编码 MP4，标记异步转码: ${fileName}`);
+            needsTranscode = true;
+          }
+        }
+
+        // 异步转码：先返回原始路径，后台启动转码，完成后更新数据库
+        if (needsTranscode) {
+          const transcodedPath = this.getTranscodedPath(projectId, mediaId);
+          if (fs.existsSync(transcodedPath)) {
+            // 已有转码文件，直接使用
+            playableFilePath = transcodedPath;
+            needsTranscode = false;
+          } else {
+            // 后台异步转码，不阻塞导入
+            this.transcodeAsync(filePath, projectId, mediaId, transcodedPath);
           }
         }
 
@@ -111,6 +113,67 @@ export class MediaService {
       }
     }
     return results;
+  }
+
+  /**
+   * 获取转码输出路径（不执行转码）
+   */
+  private getTranscodedPath(projectId: string, mediaId: string): string {
+    const outputDir = PathManager.getProjectExtractionsDir(projectId, 'transcoded');
+    return path.join(outputDir, `${mediaId}.mp4`);
+  }
+
+  /**
+   * 异步转码：后台启动 FFmpeg 转码，完成后更新数据库中的 filePath
+   * 不阻塞导入流程，用户可以立即看到导入结果
+   */
+  private transcodeAsync(sourcePath: string, projectId: string, mediaId: string, outputPath: string): void {
+    const ffmpegExe = PathManager.getBinPath(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+    if (!fs.existsSync(ffmpegExe)) {
+      AppLogger.warn(LOG_TAGS.MEDIA, 'FFmpeg 不存在，无法异步转码');
+      return;
+    }
+
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+
+    AppLogger.info(LOG_TAGS.MEDIA, `[异步转码] 后台启动: ${sourcePath.split(/[\\/]/).pop()} → MP4`);
+
+    const args = [
+      '-i', sourcePath,
+      '-c:v', 'libx264',
+      '-preset', 'fast',
+      '-crf', '23',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-movflags', '+faststart',
+      '-y',
+      outputPath
+    ];
+
+    const proc = spawn(ffmpegExe, args, { windowsHide: true });
+    let stderrOutput = '';
+
+    proc.stderr?.on('data', (data: Buffer) => { stderrOutput += data.toString(); });
+
+    proc.on('close', (code) => {
+      if (code === 0 && fs.existsSync(outputPath)) {
+        AppLogger.info(LOG_TAGS.MEDIA, `[异步转码] 完成: ${mediaId}`);
+        /** 转码完成，更新数据库中的 filePath */
+        try {
+          this.repo.updateMedia(mediaId, { filePath: outputPath, status: 'transcoded' });
+        } catch (e) {
+          AppLogger.warn(LOG_TAGS.MEDIA, `[异步转码] 更新数据库失败: ${mediaId}`, e);
+        }
+      } else {
+        AppLogger.error(LOG_TAGS.MEDIA, `[异步转码] 失败 (code: ${code}): ${mediaId}`, { stderr: stderrOutput.slice(-300) });
+        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
+      }
+    });
+
+    proc.on('error', (err) => {
+      AppLogger.error(LOG_TAGS.MEDIA, `[异步转码] 进程启动失败: ${mediaId}`, err);
+    });
   }
 
   /**

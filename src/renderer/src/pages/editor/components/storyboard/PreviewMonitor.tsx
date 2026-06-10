@@ -21,6 +21,10 @@ import {
 interface PreviewMonitorProps {
   /** 视频/图片路径 — 支持视频和图片两种模式 */
   mediaPath?: string | null;
+  /** 视频切片起始时间（毫秒），用于动态视频切片预览 */
+  startTimeMs?: number;
+  /** 视频切片结束时间（毫秒），用于动态视频切片预览 */
+  endTimeMs?: number;
   onTimeUpdate?: (t: number) => void;
   onImportClick?: () => void;
 }
@@ -31,7 +35,7 @@ function isImagePath(path: string): boolean {
 }
 
 /** 视频预览监视器组件 — 播放/暂停/进度拖拽/缩放/画幅/音量/全屏 + 图片预览 */
-export default function PreviewMonitor({ mediaPath, onTimeUpdate, onImportClick }: PreviewMonitorProps) {
+export default function PreviewMonitor({ mediaPath, startTimeMs, endTimeMs, onTimeUpdate, onImportClick }: PreviewMonitorProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);

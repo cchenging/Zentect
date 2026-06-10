@@ -3,7 +3,7 @@
 // 专注于 LLM 供应商配置 + 管线模型映射 + TTS 配置
 // 本地模型管理已移至独立 ModelTab
 import React, { useState } from 'react';
-import { Eye, EyeOff, Server, Play, ExternalLink, ChevronDown, ChevronUp, Zap, AlertCircle } from 'lucide-react';
+import { Eye, EyeOff, Server, Play, ExternalLink, ChevronDown, ChevronUp, Zap, AlertCircle, FolderOpen } from 'lucide-react';
 import { Input } from '../../../components/ui/input';
 import { Button } from '../../../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
@@ -27,14 +27,17 @@ const PROVIDERS = [
   { id: 'openai', name: 'OpenAI 协议中转', keyField: 'openaiKey', modelsField: 'openaiModels', baseURL: '', link: 'https://cloud.siliconflow.cn/', color: '#22c55e', hasBaseUrl: true },
 ];
 
-/** 管线节点映射定义 - V3 原型6节点 */
+/** 管线节点映射定义 - V3 原型6节点
+ *  💥 关键设计：LLM 类节点的选项从用户配置的 modelPool 动态生成，
+ *  本地引擎类节点（音频分离/ASR/TTS）保留固定选项
+ */
 const PIPELINE_NODES = [
-  { key: 'taskAudioSeparate', label: '音频分离', icon: '🎵', options: ['本地轻量模型', 'Spleeter', 'UVR5'] },
-  { key: 'taskASR', label: '台词识别 (ASR)', icon: '🎤', options: ['Whisper 本地版', 'SenseVoiceSmall'] },
-  { key: 'taskVisualModel', label: 'VLM 图片分析', icon: '👁️', options: ['通义千问', 'OpenAI'] },
-  { key: 'taskSentiment', label: '情绪识别', icon: '😊', options: ['本地模型', '云端 LLM'] },
-  { key: 'taskScriptModel', label: 'AI 故事生成', icon: '✍️', options: ['DeepSeek', '通义千问', 'OpenAI', '豆包', '腾讯混元'] },
-  { key: 'taskTTS', label: 'TTS 配音合成', icon: '🎙️', options: ['moss-tts-nano', 'Edge TTS', 'Fish Audio', '火山引擎'] },
+  { key: 'taskAudioSeparate', label: '音频分离', icon: '🎵', localOptions: ['本地轻量模型', 'Spleeter', 'UVR5'] },
+  { key: 'taskASR', label: '台词识别 (ASR)', icon: '🎤', localOptions: ['Whisper 本地版', 'SenseVoiceSmall'] },
+  { key: 'taskVisualModel', label: 'VLM 图片分析', icon: '👁️', useModelPool: true },
+  { key: 'taskSentiment', label: '情绪识别', icon: '😊', useModelPool: true },
+  { key: 'taskScriptModel', label: 'AI 故事生成', icon: '✍️', useModelPool: true },
+  { key: 'taskTTS', label: 'TTS 配音合成', icon: '🎙️', localOptions: ['Edge TTS', '本地 SoVITS', 'Fish Audio', '火山引擎'] },
 ] as const;
 
 /**
@@ -96,7 +99,7 @@ const PasswordField = ({ label, value, onChange, onCheck, linkUrl, placeholder =
  * AI 服务配置 Tab
  * 供应商卡片 + 管线模型映射 + TTS 配置
  */
-export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS, isTesting: _isTesting, modelPool: _modelPool }) => {
+export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS, isTesting: _isTesting, modelPool }) => {
   const aiData = data || {};
   const [expandedProvider, setExpandedProvider] = useState<string | null>('deepseek');
   const [showAllKeys, setShowAllKeys] = useState(false);
@@ -214,24 +217,36 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         </div>
         <p className="text-[11px] text-muted-foreground mb-4">为每个管线节点选择使用的模型供应商</p>
         <div className="glass-card-sm p-5 flex flex-col gap-4">
-          {PIPELINE_NODES.map((node) => (
-            <div key={node.key} className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-sm">{node.icon}</span>
-                <span className="text-xs text-foreground font-medium">{node.label}</span>
+          {PIPELINE_NODES.map((node) => {
+            /** LLM 节点从用户配置的 modelPool 动态取选项，本地引擎节点用固定选项 */
+            const options: string[] = 'useModelPool' in node
+              ? (modelPool && modelPool.length > 0 ? modelPool : [])
+              : (node as any).localOptions || [];
+            const currentValue = (aiData as any)[node.key];
+            /** 当前值不在选项中时（旧数据或手动输入），追加到选项列表保证显示 */
+            const finalOptions = currentValue && !options.includes(currentValue)
+              ? [currentValue, ...options]
+              : options;
+
+            return (
+              <div key={node.key} className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">{node.icon}</span>
+                  <span className="text-xs text-foreground font-medium">{node.label}</span>
+                </div>
+                <Select value={currentValue} onValueChange={v => handleValChange(node.key, v)}>
+                  <SelectTrigger className="w-56 h-9 text-xs bg-bg-secondary border-border/50">
+                    <SelectValue placeholder={finalOptions.length > 0 ? '选择模型' : '请先配置供应商模型'} />
+                  </SelectTrigger>
+                  <SelectContent className="bg-bg-tertiary border-border/50">
+                    {finalOptions.map((opt: string) => (
+                      <SelectItem key={opt} value={opt} className="text-xs">{opt}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
-              <Select value={(aiData as any)[node.key]} onValueChange={v => handleValChange(node.key, v)}>
-                <SelectTrigger className="w-56 h-9 text-xs bg-bg-secondary border-border/50">
-                  <SelectValue placeholder="选择模型" />
-                </SelectTrigger>
-                <SelectContent className="bg-bg-tertiary border-border/50">
-                  {node.options.map((opt: string) => (
-                    <SelectItem key={opt} value={opt} className="text-xs">{opt}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
@@ -255,6 +270,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                 <SelectContent className="bg-bg-tertiary border-border/50">
                   <SelectItem value="doubao" className="text-xs">火山引擎 TTS (推荐)</SelectItem>
                   <SelectItem value="edge" className="text-xs">微软 Edge TTS (免费)</SelectItem>
+                  <SelectItem value="moss" className="text-xs">MOSS 本地模型 (需下载)</SelectItem>
                   <SelectItem value="sovits" className="text-xs">本地 SoVITS</SelectItem>
                   <SelectItem value="fish" className="text-xs">Fish Audio (API)</SelectItem>
                 </SelectContent>
@@ -270,6 +286,28 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
             {currentTts === 'edge' && (
               <div className="text-xs text-accent-green bg-accent-green/10 p-3 rounded-lg border border-accent-green/20 flex items-center gap-2">
                 该引擎为免费开源接口，无需额外配置任何密钥。
+              </div>
+            )}
+
+            {currentTts === 'moss' && (
+              <div className="flex flex-col gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs text-muted-foreground font-medium">MOSS 模型路径</span>
+                  <div className="flex gap-3">
+                    <Input value={aiData.mossModelDir || ''} onChange={e => handleValChange('mossModelDir', e.target.value)} placeholder="F:\Tools\Zentect\resources\models\moss-tts-nano" className="flex-1 text-xs bg-bg-secondary h-9 border-border/50 font-mono" />
+                    <Button variant="outline" onClick={async () => {
+                      const dir = await window.api?.ipc?.invoke?.('dialog:openDirectory');
+                      if (dir) handleValChange('mossModelDir', dir);
+                    }} className="h-9 text-xs text-accent-cyan hover:text-accent-cyan border-accent-cyan/20 bg-accent-cyan/5 hover:bg-accent-cyan/10 px-4 shadow-none shrink-0 gap-1.5 cursor-pointer">
+                      <FolderOpen size={13} /> 选择
+                    </Button>
+                  </div>
+                  <span className="text-[10px] text-muted-foreground mt-1">选择 moss-tts-nano 文件夹所在路径，包含 MOSS-TTS-Nano-100M-ONNX 和 MOSS-Audio-Tokenizer-Nano-ONNX 子目录</span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs text-muted-foreground font-medium">服务地址（自动启动）</span>
+                  <Input value={aiData.mossUrl || 'http://127.0.0.1:9881'} onChange={e => handleValChange('mossUrl', e.target.value)} className="text-xs bg-bg-secondary h-9 border-border/50 font-mono" />
+                </div>
               </div>
             )}
 

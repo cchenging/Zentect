@@ -63,6 +63,7 @@ export class VisionProcessor {
 
   /**
    * 人脸扫描：调用 AIDaemon 视觉服务检测帧中的人脸
+   * 支持分批送入，避免超长帧列表导致 HTTP 超时
    * @param frames 帧图片路径列表
    * @param facesDir 人脸输出目录
    * @returns 检测到的人脸角色列表
@@ -79,18 +80,34 @@ export class VisionProcessor {
       fs.mkdirSync(facesDir, { recursive: true });
     }
 
-    // 💥【核心修复】：改用项目内实际打通的本地 Python 微服务网络网关进行 RPC 通信
     try {
       const pythonPort = AIDaemon.getInstance?.().getPort?.() || 9885;
+      const BATCH_SIZE = 100; // 每批最多 100 帧，避免 HTTP 请求过大
+      const allFaces: any[] = [];
 
-      const response = await HttpClient.post(`http://127.0.0.1:${pythonPort}/face/detect`, {
-        frames: frames
-      });
+      /** 分批送入人脸检测 */
+      for (let i = 0; i < frames.length; i += BATCH_SIZE) {
+        const batch = frames.slice(i, i + BATCH_SIZE);
+        const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(frames.length / BATCH_SIZE);
 
-      return response?.data?.faces || [];
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: 批次 ${batchNum}/${totalBatches} (${batch.length} 帧)`);
+
+        try {
+          const response = await HttpClient.post(`http://127.0.0.1:${pythonPort}/face/detect`, {
+            frames: batch
+          });
+          const batchFaces = response?.data?.faces || [];
+          allFaces.push(...batchFaces);
+        } catch (batchErr: any) {
+          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces 批次 ${batchNum} 失败: ${batchErr.message}`);
+        }
+      }
+
+      return allFaces;
     } catch (error) {
       console.error('[VisionProcessor] 物理修复 - 人脸识别通信断裂:', error);
-      return []; // 降级返回，绝不抛出异常让整个管线死掉
+      return [];
     }
   }
 

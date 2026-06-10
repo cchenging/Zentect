@@ -231,6 +231,17 @@ export class VideoProcessor {
     /** 标准化顺序命名输出模式 */
     const outputPattern = path.join(safeOutputDir, 'frame_%08d.jpg');
 
+    /** 长电影自适应：根据视频时长动态调整 minFrameInterval 和 scale */
+    const videoDurationSec = (outPoint ?? Infinity) - (inPoint ?? 0);
+    let adaptiveMinInterval = minFrameInterval ?? 4;
+    let adaptiveScale = scale ?? 1024;
+    if (videoDurationSec > 600) {
+      /** 超过10分钟的视频，逐步放宽间隔和降低分辨率 */
+      adaptiveMinInterval = Math.min(15, Math.max(4, Math.round(videoDurationSec / 600) * 2));
+      adaptiveScale = Math.min(1024, Math.max(512, 1024 - Math.floor(videoDurationSec / 600) * 64));
+      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 长视频自适应: ${Math.round(videoDurationSec)}s → minInterval=${adaptiveMinInterval}s, scale=${adaptiveScale}px`);
+    }
+
     /** 使用结构化 Builder 生成命令参数，杜绝裸字符串拼接 */
     const args = buildExtractCommand({
       videoPath: filePath,
@@ -238,13 +249,13 @@ export class VideoProcessor {
       strategy,
       fps,
       sceneThreshold,
-      minFrameInterval,
-      width: scale,
+      minFrameInterval: adaptiveMinInterval,
+      width: adaptiveScale,
       quality,
       inPoint,
       outPoint,
       timePoint,
-      threads: 2,
+      threads: 0,  // 0 = FFmpeg 自动选择最优线程数
     });
 
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, '[VideoProcessor] FFmpeg 抽帧启动', {

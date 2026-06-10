@@ -299,7 +299,7 @@ export class SimplePipelineRunner {
       case 'script_gen': {
         const strategy = new ScriptGenStrategy();
         await strategy.execute(
-          { ...baseTask, actionType: 'script-gen', label: '解说稿生成', params: { projectId, style: '悬疑解说', targetDuration: 900 } } as PipelineTask,
+          { ...baseTask, actionType: 'script-gen', label: '解说稿生成', params: { projectId } } as PipelineTask,
           context,
           () => {}
         );

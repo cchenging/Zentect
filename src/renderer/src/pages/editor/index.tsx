@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { getSafeMediaUrl } from '../../utils/formatUrl';
-import { Music, Image, Check } from 'lucide-react';
+import { Music, Image, Check, Film } from 'lucide-react';
 import { useStore } from '../../store/useStore';
 import { TopBar } from './components/top-bar';
 import { API } from '../../api';
@@ -49,6 +49,7 @@ export default function Editor() {
   const activePlaySource = useStore((s) => s.activePlaySource);
   const currentTime = useStore((s) => s.currentTime);
   const mediaItems = useStore((s) => s.mediaItems);
+  const videoChunks = useStore((s) => s.videoChunks);
   const setCurrentTime = useStore((s) => s.setCurrentTime);
   const setActivePlaySource = useStore((s) => s.setActivePlaySource);
   const extractedData = useStore((s) => s.extractedData);
@@ -64,24 +65,32 @@ export default function Editor() {
     return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(ff).padStart(2, '0')}`;
   };
 
-
-
   const [activeMediaTab, setActiveMediaTab] = useState('video');
 
   /** 缓存过滤结果，避免每次渲染重复过滤 */
   const videoCount = useMemo(() => mediaItems.filter((m: any) => m.type === 'video').length, [mediaItems]);
   const audioCount = useMemo(() => mediaItems.filter((m: any) => m.type === 'audio').length, [mediaItems]);
+  /** 视频切片池：优先从 Store 的 videoChunks 取，回退到 mediaItems 过滤 */
+  const chunkItems = useMemo(() => {
+    if (videoChunks.length > 0) return videoChunks;
+    return mediaItems.filter((m: any) => m.type === 'video_chunk');
+  }, [videoChunks, mediaItems]);
+  const chunkCount = chunkItems.length;
+  /** 关键帧数量 */
   const frameCount = useMemo(() => (extractedData?.framePaths?.length || mediaItems.filter((m: any) => m.type === 'frame').length), [mediaItems, extractedData]);
-  const nonVideoCount = useMemo(() => mediaItems.filter((m: any) => m.type !== 'video').length, [mediaItems]);
+
   const activeCount = useMemo(() => {
     if (activeMediaTab === 'video') return videoCount;
     if (activeMediaTab === 'audio') return audioCount;
+    if (activeMediaTab === 'chunks') return chunkCount;
     if (activeMediaTab === 'frames') return frameCount;
     return 0;
-  }, [activeMediaTab, videoCount, audioCount, frameCount]);
+  }, [activeMediaTab, videoCount, audioCount, chunkCount, frameCount]);
+
   const filteredItems = useMemo(() => {
     if (activeMediaTab === 'video') return mediaItems.filter((m: any) => m.type === 'video');
     if (activeMediaTab === 'audio') return mediaItems.filter((m: any) => m.type === 'audio');
+    if (activeMediaTab === 'chunks') return chunkItems;
     if (activeMediaTab === 'frames') {
       if (extractedData?.framePaths?.length) {
         return extractedData.framePaths.map((fp: string, i: number) => ({ id: `frame_${i}`, type: 'frame', filePath: fp, name: `关键帧 ${i + 1}` }));
@@ -89,7 +98,7 @@ export default function Editor() {
       return mediaItems.filter((m: any) => m.type === 'frame');
     }
     return [];
-  }, [mediaItems, activeMediaTab, extractedData]);
+  }, [mediaItems, activeMediaTab, chunkItems, extractedData]);
 
   /** 窗口尺寸调整 */
   useEffect(() => {
@@ -117,6 +126,8 @@ export default function Editor() {
           <div className="glass-card overflow-hidden flex flex-col shrink-0">
             <PreviewMonitor
               mediaPath={activePlaySource?.filePath}
+              startTimeMs={activePlaySource?.startMs || 0}
+              endTimeMs={activePlaySource?.endMs || 0}
               onTimeUpdate={(t) => setCurrentTime(t)}
               onImportClick={handleVideoImport}
             />
@@ -125,7 +136,7 @@ export default function Editor() {
           {/* 成功文件展示区域 */}
           <div className="glass-card overflow-hidden flex flex-col flex-1 min-h-0">
             <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border/30 shrink-0">
-              <span className="text-[12px] font-semibold">{activeMediaTab === 'video' ? '视频' : activeMediaTab === 'audio' ? '音频' : '关键帧'}</span>
+              <span className="text-[12px] font-semibold">{activeMediaTab === 'video' ? '视频' : activeMediaTab === 'audio' ? '音频' : activeMediaTab === 'chunks' ? '视频切片' : '关键帧'}</span>
               <span className="text-[10px] text-muted-foreground">共 {activeCount} 项</span>
             </div>
             <div className="flex items-center gap-1 px-3.5 pt-1.5 pb-0 shrink-0">
@@ -141,28 +152,63 @@ export default function Editor() {
                   {tab.key === 'audio' && audioCount > 0 && (
                     <span className="ml-0.5 text-[9px] opacity-60">({audioCount})</span>
                   )}
+                  {tab.key === 'chunks' && chunkCount > 0 && (
+                    <span className="ml-0.5 text-[9px] opacity-60">({chunkCount})</span>
+                  )}
                   {tab.key === 'frames' && frameCount > 0 && (
                     <span className="ml-0.5 text-[9px] opacity-60">({frameCount})</span>
                   )}
                 </button>
               ))}
             </div>
-            <div className={`flex-1 px-3.5 py-3 ${activeMediaTab === 'frames' ? 'overflow-y-auto overflow-x-hidden' : 'overflow-x-auto overflow-y-hidden'}`}>
+            <div className={`flex-1 px-3.5 py-3 ${(activeMediaTab === 'chunks' || activeMediaTab === 'frames') ? 'overflow-y-auto overflow-x-hidden' : 'overflow-x-auto overflow-y-hidden'}`}>
               {filteredItems.length > 0 ? (
-                activeMediaTab === 'frames' ? (
-                  /* 帧网格布局：3列，垂直滚动 */
-                  <div className="grid grid-cols-3 gap-1">
-                      {filteredItems.map((item: any, index: number) => (
-                        <div key={item.id}
-                          className="aspect-video bg-muted/30 rounded overflow-hidden border border-border/30 cursor-pointer hover:border-accent/50 transition-colors relative group"
-                          onClick={() => setActivePlaySource(item)}>
-                          <img src={getSafeMediaUrl(item.filePath)} className="w-full h-full object-cover group-hover:opacity-90 transition-opacity" loading="lazy" alt={item.name} />
-                          {/* 序号 - 左上 */}
-                          <span className="absolute top-0.5 left-0.5 text-[8px] bg-black/70 text-white/90 px-1 font-mono rounded font-bold">#{index + 1}</span>
-                          {/* 时间码 - 右下 */}
-                          <span className="absolute bottom-0.5 right-0.5 text-[7px] bg-black/70 text-emerald-300 px-1 font-mono rounded">{formatFrameTime(index)}</span>
+                activeMediaTab === 'chunks' ? (
+                  /** 动态视频切片网格布局：2列，垂直滚动，展示切片时长 */
+                  <div className="grid grid-cols-2 gap-2">
+                    {filteredItems.map((item: any) => (
+                      <div key={item.id}
+                        className={`group relative rounded-lg border overflow-hidden bg-bg-secondary p-1 transition-all cursor-pointer hover:border-accent ${activePlaySource?.id === item.id ? 'border-accent ring-1 ring-accent' : 'border-border'}`}
+                        onClick={() => setActivePlaySource(item)}>
+                        <div className="w-full aspect-video bg-black rounded overflow-hidden relative">
+                          <img
+                            src={getSafeMediaUrl(item.coverPath || item.thumbnail || item.filePath)}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-all duration-300"
+                            loading="lazy"
+                          />
+                          {/* 切片时长标签 */}
+                          {item.endMs != null && item.startMs != null && (
+                            <span className="absolute bottom-1 right-1 bg-black/75 px-1.5 py-0.5 rounded text-[9px] font-mono text-white">
+                              {((item.endMs - item.startMs) / 1000).toFixed(1)}s
+                            </span>
+                          )}
+                          {/* 运动显著性标签 */}
+                          {item.motionScore > 0.3 && (
+                            <span className="absolute top-1 left-1 bg-amber-500/80 px-1 py-0.5 rounded text-[8px] text-white font-semibold">
+                              动态
+                            </span>
+                          )}
                         </div>
-                      ))}
+                        <div className="text-[10px] font-medium mt-1 text-center truncate px-1 text-muted-foreground group-hover:text-foreground">
+                          {item.name || `分镜切片-${(item.id || '').substring(0, 4)}`}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : activeMediaTab === 'frames' ? (
+                  /** 关键帧网格布局：3列，垂直滚动，展示序号和时间码 */
+                  <div className="grid grid-cols-3 gap-1">
+                    {filteredItems.map((item: any, index: number) => (
+                      <div key={item.id}
+                        className="aspect-video bg-muted/30 rounded overflow-hidden border border-border/30 cursor-pointer hover:border-accent/50 transition-colors relative group"
+                        onClick={() => setActivePlaySource(item)}>
+                        <img src={getSafeMediaUrl(item.filePath)} className="w-full h-full object-cover group-hover:opacity-90 transition-opacity" loading="lazy" alt={item.name} />
+                        {/* 序号 - 左上 */}
+                        <span className="absolute top-0.5 left-0.5 text-[8px] bg-black/70 text-white/90 px-1 font-mono rounded font-bold">#{index + 1}</span>
+                        {/* 时间码 - 右下 */}
+                        <span className="absolute bottom-0.5 right-0.5 text-[7px] bg-black/70 text-emerald-300 px-1 font-mono rounded">{formatFrameTime(index)}</span>
+                      </div>
+                    ))}
                   </div>
                 ) : (
                 <div className="flex gap-2.5 h-full items-start">

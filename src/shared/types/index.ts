@@ -30,7 +30,39 @@ export interface MediaItem {
 }
 
 /**
- * 3. 任务与管线载荷 (后端执行契约)
+ * 2. 动态视频切片素材
+ */
+export interface VideoChunkMaterial {
+  id: string;              // 素材唯一ID
+  filePath: string;        // 原始长视频绝对路径
+  startMs: number;         // 动态视频切片在原视频中的毫秒起点
+  endMs: number;           // 动态视频切片在原视频中的毫秒终点
+  durationMs: number;      // 物理视频切片的实际原长
+  visionEmbedding: number[]; // 本地Video-CLIP提取的动态语义特征向量
+  motionScore: number;     // 视觉运动显著性得分（用于高潮动作截取）
+  colorHistogram: number[];// 画面平均色彩直方图（用于转场平滑度计算）
+  coverPath?: string;      // 切片封面图路径
+}
+
+/**
+ * 3. 匹配结果项：从静态帧演进为动态视频切片
+ */
+export interface MatchResultItem {
+  shotId: string;          // 对应剧本的分镜ID
+  mediaType: 'video_chunk' | 'frame'; // 动态视频切片或静态帧
+  mediaId: string;         // 匹配到的素材ID
+  score: number;           // 全局 KM 综合对齐得分
+  thumbnail: string;       // 封面图路径
+  chunkData: VideoChunkMaterial | null; // 绑定的动态视频切片
+  audioDurationMs: number; // 步骤4生成的配音刚性时长（由TTS输出提供）
+  videoTimelineStartMs: number; // 该镜头在最终合成时间线上的绝对起点
+  videoTimelineEndMs: number;   // 该镜头在最终合成时间线上的绝对终点
+  appliedSpeedFactor: number;   // 算法自适应时光流插值慢动作或快进系数（默认1.0）
+  confirmed: boolean;      // 用户是否确认
+}
+
+/**
+ * 4. 任务与管线载荷 (后端执行契约)
  */
 export interface PipelineTask {
   nodeId: string;

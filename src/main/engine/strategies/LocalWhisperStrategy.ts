@@ -51,14 +51,22 @@ export class LocalWhisperStrategy {
 
   /**
    * 通过 Python AIDaemon（SenseVoice）执行语音识别
+   * 支持长音频分片处理，避免超时降级
    */
   private async transcribeViaDaemon(daemon: AIDaemon, audioPath: string, whisperOutPath: string, language: string): Promise<TextExtractResult> {
+    /** 根据音频时长动态计算超时：每分钟音频给 60 秒超时，最低 120 秒，最高 7200 秒 */
+    const audioSizeBytes = fs.statSync(audioPath).size;
+    const estimatedDurationSec = (audioSizeBytes / (16000 * 2)) || 120; // 16kHz 16bit 单声道估算
+    const timeoutMs = Math.max(120000, Math.min(7200000, Math.round(estimatedDurationSec * 1000)));
+
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] SenseVoice 超时设置: ${Math.round(timeoutMs / 1000)}s (音频估算 ${Math.round(estimatedDurationSec)}s)`);
+
     const response = await daemon.post('/api/transcribe', {
       audio_path: audioPath,
       output_json_path: whisperOutPath,
       language: language === 'zh-CN' ? 'zh' : (language === 'en-US' ? 'en' : 'auto')
     }, {
-      timeout: 120000,
+      timeout: timeoutMs,
       retries: 2,
     });
 

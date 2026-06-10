@@ -232,6 +232,19 @@ export class ProjectRepository {
       if (data.vlmFrames && Array.isArray(data.vlmFrames) && data.vlmFrames.length > 0) {
         metadata.vlmFrames = data.vlmFrames;
       }
+      /** 💥 持久化步骤3解说文案数据，确保重进项目后文案不丢失 */
+      if (data.scriptParagraphs && Array.isArray(data.scriptParagraphs) && data.scriptParagraphs.length > 0) {
+        metadata.scriptParagraphs = data.scriptParagraphs;
+      }
+      if (data.scriptStyle) metadata.scriptStyle = data.scriptStyle;
+      if (data.speechRate) metadata.speechRate = data.speechRate;
+      if (data.pipelineParams) metadata.pipelineParams = data.pipelineParams;
+      /** 💥 持久化步骤4配音结果，确保重进项目后配音数据不丢失 */
+      if (data.ttsResults && Array.isArray(data.ttsResults) && data.ttsResults.length > 0) {
+        metadata.ttsResults = data.ttsResults;
+      }
+      if (data.ttsEngine) metadata.ttsEngine = data.ttsEngine;
+      if (data.ttsVoiceId) metadata.ttsVoiceId = data.ttsVoiceId;
 
       // 保存 mediaItems 到 metadata（因为 media 表主要用于视频，而关键帧和音频是临时的）
       if (data.mediaItems && Array.isArray(data.mediaItems)) {
@@ -365,7 +378,7 @@ export class ProjectRepository {
         WHERE id = ?
       `).run(metadataString, extractedData.videoPath || '', projectId);
 
-      AppLogger.info(`[SQLite 磁盘底座] 项目 [${projectId}] 核心影音资产在 100% 完工时安全写盘成功！`);
+      AppLogger.info('ProjectRepository', `项目 [${projectId}] 核心影音资产在 100% 完工时安全写盘成功！`);
       return result.changes > 0;
     } catch (error: any) {
       console.error('[SQLite 完工状态回写意外流产]:', error);

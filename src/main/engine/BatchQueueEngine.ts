@@ -34,6 +34,16 @@ interface BatchShot {
   label: string;
   ttsAudioPath?: string;
   subtitle?: string;
+  /** 动态视频切片数据 */
+  chunkData?: {
+    filePath: string;
+    startMs: number;
+    endMs: number;
+    durationMs: number;
+    [key: string]: any;
+  } | null;
+  /** 变速因子 */
+  speedFactor?: number;
 }
 
 /** 队列状态 */
@@ -220,6 +230,8 @@ export class BatchQueueEngine {
       endTime: s.endTime,
       ttsAudioPath: s.ttsAudioPath,
       subtitle: s.subtitle,
+      chunkData: s.chunkData || null,
+      speedFactor: s.speedFactor || 1.0,
     }));
 
     const renderJob: RenderJob = {

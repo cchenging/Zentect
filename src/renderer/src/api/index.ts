@@ -180,6 +180,9 @@ export const API = {
       invokeSafe<{ audioPath: string }>(IPC_CHANNELS.VOICE_PREVIEW, { provider, voiceId, text }),
     listByEngine: (engine: string) =>
       invokeSafe(IPC_CHANNELS.VOICE_LIST_BY_ENGINE, engine),
+    /** 获取已克隆的音色列表 */
+    getClonedVoices: () =>
+      invokeSafe<{ code: number; voices: Array<{ id: string; name: string }> }>('voice:get-cloned-voices'),
   },
 
   // 宪法重构：纯洁、类型安全且绝对合法的前端事件总线

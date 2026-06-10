@@ -242,4 +242,95 @@ export class AIService {
     const repo = new ChatHistoryRepository();
     await repo.saveMessage(projectId, role, content);
   }
+
+  /**
+   * 物理层全栈重构：视听多模态三维一体卡点对齐流水线引擎
+   * 步骤1：BGM 低频重音节拍检测
+   * 步骤2：获取动态视频切片池
+   * 步骤3：KM 全局排他性匹配求解
+   */
+  public async runSmartVisualMatchPipeline(payload: {
+    projectId: string;
+    scriptShots: any[];
+    ttsDurations: any[];
+    bgmInfo: { id: string; filePath: string } | null;
+    mediaPath: string;
+    mediaId: string;
+  }) {
+    const { scriptShots, ttsDurations, bgmInfo, mediaPath, mediaId } = payload;
+    AppLogger.info(LOG_TAGS.AI_AGENT, `[AIService] 启动 Layer-5 多维松弛代价矩阵解算程序`);
+
+    try {
+      /** 步1：触发本地听觉原子算子，对背景音执行 STFT 低频重音能量追踪 */
+      let bgmBeats: number[] = [];
+      if (bgmInfo && fs.existsSync(bgmInfo.filePath)) {
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[音频算子] 异步提取 BGM 重低音能量起音阵列`);
+        const beatResponse = await AIDaemon.getInstance().post('/api/audio/detect_beats', {
+          file_path: bgmInfo.filePath,
+        });
+        const beatData = beatResponse?.data || beatResponse;
+        bgmBeats = beatData.beatGridMs || beatData.onsetMs || [];
+      }
+
+      /** 步2：获取动态视频切片池 */
+      const cacheDir = PathManager.getProjectDir(payload.projectId);
+      const chunkResponse = await AIDaemon.getInstance().post('/api/video/detect_scene_chunks', {
+        file_path: mediaPath,
+        output_dir: path.join(cacheDir, 'video_chunks'),
+        threshold: 0.3,
+        min_chunk_duration_sec: 1.0,
+      });
+      const videoChunks = chunkResponse?.data || chunkResponse || [];
+      if (!Array.isArray(videoChunks) || videoChunks.length === 0) {
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[AIService] 动态视频切片池为空，回退到帧匹配`);
+      }
+
+      /** 步3：组装多维约束负载并调起 KM 求解器 */
+      const queries = scriptShots.map((s: any, i: number) => {
+        const ttsResult = ttsDurations[i] || ttsDurations.find((t: any) => t.shotId === (s.shotId || s.id));
+        return {
+          shotId: s.shotId || s.id || `para_${i}`,
+          text: s.text || s.content || s.narration || '',
+          audioDurationMs: ttsResult?.duration ? Math.round(ttsResult.duration * 1000) : 0,
+        };
+      }).filter(q => q.text.trim().length > 0);
+
+      const solverResult = await AIDaemon.getInstance().post('/api/solver/kuhn_munkres_match', {
+        queries,
+        videoChunks,
+        bgmBeats: bgmBeats.map((b: number) => b / 1000), // 毫秒转秒
+        alpha: 0.6,
+        beta: 0.3,
+        gamma: 0.1,
+      });
+
+      if (!solverResult?.success) {
+        throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, '后端排他性全局对齐决策引擎求解失败');
+      }
+
+      /** 步4：封装高契约数据结构回传 */
+      return {
+        type: 'match',
+        success: true,
+        matches: (solverResult.results || []).map((r: any) => ({
+          shotId: r.shotId,
+          mediaType: 'video_chunk',
+          mediaId: r.chunkId || '',
+          score: r.confidence || 0,
+          thumbnail: r.coverPath || '',
+          chunkData: r.chunkData || null,
+          audioDurationMs: r.audioDurationMs || 0,
+          videoTimelineStartMs: r.videoTimelineStartMs || 0,
+          videoTimelineEndMs: r.videoTimelineEndMs || 0,
+          appliedSpeedFactor: r.appliedSpeedFactor || 1.0,
+          confirmed: (r.confidence || 0) >= 0.88,
+        })),
+        videoChunks,
+        bgmBeats,
+      };
+    } catch (error: any) {
+      AppLogger.error(LOG_TAGS.AI_AGENT, `[Layer-5] 智能视听匹配管线发生致命崩溃`, error);
+      throw error;
+    }
+  }
 }

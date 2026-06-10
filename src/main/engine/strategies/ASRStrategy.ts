@@ -25,7 +25,8 @@ export class ASRStrategy extends BaseNodeStrategy {
     const sourceData = sourceMediaId ? context.bus.get(sourceMediaId) : null;
 
     /** 优先从 audio-separate 节点的产物拿人声，如果没有则用源媒体 */
-    const targetAudioPath = sourceData?.vocalAudioPath || sourceData?.filePath || task.mergedInputs?.mediaPath;
+    /** BaseNodeStrategy 将 params 和 mergedInputs 合并为扁平对象，直接从顶层取值 */
+    const targetAudioPath = sourceData?.vocalAudioPath || sourceData?.filePath || task.mediaPath;
 
     if (!targetAudioPath) {
       throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'ASR 失败：未找到音频输入源，请检查连线。');

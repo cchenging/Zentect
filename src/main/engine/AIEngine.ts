@@ -310,7 +310,7 @@ export class AIEngine {
         }
         case 'moss': {
           const mossUrl = config.mossUrl || 'http://127.0.0.1:9881';
-          const voiceType = voiceOverride || 'moss-narrative';
+          const voiceType = voiceOverride || 'Junhao';
           const res = await fetch(`${mossUrl}/tts`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

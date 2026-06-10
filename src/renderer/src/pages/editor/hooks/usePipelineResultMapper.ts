@@ -68,25 +68,44 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
       case PipelineNodeType.SCRIPT: {
         const paragraphs = nodeResult.paragraphs || nodeResult.shots || [];
         if (paragraphs.length > 0) {
-          store.setScriptParagraphs(paragraphs.map((p: any, idx: number) => ({
-            id: p.id || p.shotId || `para_${idx}`,
-            text: p.text || p.content || p.narration || '',
-            shotId: p.shotId,
-            duration: p.duration,
-            editing: false
-          })));
+          /** 确保 id 唯一：当 shotId 重复时追加索引后缀，避免编辑时多段联动 */
+          const idCountMap: Record<string, number> = {};
+          store.setScriptParagraphs(paragraphs.map((p: any, idx: number) => {
+            const baseId = p.id || p.shotId || `para_${idx}`;
+            const count = (idCountMap[baseId] || 0) + 1;
+            idCountMap[baseId] = count;
+            const uniqueId = count > 1 ? `${baseId}_${idx}` : baseId;
+            return {
+              id: uniqueId,
+              text: p.text || p.content || p.narration || '',
+              shotId: p.shotId,
+              duration: p.duration,
+              emotion: p.emotion || '',
+              editing: false
+            };
+          }));
         }
         break;
       }
 
       case PipelineNodeType.TTS: {
-        const ttsResults = nodeResult.results || nodeResult.shots || [];
-        if (ttsResults.length > 0) {
-          store.setTtsResults(ttsResults.map((r: any) => ({
-            shotId: r.shotId,
-            audioUrl: r.audioUrl || r.audioPath || '',
-            duration: r.duration || 0
-          })));
+        /** TTS 结果映射：兼容逐段合成结果 { shots: [...] } 和旧格式 */
+        const ttsShots = nodeResult.shots || nodeResult.results || [];
+        if (ttsShots.length > 0) {
+          store.setTtsResults(ttsShots.map((r: any) => {
+            /** 将本地绝对路径转为 magic://local/ URL，供前端 Audio 标签播放 */
+            let audioUrl = r.audioUrl || r.audioPath || '';
+            if (audioUrl && !audioUrl.startsWith('http') && !audioUrl.startsWith('magic://')) {
+              audioUrl = `magic://local/${audioUrl.replace(/\\/g, '/')}`;
+            }
+            return {
+              shotId: r.shotId,
+              audioUrl,
+              duration: r.duration || 0,
+              _failed: r._failed || false,
+              _error: r._error || '',
+            };
+          }));
         }
         store.setTtsProgress(100);
         break;
@@ -97,19 +116,38 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
         if (matches.length > 0) {
           store.setMatchResults(matches.map((m: any) => ({
             shotId: m.shotId || m.id,
-            mediaId: m.mediaId || m.frameId,
+            mediaType: m.mediaType || 'frame',
+            mediaId: m.mediaId || m.chunkId || m.frameId || '',
             score: m.score || m.confidence || 0,
             thumbnail: m.thumbnail || m.coverPath || m.framePath || '',
+            chunkData: m.chunkData || null,
+            audioDurationMs: m.audioDurationMs || 0,
+            videoTimelineStartMs: m.videoTimelineStartMs || 0,
+            videoTimelineEndMs: m.videoTimelineEndMs || 0,
+            appliedSpeedFactor: m.appliedSpeedFactor || 1.0,
             confirmed: m.confirmed || false
           })));
         } else if (nodeResult.segments && nodeResult.segments.length > 0) {
           store.setMatchResults(nodeResult.segments.map((seg: any, idx: number) => ({
             shotId: seg.shotId || seg.id || `shot_${idx}`,
-            mediaId: seg.mediaId || seg.frameId || '',
+            mediaType: seg.mediaType || 'frame',
+            mediaId: seg.mediaId || seg.chunkId || seg.frameId || '',
             score: seg.score || seg.confidence || seg.similarity || 0,
             thumbnail: seg.thumbnail || seg.coverPath || seg.framePath || '',
+            chunkData: seg.chunkData || null,
+            audioDurationMs: seg.audioDurationMs || 0,
+            videoTimelineStartMs: seg.videoTimelineStartMs || 0,
+            videoTimelineEndMs: seg.videoTimelineEndMs || 0,
+            appliedSpeedFactor: seg.appliedSpeedFactor || 1.0,
             confirmed: seg.confirmed || false
           })));
+        }
+        /** 同步视频切片池和 BGM 节拍到 Store */
+        if (nodeResult.videoChunks) {
+          store.setVideoChunks(nodeResult.videoChunks);
+        }
+        if (nodeResult.bgmBeats) {
+          store.setBeatTimestamps(nodeResult.bgmBeats.map((b: number) => Math.round(b * 1000)));
         }
         break;
       }

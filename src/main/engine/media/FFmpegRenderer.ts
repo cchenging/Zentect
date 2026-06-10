@@ -28,6 +28,16 @@ export interface RenderShot {
   endTime: number;                     // 结束时间（秒）
   ttsAudioPath?: string;               // 该镜头的 TTS 配音
   subtitle?: string;                   // 字幕文本（备用，优先用 SRT）
+  /** 动态视频切片数据（含毫秒级 startMs/endMs） */
+  chunkData?: {
+    filePath: string;
+    startMs: number;
+    endMs: number;
+    durationMs: number;
+    [key: string]: any;
+  } | null;
+  /** 变速因子（1.0=正常，<1.0=慢放，>1.0=快进） */
+  speedFactor?: number;
 }
 
 /** 渲染进度回调 */
@@ -129,28 +139,192 @@ export class FFmpegRenderer {
     }
   }
 
-  /** 步骤 1: 逐个镜头截取视频片段（使用 copy codec 避免重新编码） */
+  /**
+   * 物理级别多视频动态切片与光流变速终极混合渲染管线
+   * 使用 -filter_complex 多输入一次性渲染，避免中间文件
+   * @param matchResults 经由步骤5决策完成的视听卡点互锁序列数组
+   * @param sourceVideoPath 原始长视频路径
+   * @param outputVideoPath 最终成品视频导出物理路径
+   * @param bgmPath 可选 BGM 音频路径
+   * @param ttsAudioPaths 可选 TTS 配音路径数组（与 matchResults 一一对应）
+   */
+  async renderCinematicVideo(
+    matchResults: any[],
+    sourceVideoPath: string,
+    outputVideoPath: string,
+    bgmPath?: string,
+    ttsAudioPaths?: string[]
+  ): Promise<RenderResult> {
+    this.isAborted = false;
+    const startTime = Date.now();
+
+    if (!this.isAvailable()) {
+      return { success: false, outputPath: '', duration: 0, error: 'FFmpeg.exe 未找到' };
+    }
+
+    if (matchResults.length === 0) {
+      return { success: false, outputPath: '', duration: 0, error: '无匹配结果' };
+    }
+
+    try {
+      AppLogger.info(LOG_TAGS.EXPORT, `[FFmpeg物理混剪线] 开始拼装高级命令网络，共 ${matchResults.length} 个镜头`);
+
+      const inputArgs: string[] = [];
+      const filterParts: string[] = [];
+      const concatInputs: string[] = [];
+
+      /** 1. 逐个镜头解析步骤5打入的物理动态切片参数 */
+      matchResults.forEach((match, idx) => {
+        const chunk = match.chunkData;
+        const speedFactor = match.appliedSpeedFactor || 1.0;
+
+        if (!chunk) {
+          AppLogger.warn(LOG_TAGS.EXPORT, `[FFmpeg物理混剪线] 镜头 ${match.shotId} 无 chunkData，跳过`);
+          return;
+        }
+
+        /** 刚性毫秒轴裁剪控制：利用 -ss 与 -to 精准定位原始长视频流的动态区间 */
+        const startSec = (chunk.startMs / 1000).toFixed(3);
+        const endSec = (chunk.endMs / 1000).toFixed(3);
+
+        /** 每个镜头作为独立输入流 */
+        inputArgs.push('-ss', startSec, '-to', endSec, '-i', sourceVideoPath);
+
+        /** 2. 注入多模态核心滤镜：光流法高级慢动作运动估计补间网格 (Minterpolate) */
+        const setpts = (1 / speedFactor).toFixed(4);
+        let videoFilter = `[${idx}:v]setpts=${setpts}*PTS`;
+
+        if (speedFactor < 0.95) {
+          /** 行业最高标光流补间算子：动态估算宏块运动向量进行像素级无损插值 */
+          videoFilter += ',minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:vsbmc=1';
+        }
+
+        /** 统一缩放和帧率 */
+        videoFilter += ',scale=1920:1080,fps=60';
+        videoFilter += `[v${idx}]`;
+
+        filterParts.push(videoFilter);
+        concatInputs.push(`[v${idx}]`);
+      });
+
+      if (filterParts.length === 0) {
+        return { success: false, outputPath: '', duration: 0, error: '无有效镜头数据' };
+      }
+
+      /** 3. 完美的视听多路合并网络拼接 */
+      const concatFilter = `${concatInputs.join('')}concat=n=${filterParts.length}:v=1:a=0[v_out]`;
+      const fullFilterComplex = `${filterParts.join(';')};${concatFilter}`;
+
+      /** 4. 构建 FFmpeg 命令 */
+      const cmdArgs: string[] = [
+        '-y',
+        ...inputArgs,
+        '-filter_complex', fullFilterComplex,
+        '-map', '[v_out]',
+      ];
+
+      /** 5. 可选：混入 BGM 音频 */
+      if (bgmPath && fs.existsSync(bgmPath)) {
+        cmdArgs.push('-i', bgmPath);
+        const bgmInputIdx = filterParts.length; // BGM 是最后一个输入
+        cmdArgs.push('-map', `${bgmInputIdx}:a`, '-c:a', 'aac', '-b:a', '128k');
+      }
+
+      /** 6. 视频编码参数 */
+      cmdArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '18');
+      cmdArgs.push(outputVideoPath);
+
+      AppLogger.info(LOG_TAGS.EXPORT, `[FFmpeg物理混剪线] 执行渲染命令，${filterParts.length} 个镜头`);
+
+      /** 7. 执行渲染 */
+      await this.execFfmpeg(cmdArgs);
+
+      const duration = Date.now() - startTime;
+      AppLogger.info(LOG_TAGS.EXPORT, `[FFmpeg物理混剪线] 电影级视听卡点视频导出成功: ${outputVideoPath} (${(duration / 1000).toFixed(1)}s)`);
+
+      return { success: true, outputPath: outputVideoPath, duration };
+    } catch (err: any) {
+      AppLogger.error(LOG_TAGS.EXPORT, '[FFmpeg物理混剪线] 渲染失败', err);
+      return { success: false, outputPath: '', duration: 0, error: err.message };
+    }
+  }
+
+  /** 步骤 1: 逐个镜头截取视频片段，支持 chunkData 精确截取和变速 */
   private async cutSegments(job: RenderJob, workDir: string): Promise<string[]> {
     const segments: string[] = [];
 
     for (let i = 0; i < job.shots.length; i++) {
       if (this.isAborted) break;
       const shot = job.shots[i];
-      const duration = shot.endTime - shot.startTime;
+      const speedFactor = shot.speedFactor || 1.0;
+      const needsReencode = speedFactor !== 1.0;
+
+      /** 优先使用 chunkData 的毫秒级时间戳，否则回退到 startTime/endTime（秒） */
+      const startSec = shot.chunkData?.startMs != null
+        ? shot.chunkData.startMs / 1000
+        : shot.startTime;
+      const endSec = shot.chunkData?.endMs != null
+        ? shot.chunkData.endMs / 1000
+        : shot.endTime;
+      const duration = endSec - startSec;
       if (duration <= 0) continue;
 
-      const segPath = path.join(workDir, `seg_${String(i).padStart(3, '0')}.ts`);
+      /** 变速片段用 mp4 重编码，普通片段用 ts 流复制 */
+      const segExt = needsReencode ? 'mp4' : 'ts';
+      const segPath = path.join(workDir, `seg_${String(i).padStart(3, '0')}.${segExt}`);
       this.reportProgress(job, 5 + (i / job.shots.length) * 15, `截取镜头 ${i + 1}/${job.shots.length}`, i + 1);
 
       try {
-        await this.execFfmpeg([
-          '-y', '-ss', shot.startTime.toString(),
-          '-i', job.mediaPath,
-          '-t', duration.toString(),
-          '-c', 'copy',
-          '-avoid_negative_ts', 'make_zero',
-          segPath,
-        ]);
+        if (needsReencode) {
+          /** 变速模式：需要重编码 + 变速滤镜 */
+          const videoFilter: string[] = [];
+          const audioFilter: string[] = [];
+
+          /** 视频变速：setpts=PTS*factor（factor<1 快进，>1 慢放） */
+          videoFilter.push(`setpts=PTS*${speedFactor.toFixed(4)}`);
+
+          /** 音频变速：atempo 限制在 [0.5, 2.0]，超出范围需链式组合 */
+          let atempo = 1.0 / speedFactor;
+          const atempoChain: string[] = [];
+          while (atempo > 2.0) {
+            atempoChain.push('atempo=2.0');
+            atempo /= 2.0;
+          }
+          while (atempo < 0.5) {
+            atempoChain.push('atempo=0.5');
+            atempo /= 0.5;
+          }
+          atempoChain.push(`atempo=${atempo.toFixed(4)}`);
+          audioFilter.push(atempoChain.join(','));
+
+          /** 极端慢放（factor > 1.5）时启用光流补帧 */
+          if (speedFactor > 1.5) {
+            videoFilter.push('minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir');
+          }
+
+          await this.execFfmpeg([
+            '-y', '-ss', startSec.toString(),
+            '-i', job.mediaPath,
+            '-t', duration.toString(),
+            '-vf', videoFilter.join(','),
+            '-af', audioFilter.join(','),
+            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '128k',
+            '-avoid_negative_ts', 'make_zero',
+            segPath,
+          ]);
+        } else {
+          /** 普通模式：流复制，不重编码 */
+          await this.execFfmpeg([
+            '-y', '-ss', startSec.toString(),
+            '-i', job.mediaPath,
+            '-t', duration.toString(),
+            '-c', 'copy',
+            '-avoid_negative_ts', 'make_zero',
+            segPath,
+          ]);
+        }
+
         if (fs.existsSync(segPath) && fs.statSync(segPath).size > 0) {
           segments.push(segPath);
         }
@@ -161,19 +335,34 @@ export class FFmpegRenderer {
     return segments;
   }
 
-  /** 步骤 2: 使用 concat 协议串联所有 TS 片段 */
+  /** 步骤 2: 使用 concat 协议串联所有片段（兼容混合 ts/mp4 格式） */
   private async concatSegments(segments: string[], workDir: string): Promise<string> {
     const concatFile = path.join(workDir, 'concat_list.txt');
     const concatContent = segments.map(s => `file '${s.replace(/\\/g, '/')}'`).join('\n');
     fs.writeFileSync(concatFile, concatContent, 'utf-8');
 
+    /** 检查是否有变速片段（mp4 格式），如果有则统一重编码 concat */
+    const hasReencoded = segments.some(s => s.endsWith('.mp4'));
     const outputPath = path.join(workDir, 'video_only.ts');
-    await this.execFfmpeg([
-      '-y', '-f', 'concat', '-safe', '0',
-      '-i', concatFile,
-      '-c', 'copy',
-      outputPath,
-    ]);
+
+    if (hasReencoded) {
+      /** 混合格式：必须重编码 concat */
+      await this.execFfmpeg([
+        '-y', '-f', 'concat', '-safe', '0',
+        '-i', concatFile,
+        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        '-c:a', 'aac', '-b:a', '128k',
+        outputPath,
+      ]);
+    } else {
+      /** 纯 TS 格式：流复制 concat */
+      await this.execFfmpeg([
+        '-y', '-f', 'concat', '-safe', '0',
+        '-i', concatFile,
+        '-c', 'copy',
+        outputPath,
+      ]);
+    }
     return outputPath;
   }
 

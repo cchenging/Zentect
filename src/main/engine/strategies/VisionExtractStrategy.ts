@@ -9,6 +9,9 @@ import { AppLogger } from '../../core/AppLogger';
 export interface VisionExtractInput { mediaId: string; mediaPath: string; modelName?: string; framesMode?: 'fps' | 'scene'; framesValue?: number; }
 export interface VisionExtractOutput { framesCount: number; sceneDescriptions: string; framePaths?: string[]; }
 
+/** VLM 并发批处理的最大并发数 */
+const VLM_CONCURRENCY = 3;
+
 export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, VisionExtractOutput> {
   public readonly nodeType = 'vision-extract';
 
@@ -17,8 +20,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
   }
 
   /**
-   * 执行视觉提取任务：抽帧 → VLM 分析 → 返回场景描述
-   * 修复：使用正确的 'visual' 任务类型获取 LLM 适配器
+   * 执行视觉提取任务：抽帧 → VLM 并发分析 → 返回场景描述
    */
   protected async performTask(
     input: VisionExtractInput, 
@@ -39,38 +41,57 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
 
     onProgress(30, `抽取完成，共 ${frames.length} 个关键帧，封装多模态张量...`);
 
-    // 修复：使用 'visual' 任务类型获取正确的视觉模型配置
     const { adapter, modelName: resolvedModel } = LLMFactory.createAdapter('visual');
     const model = input.modelName || resolvedModel || 'qwen-vl-max';
 
-    // 分批处理帧：每批最多 10 帧，避免 token 溢出
+    /** 分批处理帧：每批最多 10 帧，避免 token 溢出 */
     const BATCH_SIZE = 10;
-    const allDescriptions: string[] = [];
-
+    const allBatches: { start: number; frames: string[] }[] = [];
     for (let batchStart = 0; batchStart < frames.length; batchStart += BATCH_SIZE) {
-      const batchFrames = frames.slice(batchStart, batchStart + BATCH_SIZE);
-      const batchNum = Math.floor(batchStart / BATCH_SIZE) + 1;
-      const totalBatches = Math.ceil(frames.length / BATCH_SIZE);
-
-      onProgress(
-        35 + Math.floor((batchNum / totalBatches) * 55),
-        `正在呼叫视觉大模型 [${model}] 解析第 ${batchNum}/${totalBatches} 批画面...`
-      );
-
-      const imageContents = batchFrames.map(framePath => {
-        const base64 = fs.readFileSync(framePath, 'base64');
-        return { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } };
+      allBatches.push({
+        start: batchStart,
+        frames: frames.slice(batchStart, batchStart + BATCH_SIZE),
       });
-
-      const messages = [
-        { role: 'system', content: '你是一个专业的视频画面解析引擎。请严格按照时间顺序，详细描述这些连续画面中发生的动作、人物神态、环境和景别。每帧描述单独一行，以序号开头。' },
-        { role: 'user', content: [{ type: 'text', text: `请解析以下视频关键帧（第${batchStart + 1}-${batchStart + batchFrames.length}帧），并生成场景描述：` }, ...imageContents] }
-      ];
-
-      const rawResult = await adapter.chat(messages, model, 0.2);
-      const resultText = typeof rawResult === 'string' ? rawResult : rawResult.text || '';
-      allDescriptions.push(resultText);
     }
+
+    const totalBatches = allBatches.length;
+    const allDescriptions: string[] = new Array(totalBatches);
+    let completedBatches = 0;
+
+    onProgress(35, `VLM 并发分析启动，${totalBatches} 批，${VLM_CONCURRENCY} 路并发...`);
+
+    /** 并发 Worker 池：同时处理 VLM_CONCURRENCY 批 */
+    let nextBatchIdx = 0;
+    const processBatch = async (workerId: number): Promise<void> => {
+      while (nextBatchIdx < totalBatches) {
+        const batchIdx = nextBatchIdx++;
+        const batch = allBatches[batchIdx];
+
+        const imageContents = batch.frames.map(framePath => {
+          const base64 = fs.readFileSync(framePath, 'base64');
+          return { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } };
+        });
+
+        const messages = [
+          { role: 'system', content: '你是一个专业的视频画面解析引擎。请严格按照时间顺序，详细描述这些连续画面中发生的动作、人物神态、环境和景别。每帧描述单独一行，以序号开头。' },
+          { role: 'user', content: [{ type: 'text', text: `请解析以下视频关键帧（第${batch.start + 1}-${batch.start + batch.frames.length}帧），并生成场景描述：` }, ...imageContents] }
+        ];
+
+        const rawResult = await adapter.chat(messages, model, 0.2);
+        const resultText = typeof rawResult === 'string' ? rawResult : rawResult.text || '';
+        allDescriptions[batchIdx] = resultText;
+
+        completedBatches++;
+        onProgress(
+          35 + Math.floor((completedBatches / totalBatches) * 55),
+          `VLM 分析进度: ${completedBatches}/${totalBatches} 批 (Worker-${workerId})`
+        );
+      }
+    };
+
+    /** 启动 VLM_CONCURRENCY 个并发 Worker */
+    const workerCount = Math.min(VLM_CONCURRENCY, totalBatches);
+    await Promise.all(Array.from({ length: workerCount }, (_, i) => processBatch(i)));
 
     const sceneDescriptions = allDescriptions.join('\n');
 

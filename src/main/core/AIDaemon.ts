@@ -82,20 +82,34 @@ export class AIDaemon {
 
     const pythonExe = this.settingsRepo.get<string>('pythonPath', 'python');
     const scriptPath = PathManager.getScriptPath('tts_worker.py');
-    const modelsDir = PathManager.getModelsPath();
+    const defaultModelsDir = PathManager.getModelsPath();
+    // 读取用户在设置中配置的模型路径，优先使用
+    const configuredModelDir = this.settingsRepo.get<string>('mossModelDir', '');
+    const modelDir = configuredModelDir || path.join(defaultModelsDir, 'moss-tts-nano');
 
-    AppLogger.info(LOG_TAGS.AI_DAEMON, 'Starting MOSS-TTS worker...', { script: scriptPath, port: this.ttsPort });
+    AppLogger.info(LOG_TAGS.AI_DAEMON, 'Starting MOSS-TTS worker...', { script: scriptPath, port: this.ttsPort, modelDir });
 
     this.ttsProcess = spawn(pythonExe, [
       scriptPath,
       '--port', this.ttsPort.toString(),
-      '--model_dir', path.join(modelsDir, 'moss-tts-nano'),
-      '--heartbeat_port', '34568'
+      '--model_dir', modelDir,
     ]);
     ProcessManager.register(this.ttsProcess, 'MOSS_TTS_Worker');
 
+    // 捕获 stdout 输出（uvicorn 启动日志走 stdout）
+    this.ttsProcess.stdout?.on('data', (data) => {
+      const output = data.toString().trim();
+      AppLogger.info(LOG_TAGS.AI_DAEMON, `[MOSS-TTS stdout] ${output}`);
+      if (output.includes('Uvicorn running') || output.includes('Application startup')) {
+        this.ttsReady = true;
+        AppLogger.info(LOG_TAGS.AI_DAEMON, 'MOSS-TTS worker is online.', { port: this.ttsPort });
+      }
+    });
+
+    // 捕获 stderr 输出（模型加载日志走 stderr）
     this.ttsProcess.stderr?.on('data', (data) => {
       const output = data.toString().trim();
+      AppLogger.info(LOG_TAGS.AI_DAEMON, `[MOSS-TTS stderr] ${output}`);
       if (output.includes('Uvicorn running') || output.includes('Application startup')) {
         this.ttsReady = true;
         AppLogger.info(LOG_TAGS.AI_DAEMON, 'MOSS-TTS worker is online.', { port: this.ttsPort });

@@ -58,7 +58,7 @@ export class IpcRouter {
         const message = error.message || '系统底层发生未知异常';
 
         if (!isAppError) {
-          AppLogger.error(LOG_TAGS.IPC_GATEWAY, `信道 <${channel}> 发生未捕获异常`, error);
+          AppLogger.error(LOG_TAGS.IPC_GATEWAY, `信道 <${channel}> 发生未捕获异常: ${message}`, { stack: error?.stack?.substring(0, 500) || '' });
         } else {
           AppLogger.warn(LOG_TAGS.IPC_GATEWAY, `业务拦截 [${channel}] - ${code}: ${message}`);
         }
@@ -113,7 +113,7 @@ export class IpcRouter {
         const message = error.message || '系统底层发生未知异常';
 
         if (!isAppError) {
-          AppLogger.error(LOG_TAGS.IPC_GATEWAY, `信道 <${channel}> 发生未捕获异常`, error);
+          AppLogger.error(LOG_TAGS.IPC_GATEWAY, `信道 <${channel}> 发生未捕获异常: ${message}`, { stack: error?.stack?.substring(0, 500) || '' });
         } else {
           AppLogger.warn(LOG_TAGS.IPC_GATEWAY, `业务拦截 [${channel}] - ${code}: ${message}`);
         }

@@ -1,16 +1,19 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import { useStore } from '../../../../store/useStore';
-import { Check, RefreshCw, Image, X } from 'lucide-react';
+import { Check, RefreshCw, Film, X, Music } from 'lucide-react';
 import { getSafeMediaUrl } from '../../../../utils/formatUrl';
 import { STEP_SEQUENCES } from '../../utils/pipelineConstants';
 import { API } from '../../../../api';
 import { mapPipelineResultToState } from '../../hooks/usePipelineResultMapper';
 import { Badge, StatHeader, EmptyState } from '../../../../components/shared';
 
-/** 步骤5：镜头匹配 - AI 匹配文案与画面，故事板布局，支持替换和重新匹配 */
+/** 步骤5：智能视听转场卡点匹配 - 三维一体弹性时间轴对齐 */
 export const StepShotMatching: React.FC = () => {
   const matchResults = useStore((s) => s.matchResults);
   const mediaItems = useStore((s) => s.mediaItems);
+  const ttsResults = useStore((s) => s.ttsResults);
+  const activeBgm = useStore((s) => s.activeBgm);
+  const videoChunks = useStore((s) => s.videoChunks);
   const pipelineRunning = useStore((s) => s.pipelineRunning);
   const confirmMatch = useStore((s) => s.confirmMatch);
   const replaceMatch = useStore((s) => s.replaceMatch);
@@ -23,17 +26,27 @@ export const StepShotMatching: React.FC = () => {
   /** 重新匹配状态 */
   const [isRematching, setIsRematching] = useState(false);
 
-  /** 可用帧素材 */
-  const frameItems = mediaItems.filter((m: any) => m.type === 'frame');
+  /** 动态视频切片片段池 */
+  const chunkPool = useMemo(() => {
+    return videoChunks.length > 0
+      ? videoChunks
+      : mediaItems.filter((m: any) => m.type === 'video_chunk' || m.type === 'frame');
+  }, [videoChunks, mediaItems]);
 
   /** 替换选中的画面 */
-  const handleReplaceSelect = useCallback((shotId: string, frameItem: any) => {
-    const framePath = frameItem.filePath || frameItem.coverPath || frameItem.thumbnail;
-    replaceMatch(shotId, frameItem.id);
+  const handleReplaceSelect = useCallback((shotId: string, chunkItem: any) => {
+    const coverPath = chunkItem.coverPath || chunkItem.filePath || chunkItem.thumbnail;
+    replaceMatch(shotId, chunkItem.id);
     const state = useStore.getState();
     const updatedResults = state.matchResults.map((m: any) =>
       m.shotId === shotId
-        ? { ...m, mediaId: frameItem.id, thumbnail: framePath, confirmed: false }
+        ? {
+            ...m,
+            mediaId: chunkItem.id,
+            thumbnail: coverPath,
+            chunkData: chunkItem.chunkData || chunkItem,
+            confirmed: false,
+          }
         : m
     );
     setMatchResults(updatedResults);
@@ -52,9 +65,30 @@ export const StepShotMatching: React.FC = () => {
     state.resetPipeline();
 
     try {
+      /** 三维一体参数注入：文案 + 视觉描述 + TTS刚性时长 + BGM信息 */
+      const enrichedSequence = sequence.map(node => ({
+        ...node,
+        params: {
+          ...(node.params || {}),
+          mediaPath: state.mediaItems?.[0]?.filePath || '',
+          mediaId: state.mediaItems?.[0]?.id || '',
+          scriptShots: state.scriptParagraphs || [],
+          visionResult: {
+            sceneDescriptions: state.vlmFrames
+              ?.map((f: any) => f.description || '')
+              .filter(Boolean)
+              .join('\n') || '',
+          },
+          ttsDurations: state.ttsResults || [],
+          bgmInfo: state.activeBgm ? {
+            id: state.activeBgm.id,
+            filePath: state.activeBgm.filePath,
+          } : null,
+        },
+      }));
       const result = await API.engine.runPipeline({
         projectId: state.projectId,
-        sequence,
+        sequence: enrichedSequence,
         sourceMedia: state.mediaItems?.[0]?.filePath || '',
       });
       if (result) {
@@ -64,7 +98,7 @@ export const StepShotMatching: React.FC = () => {
       state.setStepStatus(5, 'completed');
     } catch (err: any) {
       state.setStepStatus(5, 'failed');
-      state.setPipelineError(err?.message || '重新匹配失败');
+      state.setPipelineError(err?.message || '智能视听匹配失败');
     } finally {
       state.setPipelineRunning(false);
       setIsRematching(false);
@@ -97,22 +131,29 @@ export const StepShotMatching: React.FC = () => {
     <div className="flex flex-col gap-4">
       {/* 头部操作栏 */}
       <div className="flex items-center justify-between">
-        <div className="text-[13px] font-semibold">镜头匹配</div>
+        <div className="text-[13px] font-semibold flex items-center gap-1.5">
+          <span>智能视听匹配</span>
+          {activeBgm && (
+            <Badge variant="success" className="flex items-center gap-0.5">
+              <Music size={10} /> BGM已锁
+            </Badge>
+          )}
+        </div>
         <div className="flex items-center gap-3">
           {matchResults.length > 0 && (
             <StatHeader
               value={matchResults.length}
-              unit="个段落"
-              secondary={`匹配完成 ${matchResults.filter((m: any) => m.confirmed).length}/${matchResults.length}`}
+              unit="个分镜"
+              secondary={`对齐 ${matchResults.filter((m: any) => m.confirmed).length}/${matchResults.length}`}
             />
           )}
           <button
             onClick={handleRematch}
             disabled={isProcessing}
-            className="flex items-center gap-1.5 px-3 py-1 rounded-md text-[11px] transition-all cursor-pointer outline-none bg-bg-secondary text-muted-foreground hover:text-foreground disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1 bg-accent text-accent-foreground rounded-md text-[11px] font-medium transition-all hover:opacity-90 disabled:opacity-50 cursor-pointer"
           >
             <RefreshCw size={12} className={isProcessing ? 'animate-spin' : ''} />
-            {isProcessing ? '匹配中...' : '重新匹配'}
+            {isProcessing ? '多维求解中...' : '启动智能匹配'}
           </button>
         </div>
       </div>
@@ -121,68 +162,88 @@ export const StepShotMatching: React.FC = () => {
         <>
           {/* 故事板：垂直排列卡片 */}
           <div className="flex flex-col gap-3">
-              {matchResults.map((m: any, index: number) => (
-                <div
-                  key={m.shotId}
-                  draggable
-                  onDragStart={() => handleDragStart(index)}
-                  onDragOver={(e) => handleDragOver(e, index)}
-                  onDragEnd={handleDragEnd}
-                  className={`shrink-0 w-[160px] glass-card-sm p-2.5 flex flex-col gap-2 transition-all cursor-grab active:cursor-grabbing border-l-2 ${
-                    dragIndex === index ? 'opacity-50' : ''
-                  } ${m.confirmed ? 'border-l-accent-green' : m.score >= 0.85 ? 'border-l-accent-green' : m.score >= 0.6 ? 'border-l-yellow-500' : 'border-l-accent-rose'}`}
-                >
+            {matchResults.map((m: any, index: number) => (
+              <div
+                key={m.shotId}
+                draggable
+                onDragStart={() => handleDragStart(index)}
+                onDragOver={(e) => handleDragOver(e, index)}
+                onDragEnd={handleDragEnd}
+                className={`glass-card-sm p-3 flex flex-col gap-2 transition-all cursor-grab active:cursor-grabbing border-l-4 ${
+                  dragIndex === index ? 'opacity-50' : ''
+                } ${m.confirmed ? 'border-l-accent-green' : m.score >= 0.85 ? 'border-l-accent-green' : m.score >= 0.6 ? 'border-l-yellow-500' : 'border-l-accent-rose'}`}
+              >
+                <div className="flex gap-3">
                   {/* 缩略图 */}
-                  <div className="w-full h-[90px] rounded-md bg-bg-secondary overflow-hidden shrink-0 group/img relative">
+                  <div className="w-[140px] h-[90px] rounded-md bg-bg-secondary overflow-hidden shrink-0 relative group/img">
                     {m.thumbnail ? (
                       <img src={getSafeMediaUrl(m.thumbnail)} className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full flex items-center justify-center">
-                        <Image size={24} className="text-muted-foreground/30" />
+                        <Film size={24} className="text-muted-foreground/20" />
+                      </div>
+                    )}
+                    {/* 视频切片时长标签 */}
+                    {m.chunkData && (
+                      <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/70 text-[9px] text-white font-mono">
+                        切片: {((m.chunkData.endMs - m.chunkData.startMs) / 1000).toFixed(1)}s
+                      </div>
+                    )}
+                    {/* 变速标签 */}
+                    {m.appliedSpeedFactor !== 1 && m.appliedSpeedFactor !== undefined && (
+                      <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-accent-rose/80 text-[9px] text-white">
+                        变速: {m.appliedSpeedFactor.toFixed(2)}x
                       </div>
                     )}
                   </div>
 
                   {/* 信息 */}
-                  <div className="flex flex-col gap-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] font-medium truncate flex-1">{m.shotId}</span>
+                  <div className="flex-1 flex flex-col gap-1.5 min-w-0">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-semibold truncate">{m.shotId}</span>
                       <Badge
                         variant={m.score > 0.8 ? 'success' : m.score > 0.5 ? 'warning' : 'danger'}
-                        className="text-[9px]"
+                        className="text-[9px] shrink-0"
                       >
-                        {Math.round(m.score * 100)}%
+                        匹配度 {Math.round(m.score * 100)}%
                       </Badge>
                     </div>
 
-                    <div className="flex items-center gap-1">
+                    {/* 刚性音频时长 */}
+                    {m.audioDurationMs > 0 && (
+                      <div className="text-[10px] text-muted-foreground bg-bg-secondary/40 px-1.5 py-0.5 rounded">
+                        音频红线: <span className="font-mono text-foreground">{(m.audioDurationMs / 1000).toFixed(2)}s</span>
+                      </div>
+                    )}
+
+                    {/* 操作按钮 */}
+                    <div className="flex items-center gap-2 mt-auto">
                       {m.confirmed ? (
-                        <span className="text-[10px] text-accent-green flex items-center gap-1">
-                          <Check size={10} /> 已确认
+                        <span className="text-[10px] text-accent-green flex items-center gap-0.5">
+                          <Check size={12} /> 时序已互锁
                         </span>
                       ) : (
                         <>
-                          <button onClick={() => confirmMatch(m.shotId)} className="cursor-pointer outline-none">
-                            <Badge variant="success" className="text-[10px] hover:bg-accent-green/25 transition-colors cursor-pointer">确认</Badge>
+                          <button
+                            onClick={() => confirmMatch(m.shotId)}
+                            className="px-2.5 py-1 text-[10px] bg-accent-green/20 text-accent-green hover:bg-accent-green hover:text-white rounded transition-all cursor-pointer"
+                          >
+                            确认对齐
                           </button>
                           <button
                             onClick={() => setReplacingShotId(m.shotId)}
-                            className="text-[10px] px-2 py-1 rounded bg-bg-secondary text-muted-foreground hover:text-foreground cursor-pointer outline-none leading-none"
+                            className="px-2.5 py-1 text-[10px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer"
                           >
-                            替换画面
+                            手动选片
                           </button>
-                          {m.score < 0.6 && (
-                            <button onClick={() => setReplacingShotId(m.shotId)} className="cursor-pointer outline-none">
-                              <Badge variant="danger" className="text-[10px] hover:bg-accent-rose/20 transition-colors cursor-pointer">手动选择</Badge>
-                            </button>
-                          )}
                         </>
                       )}
                     </div>
                   </div>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
+          </div>
 
           <div className="text-[10px] text-muted-foreground text-center">
             ↕ 拖拽卡片可调整段落顺序
@@ -190,8 +251,8 @@ export const StepShotMatching: React.FC = () => {
         </>
       ) : (
         <EmptyState
-          title="镜头匹配待执行"
-          description="执行管线后，AI 将自动匹配文案段落与画面素材，支持手动替换与重新匹配"
+          title="智能卡点匹配就绪"
+          description="算法将自动分析 BGM 节拍、配音刚性时长，通过全局排他匹配算法截取动态视频切片"
           iconType="media"
           size="md"
           className="glass-card-sm"
@@ -201,42 +262,46 @@ export const StepShotMatching: React.FC = () => {
       {/* 替换素材选择面板 */}
       {replacingShotId && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={() => setReplacingShotId(null)}>
-          <div className="bg-bg-base border border-border rounded-xl shadow-2xl w-[420px] max-h-[520px] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-              <span className="text-[13px] font-semibold">选择替换画面</span>
+          <div className="bg-bg-base border border-border rounded-xl shadow-2xl w-[500px] max-h-[550px] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-bg-secondary/30">
+              <span className="text-[13px] font-semibold">视频动态切片池</span>
               <button onClick={() => setReplacingShotId(null)} className="text-muted-foreground hover:text-foreground cursor-pointer outline-none">
                 <X size={18} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              {frameItems.length > 0 ? (
-                <div className="grid grid-cols-3 gap-3">
-                  {frameItems.map((item: any) => (
-                    <div
-                      key={item.id}
-                      onClick={() => handleReplaceSelect(replacingShotId, item)}
-                      className="cursor-pointer hover:ring-1 hover:ring-accent/40 rounded-md overflow-hidden transition-all bg-bg-secondary p-1"
-                    >
-                      <div className="w-full aspect-video rounded bg-bg-base overflow-hidden flex items-center justify-center">
-                        {item.coverPath || item.thumbnail ? (
-                          <img src={getSafeMediaUrl(item.coverPath || item.thumbnail)} className="w-full h-full object-cover" />
-                        ) : (
-                          <Image size={20} className="text-muted-foreground/30" />
-                        )}
-                      </div>
-                      <div className="text-[10px] text-foreground truncate mt-1 text-center">
-                        {item.fileName || item.name || '帧画面'}
-                      </div>
+            <div className="flex-1 overflow-y-auto p-4 grid grid-cols-2 gap-3">
+              {chunkPool.length > 0 ? (
+                chunkPool.map((chunk: any) => (
+                  <div
+                    key={chunk.id}
+                    onClick={() => handleReplaceSelect(replacingShotId, chunk)}
+                    className="cursor-pointer border border-border hover:border-accent rounded-lg overflow-hidden transition-all bg-bg-secondary p-1.5 flex flex-col gap-1"
+                  >
+                    <div className="w-full aspect-video rounded bg-black overflow-hidden relative">
+                      <img
+                        src={getSafeMediaUrl(chunk.coverPath || chunk.thumbnail)}
+                        className="w-full h-full object-cover"
+                      />
+                      {chunk.endMs && chunk.startMs !== undefined && (
+                        <span className="absolute bottom-1 right-1 bg-black/80 px-1 text-[9px] text-white font-mono rounded">
+                          {((chunk.endMs - chunk.startMs) / 1000).toFixed(1)}s
+                        </span>
+                      )}
                     </div>
-                  ))}
-                </div>
+                    <div className="text-[10px] font-medium truncate px-1 text-center">
+                      {chunk.name || '动态镜头切片'}
+                    </div>
+                  </div>
+                ))
               ) : (
-                <EmptyState
-                  title="暂无关键帧素材"
-                  description="请先在步骤1中完成素材分析"
-                  iconType="search"
-                  size="md"
-                />
+                <div className="col-span-2">
+                  <EmptyState
+                    title="暂无切片素材"
+                    description="请先执行智能匹配生成视频切片"
+                    iconType="search"
+                    size="md"
+                  />
+                </div>
               )}
             </div>
           </div>

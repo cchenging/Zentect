@@ -30,7 +30,7 @@ export class PathManager {
 
     this.dataRootPath = targetDataPath;
 
-    const coreDirs = ['database', 'projects', 'exports', 'logs'];
+    const coreDirs = ['database', 'projects', 'exports', 'logs', 'tts_output'];
     for (const dir of coreDirs) {
       const fullPath = path.join(this.dataRootPath, dir);
       if (!fs.existsSync(fullPath)) fs.mkdirSync(fullPath, { recursive: true });
@@ -130,7 +130,14 @@ export class PathManager {
   }
 
   public static getLogsPath(): string { return path.join(this.dataRootPath, 'logs'); }
-  
+
+  /** TTS 音频输出统一目录（试听 + 合成共用） */
+  public static getTTSOutputDir(): string {
+    const dir = path.join(this.dataRootPath, 'tts_output');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
   public static getUserDataPath(): string { return this.dataRootPath; }
   
   public static getScriptsPath(): string {

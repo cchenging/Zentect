@@ -100,6 +100,11 @@ export abstract class BaseNodeStrategy<TInput = any, TOutput = any> implements I
 
       const results = await this.performTask(taskData as TInput, context, nodeCacheDir, (p, s) => onProgress(p, s));
 
+      // 防御性检查：确保 context.bus 存在
+      if (!context.bus) {
+        AppLogger.warn(LOG_TAGS.SCHEDULER, `[${this.nodeType}] context.bus 为空，自动创建补偿实例`);
+        context.bus = new Map();
+      }
       context.bus.set(nodeId, results);
 
       onProgress(100, 'success', results);

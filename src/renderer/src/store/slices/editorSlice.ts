@@ -50,15 +50,20 @@ export const createEditorSlice: StateCreator<EditorSlice, [], [], EditorSlice> =
   // ===== 步骤3: 解说文案 =====
   scriptParagraphs: [], // 文案段落 [{id, text, editing}]
   scriptStyle: '赛博现实主义', // 文案风格
+  speechRate: 4.5, // 语速控制 (字/秒)，默认 4.5 字/秒
   pipelineParams: { R: 70, S: 50, T: 80, P: 60 }, // R/S/T/P参数
 
   // ===== 步骤4: 配音合成 =====
   ttsEngine: 'edge', // TTS引擎
+  ttsVoiceId: '', // 当前音色ID
   ttsProgress: 0, // TTS合成进度
   ttsResults: [], // TTS合成结果 [{shotId, audioUrl, duration}]
 
   // ===== 步骤5: 镜头匹配 =====
-  matchResults: [], // 匹配结果 [{shotId, mediaId, score, thumbnail, confirmed}]
+  matchResults: [], // 匹配结果 [{shotId, mediaId, score, thumbnail, confirmed, chunkData, audioDurationMs, appliedSpeedFactor}]
+  activeBgm: null, // 当前项目的背景音乐 { id, filePath, name }
+  beatTimestamps: [], // BGM 鼓点时间戳数组（毫秒）
+  videoChunks: [], // 动态视频切片池
 
   // ===== 步骤操作 =====
   setCurrentStep: (step) => set({ currentStep: step }),
@@ -157,10 +162,12 @@ export const createEditorSlice: StateCreator<EditorSlice, [], [], EditorSlice> =
       scriptParagraphs: s.scriptParagraphs.map((p: any) => p.id === id ? { ...p, text } : p),
     })),
   setScriptStyle: (style) => set({ scriptStyle: style }),
+  setSpeechRate: (rate) => set({ speechRate: rate }),
   setPipelineParams: (params) => set({ pipelineParams: params }),
 
   // ===== TTS操作 =====
-  setTtsEngine: (engine) => set({ ttsEngine: engine }),
+  setTtsEngine: (engine) => set({ ttsEngine: engine, ttsVoiceId: '' }),
+  setTtsVoiceId: (voiceId) => set({ ttsVoiceId: voiceId }),
   setTtsProgress: (progress) => set({ ttsProgress: progress }),
   setTtsResults: (results) => set({ ttsResults: results }),
 
@@ -174,4 +181,7 @@ export const createEditorSlice: StateCreator<EditorSlice, [], [], EditorSlice> =
     set((s) => ({
       matchResults: s.matchResults.map((m: any) => m.shotId === shotId ? { ...m, mediaId: newMediaId, confirmed: false } : m),
     })),
+  setActiveBgm: (bgm) => set({ activeBgm: bgm }),
+  setBeatTimestamps: (beats) => set({ beatTimestamps: beats }),
+  setVideoChunks: (chunks) => set({ videoChunks: chunks }),
 });

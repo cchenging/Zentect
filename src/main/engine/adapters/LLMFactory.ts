@@ -60,6 +60,7 @@ export class LLMFactory {
 
   /**
    * 业务级路由：根据任务类型，动态生成对应的大模型适配器实例
+   * 路由策略：优先按用户配置的各供应商模型列表精确匹配，其次按模型名关键字模糊匹配
    * @param taskType - 任务类型（visual/script/translate/helper）
    * @returns 适配器实例、模型名称和温度参数
    */
@@ -78,46 +79,52 @@ export class LLMFactory {
 
     const modelName = settings.get(modelKey, '') as string;
     if (!modelName) {
-      throw new Error(`系统拦截：请先在【全局偏好设置】中为 [${taskType}] 任务分配启用的模型。`);
+      throw new Error(`系统拦截：请先在【全局偏好设置】中为 [${taskType}] 任务分配启用的模型。（设置键: ${modelKey}）`);
     }
 
     let baseURL = '';
     let apiKey = '';
     let adapter: ILLMProvider;
 
-    // 2. 智能路由与鉴权解析
+    // 2. 智能路由：优先按用户配置的模型列表精确匹配，其次按关键字模糊匹配
+    const deepseekModels = settings.get('deepseekModels', []) as string[];
+    const qwenModels = settings.get('qwenModels', []) as string[];
+    const tencentModels = settings.get('tencentModels', []) as string[];
     const doubaoModels = settings.get('doubaoModels', []) as string[];
-    const isVolcengine = modelName.startsWith('ep-') || doubaoModels.includes(modelName);
+    const openaiModels = settings.get('openaiModels', []) as string[];
 
-    if (isVolcengine) {
-      // 命中字节跳动火山引擎特殊节点
+    if (doubaoModels.includes(modelName) || modelName.startsWith('ep-')) {
+      // 命中字节跳动火山引擎
       baseURL = 'https://ark.cn-beijing.volces.com/api/v3';
       apiKey = settings.get('doubaoKey', '') as string;
       if (!apiKey) throw new Error(`系统无法为火山引擎节点 [${modelName}] 匹配到有效的 API Key。`);
-      
       adapter = new VolcengineAdapter(baseURL, apiKey);
+    } else if (deepseekModels.includes(modelName) || modelName.toLowerCase().includes('deepseek')) {
+      // 命中 DeepSeek：精确匹配用户配置列表 或 模型名包含 deepseek
+      baseURL = 'https://api.deepseek.com/v1';
+      apiKey = settings.get('deepseekKey', '') as string;
+      adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
+    } else if (qwenModels.includes(modelName) || modelName.toLowerCase().includes('qwen')) {
+      // 命中阿里云通义千问：精确匹配用户配置列表 或 模型名包含 qwen
+      baseURL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+      apiKey = settings.get('qwenKey', '') as string;
+      adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
+    } else if (tencentModels.includes(modelName) || modelName.toLowerCase().includes('hunyuan')) {
+      // 命中腾讯混元：精确匹配用户配置列表 或 模型名包含 hunyuan
+      baseURL = 'https://api.hunyuan.cloud.tencent.com/v1';
+      apiKey = settings.get('tencentKey', '') as string;
+      adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
+    } else if (openaiModels.includes(modelName) || modelName.toLowerCase().includes('gpt') || modelName.toLowerCase().includes('o1') || modelName.toLowerCase().includes('o3') || modelName.toLowerCase().includes('claude')) {
+      // 命中 OpenAI 及兼容中转：精确匹配用户配置列表 或 模型名包含 gpt/o1/o3/claude
+      baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string;
+      baseURL = baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
+      apiKey = settings.get('openaiKey', '') as string;
+      adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
     } else {
-      // 命中通用 OpenAI 兼容协议 (DeepSeek, 阿里，腾讯，智谱，本地 Ollama)
-      const deepseekModels = settings.get('deepseekModels', []) as string[];
-      const qwenModels = settings.get('qwenModels', []) as string[];
-      const tencentModels = settings.get('tencentModels', []) as string[];
-      
-      if (deepseekModels.includes(modelName) || modelName.toLowerCase().includes('deepseek')) {
-        baseURL = 'https://api.deepseek.com/v1';
-        apiKey = settings.get('deepseekKey', '') as string;
-      } else if (qwenModels.includes(modelName) || modelName.toLowerCase().includes('qwen')) {
-        baseURL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-        apiKey = settings.get('qwenKey', '') as string;
-      } else if (tencentModels.includes(modelName)) {
-        baseURL = 'https://api.hunyuan.cloud.tencent.com/v1';
-        apiKey = settings.get('tencentKey', '') as string;
-      } else {
-        // 自定义接入点或本地 Ollama (去除结尾冗余的路径)
-        baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string;
-        baseURL = baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
-        apiKey = settings.get('openaiKey', '') as string;
-      }
-
+      // 降级兜底：使用 OpenAI 中转地址，让用户自定义的任意模型都能走通
+      baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string;
+      baseURL = baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
+      apiKey = settings.get('openaiKey', '') as string;
       adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
     }
 

@@ -51,6 +51,7 @@ export class LogSanitizer {
 
   /** 脱敏字符串 */
   static sanitize(text: string): string {
+    if (typeof text !== 'string') return String(text ?? '');
     let result = text
 
     for (const rule of this.rules) {

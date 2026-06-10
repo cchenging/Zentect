@@ -35,8 +35,8 @@ const V1_PIPELINE_PAYLOAD_SCHEMA = z.object({
 
 export class EngineController {
   private projectService = new ProjectService();
-  private engines = new Map<string, PipelineEngine>();
-  private simpleRunners = new Map<string, SimplePipelineRunner>();
+  private static engines = new Map<string, PipelineEngine>();
+  private static simpleRunners = new Map<string, SimplePipelineRunner>();
   private static suspendController = new PipelineSuspendController();
 
   static register() {
@@ -102,9 +102,9 @@ export class EngineController {
         return { success: true, message: 'Zentect 线性内核异步唤醒成功' };
       }
 
-      // C. 传统 DAG 画布管线执行
+      // C. 步骤管线 / DAG 管线执行
       const pid = projectId || 'default';
-      AppLogger.info(LOG_TAGS.SYSTEM, `接收到画布执行指令，工程 ID: ${pid}`);
+      AppLogger.info(LOG_TAGS.SYSTEM, `接收到管线执行指令，工程 ID: ${pid}`);
 
       const engine = new PipelineEngine();
       this.engines.set(pid, engine);
@@ -130,7 +130,9 @@ export class EngineController {
         );
         return { data: result, message: '工作流执行圆满完成' };
       } catch (error: any) {
-        AppLogger.error(LOG_TAGS.SYSTEM, `工作流执行崩盘`, error);
+        const errMsg = error?.message || error?.toString() || '未知异常';
+        const errStack = error?.stack || '';
+        AppLogger.error(LOG_TAGS.SYSTEM, `工作流执行崩盘: ${errMsg}`, { stack: errStack.substring(0, 500) });
 
         // 💥 断层3修复：异常归一化后推送 EVENT_PIPELINE_ERROR 到前端
         try {

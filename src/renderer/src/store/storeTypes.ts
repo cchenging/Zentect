@@ -190,15 +190,24 @@ export interface EditorSlice {
   // 步骤3: 解说文案
   scriptParagraphs: any[];
   scriptStyle: string;
+  speechRate: number; // 语速控制 (字/秒)，影响生成字数
   pipelineParams: { R: number; S: number; T: number; P: number };
 
   // 步骤4: 配音合成
   ttsEngine: string;
+  /** 当前选择的音色 ID（随引擎切换而变化） */
+  ttsVoiceId: string;
   ttsProgress: number;
   ttsResults: any[];
 
   // 步骤5: 镜头匹配
   matchResults: any[];
+  /** 当前项目的背景音乐 */
+  activeBgm: { id: string; filePath: string; name?: string } | null;
+  /** BGM 鼓点时间戳数组（毫秒） */
+  beatTimestamps: number[];
+  /** 动态视频切片池 */
+  videoChunks: any[];
 
   // 步骤操作
   setCurrentStep: (step: number) => void;
@@ -236,10 +245,13 @@ export interface EditorSlice {
   setScriptParagraphs: (paragraphs: any[]) => void;
   updateScriptParagraph: (id: string, text: string) => void;
   setScriptStyle: (style: string) => void;
+  setSpeechRate: (rate: number) => void;
   setPipelineParams: (params: { R: number; S: number; T: number; P: number }) => void;
 
   // TTS操作
   setTtsEngine: (engine: string) => void;
+  /** 设置当前音色 ID */
+  setTtsVoiceId: (voiceId: string) => void;
   setTtsProgress: (progress: number) => void;
   setTtsResults: (results: any[]) => void;
 
@@ -247,4 +259,10 @@ export interface EditorSlice {
   setMatchResults: (results: any[]) => void;
   confirmMatch: (shotId: string) => void;
   replaceMatch: (shotId: string, newMediaId: string) => void;
+  /** 设置背景音乐 */
+  setActiveBgm: (bgm: { id: string; filePath: string; name?: string } | null) => void;
+  /** 设置 BGM 鼓点时间戳 */
+  setBeatTimestamps: (beats: number[]) => void;
+  /** 设置动态视频切片池 */
+  setVideoChunks: (chunks: any[]) => void;
 }

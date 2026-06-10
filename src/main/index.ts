@@ -120,6 +120,8 @@ class AppBootstrap {
       // 步骤 5: 唤醒 AI 运行时 (AiRuntimeManager接管, AIDaemon为facade)
       AiRuntimeManager.getInstance();
       AIDaemon.getInstance().start()
+      // 并行启动 MOSS TTS 本地语音合成
+      AIDaemon.getInstance().startTTS()
       AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 5/10 AI 运行时已拉起')
 
       // 步骤 6: M4.0 运行时服务启动 (崩溃/遥测/统计)
@@ -394,13 +396,14 @@ app.whenReady().then(async () => {
       const projectsRoot = PathManager.getProjectsRootPath();
       /** 所有产物统一存放在项目目录下，cacheRoot 仅保留兼容旧数据 */
       const cacheRoot = PathManager.getCacheRootPath?.() || path.join(projectsRoot, '..', 'zentect-cache');
+      const dataRoot = PathManager.getUserDataPath();
       const homeDir = app.getPath('home');
       let resolvedPath: string;
 
       if (/^[A-Za-z]:[\\/]/.test(decodedPath)) {
         resolvedPath = path.resolve(decodedPath.replace(/\//g, '\\'));
         const allowedRoots = [
-          path.resolve(projectsRoot), path.resolve(cacheRoot), path.resolve(homeDir),
+          path.resolve(dataRoot), path.resolve(projectsRoot), path.resolve(cacheRoot), path.resolve(homeDir),
           path.join(homeDir, 'Videos'), path.join(homeDir, 'Music'),
           path.join(homeDir, 'Pictures'), path.join(homeDir, 'Desktop'), path.join(homeDir, 'Downloads'),
         ].filter(Boolean);

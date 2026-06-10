@@ -402,6 +402,17 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
     /** 💥 从 metadata 恢复 vlmFrames，确保重进项目后步骤2画面描述数据不丢失 */
     const savedVlmFrames = raw.vlmFrames || parsed.vlmFrames;
 
+    /** 💥 从 metadata 恢复步骤3解说文案数据，确保重进项目后文案不丢失 */
+    const savedScriptParagraphs = raw.scriptParagraphs || parsed.scriptParagraphs;
+    const savedScriptStyle = raw.scriptStyle || parsed.scriptStyle;
+    const savedSpeechRate = raw.speechRate || parsed.speechRate;
+    const savedPipelineParams = raw.pipelineParams || parsed.pipelineParams;
+
+    /** 💥 从 metadata 恢复步骤4配音结果，确保重进项目后配音数据不丢失 */
+    const savedTtsResults = raw.ttsResults || parsed.ttsResults;
+    const savedTtsEngine = raw.ttsEngine || parsed.ttsEngine;
+    const savedTtsVoiceId = raw.ttsVoiceId || parsed.ttsVoiceId;
+
     /** 💥 自动修正状态不一致：如果 subStepStatuses 全是 completed 但 stepStatuses[0] 还是 running 且 stepCompleted[0] 是 false */
     if (
       subStepStatuses &&
@@ -477,6 +488,19 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
       vlmFrames: (Array.isArray(savedVlmFrames) && savedVlmFrames.length > 0)
         ? savedVlmFrames
         : state.vlmFrames,
+      /** 💥 恢复步骤3解说文案数据：空数组不覆盖已有数据 */
+      scriptParagraphs: (Array.isArray(savedScriptParagraphs) && savedScriptParagraphs.length > 0)
+        ? savedScriptParagraphs
+        : state.scriptParagraphs,
+      scriptStyle: savedScriptStyle || state.scriptStyle,
+      speechRate: savedSpeechRate || state.speechRate,
+      pipelineParams: savedPipelineParams || state.pipelineParams,
+      /** 💥 恢复步骤4配音结果：空数组不覆盖已有数据 */
+      ttsResults: (Array.isArray(savedTtsResults) && savedTtsResults.length > 0)
+        ? savedTtsResults
+        : state.ttsResults,
+      ttsEngine: savedTtsEngine || state.ttsEngine,
+      ttsVoiceId: savedTtsVoiceId || state.ttsVoiceId,
       extractedData: {
         videoPath: video,
         vocalPath: vocal,

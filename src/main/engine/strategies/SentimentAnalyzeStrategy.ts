@@ -15,7 +15,8 @@ export class SentimentAnalyzeStrategy extends BaseNodeStrategy {
   ): Promise<any> {
     onProgress(30, '正在分析语音情感...');
 
-    const audioPath = task.mergedInputs?.audioPath || task.mergedInputs?.vocalPath;
+    /** BaseNodeStrategy 将 params 和 mergedInputs 合并为扁平对象，直接从顶层取值 */
+    const audioPath = task.audioPath || task.vocalPath;
     if (!audioPath) throw new Error('情感分析失败：未找到音频输入');
 
     try {

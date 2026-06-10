@@ -1,4 +1,5 @@
 import { ProviderManager } from '../config/ProviderManager'
+import { PathManager } from '../../utils/pathManager'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -33,7 +34,7 @@ export class TTSProvider {
    * 语音合成 — 从 AIEngine.generateTTS 拆出独立能力
    * @param text          合成文本
    * @param provider      合成引擎
-   * @param saveDir       保存目录 (默认系统临时目录)
+   * @param saveDir       保存目录 (默认项目目录下的 tts_output)
    * @param voiceOverride 覆写音色 (角色/voice type)
    * @returns 音频文件绝对路径
    */
@@ -44,8 +45,17 @@ export class TTSProvider {
     voiceOverride?: string
   ): Promise<string> {
     const config = ProviderManager.getTTSConfig(provider)
-    const targetDir = saveDir || os.tmpdir()
-    let ext = 'mp3'
+    const targetDir = saveDir || PathManager.getTTSOutputDir()
+
+    /** 缓存查找：相同文本+引擎+音色 的合成结果直接复用 */
+    const voiceKey = voiceOverride || config.voice || 'default'
+    const cacheHash = crypto.createHash('md5').update(`${text}|${provider}|${voiceKey}`).digest('hex').substring(0, 12)
+    const ext = provider === 'moss' || provider === 'sovits' ? 'wav' : 'mp3'
+    const cachedFile = path.join(targetDir, `tts_${provider}_${voiceKey}_${cacheHash}.${ext}`)
+    if (fs.existsSync(cachedFile)) {
+      return cachedFile
+    }
+
     let audioData: Buffer
 
     try {
@@ -113,12 +123,11 @@ export class TTSProvider {
           const res = await fetch(url.toString())
           if (!res.ok) throw new Error(`SoVITS 异常: ${res.statusText}`)
           audioData = Buffer.from(await res.arrayBuffer())
-          ext = 'wav'
           break
         }
         case 'moss': {
           const mossUrl = config.mossUrl || 'http://127.0.0.1:9881'
-          const voiceType = voiceOverride || 'moss-narrative'
+          const voiceType = voiceOverride || 'Junhao'
           const res = await fetch(`${mossUrl}/tts`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -128,18 +137,15 @@ export class TTSProvider {
           const json: any = await res.json()
           if (json.code !== 0) throw new Error(`MOSS-TTS 错误: ${json.message}`)
           audioData = Buffer.from(json.audio, 'hex')
-          ext = 'wav'
           break
         }
         default:
           throw new Error(`未知的 TTS 引擎: ${provider}`)
       }
 
-      const fileName = `tts_${provider}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`
-      const filePath = path.join(targetDir, fileName)
       if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true })
-      fs.writeFileSync(filePath, audioData)
-      return filePath
+      fs.writeFileSync(cachedFile, audioData)
+      return cachedFile
     } catch (err: any) {
       const hints: Record<string, string> = {
         doubao: '（请在 设置 → AI → 语音合成 中检查火山引擎配置）',

@@ -5,6 +5,7 @@ import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../shared/utils/LogConstants';
 import { VisionExtractStrategy } from '../engine/strategies/VisionExtractStrategy';
+import { LLMFactory } from '../engine/adapters/LLMFactory';
 import { PathManager } from '../utils/pathManager';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -97,11 +98,11 @@ export class AIController {
       AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 复用步骤1已有帧 ${physicalFrames.length} 张，跳过 FFmpeg 抽帧`);
 
       /** 直接调用 VLM 分析已有帧图片 */
-      const { LLMFactory } = await import('../engine/adapters/LLMFactory');
-      const { adapter, modelName } = LLMFactory.createAdapter('visual');
+      const { adapter, modelName, temperature } = LLMFactory.createAdapter('visual');
       const model = modelName || 'qwen-vl-max';
 
-      const BATCH_SIZE = 10;
+      /** 每批最多5帧（视觉模型 token 消耗大，避免超时） */
+      const BATCH_SIZE = 5;
       const allDescriptions: string[] = [];
 
       for (let batchStart = 0; batchStart < physicalFrames.length; batchStart += BATCH_SIZE) {
@@ -111,27 +112,64 @@ export class AIController {
 
         AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] VLM 批次 ${batchNum}/${totalBatches}，帧 ${batchStart + 1}-${batchStart + batchFrames.length}`);
 
+        /** 读取帧图片并转为 base64 */
         const imageContents = batchFrames.map(framePath => {
           const base64 = fs.readFileSync(framePath, 'base64');
           return { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } };
         });
 
+        /** 构造 VLM 请求消息，要求逐帧描述 */
         const messages = [
-          { role: 'system', content: '你是一个专业的视频画面解析引擎。请严格按照时间顺序，详细描述这些连续画面中发生的动作、人物神态、环境和景别。每帧描述单独一行，以序号开头。' },
-          { role: 'user', content: [{ type: 'text', text: `请解析以下视频关键帧（第${batchStart + 1}-${batchStart + batchFrames.length}帧），并生成场景描述：` }, ...imageContents] }
+          { role: 'system', content: '你是一个专业的视频画面解析引擎。请严格按照帧顺序，逐一描述每帧画面的内容。格式要求：每帧描述单独一行，以"帧X:"开头（X为序号），简洁描述人物动作、神态、环境和景别。' },
+          { role: 'user', content: [
+            { type: 'text', text: `以下是视频的第${batchStart + 1}到第${batchStart + batchFrames.length}帧关键画面，共${batchFrames.length}帧。请逐帧描述，每帧一行，格式为"帧X:描述内容"。` },
+            ...imageContents
+          ] }
         ];
 
-        const rawResult = await adapter.chat(messages, model, 0.2);
-        const resultText = typeof rawResult === 'string' ? rawResult : (rawResult as any).text || '';
-        allDescriptions.push(resultText);
+        try {
+          const rawResult = await adapter.chat(messages, model, temperature);
+          /** chat() 返回 LLMResponse { success, text, error }，需要正确解析 */
+          let resultText = '';
+          if (rawResult && typeof rawResult === 'object') {
+            if (rawResult.success === false) {
+              throw new Error(`VLM 调用失败: ${rawResult.error || '未知错误'}`);
+            }
+            resultText = rawResult.text || '';
+          } else if (typeof rawResult === 'string') {
+            resultText = rawResult;
+          }
+
+          if (!resultText.trim()) {
+            AppLogger.warn(LOG_TAGS.AI_AGENT, `[画面描述] VLM 批次 ${batchNum} 返回空结果`);
+          }
+
+          allDescriptions.push(resultText);
+          AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] VLM 批次 ${batchNum} 完成，描述长度: ${resultText.length}`);
+        } catch (err: any) {
+          AppLogger.error(LOG_TAGS.AI_AGENT, `[画面描述] VLM 批次 ${batchNum} 调用异常: ${err.message}`);
+          throw new Error(`画面描述 VLM 调用失败: ${err.message}`);
+        }
       }
 
-      const sceneDescriptions = allDescriptions.join('\n');
-      AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 完成，描述长度: ${sceneDescriptions.length}，帧数: ${physicalFrames.length}`);
+      /** 将所有批次的描述合并，按行拆分并清洗 */
+      const rawDescriptionText = allDescriptions.join('\n');
+      const descriptionLines = rawDescriptionText
+        .split('\n')
+        .map((line: string) => line.trim())
+        .filter((line: string) => line.length > 0);
+
+      /** 确保描述行数与帧数一致：不足则补空，多余则截断 */
+      const finalDescriptions: string[] = [];
+      for (let i = 0; i < physicalFrames.length; i++) {
+        finalDescriptions.push(descriptionLines[i] || '');
+      }
+
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 全部完成，帧数: ${physicalFrames.length}，有效描述: ${finalDescriptions.filter(d => d.trim()).length}`);
 
       return {
         framesCount: physicalFrames.length,
-        sceneDescriptions,
+        sceneDescriptions: finalDescriptions.join('\n'),
         framePaths: framePaths || physicalFrames,
       };
     });

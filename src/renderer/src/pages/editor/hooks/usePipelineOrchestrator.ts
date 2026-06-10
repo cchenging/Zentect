@@ -134,6 +134,45 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
             ...(node.params || {}),
             mediaPath: activeMedia?.filePath || '',
             mediaId: activeMedia?.id || '',
+            /** 步骤3：注入用户选择的文案风格、语速控制、R/S/T/P 创作参数 和 VLM 画面描述 */
+            ...(step === 3 ? {
+              scriptStyle: state.scriptStyle || '赛博现实主义',
+              speechRate: state.speechRate || 4.5,
+              pipelineParams: state.pipelineParams || { R: 50, S: 50, T: 50, P: 50 },
+              /** 将步骤2的 VLM 画面描述注入，提供上下文给脚本生成 */
+              visionResult: {
+                sceneDescriptions: state.vlmFrames
+                  ?.map((f: any) => f.description || '')
+                  .filter(Boolean)
+                  .join('\n') || '',
+              },
+            } : {}),
+            /** 步骤4：注入用户选择的 TTS 引擎 + 音色 + 前置剧本文本 */
+            ...(step === 4 ? {
+              ttsEngine: state.ttsEngine || 'edge',
+            ttsVoiceId: state.ttsVoiceId || '',
+              voiceId: state.ttsVoiceId || '',
+              /** 将步骤3的解说文案注入，供 TTSStrategy 逐段合成 */
+              scriptShots: state.scriptParagraphs || [],
+            } : {}),
+            /** 步骤5：注入解说文案 + VLM 画面描述 + TTS刚性时长 + BGM信息，供三维一体匹配使用 */
+            ...(step === 5 ? {
+              scriptShots: state.scriptParagraphs || [],
+              visionResult: {
+                sceneDescriptions: state.vlmFrames
+                  ?.map((f: any) => f.description || '')
+                  .filter(Boolean)
+                  .join('\n') || '',
+                frames: state.vlmFrames || [],
+              },
+              /** 注入步骤4的 TTS 配音刚性时长，供时长约束匹配 */
+              ttsDurations: state.ttsResults || [],
+              /** 注入背景音乐信息，供 BGM 卡点匹配 */
+              bgmInfo: state.activeBgm ? {
+                id: state.activeBgm.id,
+                filePath: state.activeBgm.filePath,
+              } : null,
+            } : {}),
           },
         }));
         const result = await API.engine.runPipeline({
@@ -169,6 +208,14 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
             currentStep: currentState.currentStep,
             extractionConfig: currentState.extractionConfig,
             vlmFrames: currentState.vlmFrames,
+            /** 持久化步骤3解说文案和步骤4配音结果，确保重进项目不丢失 */
+            scriptParagraphs: currentState.scriptParagraphs,
+            scriptStyle: currentState.scriptStyle,
+            speechRate: currentState.speechRate,
+            pipelineParams: currentState.pipelineParams,
+            ttsResults: currentState.ttsResults,
+            ttsEngine: currentState.ttsEngine,
+            ttsVoiceId: currentState.ttsVoiceId,
           });
         } catch (saveErr) {
           console.error('[管线编排器] 步骤完工落盘失败:', saveErr);

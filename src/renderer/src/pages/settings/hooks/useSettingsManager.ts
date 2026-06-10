@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS_SCHEMA: Record<string, any> = {
   taskTranslateModel: 'qwen-plus', taskHelperModel: 'gpt-4o-mini',
   ttsProvider: 'edge', sovitsUrl: 'http://127.0.0.1:9880',
   fishKey: '', doubaoTtsAppId: '', doubaoTtsToken: '', doubaoTtsVoice: 'zh_female_meilinvyou_saturn_bigtts',
+  mossUrl: 'http://127.0.0.1:9881', mossModelDir: '',
   enableGpuAcceleration: false
 };
 
