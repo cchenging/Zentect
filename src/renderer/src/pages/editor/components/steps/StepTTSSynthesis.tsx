@@ -5,7 +5,6 @@ import { STEP_SEQUENCES } from '../../utils/pipelineConstants';
 import { API } from '../../../../api';
 import { mapPipelineResultToState } from '../../hooks/usePipelineResultMapper';
 import { Badge, Progress, StatHeader, EmptyState } from '../../../../components/shared';
-// @ts-expect-error will be used when voice grid refactor completes
 import { VoiceCard } from '../../../../components/shared/VoiceCard';
 import { AppNotifier } from '../../../../core/AppNotifier';
 
@@ -295,40 +294,20 @@ export const StepTTSSynthesis: React.FC = () => {
           <User size={12} /> 音色选择
         </div>
         <div className="grid grid-cols-3 gap-1.5 max-h-[200px] overflow-y-auto">
-          {currentVoices.map(voice => {
-            const isSelected = ttsVoiceId === voice.id;
-            const isPreviewing = previewingVoiceId === voice.id;
-            return (
-              <div
-                key={voice.id}
-                className={`flex flex-col items-center gap-0.5 px-1.5 py-1.5 rounded-md cursor-pointer transition-all text-[10px] border ${
-                  isSelected
-                    ? 'bg-accent/10 border-accent/40 text-accent'
-                    : 'border-transparent hover:bg-bg-secondary hover:border-border'
-                }`}
-                onClick={() => setTtsVoiceId(voice.id)}
-              >
-                <div className="flex items-center gap-1 w-full">
-                  <span className="truncate font-medium flex-1">{voice.name}</span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleVoicePreview(voice.id); }}
-                    disabled={isPreviewing}
-                    className="shrink-0 w-4 h-4 rounded-full flex items-center justify-center hover:bg-accent-cyan/10 text-muted-foreground hover:text-accent-cyan transition-colors"
-                    title="试听音色"
-                  >
-                    {isPreviewing ? (
-                      <span className="text-[7px]">...</span>
-                    ) : (
-                      <Play size={8} />
-                    )}
-                  </button>
-                </div>
-                <span className="text-[9px] text-muted-foreground truncate w-full">{voice.lang}</span>
-              </div>
-            );
-          })}
+          {currentVoices.map(voice => (
+            <VoiceCard
+              key={voice.id}
+              id={voice.id}
+              name={voice.name}
+              lang={voice.lang}
+              selected={ttsVoiceId === voice.id}
+              isPreviewing={previewingVoiceId === voice.id}
+              onSelect={setTtsVoiceId}
+              onPreview={handleVoicePreview}
+            />
+          ))}
           {currentVoices.length === 0 && (
-            <div className="col-span-3 text-[10px] text-muted-foreground py-1">当前引擎暂无可用音色</div>
+            <div className="col-span-3 text-[10px] text-muted-foreground py-1">No voices available</div>
           )}
         </div>
       </div>
