@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+﻿import React, { useState, useEffect, useCallback } from "react";
 import { Plus, Check, Trash2, Edit2, X, Zap, Wifi, Loader2 } from "lucide-react";
 
 export interface ApiProfileData {
@@ -81,7 +81,7 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
     if (!profile.id) return;
     setTestStatus((prev) => ({ ...prev, [profile.id!]: "testing" }));
     try {
-      const { API } = await import("../../../../api");
+      const { API } = await import("../../api");
       await API.ai.testNetwork("openai_like", {
         provider: profile.provider,
         apiKey: profile.apiKey,
