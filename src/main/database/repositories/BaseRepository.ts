@@ -15,7 +15,7 @@ export abstract class BaseRepository<T extends IEntity> {
   protected abstract primaryKey: string = 'id';
 
   protected get db() {
-    return SQLiteConnection.getInstance().getDatabase();
+    return SQLiteConnection.getInstance().getDB();
   }
 
   findById(id: string): T | null {

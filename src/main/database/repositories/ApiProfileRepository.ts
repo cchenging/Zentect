@@ -38,25 +38,25 @@ function rowToProfile(row: RawRow): ApiProfile {
 
 export class ApiProfileRepository {
   static getAll(): ApiProfile[] {
-    const db = SQLiteConnection.getInstance().getDatabase();
+    const db = SQLiteConnection.getInstance().getDB();
     const rows = db.prepare('SELECT * FROM api_profiles ORDER BY sort_order, created_at').all() as RawRow[];
     return rows.map(rowToProfile);
   }
 
   static getByProvider(provider: string): ApiProfile[] {
-    const db = SQLiteConnection.getInstance().getDatabase();
+    const db = SQLiteConnection.getInstance().getDB();
     const rows = db.prepare('SELECT * FROM api_profiles WHERE provider = ? ORDER BY sort_order').all(provider) as RawRow[];
     return rows.map(rowToProfile);
   }
 
   static getActive(provider: string): ApiProfile | null {
-    const db = SQLiteConnection.getInstance().getDatabase();
+    const db = SQLiteConnection.getInstance().getDB();
     const row = db.prepare('SELECT * FROM api_profiles WHERE provider = ? AND is_active = 1 LIMIT 1').get(provider) as RawRow | undefined;
     return row ? rowToProfile(row) : null;
   }
 
   static create(profile: Omit<ApiProfile, 'id' | 'createdAt' | 'updatedAt'>): ApiProfile {
-    const db = SQLiteConnection.getInstance().getDatabase();
+    const db = SQLiteConnection.getInstance().getDB();
     const id = uuidv4();
     const now = new Date().toISOString();
     db.prepare(`INSERT INTO api_profiles (id, name, provider, api_key, base_url, models, is_active, sort_order, extra_config, created_at, updated_at)
@@ -73,7 +73,7 @@ export class ApiProfileRepository {
   }
 
   static update(id: string, patch: Partial<ApiProfile>): boolean {
-    const db = SQLiteConnection.getInstance().getDatabase();
+    const db = SQLiteConnection.getInstance().getDB();
     const sets: string[] = []; const vals: any[] = [];
     if (patch.name !== undefined) { sets.push('name = ?'); vals.push(patch.name); }
     if (patch.apiKey !== undefined) { sets.push('api_key = ?'); vals.push(patch.apiKey ? encryptData(patch.apiKey) : null); }
@@ -88,12 +88,12 @@ export class ApiProfileRepository {
   }
 
   static delete(id: string): boolean {
-    const db = SQLiteConnection.getInstance().getDatabase();
+    const db = SQLiteConnection.getInstance().getDB();
     return db.prepare('DELETE FROM api_profiles WHERE id = ?').run(id).changes > 0;
   }
 
   static activate(id: string, provider: string): boolean {
-    const db = SQLiteConnection.getInstance().getDatabase();
+    const db = SQLiteConnection.getInstance().getDB();
     const tx = db.transaction(() => {
       db.prepare('UPDATE api_profiles SET is_active = 0 WHERE provider = ?').run(provider);
       db.prepare('UPDATE api_profiles SET is_active = 1 WHERE id = ?').run(id);
