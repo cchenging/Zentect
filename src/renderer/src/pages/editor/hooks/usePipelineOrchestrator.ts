@@ -1,10 +1,11 @@
-import { useCallback } from 'react';
+﻿import { useCallback } from 'react';
 import { useEditorStore } from '../../../store/useStore';
 import { AppNotifier } from '../../../core/AppNotifier';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 import { API } from '../../../api';
 import { STEP_SEQUENCES } from '../utils/pipelineConstants';
 import { mapPipelineResultToState } from './usePipelineResultMapper';
+import { editorLogger } from '../../../core/logger/EditorLogger';
 
 /** 抽帧密度到 fps 的映射 */
 const DENSITY_MAP: Record<string, { fps: number }> = {
@@ -69,6 +70,7 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
     state.setStepStatus(step, 'running');
     state.setPipelineRunning(true);
     state.resetPipeline();
+    editorLogger.trackStep(step, 'start', { projectId: state.projectId });
 
     try {
       const activeMedia = state.mediaItems?.[0];
@@ -187,6 +189,7 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
 
       state.setStepCompleted(step, true);
       state.setStepStatus(step, 'completed');
+      editorLogger.trackStep(step, 'complete');
 
       /** 完工落盘：将步骤结果持久化到 SQLite，防止重进项目丢失 */
       const currentState = useEditorStore.getState();
