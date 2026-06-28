@@ -158,8 +158,12 @@ class AppBootstrap {
   // ==========================================
   private static registerControllers() {
     new SystemController().register();
-new ApiProfileController().register();
-  migrateOldApiConfig();
+try {
+      new ApiProfileController().register();
+      migrateOldApiConfig();
+    } catch (e) {
+      console.warn('ApiProfile init failed (non-fatal):', e);
+    }
     new ProjectController().register()
     new MediaController().register()
     new AIController().register()

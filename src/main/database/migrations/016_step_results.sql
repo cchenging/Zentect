@@ -40,15 +40,13 @@ CREATE TABLE IF NOT EXISTS project_assets (
 CREATE INDEX IF NOT EXISTS idx_assets_project ON project_assets(project_id);
 CREATE INDEX IF NOT EXISTS idx_assets_project_type ON project_assets(project_id, asset_type);
 
--- project extensions
-ALTER TABLE projects ADD COLUMN script_style TEXT DEFAULT 'narrative';
 ALTER TABLE projects ADD COLUMN speech_rate REAL DEFAULT 1.0;
 ALTER TABLE projects ADD COLUMN tts_engine TEXT DEFAULT 'moss-tts-nano';
 ALTER TABLE projects ADD COLUMN tts_voice_id TEXT;
 ALTER TABLE projects ADD COLUMN pipeline_params TEXT;
 ALTER TABLE projects ADD COLUMN extraction_config TEXT;
 
--- Migration 017: add editor step_status to projects (for hydration restore)
+
 ALTER TABLE projects ADD COLUMN step_statuses TEXT;
 ALTER TABLE projects ADD COLUMN step_completed TEXT;
 ALTER TABLE projects ADD COLUMN current_step INTEGER DEFAULT 1;

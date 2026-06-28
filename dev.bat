@@ -1,6 +1,13 @@
 @echo off
 cd /d "%~dp0"
-echo Starting Zentect Dev...
-set ELECTRON_ENABLE_LOGGING=1
-npm run dev
+echo ========================================
+echo   Zentect Dev Server
+echo ========================================
+echo Working dir: %cd%
+echo.
+call npm run dev
+echo.
+echo ========================================
+echo Dev server stopped. Exit code: %errorlevel%
+echo ========================================
 pause
