@@ -154,8 +154,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
           </button>
         </div>
 
-        <div className="flex flex-col gap-3">
-          {PROVIDERS.map((provider) => {
+        <div className="grid grid-cols-2 gap-3">`r`n          {PROVIDERS.map((provider) => {
             const isExpanded = expandedProvider === provider.id;
             const hasKey = !!(aiData as any)[provider.keyField];
 
