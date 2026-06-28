@@ -154,12 +154,12 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
           </button>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">`r`n          {PROVIDERS.map((provider) => {
+        <div className="flex flex-col gap-2">          {PROVIDERS.map((provider) => {
             const isExpanded = expandedProvider === provider.id;
             const hasKey = !!(aiData as any)[provider.keyField];
 
             return (
-              <div key={provider.id} className="glass-card-sm overflow-hidden">
+              <div key={provider.id} className="glass-card-sm overflow-hidden compact-card">
                 {/* 供应商标题行 */}
                 <button
                   onClick={() => toggleProvider(provider.id)}
