@@ -1,4 +1,4 @@
-// 📁 路径: src/renderer/src/pages/settings/components/AITab.tsx
+﻿// 📁 路径: src/renderer/src/pages/settings/components/AITab.tsx
 // AI 服务配置 Tab - V3 设计系统风格
 // 专注于 LLM 供应商配置 + 管线模型映射 + TTS 配置
 // 本地模型管理已移至独立 ModelTab
@@ -201,6 +201,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                       <span className="text-xs text-muted-foreground font-medium">支持的模型列表</span>
                       <Input value={(aiData as any)[provider.modelsField]?.join(', ') || ''} onChange={e => handleValChange(provider.modelsField, e.target.value.split(','))} className="text-xs bg-bg-secondary h-9 border-border/50" />
                     </div>
+                    <ApiProfileManager provider={provider.id} providerName={provider.name} hasBaseUrl={provider.hasBaseUrl} defaultBaseUrl={provider.baseURL} />
                   </div>
                 )}
               </div>
