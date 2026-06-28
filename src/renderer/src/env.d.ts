@@ -1,4 +1,4 @@
-/// <reference types="vite/client" />
+﻿/// <reference types="vite/client" />
 
 /**
  * Preload 暴露的 IPC API 类型声明
@@ -38,7 +38,14 @@ interface WindowApi {
     removeAll: () => void;
   };
   invoke: (channel: string, ...args: any[]) => Promise<any>;
-  versions: NodeJS.ProcessVersions;
+  apiProfile: {
+    getAll: () => Promise<any[]>;
+    getByProvider: (provider: string) => Promise<any[]>;
+    create: (profile: any) => Promise<any>;
+    update: (id: string, patch: any) => Promise<boolean>;
+    delete: (id: string) => Promise<boolean>;
+    activate: (id: string, provider: string) => Promise<boolean>;
+  };  versions: NodeJS.ProcessVersions;
 }
 
 interface Window {

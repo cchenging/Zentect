@@ -1,7 +1,6 @@
 ﻿import { IpcRouter } from '../core/IpcRouter';
 import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
 import { ApiProfileRepository } from '../database/repositories/ApiProfileRepository';
-import { MigrationManager } from '../database/migrations/MigrationManager';
 
 export class ApiProfileController {
   public register() {

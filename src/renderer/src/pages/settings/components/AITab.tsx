@@ -201,7 +201,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                       <span className="text-xs text-muted-foreground font-medium">支持的模型列表</span>
                       <Input value={(aiData as any)[provider.modelsField]?.join(', ') || ''} onChange={e => handleValChange(provider.modelsField, e.target.value.split(','))} className="text-xs bg-bg-secondary h-9 border-border/50" />
                     </div>
-                    <ApiProfileManager provider={provider.id} providerName={provider.name} hasBaseUrl={provider.hasBaseUrl} defaultBaseUrl={provider.baseURL} />
+                    <ApiProfileManager provider={provider.id} hasBaseUrl={provider.hasBaseUrl} defaultBaseUrl={provider.baseURL} />
                   </div>
                 )}
               </div>

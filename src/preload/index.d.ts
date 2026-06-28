@@ -1,4 +1,4 @@
-import { ElectronAPI } from '@electron-toolkit/preload'
+﻿import { ElectronAPI } from '@electron-toolkit/preload'
 import { IPCInvokeChannels, IPCEventChannels } from '../shared/types'
 
 // 💥 工业级类型体操：把宽松的 ipcRenderer 扭曲成绝对严格的守卫

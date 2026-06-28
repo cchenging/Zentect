@@ -13,14 +13,13 @@ export interface ApiProfileData {
 
 export interface ApiProfileManagerProps {
   provider: string;
-  providerName: string;
-  hasBaseUrl: boolean;
+    hasBaseUrl: boolean;
   defaultBaseUrl: string;
   onActiveProfileChange?: (profile: ApiProfileData | null) => void;
 }
 
 export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
-  provider, providerName, hasBaseUrl, defaultBaseUrl, onActiveProfileChange,
+  provider, hasBaseUrl, defaultBaseUrl, onActiveProfileChange,
 }) => {
   const [profiles, setProfiles] = useState<ApiProfileData[]>([]);
   const [editing, setEditing] = useState<ApiProfileData | null>(null);
