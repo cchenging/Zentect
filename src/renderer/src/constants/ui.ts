@@ -1,4 +1,4 @@
-export const UI_CONFIG = {
+﻿export const UI_CONFIG = {
   TOPBAR_HEIGHT: 40,
   TOPBAR_HEIGHT_CLASS: 'h-[40px]',
 
