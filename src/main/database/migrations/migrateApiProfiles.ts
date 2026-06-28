@@ -2,11 +2,11 @@
  * 旧 API 配置自动迁移到 api_profiles 表
  * 在应用启动时调用，幂等执行（已有数据则跳过）
  */
-import { ApiProfileRepository } from '../database/repositories/ApiProfileRepository';
-import { SettingsRepository } from '../database/repositories/SettingsRepository';
-import { decryptData } from '../utils/crypto';
+import { ApiProfileRepository } from '../repositories/ApiProfileRepository';
+import { SettingsRepository } from '../repositories/SettingsRepository';
+import { decryptData } from '../../utils/crypto';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../shared/utils/LogConstants';
+import { LOG_TAGS } from '../../../shared/utils/LogConstants';
 
 const PROVIDER_MIGRATION_MAP = [
   { provider: 'deepseek', keyField: 'deepseekKey', modelsField: 'deepseekModels', defaultBaseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat' },
