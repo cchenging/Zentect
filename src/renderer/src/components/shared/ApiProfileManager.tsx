@@ -51,7 +51,8 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
         const rawCreated = await window.api.apiProfile.create({
           ...editing, provider, sortOrder: profiles.length,
         });
-        const created = (rawCreated as any)?.data ?? rawCreated;`r`n      if (profiles.length === 0 && created) {
+        const created = (rawCreated as any)?.data ?? rawCreated;
+      if (profiles.length === 0 && created) {
           await window.api.apiProfile.activate(created.id, provider);
         }
       }
