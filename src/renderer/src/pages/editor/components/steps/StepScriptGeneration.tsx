@@ -1,10 +1,11 @@
-import React, { useState, useCallback, useMemo } from 'react';
+﻿import React, { useState, useCallback, useMemo } from 'react';
 import { useStore } from '../../../../store/useStore';
 import { Sliders, RefreshCw, Tag, AlertTriangle, Search, Image } from 'lucide-react';
 import { SCRIPT_STYLES, STEP_SEQUENCES } from '../../utils/pipelineConstants';
 import { API } from '../../../../api';
 import { mapPipelineResultToState } from '../../hooks/usePipelineResultMapper';
 import { Badge, StatHeader, EmptyState } from '../../../../components/shared';
+import { ParameterSlider } from '../../../../components/shared/ParameterSlider';
 import { predictSpeechCapacity, type OverflowLevel } from '../../utils/speechPredictor';
 import { diffParagraphs, applyDiffUpdate } from '../../utils/scriptDiffTree';
 import { findBestVisionMatches, type MatchCandidate } from '../../utils/bidirectionalMatcher';
@@ -232,18 +233,7 @@ export const StepScriptGeneration: React.FC = () => {
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <Sliders size={12} /> 创作参数
         </div>
-        {(['R', 'S', 'T', 'P'] as const).map(param => (
-          <div key={param} className="flex items-center gap-3">
-            <span className="w-20 text-[11px] text-foreground font-medium shrink-0">
-              {param === 'R' ? '经典保留' : param === 'S' ? '原台词保留' : param === 'T' ? 'TTS覆盖' : '节奏因子'}
-            </span>
-            <input type="range" min={0} max={100} value={pipelineParams[param]} disabled={isGenerating}
-              onChange={(e) => setPipelineParams({ ...pipelineParams, [param]: parseInt(e.target.value) })}
-              className="flex-1 h-1 accent-accent" />
-            <span className="w-8 text-[11px] text-accent font-mono text-right">{pipelineParams[param]}</span>
-          </div>
-        ))}
-      </div>
+                <ParameterSlider label={param === 'R' ? '经典保留' : param === 'S' ? '原台词保留' : param === 'T' ? 'TTS覆盖' : '节奏因子'} code={param} value={pipelineParams[param]} onChange={(v) => setPipelineParams({ ...pipelineParams, [param]: v })} disabled={isGenerating} unit="%" /></div>
 
       {/* 语速控制 + 预估字数 */}
       <div className="glass-card-sm p-3 flex flex-col gap-2">

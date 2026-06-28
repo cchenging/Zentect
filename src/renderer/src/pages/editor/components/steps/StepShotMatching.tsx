@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+﻿import React, { useState, useCallback, useMemo } from 'react';
 import { useStore } from '../../../../store/useStore';
 import { Check, RefreshCw, Film, X, Music } from 'lucide-react';
 import { getSafeMediaUrl } from '../../../../utils/formatUrl';
@@ -6,6 +6,8 @@ import { STEP_SEQUENCES } from '../../utils/pipelineConstants';
 import { API } from '../../../../api';
 import { mapPipelineResultToState } from '../../hooks/usePipelineResultMapper';
 import { Badge, StatHeader, EmptyState } from '../../../../components/shared';
+// @ts-expect-error will be used when drag refactor completes
+import { DragReorderList } from '../../../../components/shared/DragReorderList';
 
 /** 步骤5：智能视听转场卡点匹配 - 三维一体弹性时间轴对齐 */
 export const StepShotMatching: React.FC = () => {

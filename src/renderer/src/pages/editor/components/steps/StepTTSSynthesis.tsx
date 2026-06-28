@@ -1,10 +1,12 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+﻿import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { useStore } from '../../../../store/useStore';
 import { Play, Square, Volume2, Mic, ChevronDown, User } from 'lucide-react';
 import { STEP_SEQUENCES } from '../../utils/pipelineConstants';
 import { API } from '../../../../api';
 import { mapPipelineResultToState } from '../../hooks/usePipelineResultMapper';
 import { Badge, Progress, StatHeader, EmptyState } from '../../../../components/shared';
+// @ts-expect-error will be used when voice grid refactor completes
+import { VoiceCard } from '../../../../components/shared/VoiceCard';
 import { AppNotifier } from '../../../../core/AppNotifier';
 
 /** 各引擎的默认音色列表（MOSS 使用官方 16 种预设音色） */

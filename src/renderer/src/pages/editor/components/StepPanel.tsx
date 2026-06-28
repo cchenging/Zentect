@@ -1,4 +1,4 @@
-import React from 'react';
+﻿import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '../../../store/useStore';
 import { STEPS } from '../utils/pipelineConstants';
@@ -11,6 +11,7 @@ import { StepTTSSynthesis } from './steps/StepTTSSynthesis';
 import { StepShotMatching } from './steps/StepShotMatching';
 import { Play, ChevronRight, RefreshCcw } from 'lucide-react';
 import { Badge, StatusIcon } from '../../../components/shared';
+import { StepIndicator } from '../../../components/shared/StepIndicator';
 import { AppNotifier } from '../../../core/AppNotifier';
 
 interface StepPanelProps {
@@ -19,13 +20,6 @@ interface StepPanelProps {
 }
 
 /** 获取步骤状态（融合 stepCompleted 和 stepStatuses） */
-const getStepStatus = (step: number, currentStep: number, stepStatuses: string[], stepCompleted: boolean[]) => {
-  const execStatus = stepStatuses[step - 1];
-  if (execStatus === 'completed' || stepCompleted[step - 1]) return 'done';
-  if (execStatus === 'running') return 'running';
-  if (step === currentStep) return 'active';
-  return 'pending';
-};
 
 /** 步骤导航面板 - 包含步骤进度条、管线状态、步骤内容和底部操作栏 */
 export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => {
@@ -75,31 +69,7 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
       {/* 步骤进度条 */}
       <div className="flex items-center justify-between px-5 py-2.5 border-b border-border/30 shrink-0">
         <div className="flex items-center gap-0">
-          {STEPS.map((step, i) => (
-            <div key={step.key} className="flex items-center">
-              <button onClick={() => handleStepClick(step.key)}
-                className={`flex items-center gap-1.5 cursor-pointer outline-none transition-all ${
-                  getStepStatus(step.key, currentStep, stepStatuses, stepCompleted) === 'active' ? 'text-accent' :
-                  getStepStatus(step.key, currentStep, stepStatuses, stepCompleted) === 'done' ? 'text-accent-green' :
-                  getStepStatus(step.key, currentStep, stepStatuses, stepCompleted) === 'running' ? 'text-primary' : 'text-muted-foreground'
-                }`}>
-                <div className={`w-[22px] h-[22px] rounded-md flex items-center justify-center text-[11px] font-bold ${
-                  getStepStatus(step.key, currentStep, stepStatuses, stepCompleted) === 'active' ? 'bg-accent text-white shadow-sm shadow-accent/30' :
-                  getStepStatus(step.key, currentStep, stepStatuses, stepCompleted) === 'done' ? 'bg-accent-green/20 text-accent-green' :
-                  getStepStatus(step.key, currentStep, stepStatuses, stepCompleted) === 'running' ? 'bg-primary/20 text-primary' :
-                  'bg-muted text-muted-foreground'
-                }`}>
-                  {getStepStatus(step.key, currentStep, stepStatuses, stepCompleted) === 'done' ? <StatusIcon status="completed" size={12} /> :
-                   getStepStatus(step.key, currentStep, stepStatuses, stepCompleted) === 'running' ? <StatusIcon status="running" size={12} /> :
-                   step.key}
-                </div>
-                <span className="text-[11px] font-medium hidden xl:inline">{step.label}</span>
-              </button>
-              {i < STEPS.length - 1 && (
-                <div className={`w-7 h-px mx-1 ${step.key < currentStep ? 'bg-accent-green/40' : 'bg-border/30'}`} />
-              )}
-            </div>
-          ))}
+          <StepIndicator currentStep={currentStep} steps={STEPS.map(s => ({ id: s.key, label: s.label }))} stepStatuses={stepStatuses as any} stepCompleted={stepCompleted} onStepClick={handleStepClick} />
         </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-0.5 bg-bg-secondary rounded-lg p-[3px]">

@@ -1,5 +1,6 @@
-import type { MediaItem, Shot, Role } from '../../../shared/types';
-import type { NodeStatusType, HydrationStatusType } from './constants';
+﻿import type { MediaItem, Shot, Role } from '../../../shared/types';
+import type { AsrLine, VlmFrame, ScriptParagraph, TtsResult, MatchResult } from '../../../shared/types/entities/editor';
+import type { HydrationStatusType } from './constants';
 
 /** 角色关系定义 */
 export interface CharacterRelation {
@@ -86,7 +87,7 @@ export interface ExtractedData {
   videoPath: string;
   vocalPath: string;
   backgroundPath: string;
-  asrLines: any[];
+  asrLines: AsrLine[];
   frameCount: number;
   /** 抽帧产出的物理文件路径数组，用于前端预览和分镜匹配 */
   framePaths: string[];
@@ -180,15 +181,15 @@ export interface EditorSlice {
   pipelineNodes: any[];
 
   // 步骤1: 素材分析
-  asrLines: any[];
+  asrLines: AsrLine[];
   frameCount: number;
   audioSeparated: boolean;
 
   // 步骤2: 画面描述
-  vlmFrames: any[];
+  vlmFrames: VlmFrame[];
 
   // 步骤3: 解说文案
-  scriptParagraphs: any[];
+  scriptParagraphs: ScriptParagraph[];
   scriptStyle: string;
   speechRate: number; // 语速控制 (字/秒)，影响生成字数
   pipelineParams: { R: number; S: number; T: number; P: number };
@@ -198,10 +199,10 @@ export interface EditorSlice {
   /** 当前选择的音色 ID（随引擎切换而变化） */
   ttsVoiceId: string;
   ttsProgress: number;
-  ttsResults: any[];
+  ttsResults: TtsResult[];
 
   // 步骤5: 镜头匹配
-  matchResults: any[];
+  matchResults: MatchResult[];
   /** 当前项目的背景音乐 */
   activeBgm: { id: string; filePath: string; name?: string } | null;
   /** BGM 鼓点时间戳数组（毫秒） */
