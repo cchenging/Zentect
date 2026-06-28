@@ -5,7 +5,7 @@
 import { ApiProfileRepository } from '../repositories/ApiProfileRepository';
 import { SettingsRepository } from '../repositories/SettingsRepository';
 import { decryptData } from '../../utils/crypto';
-import { AppLogger } from '../core/AppLogger';
+import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '../../../shared/utils/LogConstants';
 
 const PROVIDER_MIGRATION_MAP = [
