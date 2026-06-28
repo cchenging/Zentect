@@ -1,4 +1,4 @@
-// — 路径：src/main/index.ts
+﻿// — 路径：src/main/index.ts
 // Windows 中文乱码修复：在所有 import 之前强制设置控制台 UTF-8 编码
 if (process.platform === 'win32') {
   try { require('child_process').execSync('chcp 65001', { stdio: 'ignore' }); } catch {}
@@ -157,7 +157,8 @@ class AppBootstrap {
   // 🔌 2. 路由网关统一挂载
   // ==========================================
   private static registerControllers() {
-    new SystemController().register()
+    new SystemController().register();
+new ApiProfileController().register();
     new ProjectController().register()
     new MediaController().register()
     new AIController().register()

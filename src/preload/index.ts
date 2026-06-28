@@ -1,4 +1,4 @@
-// 📁 路径：src/preload/index.ts
+﻿// 📁 路径：src/preload/index.ts
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS } from '../shared/utils/IpcConstants';
 
@@ -148,6 +148,14 @@ const api = {
     removeAllListeners: safeRemoveAllListeners,
   },
 
+  apiProfile: {
+    getAll: () => safeInvoke(IPC_CHANNELS.API_PROFILE_GET_ALL),
+    getByProvider: (provider: string) => safeInvoke(IPC_CHANNELS.API_PROFILE_GET_BY_PROVIDER, provider),
+    create: (profile: any) => safeInvoke(IPC_CHANNELS.API_PROFILE_CREATE, profile),
+    update: (id: string, patch: any) => safeInvoke(IPC_CHANNELS.API_PROFILE_UPDATE, id, patch),
+    delete: (id: string) => safeInvoke(IPC_CHANNELS.API_PROFILE_DELETE, id),
+    activate: (id: string, provider: string) => safeInvoke(IPC_CHANNELS.API_PROFILE_ACTIVATE, id, provider),
+  },
   versions: process.versions,
 }
 

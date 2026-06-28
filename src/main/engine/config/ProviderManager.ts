@@ -1,4 +1,5 @@
-import { SettingsRepository } from '../../database/repositories/SettingsRepository';
+﻿import { SettingsRepository } from '../../database/repositories/SettingsRepository';
+import { ApiProfileRepository } from '../../database/repositories/ApiProfileRepository';
 
 export interface LLMConfig { provider: string; model: string; baseURL: string; apiKey: string; temperature: number; }
 export interface TTSConfig { provider: string; appId?: string; token?: string; voice?: string; url?: string; apiKey?: string; mossUrl?: string; mossModelDir?: string; }
@@ -16,7 +17,28 @@ export class ProviderManager {
     let modelName = '';
 
     // 2. 纯粹的查表逻辑：你要哪个通道，我就去数据库拿哪个通道的钥匙！
-    switch (provider) {
+    // Check api_profiles first (multi-API support)
+    const activeProfile = ApiProfileRepository.getActive(provider);
+    if (activeProfile && activeProfile.apiKey) {
+      let profileBaseURL = activeProfile.baseUrl || '';
+      if (provider === 'proxy' && profileBaseURL) {
+        if (!profileBaseURL.startsWith('http://') && !profileBaseURL.startsWith('https://')) {
+          profileBaseURL = /^(localhost|127\.|192\.168|10\.)/.test(profileBaseURL) ? 'http://' + profileBaseURL : 'https://' + profileBaseURL;
+        }
+        profileBaseURL = profileBaseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
+      }
+      if (!profileBaseURL) {
+        switch (provider) {
+          case 'deepseek': profileBaseURL = 'https://api.deepseek.com/v1'; break;
+          case 'qwen': profileBaseURL = 'https://dashscope.aliyuncs.com/compatible-mode/v1'; break;
+          case 'doubao': profileBaseURL = 'https://ark.cn-beijing.volces.com/api/v3'; break;
+          case 'tencent': profileBaseURL = 'https://api.hunyuan.cloud.tencent.com/v1'; break;
+        }
+      }
+      const profileModel = activeProfile.models?.[0] || '';
+      return { provider, model: profileModel, baseURL: profileBaseURL, apiKey: activeProfile.apiKey, temperature: 0.5 };
+    }
+switch (provider) {
       case 'deepseek':
         baseURL = 'https://api.deepseek.com/v1';
         apiKey = this.settings.get<string>('deepseekKey', '');
@@ -95,4 +117,14 @@ export class ProviderManager {
       mossModelDir: this.settings.get<string>('mossModelDir', ''),
     };
   }
-}
+
+  private static getDefaultModel(provider: string): string {
+    switch (provider) {
+      case 'deepseek': return 'deepseek-chat';
+      case 'qwen': return 'qwen-turbo';
+      case 'doubao': return 'doubao-pro-32k';
+      case 'tencent': return 'hunyuan-turbo';
+      case 'proxy': return 'gpt-4o-mini';
+      default: return '';
+    }
+  }}

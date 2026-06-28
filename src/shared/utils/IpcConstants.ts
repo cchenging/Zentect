@@ -1,4 +1,4 @@
-// 📁 路径: src/shared/utils/IpcConstants.ts
+﻿// 📁 路径: src/shared/utils/IpcConstants.ts
 // 💥 统一管理：全站 IPC 通信频道唯一真相源 (SSOT)
 
 export const IPC_CHANNELS = {
@@ -205,4 +205,12 @@ export const IPC_CHANNELS = {
   BATCH_QUEUE_REORDER: 'batch:queueReorder',    // 重排任务顺序
   BATCH_QUEUE_RETRY: 'batch:queueRetry',        // 失败重试
   BATCH_PROGRESS: 'batch:progress',             // 推送队列进度
+
+  // --- API Profiles (多 API 配置) ---
+  API_PROFILE_GET_ALL: 'apiProfile:getAll',
+  API_PROFILE_GET_BY_PROVIDER: 'apiProfile:getByProvider',
+  API_PROFILE_CREATE: 'apiProfile:create',
+  API_PROFILE_UPDATE: 'apiProfile:update',
+  API_PROFILE_DELETE: 'apiProfile:delete',
+  API_PROFILE_ACTIVATE: 'apiProfile:activate',
 } as const;
