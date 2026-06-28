@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Plus, Check, Trash2, Edit2, X, Zap } from "lucide-react";
 
 export interface ApiProfileData {
@@ -52,7 +52,7 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
           ...editing, provider, sortOrder: profiles.length,
         });
         const created = (rawCreated as any)?.data ?? rawCreated;
-      if (profiles.length === 0 && created) {
+        if (profiles.length === 0 && created) {
           await window.api.apiProfile.activate(created.id, provider);
         }
       }
@@ -84,8 +84,12 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
     setShowForm(true);
   };
 
+  const inputClass = "flex-1 text-[11px] px-2 py-1 rounded bg-bg-secondary border border-border/30 outline-none focus:border-accent/40";
+  const labelClass = "text-[10px] text-muted-foreground font-medium w-16 shrink-0 text-right";
+
   return (
     <div className="mt-2">
+      {/* 已保存的配置列表 */}
       {profiles.length > 0 && !showForm && (
         <div className="flex flex-col gap-1">
           {profiles.map((p) => (
@@ -117,6 +121,7 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
         </div>
       )}
 
+      {/* 添加配置按钮 */}
       {!showForm && (
         <button onClick={startNew}
           className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground hover:text-accent transition-colors cursor-pointer">
@@ -124,34 +129,54 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
         </button>
       )}
 
+      {/* 新增/编辑表单：左标签右输入框 */}
       {showForm && editing && (
-        <div className="mt-1 p-2 rounded-md border border-border/30 bg-bg-secondary/30 flex flex-col gap-1.5">
-          <div className="flex items-center gap-1.5">
-            <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })}
-              placeholder="配置名称（如：硅基流动-A）"
-              className="flex-1 text-[11px] px-2 py-1 rounded bg-bg-secondary border border-border/30 outline-none focus:border-accent/40" autoFocus />
+        <div className="mt-1 p-3 rounded-md border border-border/30 bg-bg-secondary/30 flex flex-col gap-2">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[11px] font-semibold text-foreground">{editing.id ? "编辑配置" : "新增配置"}</span>
             <button onClick={() => { setShowForm(false); setEditing(null); }}
               className="text-muted-foreground hover:text-foreground cursor-pointer"><X size={13} /></button>
           </div>
+
+          <div className="flex items-center gap-2">
+            <label className={labelClass}>名称</label>
+            <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })}
+              placeholder="如：硅基流动-A"
+              className={inputClass} autoFocus />
+          </div>
+
           {hasBaseUrl && (
-            <input value={editing.baseUrl} onChange={(e) => setEditing({ ...editing, baseUrl: e.target.value })}
-              placeholder="接口地址（如：https://api.siliconflow.cn/v1）"
-              className="text-[11px] px-2 py-1 rounded bg-bg-secondary border border-border/30 outline-none focus:border-accent/40" />
+            <div className="flex items-center gap-2">
+              <label className={labelClass}>地址</label>
+              <input value={editing.baseUrl} onChange={(e) => setEditing({ ...editing, baseUrl: e.target.value })}
+                placeholder="https://api.siliconflow.cn/v1"
+                className={inputClass} />
+            </div>
           )}
-          <input value={editing.apiKey} onChange={(e) => setEditing({ ...editing, apiKey: e.target.value })}
-            placeholder="API Key" type="password"
-            className="text-[11px] px-2 py-1 rounded bg-bg-secondary border border-border/30 outline-none focus:border-accent/40" />
-          <input value={(editing.models || []).join(", ")}
-            onChange={(e) => setEditing({ ...editing, models: (e.target.value || "").split(",").map((s: string) => s.trim()).filter(Boolean) })}
-            placeholder="模型列表（逗号分隔）"
-            className="text-[11px] px-2 py-1 rounded bg-bg-secondary border border-border/30 outline-none focus:border-accent/40" />
+
+          <div className="flex items-center gap-2">
+            <label className={labelClass}>Key</label>
+            <input value={editing.apiKey} onChange={(e) => setEditing({ ...editing, apiKey: e.target.value })}
+              placeholder="API Key" type="password"
+              className={inputClass} />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label className={labelClass}>模型</label>
+            <input value={(editing.models || []).join(", ")}
+              onChange={(e) => setEditing({ ...editing, models: (e.target.value || "").split(",").map((s: string) => s.trim()).filter(Boolean) })}
+              placeholder="逗号分隔，如：deepseek-chat, deepseek-reasoner"
+              className={inputClass} />
+          </div>
+
           <button onClick={handleSave}
-            className="text-[11px] px-3 py-1 rounded-md bg-accent text-white font-medium hover:brightness-110 transition-all cursor-pointer">
+            className="self-end text-[11px] px-4 py-1 rounded-md bg-accent text-white font-medium hover:brightness-110 transition-all cursor-pointer">
             保存
           </button>
         </div>
       )}
 
+      {/* 空状态 */}
       {profiles.length === 0 && !showForm && (
         <div className="text-[10px] text-muted-foreground/60 mt-1">
           暂无保存的配置，点击「添加配置」创建。
