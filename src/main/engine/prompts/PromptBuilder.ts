@@ -1,4 +1,4 @@
-// 📁 路径：src/main/engine/prompts/PromptBuilder.ts
+﻿// 📁 路径：src/main/engine/prompts/PromptBuilder.ts
 import { PERSONAS } from './personas'
 import { CONSTRAINTS } from './constraints'
 
@@ -92,5 +92,32 @@ ${safeContext}
 5. **视觉风格**：画面传递了什么样的情绪或氛围？
 
 请用中文输出分析结果，语言简洁专业。`.trim()
+  }
+  /**
+   * Build vision extract prompt for VLM frame analysis
+   * Returns system + user prompts with ASR context and frame window info
+   */
+  public static buildVisionExtractPrompt(
+    asrText: string,
+    _unused: string,
+    strategy: string,
+    frameWindow?: unknown[],
+  ): { systemPrompt: string; userPrompt: string } {
+    const systemPrompt = PromptBuilder.buildVisionPrompt();
+
+    const parts: string[] = [];
+    if (asrText) {
+      parts.push(`【台词上下文】\n${asrText}`);
+    }
+    if (frameWindow && frameWindow.length > 0) {
+      parts.push(`【帧序列信息】\n共 ${frameWindow.length} 帧，请逐帧分析`);
+    }
+    if (strategy) {
+      parts.push(`【分析策略】${strategy}`);
+    }
+    parts.push('请对每张图片进行详细的画面描述，包括场景、人物、动作、光线、色调等。');
+
+    const userPrompt = parts.join('\n\n');
+    return { systemPrompt, userPrompt };
   }
 }
