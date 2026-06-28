@@ -1,5 +1,5 @@
 ﻿import React, { useState, useEffect, useCallback } from "react";
-import { Plus, Check, Trash2, 编辑2, X, Zap } from "lucide-react";
+import { Plus, Check, Trash2, Edit2, X, Zap } from "lucide-react";
 
 export interface ApiProfileData {
   id?: string;
