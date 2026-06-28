@@ -30,14 +30,14 @@ const getEmotionVariant = (emotion: string): 'danger' | 'warning' | 'success' | 
 /** 溢出级别到颜色的映射 */
 const overflowColorMap: Record<OverflowLevel, string> = {
   safe: 'text-accent-green',
-  warning: 'text-yellow-500',
+  warning: 'text-warning',
   overflow: 'text-accent-rose',
 };
 
 /** 溢出级别到边框的映射 */
 const overflowBorderMap: Record<OverflowLevel, string> = {
   safe: '',
-  warning: 'border-l-2 border-l-yellow-500',
+  warning: 'border-l-2 border-l-warning',
   overflow: 'border-l-2 border-l-accent-rose',
 };
 
@@ -337,7 +337,7 @@ export const StepScriptGeneration: React.FC = () => {
                             <Image size={12} className="text-muted-foreground/30" />
                           </div>
                         )}
-                        <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-[8px] text-white text-center py-0.5">
+                        <div className="absolute bottom-0 left-0 right-0 bg-overlay-mask text-[8px] text-white text-center py-0.5">
                           {Math.round(c.score * 100)}%
                         </div>
                       </div>

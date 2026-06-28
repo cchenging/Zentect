@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+﻿import React, { useState, useCallback } from 'react';
 import { useStore } from '../../../../store/useStore';
 import { ChevronLeft, ChevronRight, X, Maximize2, BookOpen } from 'lucide-react';
 import { getSafeMediaUrl } from '../../../../utils/formatUrl';
@@ -125,7 +125,7 @@ export const StepVisionDescription: React.FC = () => {
       {/* 图片放大弹窗 */}
       {zoomIndex !== null && vlmFrames[zoomIndex] && (
         <div
-          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center"
+          className="fixed inset-0 z-[500] bg-black/85 flex items-center justify-center"
           onClick={closeZoom}
           onKeyDown={handleKeyDown}
           tabIndex={-1}

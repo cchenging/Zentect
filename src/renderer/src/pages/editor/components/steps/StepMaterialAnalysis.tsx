@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+﻿import React, { useState } from 'react';
 import { useStore } from '../../../../store/useStore';
 import { Edit3, User, Music, Play, UndoDot, RotateCcw } from 'lucide-react';
 import { getSafeMediaUrl } from '../../../../utils/formatUrl';
@@ -129,7 +129,7 @@ const StepMaterialAnalysisInner: React.FC = () => {
         title={
           <>
             <StatusIcon status={framesStatus === 'idle' ? 'pending' : framesStatus} />
-            <span className={`text-[12px] font-semibold ${framesStatus === 'completed' ? 'text-accent-green' : framesStatus === 'failed' ? 'text-red-400' : ''}`}>
+            <span className={`text-[12px] font-semibold ${framesStatus === 'completed' ? 'text-accent-green' : framesStatus === 'failed' ? 'text-accent-rose' : ''}`}>
               关键帧提取
             </span>
           </>
@@ -162,7 +162,7 @@ const StepMaterialAnalysisInner: React.FC = () => {
         title={
           <>
             <StatusIcon status={audioStatus === 'idle' ? 'pending' : audioStatus} />
-            <span className={`text-[12px] font-semibold ${audioStatus === 'completed' ? 'text-accent-green' : audioStatus === 'failed' ? 'text-red-400' : ''}`}>
+            <span className={`text-[12px] font-semibold ${audioStatus === 'completed' ? 'text-accent-green' : audioStatus === 'failed' ? 'text-accent-rose' : ''}`}>
               音频分离
             </span>
           </>
@@ -175,7 +175,7 @@ const StepMaterialAnalysisInner: React.FC = () => {
             {audioStatus === 'failed' && (
               <button
                 onClick={(e) => { e.stopPropagation(); handleRetrySubStep('audio'); }}
-                className="ml-auto text-red-400 hover:text-accent transition-colors cursor-pointer outline-none"
+                className="ml-auto text-accent-rose hover:text-accent transition-colors cursor-pointer outline-none"
                 title="重试音频分离"
               >
                 <RotateCcw size={13} />
@@ -233,7 +233,7 @@ const StepMaterialAnalysisInner: React.FC = () => {
         title={
           <>
             <StatusIcon status={whisperStatus === 'idle' ? 'pending' : whisperStatus} />
-            <span className={`text-[12px] font-semibold ${whisperStatus === 'completed' ? 'text-accent-green' : whisperStatus === 'failed' ? 'text-red-400' : ''}`}>
+            <span className={`text-[12px] font-semibold ${whisperStatus === 'completed' ? 'text-accent-green' : whisperStatus === 'failed' ? 'text-accent-rose' : ''}`}>
               ASR台词识别
             </span>
           </>
@@ -250,7 +250,7 @@ const StepMaterialAnalysisInner: React.FC = () => {
             {whisperStatus === 'failed' && (
               <button
                 onClick={(e) => { e.stopPropagation(); handleRetrySubStep('whisper'); }}
-                className="ml-auto text-red-400 hover:text-accent transition-colors cursor-pointer outline-none"
+                className="ml-auto text-accent-rose hover:text-accent transition-colors cursor-pointer outline-none"
                 title="重试ASR台词识别"
               >
                 <RotateCcw size={13} />
@@ -266,7 +266,7 @@ const StepMaterialAnalysisInner: React.FC = () => {
               const isModified = line.originalText !== undefined && line.text !== line.originalText;
               const isPending = !isModified && line.originalText === undefined;
               return (
-                <div key={idx} className={`flex items-center gap-2 px-3 py-2 border-b border-border/10 last:border-0 group ${isModified ? 'bg-accent/5 border-l-2 border-l-red-400' : ''}`}>
+                <div key={idx} className={`flex items-center gap-2 px-3 py-2 border-b border-border/10 last:border-0 group ${isModified ? 'bg-accent/5 border-l-2 border-l-accent-rose' : ''}`}>
                   <span className="text-[11px] font-mono text-accent shrink-0 w-12">{line.start || '00:00'}</span>
                   {line.editing ? (
                     <input
@@ -320,7 +320,7 @@ const StepMaterialAnalysisInner: React.FC = () => {
         title={
           <>
             <StatusIcon status={facesStatus === 'idle' ? 'pending' : facesStatus} />
-            <span className={`text-[12px] font-semibold ${facesStatus === 'completed' ? 'text-accent-purple' : facesStatus === 'failed' ? 'text-red-400' : ''}`}>
+            <span className={`text-[12px] font-semibold ${facesStatus === 'completed' ? 'text-accent-purple' : facesStatus === 'failed' ? 'text-accent-rose' : ''}`}>
               人脸检测
             </span>
           </>
@@ -333,7 +333,7 @@ const StepMaterialAnalysisInner: React.FC = () => {
             {facesStatus === 'failed' && (
               <button
                 onClick={(e) => { e.stopPropagation(); handleRetrySubStep('faces'); }}
-                className="ml-auto text-red-400 hover:text-accent transition-colors cursor-pointer outline-none"
+                className="ml-auto text-accent-rose hover:text-accent transition-colors cursor-pointer outline-none"
                 title="重试人脸检测"
               >
                 <RotateCcw size={13} />

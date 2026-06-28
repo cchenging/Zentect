@@ -150,7 +150,7 @@ export const StepShotMatching: React.FC = () => {
             renderItem={(m: any, _index: number, isDragging: boolean) => (
               <div className={`glass-card-sm p-3 flex flex-col gap-2 transition-all border-l-4 ${
                 isDragging ? 'opacity-50' : ''
-              } ${m.confirmed ? 'border-l-accent-green' : m.score >= 0.85 ? 'border-l-accent-green' : m.score >= 0.6 ? 'border-l-yellow-500' : 'border-l-accent-rose'}`}>
+              } ${m.confirmed ? 'border-l-accent-green' : m.score >= 0.85 ? 'border-l-accent-green' : m.score >= 0.6 ? 'border-l-warning' : 'border-l-accent-rose'}`}>
                 <div className="flex gap-3">
                   <div className="w-[140px] h-[90px] rounded-md bg-bg-secondary overflow-hidden shrink-0 relative group/img">
                     {m.thumbnail ? (
@@ -217,7 +217,7 @@ export const StepShotMatching: React.FC = () => {
 
       {/* 替换素材选择面板 */}
       {replacingShotId && (
-        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center" onClick={() => setReplacingShotId(null)}>
+        <div className="fixed inset-0 z-[500] bg-overlay-mask flex items-center justify-center" onClick={() => setReplacingShotId(null)}>
           <div className="bg-bg-base border border-border rounded-xl shadow-2xl w-[500px] max-h-[550px] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-bg-secondary/30">
               <span className="text-[13px] font-semibold">视频动态切片池</span>

@@ -1,4 +1,4 @@
-// 📁 路径：src/shared/locales/zh-CN.ts
+﻿// 📁 路径：src/shared/locales/zh-CN.ts
 import { ErrorCode } from '../utils/AppError';
 import { DICT } from './dictionary';
 
@@ -734,6 +734,9 @@ export const zhCN = {
       no_input: '未连接输入源',
     },
   },
+// 步骤1 - 素材分析
+  'editor.step1.frames.title': '关键帧提取',
+  'editor.step1.frames.statusDone': '已提取 {count
 } as const;
 
 // 💥 添加默认导出，兼容参考.html 的导入方式
