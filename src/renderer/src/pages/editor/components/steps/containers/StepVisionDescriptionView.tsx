@@ -1,8 +1,8 @@
 ﻿import React, { useState, useCallback } from "react";
 import { ChevronLeft, ChevronRight, X, Maximize2, BookOpen } from "lucide-react";
-import { getSafeMediaUrl } from "../../../../utils/formatUrl";
-import { StatHeader, EmptyState } from "../../../../components/shared";
-import type { VlmFrame } from "../../../../../../shared/types/entities/editor";
+import { getSafeMediaUrl } from "../../../../../utils/formatUrl";
+import { StatHeader, EmptyState } from "../../../../../components/shared";
+import type { VlmFrame } from "../../../../../../../shared/types/entities/editor";
 
 export interface StepVisionDescriptionProps {
   vlmFrames: VlmFrame[];
