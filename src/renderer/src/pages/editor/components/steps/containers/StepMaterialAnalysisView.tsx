@@ -1,9 +1,9 @@
 ﻿import React, { useState } from "react";
 import { Edit3, User, Music, Play, UndoDot, RotateCcw } from "lucide-react";
-import { getSafeMediaUrl } from "../../../../utils/formatUrl";
-import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "../../../../components/shared";
+import { getSafeMediaUrl } from "../../../../../utils/formatUrl";
+import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "../../../../../components/shared";
 import { FrameExtractConfig } from "../../inspectors/configs/FrameExtractConfig";
-import type { AsrLine, Role, MediaItem, StepStatus } from "../../../../../../shared/types/entities/editor";
+import type { AsrLine, Role, MediaItem, StepStatus } from "../../../../../../../shared/types/entities/editor";
 
 export interface StepMaterialAnalysisProps {
   asrLines: AsrLine[];

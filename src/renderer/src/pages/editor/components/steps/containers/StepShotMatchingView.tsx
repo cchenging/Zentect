@@ -1,9 +1,9 @@
 ﻿import React, { useState, useMemo } from "react";
 import { Check, RefreshCw, Film, X } from "lucide-react";
-import { getSafeMediaUrl } from "../../../../utils/formatUrl";
-import { Badge, StatHeader, EmptyState } from "../../../../components/shared";
-import { DragReorderList } from "../../../../components/shared/DragReorderList";
-import type { MatchResult, MediaItem, VideoChunk } from "../../../../../../shared/types/entities/editor";
+import { getSafeMediaUrl } from "../../../../../utils/formatUrl";
+import { Badge, StatHeader, EmptyState } from "../../../../../components/shared";
+import { DragReorderList } from "../../../../../components/shared/DragReorderList";
+import type { MatchResult, MediaItem, VideoChunk } from "../../../../../../../shared/types/entities/editor";
 
 export interface StepShotMatchingProps {
   matchResults: MatchResult[];
