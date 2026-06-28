@@ -233,7 +233,10 @@ export const StepScriptGeneration: React.FC = () => {
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
           <Sliders size={12} /> 创作参数
         </div>
-                <ParameterSlider label={param === 'R' ? '经典保留' : param === 'S' ? '原台词保留' : param === 'T' ? 'TTS覆盖' : '节奏因子'} code={param} value={pipelineParams[param]} onChange={(v) => setPipelineParams({ ...pipelineParams, [param]: v })} disabled={isGenerating} unit="%" /></div>
+                <ParameterSlider label="经典保留" code="R" value={pipelineParams.R} onChange={(v) => setPipelineParams({ ...pipelineParams, R: v })} disabled={isGenerating} unit="%" />
+                <ParameterSlider label="原台词保留" code="S" value={pipelineParams.S} onChange={(v) => setPipelineParams({ ...pipelineParams, S: v })} disabled={isGenerating} unit="%" />
+                <ParameterSlider label="TTS覆盖" code="T" value={pipelineParams.T} onChange={(v) => setPipelineParams({ ...pipelineParams, T: v })} disabled={isGenerating} unit="%" />
+                <ParameterSlider label="节奏因子" code="P" value={pipelineParams.P} onChange={(v) => setPipelineParams({ ...pipelineParams, P: v })} disabled={isGenerating} unit="%" />
 
       {/* 语速控制 + 预估字数 */}
       <div className="glass-card-sm p-3 flex flex-col gap-2">
