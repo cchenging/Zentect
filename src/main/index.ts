@@ -159,6 +159,7 @@ class AppBootstrap {
   private static registerControllers() {
     new SystemController().register();
 new ApiProfileController().register();
+  migrateOldApiConfig();
     new ProjectController().register()
     new MediaController().register()
     new AIController().register()
