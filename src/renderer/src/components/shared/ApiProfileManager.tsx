@@ -142,7 +142,7 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
           <input value={editing.apiKey} onChange={(e) => set编辑ing({ ...editing, apiKey: e.target.value })}
             placeholder="API Key" type="password"
             className="text-[11px] px-2 py-1 rounded bg-bg-secondary border border-border/30 outline-none focus:border-accent/40" />
-          <input value={editing.models.join(", ")}
+          <input value={(editing.models || []).join(", ")}
             onChange={(e) => set编辑ing({ ...editing, 个模型: e.target.value.split(",").map(s => s.trim()).filter(Boolean) })}
             placeholder="模型列表（逗号分隔）"
             className="text-[11px] px-2 py-1 rounded bg-bg-secondary border border-border/30 outline-none focus:border-accent/40" />
