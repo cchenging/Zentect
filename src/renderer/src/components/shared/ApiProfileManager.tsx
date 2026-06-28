@@ -27,7 +27,8 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
 
   const loadProfiles = useCallback(async () => {
     try {
-      const raw = await window.api.apiProfile.getByProvider(provider);`r`n      const result = (raw as any)?.data ?? raw;
+      const raw = await window.api.apiProfile.getByProvider(provider);
+      const result = (raw as any)?.data ?? raw;
       if (Array.isArray(result)) {
         setProfiles(result);
         const active = result.find((p: any) => p.isActive);
