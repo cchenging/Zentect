@@ -1,4 +1,4 @@
-﻿import React, { useState, useCallback, useMemo } from 'react';
+﻿import React, { useState, useMemo, useCallback } from 'react';
 import { useStore } from '../../../../store/useStore';
 import { Check, RefreshCw, Film, X, Music } from 'lucide-react';
 import { getSafeMediaUrl } from '../../../../utils/formatUrl';
@@ -6,15 +6,13 @@ import { STEP_SEQUENCES } from '../../utils/pipelineConstants';
 import { API } from '../../../../api';
 import { mapPipelineResultToState } from '../../hooks/usePipelineResultMapper';
 import { Badge, StatHeader, EmptyState } from '../../../../components/shared';
-// @ts-expect-error will be used when drag refactor completes
 import { DragReorderList } from '../../../../components/shared/DragReorderList';
 
 /** 步骤5：智能视听转场卡点匹配 - 三维一体弹性时间轴对齐 */
 export const StepShotMatching: React.FC = () => {
   const matchResults = useStore((s) => s.matchResults);
   const mediaItems = useStore((s) => s.mediaItems);
-  const ttsResults = useStore((s) => s.ttsResults);
-  const activeBgm = useStore((s) => s.activeBgm);
+    const activeBgm = useStore((s) => s.activeBgm);
   const videoChunks = useStore((s) => s.videoChunks);
   const pipelineRunning = useStore((s) => s.pipelineRunning);
   const confirmMatch = useStore((s) => s.confirmMatch);
@@ -24,7 +22,7 @@ export const StepShotMatching: React.FC = () => {
   /** 替换面板：被替换的 shotId */
   const [replacingShotId, setReplacingShotId] = useState<string | null>(null);
   /** 拖拽状态 */
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
+
   /** 重新匹配状态 */
   const [isRematching, setIsRematching] = useState(false);
 
@@ -110,24 +108,6 @@ export const StepShotMatching: React.FC = () => {
   const isProcessing = isRematching || pipelineRunning;
 
   /** 拖拽排序处理 */
-  const handleDragStart = useCallback((index: number) => {
-    setDragIndex(index);
-  }, []);
-
-  const handleDragOver = useCallback((e: React.DragEvent, index: number) => {
-    e.preventDefault();
-    if (dragIndex === null || dragIndex === index) return;
-    const items = [...matchResults];
-    const draggedItem = items[dragIndex];
-    items.splice(dragIndex, 1);
-    items.splice(index, 0, draggedItem);
-    setMatchResults(items);
-    setDragIndex(index);
-  }, [dragIndex, matchResults, setMatchResults]);
-
-  const handleDragEnd = useCallback(() => {
-    setDragIndex(null);
-  }, []);
 
   return (
     <div className="flex flex-col gap-4">
@@ -163,20 +143,15 @@ export const StepShotMatching: React.FC = () => {
       {matchResults.length > 0 ? (
         <>
           {/* 故事板：垂直排列卡片 */}
-          <div className="flex flex-col gap-3">
-            {matchResults.map((m: any, index: number) => (
-              <div
-                key={m.shotId}
-                draggable
-                onDragStart={() => handleDragStart(index)}
-                onDragOver={(e) => handleDragOver(e, index)}
-                onDragEnd={handleDragEnd}
-                className={`glass-card-sm p-3 flex flex-col gap-2 transition-all cursor-grab active:cursor-grabbing border-l-4 ${
-                  dragIndex === index ? 'opacity-50' : ''
-                } ${m.confirmed ? 'border-l-accent-green' : m.score >= 0.85 ? 'border-l-accent-green' : m.score >= 0.6 ? 'border-l-yellow-500' : 'border-l-accent-rose'}`}
-              >
+          <DragReorderList
+            items={matchResults}
+            getItemId={(m: any) => m.shotId}
+            onReorder={(reordered: any[]) => setMatchResults(reordered)}
+            renderItem={(m: any, _index: number, isDragging: boolean) => (
+              <div className={`glass-card-sm p-3 flex flex-col gap-2 transition-all border-l-4 ${
+                isDragging ? 'opacity-50' : ''
+              } ${m.confirmed ? 'border-l-accent-green' : m.score >= 0.85 ? 'border-l-accent-green' : m.score >= 0.6 ? 'border-l-yellow-500' : 'border-l-accent-rose'}`}>
                 <div className="flex gap-3">
-                  {/* 缩略图 */}
                   <div className="w-[140px] h-[90px] rounded-md bg-bg-secondary overflow-hidden shrink-0 relative group/img">
                     {m.thumbnail ? (
                       <img src={getSafeMediaUrl(m.thumbnail)} className="w-full h-full object-cover" />
@@ -185,58 +160,41 @@ export const StepShotMatching: React.FC = () => {
                         <Film size={24} className="text-muted-foreground/20" />
                       </div>
                     )}
-                    {/* 视频切片时长标签 */}
                     {m.chunkData && (
                       <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/70 text-[9px] text-white font-mono">
-                        切片: {((m.chunkData.endMs - m.chunkData.startMs) / 1000).toFixed(1)}s
+                        {((m.chunkData.endMs - m.chunkData.startMs) / 1000).toFixed(1)}s
                       </div>
                     )}
-                    {/* 变速标签 */}
                     {m.appliedSpeedFactor !== 1 && m.appliedSpeedFactor !== undefined && (
                       <div className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-accent-rose/80 text-[9px] text-white">
-                        变速: {m.appliedSpeedFactor.toFixed(2)}x
+                        {m.appliedSpeedFactor.toFixed(2)}x
                       </div>
                     )}
                   </div>
-
-                  {/* 信息 */}
                   <div className="flex-1 flex flex-col gap-1.5 min-w-0">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[11px] font-semibold truncate">{m.shotId}</span>
-                      <Badge
-                        variant={m.score > 0.8 ? 'success' : m.score > 0.5 ? 'warning' : 'danger'}
-                        className="text-[9px] shrink-0"
-                      >
-                        匹配度 {Math.round(m.score * 100)}%
+                      <Badge variant={m.score > 0.8 ? 'success' : m.score > 0.5 ? 'warning' : 'danger'} className="text-[9px] shrink-0">
+                        {Math.round(m.score * 100)}%
                       </Badge>
                     </div>
-
-                    {/* 刚性音频时长 */}
                     {m.audioDurationMs > 0 && (
                       <div className="text-[10px] text-muted-foreground bg-bg-secondary/40 px-1.5 py-0.5 rounded">
-                        音频红线: <span className="font-mono text-foreground">{(m.audioDurationMs / 1000).toFixed(2)}s</span>
+                        {(m.audioDurationMs / 1000).toFixed(2)}s
                       </div>
                     )}
-
-                    {/* 操作按钮 */}
                     <div className="flex items-center gap-2 mt-auto">
                       {m.confirmed ? (
                         <span className="text-[10px] text-accent-green flex items-center gap-0.5">
-                          <Check size={12} /> 时序已互锁
+                          <Check size={12} />
                         </span>
                       ) : (
                         <>
-                          <button
-                            onClick={() => confirmMatch(m.shotId)}
-                            className="px-2.5 py-1 text-[10px] bg-accent-green/20 text-accent-green hover:bg-accent-green hover:text-white rounded transition-all cursor-pointer"
-                          >
-                            确认对齐
+                          <button onClick={() => confirmMatch(m.shotId)} className="px-2.5 py-1 text-[10px] bg-accent-green/20 text-accent-green hover:bg-accent-green hover:text-white rounded transition-all cursor-pointer">
+                            OK
                           </button>
-                          <button
-                            onClick={() => setReplacingShotId(m.shotId)}
-                            className="px-2.5 py-1 text-[10px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer"
-                          >
-                            手动选片
+                          <button onClick={() => setReplacingShotId(m.shotId)} className="px-2.5 py-1 text-[10px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer">
+                            Replace
                           </button>
                         </>
                       )}
@@ -244,12 +202,8 @@ export const StepShotMatching: React.FC = () => {
                   </div>
                 </div>
               </div>
-            ))}
-          </div>
-
-          <div className="text-[10px] text-muted-foreground text-center">
-            ↕ 拖拽卡片可调整段落顺序
-          </div>
+            )}
+          />
         </>
       ) : (
         <EmptyState
