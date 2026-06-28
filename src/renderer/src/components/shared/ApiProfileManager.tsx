@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Plus, Check, Trash2, Edit2, X, Zap } from "lucide-react";
+import { Plus, Check, Trash2, Edit2, X, Zap, Wifi, Loader2 } from "lucide-react";
 
 export interface ApiProfileData {
   id?: string;
@@ -18,12 +18,15 @@ export interface ApiProfileManagerProps {
   onActiveProfileChange?: (profile: ApiProfileData | null) => void;
 }
 
+type TestStatus = "idle" | "testing" | "success" | "failed";
+
 export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
   provider, hasBaseUrl, defaultBaseUrl, onActiveProfileChange,
 }) => {
   const [profiles, setProfiles] = useState<ApiProfileData[]>([]);
   const [editing, setEditing] = useState<ApiProfileData | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [testStatus, setTestStatus] = useState<Record<string, TestStatus>>({});
 
   const loadProfiles = useCallback(async () => {
     try {
@@ -74,6 +77,22 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
     loadProfiles();
   };
 
+  const handleTest = async (profile: ApiProfileData) => {
+    if (!profile.id) return;
+    setTestStatus((prev) => ({ ...prev, [profile.id!]: "testing" }));
+    try {
+      const { API } = await import("../../../../api");
+      await API.ai.testNetwork("openai_like", {
+        provider: profile.provider,
+        apiKey: profile.apiKey,
+        baseURL: profile.baseUrl || defaultBaseUrl,
+      });
+      setTestStatus((prev) => ({ ...prev, [profile.id!]: "success" }));
+    } catch {
+      setTestStatus((prev) => ({ ...prev, [profile.id!]: "failed" }));
+    }
+  };
+
   const startEdit = (p: ApiProfileData) => {
     setEditing({ ...p });
     setShowForm(true);
@@ -91,45 +110,68 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
     <div className="mt-2">
       {/* 已保存的配置列表 */}
       {profiles.length > 0 && !showForm && (
-        <div className="flex flex-col gap-1">
-          {profiles.map((p) => (
-            <div key={p.id} className={`flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] border transition-all ${
-              p.isActive ? "border-accent/40 bg-accent/5" : "border-border/20 bg-bg-secondary/50"
-            }`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${p.isActive ? "bg-accent" : "bg-muted-foreground/30"}`} />
-              <span className="flex-1 truncate font-medium">{p.name}</span>
-              {p.models && p.models.length > 0 && (
-                <span className="text-[9px] text-muted-foreground">{p.models.length} 个模型</span>
-              )}
-              {!p.isActive && (
-                <button onClick={() => handleActivate(p.id!)} title="激活"
-                  className="text-muted-foreground hover:text-accent transition-colors cursor-pointer">
-                  <Zap size={11} />
-                </button>
-              )}
-              {p.isActive && <Check size={11} className="text-accent" />}
-              <button onClick={() => startEdit(p)} title="编辑"
-                className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-                <Edit2 size={11} />
-              </button>
-              <button onClick={() => handleDelete(p.id!)} title="删除"
-                className="text-muted-foreground hover:text-accent-rose transition-colors cursor-pointer">
-                <Trash2 size={11} />
-              </button>
-            </div>
-          ))}
+        <div className="flex flex-col gap-1.5">
+          {profiles.map((p) => {
+            const status = testStatus[p.id || ""];
+            return (
+              <div key={p.id} className={`px-2.5 py-2 rounded-md text-[11px] border transition-all ${
+                p.isActive ? "border-accent/50 bg-accent/5" : "border-border/20 bg-bg-secondary/50"
+              }`}>
+                <div className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${p.isActive ? "bg-accent" : "bg-muted-foreground/30"}`} />
+                  <span className="flex-1 truncate font-medium">{p.name}</span>
+                  {p.isActive && (
+                    <span className="text-[9px] text-accent bg-accent/10 px-1.5 py-0.5 rounded">当前生效</span>
+                  )}
+                  {p.models && p.models.length > 0 && (
+                    <span className="text-[9px] text-muted-foreground">{p.models.length} 模型</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 mt-1.5 ml-4">
+                  {/* 测试连接 */}
+                  <button onClick={() => handleTest(p)} disabled={status === "testing"}
+                    className={`flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded transition-colors cursor-pointer ${
+                      status === "success" ? "text-accent-green" :
+                      status === "failed" ? "text-accent-rose" :
+                      status === "testing" ? "text-muted-foreground" :
+                      "text-muted-foreground hover:text-accent-cyan"
+                    }`}>
+                    {status === "testing" ? <Loader2 size={10} className="animate-spin" /> :
+                     status === "success" ? <Check size={10} /> :
+                     status === "failed" ? <X size={10} /> :
+                     <Wifi size={10} />}
+                    {status === "testing" ? "检测中" : status === "success" ? "已连通" : status === "failed" ? "连接失败" : "测试连接"}
+                  </button>
+                  {/* 激活 */}
+                  {!p.isActive && (
+                    <button onClick={() => handleActivate(p.id!)} className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded text-muted-foreground hover:text-accent transition-colors cursor-pointer">
+                      <Zap size={10} /> 设为生效
+                    </button>
+                  )}
+                  {/* 编辑 */}
+                  <button onClick={() => startEdit(p)} className="text-[9px] px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
+                    <Edit2 size={10} />
+                  </button>
+                  {/* 删除 */}
+                  <button onClick={() => handleDelete(p.id!)} className="text-[9px] px-1.5 py-0.5 rounded text-muted-foreground hover:text-accent-rose transition-colors cursor-pointer">
+                    <Trash2 size={10} />
+                  </button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
       {/* 添加配置按钮 */}
       {!showForm && (
         <button onClick={startNew}
-          className="mt-1 flex items-center gap-1 text-[10px] text-muted-foreground hover:text-accent transition-colors cursor-pointer">
+          className="mt-1.5 flex items-center gap-1 text-[10px] text-muted-foreground hover:text-accent transition-colors cursor-pointer">
           <Plus size={11} /> 添加配置
         </button>
       )}
 
-      {/* 新增/编辑表单：左标签右输入框 */}
+      {/* 新增/编辑表单 */}
       {showForm && editing && (
         <div className="mt-1 p-3 rounded-md border border-border/30 bg-bg-secondary/30 flex flex-col gap-2">
           <div className="flex items-center justify-between mb-1">
