@@ -27,7 +27,7 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
 
   const loadProfiles = useCallback(async () => {
     try {
-      const result = await window.api.apiProfile.getByProvider(provider);
+      const raw = await window.api.apiProfile.getByProvider(provider);`r`n      const result = (raw as any)?.data ?? raw;
       if (Array.isArray(result)) {
         setProfiles(result);
         const active = result.find((p: any) => p.isActive);
@@ -47,10 +47,10 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
           baseUrl: editing.baseUrl, models: editing.models,
         });
       } else {
-        const created = await window.api.apiProfile.create({
+        const rawCreated = await window.api.apiProfile.create({
           ...editing, provider, sortOrder: profiles.length,
         });
-        if (profiles.length === 0 && created) {
+        const created = (rawCreated as any)?.data ?? rawCreated;`r`n      if (profiles.length === 0 && created) {
           await window.api.apiProfile.activate(created.id, provider);
         }
       }
