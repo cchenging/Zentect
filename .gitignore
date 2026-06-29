@@ -166,3 +166,5 @@ debug-*.md
 .npmrc
 pnpm-workspace.yaml
 pnpm-lock.yaml
+
+scripts/
