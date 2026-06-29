@@ -252,7 +252,9 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         </div>
       </section>
 
-                {/* 管线-模型映射 */}\n          <PipelineBindingPanel />\n\n          {/* ===== TTS 配置 ===== */}
+                {/* 管线-模型映射 */}
+          <PipelineBindingPanel />\n
+          {/* ===== TTS 配置 ===== */}
       <section>
         <div className="flex items-center gap-2 mb-4">
           <Play size={18} className="text-accent-purple" />
