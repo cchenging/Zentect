@@ -1,4 +1,4 @@
-﻿import { IpcRouter } from '../core/IpcRouter';
+import { IpcRouter } from '../core/IpcRouter';
 import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
 import { ApiProfileRepository } from '../database/repositories/ApiProfileRepository';
 import { ProfileBindingRepository } from '../database/repositories/ProfileBindingRepository';
@@ -28,8 +28,18 @@ export class ApiProfileController {
     IpcRouter.handle(IPC_CHANNELS.API_PROFILE_ACTIVATE, async (_, id: string, provider: string) => {
       return ApiProfileRepository.activate(id, provider);
     });
+
+    IpcRouter.handle(IPC_CHANNELS.BINDING_GET_ALL, async () => {
+      return ProfileBindingRepository.getAll();
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.BINDING_GET_BY_TASK, async (_, taskType: string) => {
+      return ProfileBindingRepository.getByTaskType(taskType);
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.BINDING_UPSERT, async (_, taskType: string, profileId: string | null, modelName: string) => {
+      ProfileBindingRepository.upsert(taskType, profileId, modelName);
+      return true;
+    });
   }
-  IpcRouter.handle(IPC_CHANNELS.BINDING_GET_ALL, async () => ProfileBindingRepository.getAll());
-  IpcRouter.handle(IPC_CHANNELS.BINDING_GET_BY_TASK, async (_, taskType: string) => ProfileBindingRepository.getByTaskType(taskType));
-  IpcRouter.handle(IPC_CHANNELS.BINDING_UPSERT, async (_, taskType: string, profileId: string | null, modelName: string) => ProfileBindingRepository.upsert(taskType, profileId, modelName));
 }
