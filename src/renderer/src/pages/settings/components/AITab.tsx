@@ -2,7 +2,7 @@
 // AI 服务配置 Tab - V3 设计系统风格
 // 专注于 LLM 供应商配置 + 管线模型映射 + TTS 配置
 // 本地模型管理已移至独立 ModelTab
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Eye, EyeOff, Server, Play, ExternalLink, ChevronDown, ChevronUp, Zap, AlertCircle, FolderOpen } from 'lucide-react';
 import { Input } from '../../../components/ui/input';
 import { Button } from '../../../components/ui/button';
@@ -104,7 +104,28 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   const aiData = data || {};
   const [expandedProvider, setExpandedProvider] = useState<string | null>('deepseek');
   const [showAllKeys, setShowAllKeys] = useState(false);
-  const [currentTts, setCurrentTts] = useState(aiData.ttsProvider || 'edge');
+    const [currentTts, setCurrentTts] = useState(aiData.ttsProvider || 'edge');
+  const [apiProfiles, setApiProfiles] = useState<any[]>([]);
+  const [bindings, setBindings] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const rawP = await window.api?.apiProfile?.getAll();
+        const pData = (rawP as any)?.data ?? rawP;
+        if (Array.isArray(pData)) setApiProfiles(pData);
+      } catch {}
+      try {
+        const rawB = await window.api?.profileBinding?.getAll();
+        const bData = (rawB as any)?.data ?? rawB;
+        if (Array.isArray(bData)) {
+          const map: Record<string, any> = {};
+          bData.forEach((b: any) => { map[b.taskType] = b; });
+          setBindings(map);
+        }
+      } catch {}
+    })();
+  }, []);
 
   /** 更新 AI 配置值 */
   const handleValChange = (field: string, val: any) => {
