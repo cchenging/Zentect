@@ -133,6 +133,12 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
     if (field === 'ttsProvider') setCurrentTts(val);
   };
 
+  const handleBindingChange = async (taskType: string, profileId: string | null, modelName: string) => {
+    if (!taskType) return;
+    setBindings((prev) => ({ ...prev, [taskType]: { taskType, profileId, modelName } }));
+    try { await window.api?.profileBinding?.upsert(taskType, profileId, modelName); } catch {}
+  };
+
   /** 切换供应商卡片展开 */
   const toggleProvider = (id: string) => {
     setExpandedProvider(prev => prev === id ? null : id);
@@ -250,22 +256,49 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
               ? [currentValue, ...options]
               : options;
 
-            return (
-              <div key={node.key} className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+                        return (
+              <div key={node.key} className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   <span className="text-sm">{node.icon}</span>
                   <span className="text-xs text-foreground font-medium">{node.label}</span>
                 </div>
-                <Select value={currentValue} onValueChange={v => handleValChange(node.key, v)}>
-                  <SelectTrigger className="w-56 h-9 text-xs bg-bg-secondary border-border/50">
-                    <SelectValue placeholder={finalOptions.length > 0 ? '选择模型' : '请先配置供应商模型'} />
-                  </SelectTrigger>
-                  <SelectContent className="bg-bg-tertiary border-border/50">
-                    {finalOptions.map((opt: string) => (
-                      <SelectItem key={opt} value={opt} className="text-xs">{opt}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex items-center gap-2">
+                  {'useModelPool' in node && (
+                    <select
+                      value={bindings[node.key === 'taskVisualModel' ? 'visual' : node.key === 'taskScriptModel' ? 'script' : 'translate']?.profileId || ''}
+                      onChange={(e) => {
+                        const tk = node.key === 'taskVisualModel' ? 'visual' : node.key === 'taskScriptModel' ? 'script' : 'translate';
+                        const pid = e.target.value || null;
+                        const p = apiProfiles.find((x: any) => x.id === pid);
+                        const nm = pid ? (p?.models?.[0] || currentValue) : currentValue;
+                        handleBindingChange(tk, pid, nm);
+                        if (nm !== currentValue) handleValChange(node.key, nm);
+                      }}
+                      className="text-[11px] px-2 py-1.5 rounded bg-bg-secondary border border-border/30 text-foreground outline-none cursor-pointer hover:border-accent/40 w-36"
+                    >
+                      <option value="">自动匹配</option>
+                      {apiProfiles.map((p: any) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                  )}
+                  <Select value={currentValue} onValueChange={v => {
+                    handleValChange(node.key, v);
+                    if ('useModelPool' in node) {
+                      const tk = node.key === 'taskVisualModel' ? 'visual' : node.key === 'taskScriptModel' ? 'script' : 'translate';
+                      handleBindingChange(tk, bindings[tk]?.profileId || null, v);
+                    }
+                  }}>
+                    <SelectTrigger className="w-48 h-9 text-xs bg-bg-secondary border-border/50">
+                      <SelectValue placeholder={finalOptions.length > 0 ? '选择模型' : '先配置供应商模型'} />
+                    </SelectTrigger>
+                    <SelectContent className="bg-bg-tertiary border-border/50">
+                      {finalOptions.map((opt: string) => (
+                        <SelectItem key={opt} value={opt} className="text-xs">{opt}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             );
           })}
