@@ -213,4 +213,7 @@ export const IPC_CHANNELS = {
   API_PROFILE_UPDATE: 'apiProfile:update',
   API_PROFILE_DELETE: 'apiProfile:delete',
   API_PROFILE_ACTIVATE: 'apiProfile:activate',
+  BINDING_GET_ALL: 'profileBinding:getAll',
+  BINDING_GET_BY_TASK: 'profileBinding:getByTask',
+  BINDING_UPSERT: 'profileBinding:upsert',
 } as const;

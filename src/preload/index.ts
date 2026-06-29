@@ -148,6 +148,11 @@ const api = {
     removeAllListeners: safeRemoveAllListeners,
   },
 
+  profileBinding: {
+    getAll: () => safeInvoke(IPC_CHANNELS.BINDING_GET_ALL),
+    getByTask: (taskType: string) => safeInvoke(IPC_CHANNELS.BINDING_GET_BY_TASK, taskType),
+    upsert: (taskType: string, profileId: string | null, modelName: string) => safeInvoke(IPC_CHANNELS.BINDING_UPSERT, taskType, profileId, modelName),
+  },
   apiProfile: {
     getAll: () => safeInvoke(IPC_CHANNELS.API_PROFILE_GET_ALL),
     getByProvider: (provider: string) => safeInvoke(IPC_CHANNELS.API_PROFILE_GET_BY_PROVIDER, provider),

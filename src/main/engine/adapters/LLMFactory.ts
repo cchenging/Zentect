@@ -5,6 +5,7 @@ import { VolcengineAdapter } from './VolcengineAdapter';
 import { LLMConfig } from '../config/ProviderManager';
 import { SettingsRepository } from '../../database/repositories/SettingsRepository';
 import { ApiProfileRepository } from '../../database/repositories/ApiProfileRepository';
+import { ProfileBindingRepository } from '../../database/repositories/ProfileBindingRepository';
 
 export type AITaskType = 'visual' | 'script' | 'translate' | 'helper';
 
@@ -77,11 +78,31 @@ export class LLMFactory {
    * @returns 适配器实例、模型名称和温度参数
    */
   static createAdapter(taskType: AITaskType): FactoryResult {
+    // === NEW: Check bindings table first ===
+    const binding = ProfileBindingRepository.getByTaskType(taskType);
+    if (binding && binding.profileId) {
+      try {
+        const { ApiProfileRepository } = require('../../database/repositories/ApiProfileRepository');
+        const profile = ApiProfileRepository.getByProvider('').find((p: any) => p.id === binding.profileId || p.isActive);
+        // Actually find by ID directly
+        const allProfiles = (ApiProfileRepository as any).getAll ? ApiProfileRepository.getAll() : [];
+        const matchedProfile = allProfiles.find((p: any) => p.id === binding.profileId);
+        if (matchedProfile && matchedProfile.apiKey) {
+          let baseURL = matchedProfile.baseUrl || 'https://api.openai.com/v1';
+          baseURL = baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
+          const adapter = new OpenAICompatibleAdapter(baseURL, matchedProfile.apiKey);
+          return { adapter, modelName: binding.modelName, temperature: taskType === 'visual' ? 0.1 : taskType === 'script' ? 0.8 : 0.7 };
+        }
+      } catch (e) { /* fall through to old logic */ }
+    }
+    if (binding && binding.modelName) {
+      // Has model but no profile binding - use old logic with the binding model
+    }
+
+    // === OLD LOGIC: fallback ===
     const settings = new SettingsRepository();
     let modelKey = 'taskHelperModel';
     let temperature = 0.7;
-
-    // 1. 确定任务所需读取的设置键值与标准温度
     switch (taskType) {
       case 'visual': modelKey = 'taskVisualModel'; temperature = 0.1; break;
       case 'script': modelKey = 'taskScriptModel'; temperature = 0.8; break;
@@ -89,16 +110,15 @@ export class LLMFactory {
       case 'helper': default: modelKey = 'taskHelperModel'; temperature = 0.7; break;
     }
 
-    const modelName = settings.get(modelKey, '') as string;
+    const modelName = (binding?.modelName) || (settings.get(modelKey, '') as string);
     if (!modelName) {
-      throw new Error(`系统拦截：请先在【全局偏好设置】中为 [${taskType}] 任务分配启用的模型。（设置键: ${modelKey}）`);
+      throw new Error(未配置模型。请在设置→管线-模型映射中为 [] 选择模型。);
     }
 
     let baseURL = '';
     let apiKey = '';
     let adapter: ILLMProvider;
 
-    // 2. 智能路由：优先按用户配置的模型列表精确匹配，其次按关键字模糊匹配
     const deepseekModels = settings.get('deepseekModels', []) as string[];
     const qwenModels = settings.get('qwenModels', []) as string[];
     const tencentModels = settings.get('tencentModels', []) as string[];
@@ -106,34 +126,24 @@ export class LLMFactory {
     const openaiModels = settings.get('openaiModels', []) as string[];
 
     if (doubaoModels.includes(modelName) || modelName.startsWith('ep-')) {
-      // 命中字节跳动火山引擎
       baseURL = 'https://ark.cn-beijing.volces.com/api/v3';
       apiKey = this.resolveApiKey('doubao', settings, 'doubaoKey');
-      if (!apiKey) throw new Error(`系统无法为火山引擎节点 [${modelName}] 匹配到有效的 API Key。`);
+      if (!apiKey) throw new Error(未找到火山引擎的 API Key);
       adapter = new VolcengineAdapter(baseURL, apiKey);
     } else if (deepseekModels.includes(modelName) || modelName.toLowerCase().includes('deepseek')) {
-      // 命中 DeepSeek：精确匹配用户配置列表 或 模型名包含 deepseek
       baseURL = 'https://api.deepseek.com/v1';
       apiKey = this.resolveApiKey('deepseek', settings, 'deepseekKey');
       adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
     } else if (qwenModels.includes(modelName) || modelName.toLowerCase().includes('qwen')) {
-      // 命中阿里云通义千问：精确匹配用户配置列表 或 模型名包含 qwen
       baseURL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
       apiKey = this.resolveApiKey('qwen', settings, 'qwenKey');
       adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
     } else if (tencentModels.includes(modelName) || modelName.toLowerCase().includes('hunyuan')) {
-      // 命中腾讯混元：精确匹配用户配置列表 或 模型名包含 hunyuan
       baseURL = 'https://api.hunyuan.cloud.tencent.com/v1';
       apiKey = this.resolveApiKey('tencent', settings, 'tencentKey');
       adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
-    } else if (openaiModels.includes(modelName) || modelName.toLowerCase().includes('gpt') || modelName.toLowerCase().includes('o1') || modelName.toLowerCase().includes('o3') || modelName.toLowerCase().includes('claude')) {
-      // 命中 OpenAI 及兼容中转：精确匹配用户配置列表 或 模型名包含 gpt/o1/o3/claude
-      try { const active = ApiProfileRepository.getActive('proxy'); if (active?.baseUrl) { baseURL = active.baseUrl; } else { baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string; } } catch { baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string; }
-      baseURL = baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
-      apiKey = this.resolveApiKey('proxy', settings, 'openaiKey');
-      adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
     } else {
-      // 降级兜底：使用 OpenAI 中转地址，让用户自定义的任意模型都能走通
+      // Default: OpenAI compatible (proxy / 中转站)
       try { const active = ApiProfileRepository.getActive('proxy'); if (active?.baseUrl) { baseURL = active.baseUrl; } else { baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string; } } catch { baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string; }
       baseURL = baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
       apiKey = this.resolveApiKey('proxy', settings, 'openaiKey');
@@ -142,4 +152,5 @@ export class LLMFactory {
 
     return { adapter, modelName, temperature };
   }
+}
 }

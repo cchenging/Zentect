@@ -37,7 +37,11 @@ interface WindowApi {
     onMediaUpdated: (handler: (payload: any) => void) => void;
     removeAll: () => void;
   };
-  invoke: (channel: string, ...args: any[]) => Promise<any>;
+  invoke: (channel: string, ...args: any[]) => Promise<any>;  profileBinding: {
+    getAll: () => Promise<any[]>;
+    getByTask: (taskType: string) => Promise<any>;
+    upsert: (taskType: string, profileId: string | null, modelName: string) => Promise<void>;
+  };
   apiProfile: {
     getAll: () => Promise<any[]>;
     getByProvider: (provider: string) => Promise<any[]>;

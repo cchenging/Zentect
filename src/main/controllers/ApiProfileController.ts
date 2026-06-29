@@ -1,6 +1,7 @@
 ﻿import { IpcRouter } from '../core/IpcRouter';
 import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
 import { ApiProfileRepository } from '../database/repositories/ApiProfileRepository';
+import { ProfileBindingRepository } from '../database/repositories/ProfileBindingRepository';
 
 export class ApiProfileController {
   public register() {
@@ -28,4 +29,7 @@ export class ApiProfileController {
       return ApiProfileRepository.activate(id, provider);
     });
   }
+  IpcRouter.handle(IPC_CHANNELS.BINDING_GET_ALL, async () => ProfileBindingRepository.getAll());
+  IpcRouter.handle(IPC_CHANNELS.BINDING_GET_BY_TASK, async (_, taskType: string) => ProfileBindingRepository.getByTaskType(taskType));
+  IpcRouter.handle(IPC_CHANNELS.BINDING_UPSERT, async (_, taskType: string, profileId: string | null, modelName: string) => ProfileBindingRepository.upsert(taskType, profileId, modelName));
 }
