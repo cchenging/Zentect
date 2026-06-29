@@ -7,6 +7,7 @@ import { Eye, EyeOff, Server, Play, ExternalLink, ChevronDown, ChevronUp, Zap, A
 import { Input } from '../../../components/ui/input';
 import { Button } from '../../../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
+import { PipelineModelMapping } from './PipelineModelMapping';
 import { ApiProfileManager } from '../../../components/shared/ApiProfileManager';
 import { PipelineBindingPanel } from '../../../components/shared/PipelineBindingPanel';
 import { FormField } from '../../../components/ui/form-field';
@@ -120,96 +121,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
 
   return (
     <div className="space-y-8 animate-fade-in-up">
-      {/* ===== API Key 获取引导 ===== */}
-      <div className="glass-card-sm p-4 flex flex-col gap-3 glow-border-accent">
-        <div className="flex items-center gap-2">
-          <ExternalLink size={15} className="text-accent" />
-          <span className="text-sm font-medium text-foreground">获取 API Key</span>
-        </div>
-        <p className="text-[11px] text-muted-foreground">
-          使用 Zentect 需要第三方云服务的 API Key，点击下方链接注册并获取。
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {PROVIDERS.map(p => (
-            <a key={p.id} href="#" onClick={(e) => { e.preventDefault(); if (p.link) window.open(p.link, '_blank'); }}
-               className="text-[10px] text-accent hover:underline flex items-center gap-1 px-2 py-1 rounded-md bg-accent/5 hover:bg-accent/10 transition-colors">
-              <ExternalLink size={10} /> {p.name.split(' ')[0]}
-            </a>
-          ))}
-        </div>
-      </div>
-
-      {/* ===== LLM 供应商配置 ===== */}
-      <section>
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <Zap size={18} className="text-accent" />
-            <h3 className="text-base font-semibold text-foreground">大语言模型 (LLM) 配置</h3>
-          </div>
-          <button
-            onClick={() => setShowAllKeys(!showAllKeys)}
-            className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border transition-all outline-none cursor-pointer shrink-0 border-border/50 bg-bg-secondary/50 text-muted-foreground hover:border-accent/40 hover:text-foreground"
-          >
-            {showAllKeys ? <EyeOff size={12} /> : <Eye size={12} />}
-            {showAllKeys ? '隐藏密钥' : '显示密钥'}
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-2">          {PROVIDERS.map((provider) => {
-            const isExpanded = expandedProvider === provider.id;
-            const hasKey = !!(aiData as any)[provider.keyField];
-
-            return (
-              <div key={provider.id} className="glass-card-sm overflow-hidden compact-card">
-                {/* 供应商标题行 */}
-                <button
-                  onClick={() => toggleProvider(provider.id)}
-                  className="w-full flex items-center justify-between p-4 cursor-pointer outline-none hover:bg-white/[0.02] transition-colors"
-                >
-                  <div className="flex items-center gap-3">
-                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: provider.color }} />
-                    <span className="text-[13px] font-semibold text-foreground">{provider.name}</span>
-                    {hasKey && <span className="badge-success">已配置</span>}
-                  </div>
-                  {isExpanded ? <ChevronUp size={16} className="text-muted-foreground" /> : <ChevronDown size={16} className="text-muted-foreground" />}
-                </button>
-
-                {/* 展开的配置内容 */}
-                {isExpanded && (
-                  <div className="px-4 pb-4 pt-0 flex flex-col gap-4 border-t border-border/30">
-                    {/* OpenAI 中转的 Base URL */}
-                    {provider.hasBaseUrl && (
-                      <div className="flex flex-col gap-1.5 mt-4">
-                        <span className="text-xs text-muted-foreground font-medium">代理地址 (Base URL)</span>
-                        <Input value={aiData.openaiBaseUrl || ''} onChange={e => handleValChange('openaiBaseUrl', e.target.value)} placeholder="https://api.siliconflow.cn/v1" className="text-xs bg-bg-secondary h-9 border-border/50" />
-                      </div>
-                    )}
-
-                    {/* API Key */}
-                    <div className={provider.hasBaseUrl ? '' : 'mt-4'}>
-                      <PasswordField
-                        label="API Key"
-                        value={(aiData as any)[provider.keyField] || ''}
-                        onChange={(e: any) => handleValChange(provider.keyField, e.target.value)}
-                        onCheck={() => onTest('openai_like', provider.name, { provider: provider.id, apiKey: (aiData as any)[provider.keyField] || '', baseURL: provider.hasBaseUrl ? aiData.openaiBaseUrl : provider.baseURL }, provider.keyField)}
-                        linkUrl={provider.link}
-                        forceShow={showAllKeys}
-                      />
-                    </div>
-
-                    {/* 模型列表 */}
-                    <div className="flex flex-col gap-1.5">
-                      <span className="text-xs text-muted-foreground font-medium">支持的模型列表</span>
-                      <Input value={(aiData as any)[provider.modelsField]?.join(', ') || ''} onChange={e => handleValChange(provider.modelsField, e.target.value.split(','))} className="text-xs bg-bg-secondary h-9 border-border/50" />
-                    </div>
-                    <ApiProfileManager provider={provider.id} hasBaseUrl={provider.hasBaseUrl} defaultBaseUrl={provider.baseURL} />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </section>
+              <PipelineModelMapping aiData={aiData} modelPool={modelPool || []} onModelChange={(key, val) => handleValChange(key, val)} />
 
       {/* ===== 管线模型调度映射 ===== */}
       <section>
