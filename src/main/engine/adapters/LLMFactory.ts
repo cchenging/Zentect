@@ -1,9 +1,10 @@
-// 📁 路径：src/main/engine/adapters/LLMFactory.ts
+﻿// 📁 路径：src/main/engine/adapters/LLMFactory.ts
 import { ILLMProvider } from './ILLMProvider';
 import { OpenAICompatibleAdapter } from './OpenAICompatibleAdapter';
 import { VolcengineAdapter } from './VolcengineAdapter';
 import { LLMConfig } from '../config/ProviderManager';
 import { SettingsRepository } from '../../database/repositories/SettingsRepository';
+import { ApiProfileRepository } from '../../database/repositories/ApiProfileRepository';
 
 export type AITaskType = 'visual' | 'script' | 'translate' | 'helper';
 
@@ -20,6 +21,17 @@ export interface FactoryResult {
  * 模型工厂：根据任务类型动态生成对应的大模型适配器实例
  */
 export class LLMFactory {
+  /**
+   * Resolve API key: check api_profiles (multi-API) first, fall back to old settings.
+   */
+  private static resolveApiKey(provider: string, settings: SettingsRepository, oldKey: string): string {
+    try {
+      const active = ApiProfileRepository.getActive(provider);
+      if (active?.apiKey) return active.apiKey;
+    } catch {}
+    return settings.get(oldKey, '') as string;
+  }
+
   
   /**
    * 💥 修复核心：补回被遗漏的系统级 create 方法！
@@ -96,35 +108,35 @@ export class LLMFactory {
     if (doubaoModels.includes(modelName) || modelName.startsWith('ep-')) {
       // 命中字节跳动火山引擎
       baseURL = 'https://ark.cn-beijing.volces.com/api/v3';
-      apiKey = settings.get('doubaoKey', '') as string;
+      apiKey = this.resolveApiKey('doubao', settings, 'doubaoKey');
       if (!apiKey) throw new Error(`系统无法为火山引擎节点 [${modelName}] 匹配到有效的 API Key。`);
       adapter = new VolcengineAdapter(baseURL, apiKey);
     } else if (deepseekModels.includes(modelName) || modelName.toLowerCase().includes('deepseek')) {
       // 命中 DeepSeek：精确匹配用户配置列表 或 模型名包含 deepseek
       baseURL = 'https://api.deepseek.com/v1';
-      apiKey = settings.get('deepseekKey', '') as string;
+      apiKey = this.resolveApiKey('deepseek', settings, 'deepseekKey');
       adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
     } else if (qwenModels.includes(modelName) || modelName.toLowerCase().includes('qwen')) {
       // 命中阿里云通义千问：精确匹配用户配置列表 或 模型名包含 qwen
       baseURL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-      apiKey = settings.get('qwenKey', '') as string;
+      apiKey = this.resolveApiKey('qwen', settings, 'qwenKey');
       adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
     } else if (tencentModels.includes(modelName) || modelName.toLowerCase().includes('hunyuan')) {
       // 命中腾讯混元：精确匹配用户配置列表 或 模型名包含 hunyuan
       baseURL = 'https://api.hunyuan.cloud.tencent.com/v1';
-      apiKey = settings.get('tencentKey', '') as string;
+      apiKey = this.resolveApiKey('tencent', settings, 'tencentKey');
       adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
     } else if (openaiModels.includes(modelName) || modelName.toLowerCase().includes('gpt') || modelName.toLowerCase().includes('o1') || modelName.toLowerCase().includes('o3') || modelName.toLowerCase().includes('claude')) {
       // 命中 OpenAI 及兼容中转：精确匹配用户配置列表 或 模型名包含 gpt/o1/o3/claude
-      baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string;
+      try { const active = ApiProfileRepository.getActive('proxy'); if (active?.baseUrl) { baseURL = active.baseUrl; } else { baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string; } } catch { baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string; }
       baseURL = baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
-      apiKey = settings.get('openaiKey', '') as string;
+      apiKey = this.resolveApiKey('proxy', settings, 'openaiKey');
       adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
     } else {
       // 降级兜底：使用 OpenAI 中转地址，让用户自定义的任意模型都能走通
-      baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string;
+      try { const active = ApiProfileRepository.getActive('proxy'); if (active?.baseUrl) { baseURL = active.baseUrl; } else { baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string; } } catch { baseURL = settings.get('openaiBaseUrl', 'https://api.openai.com/v1') as string; }
       baseURL = baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
-      apiKey = settings.get('openaiKey', '') as string;
+      apiKey = this.resolveApiKey('proxy', settings, 'openaiKey');
       adapter = new OpenAICompatibleAdapter(baseURL, apiKey);
     }
 
