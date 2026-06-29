@@ -8,6 +8,7 @@ import { Input } from '../../../components/ui/input';
 import { Button } from '../../../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../components/ui/select';
 import { ApiProfileManager } from '../../../components/shared/ApiProfileManager';
+import { PipelineBindingPanel } from '../../../components/shared/PipelineBindingPanel';
 import { FormField } from '../../../components/ui/form-field';
 
 interface AITabProps {
