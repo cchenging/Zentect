@@ -33,12 +33,12 @@ const PROVIDERS = [
  *  本地引擎类节点（音频分离/ASR/TTS）保留固定选项
  */
 const PIPELINE_NODES = [
-  { key: 'taskAudioSeparate', label: '音频分离', icon: '🎵', localOptions: ['本地轻量模型', 'Spleeter', 'UVR5'] },
-  { key: 'taskASR', label: '台词识别 (ASR)', icon: '🎤', localOptions: ['Whisper 本地版', 'SenseVoiceSmall'] },
-  { key: 'taskVisualModel', label: 'VLM 图片分析', icon: '👁️', useModelPool: true },
-  { key: 'taskSentiment', label: '情绪识别', icon: '😊', useModelPool: true },
-  { key: 'taskScriptModel', label: 'AI 故事生成', icon: '✍️', useModelPool: true },
-  { key: 'taskTTS', label: 'TTS 配音合成', icon: '🎙️', localOptions: ['Edge TTS', '本地 SoVITS', 'Fish Audio', '火山引擎'] },
+  { key: 'taskAudioSeparate', bindingKey: 'audio', label: '音频分离', icon: '🎵', localOptions: ['本地轻量模型', 'Spleeter', 'UVR5'] },
+  { key: 'taskASR', bindingKey: 'asr', label: '台词识别 (ASR)', icon: '🎤', localOptions: ['Whisper 本地版', 'SenseVoiceSmall'] },
+  { key: 'taskVisualModel', bindingKey: 'visual', label: 'VLM 图片分析', icon: '👁️', useModelPool: true },
+  { key: 'taskSentiment', bindingKey: 'sentiment', label: '情绪识别', icon: '😊', useModelPool: true },
+  { key: 'taskScriptModel', bindingKey: 'script', label: 'AI 故事生成', icon: '✍️', useModelPool: true },
+  { key: 'taskTTS', bindingKey: 'tts', label: 'TTS 配音合成', icon: '🎙️', localOptions: ['Edge TTS', '本地 SoVITS', 'Fish Audio', '火山引擎'] },
 ] as const;
 
 /**
@@ -263,11 +263,11 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                   <span className="text-xs text-foreground font-medium">{node.label}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  {'useModelPool' in node && (
+                  {(node as any).bindingKey && (
                     <select
-                      value={bindings[node.key === 'taskVisualModel' ? 'visual' : node.key === 'taskScriptModel' ? 'script' : 'translate']?.profileId || ''}
+                      value={bindings[(node as any).bindingKey]?.profileId || ''}
                       onChange={(e) => {
-                        const tk = node.key === 'taskVisualModel' ? 'visual' : node.key === 'taskScriptModel' ? 'script' : 'translate';
+                        const tk = (node as any).bindingKey;
                         const pid = e.target.value || null;
                         const p = apiProfiles.find((x: any) => x.id === pid);
                         const nm = pid ? (p?.models?.[0] || currentValue) : currentValue;
@@ -285,7 +285,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                   <Select value={currentValue} onValueChange={v => {
                     handleValChange(node.key, v);
                     if ('useModelPool' in node) {
-                      const tk = node.key === 'taskVisualModel' ? 'visual' : node.key === 'taskScriptModel' ? 'script' : 'translate';
+                      const tk = (node as any).bindingKey;
                       handleBindingChange(tk, bindings[tk]?.profileId || null, v);
                     }
                   }}>
