@@ -1,4 +1,4 @@
-// 📁 src/main/engine/PipelineEngine.ts
+﻿// 📁 src/main/engine/PipelineEngine.ts
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../shared/utils/LogConstants';
 import { PipelineTask, PipelinePayload, TaskProgressPayload } from '../../shared/types';
@@ -320,7 +320,7 @@ export class PipelineEngine {
       });
 
       // 当节点产出包含 shotId 的数据时，额外推送到故事板卡片通道
-      if (progress === 100 && Array.isArray(results)) {
+      if (progress === 100 && Array.isArray(results) && !task.nodeId?.includes('tts')) {
         for (const item of results) {
           if (item && item.shotId) {
             onProgressUpdate({
