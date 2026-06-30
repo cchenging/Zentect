@@ -1,4 +1,4 @@
-// 📁 路径：src/main/engine/AIEngine.ts
+﻿// 📁 路径：src/main/engine/AIEngine.ts
 
 import { WebContents } from 'electron';
 import { FrameExtractor } from './capabilities/FrameExtractor';
@@ -325,7 +325,7 @@ export class AIEngine {
           if (!res.ok) throw new Error(`MOSS-TTS 异常: ${await res.text()}`);
           const json = await res.json();
           if (json.code !== 0) throw new Error(`MOSS-TTS 错误: ${json.message}`);
-          audioData = Buffer.from(json.audio, 'hex'); ext = 'wav';
+          const audioStr = json.audio || ''; const isBase64 = /[^0-9a-fA-F]/.test(audioStr); audioData = isBase64 ? Buffer.from(audioStr, 'base64') : Buffer.from(audioStr, 'hex'); ext = 'wav';
           break;
         }
         default: throw new Error(`未知的 TTS: ${provider}`);

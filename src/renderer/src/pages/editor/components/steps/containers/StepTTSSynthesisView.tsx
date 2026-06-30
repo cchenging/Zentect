@@ -97,7 +97,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisProps> = (props) => 
         <div className="flex flex-col gap-2">
           <div className="text-[12px] font-semibold flex items-center gap-2"><Mic size={14} /> 配音列表</div>
           {scriptParagraphs.map((p, idx) => {
-            const result = ttsResults[idx] || null;
+            const pId = p.shotId || p.id || ''; const result = ttsResults.find((r: any) => (r.shotId || '') === pId) || ttsResults[idx] || null;
             const status = result ? (result._failed ? "failed" : result.audioUrl ? "completed" : "failed") : null;
             const isPlaying = playingIdx === idx;
             return (
