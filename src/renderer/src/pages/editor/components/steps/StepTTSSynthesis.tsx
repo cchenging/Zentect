@@ -98,7 +98,7 @@ export const StepTTSSynthesis: React.FC = () => {
   }, [playingIdx, speechRate, stopAudio]);
 
   const handleVoicePreview = useCallback(async (voiceId: string) => {
-    if (previewingVoiceId) return;
+    if (previewingVoiceId === voiceId) { stopAudio(); setPreviewingVoiceId(null); return; } if (previewingVoiceId) { stopAudio(); setPreviewingVoiceId(null); }
     setPreviewingVoiceId(voiceId);
     try {
       const state = useStore.getState();

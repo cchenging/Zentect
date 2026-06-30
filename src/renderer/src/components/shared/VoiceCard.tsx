@@ -1,5 +1,5 @@
-﻿import React from 'react';
-import { User, Play } from 'lucide-react';
+import React from 'react';
+import { User, Play, Square } from 'lucide-react';
 
 export interface VoiceCardProps {
   id: string; name: string; lang?: string;
@@ -17,10 +17,11 @@ export const VoiceCard: React.FC<VoiceCardProps> = ({
     <User size={11} />
     <span className="flex-1 truncate">{name}</span>
     {lang && <span className="text-[9px] opacity-60">{lang}</span>}
-    <button onClick={(e) => { e.stopPropagation(); onPreview(id); }}
-      disabled={isPreviewing || disabled}
-      className={`shrink-0 p-0.5 rounded cursor-pointer ${isPreviewing ? 'text-accent animate-pulse' : 'text-muted-foreground hover:text-accent'}`}>
-      <Play size={10} />
+    <button onClick={(e) => { e.stopPropagation(); if (!disabled) onPreview(id); }}
+      className={`shrink-0 p-0.5 rounded cursor-pointer transition-colors ${
+        isPreviewing ? 'text-accent' : 'text-muted-foreground hover:text-accent'
+      } ${disabled ? 'opacity-30 cursor-not-allowed' : ''}`}>
+      {isPreviewing ? <Square size={10} /> : <Play size={10} />}
     </button>
   </div>
 );
