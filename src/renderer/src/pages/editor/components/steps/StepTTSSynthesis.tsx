@@ -44,15 +44,22 @@ export const StepTTSSynthesis: React.FC = () => {
   const [playingIdx, setPlayingIdx] = useState<number | null>(null);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [clonedVoices, setClonedVoices] = useState<TtsVoiceOption[]>([]);
+  const [mossVoices, setMossVoices] = useState<TtsVoiceOption[]>([]);
   const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     if (ttsEngine === "sovits" || ttsEngine === "fish") {
+      setMossVoices([]);
       API.voice.getClonedVoices().then((res: any) => {
         if (res?.voices && Array.isArray(res.voices)) setClonedVoices(res.voices.map((v: any) => ({ id: v.id, name: v.name, lang: "克隆" })));
       }).catch(() => {});
-    } else { setClonedVoices([]); }
+    } else if (ttsEngine === "moss") {
+      setClonedVoices([]);
+      API.voice.listByEngine("moss").then((voices: any) => {
+        if (Array.isArray(voices) && voices.length > 0) setMossVoices(voices);
+      }).catch(() => { setMossVoices([]); });
+    } else { setClonedVoices([]); setMossVoices([]); }
   }, [ttsEngine]);
 
   const stopAudio = useCallback(() => { if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; } setPlayingIdx(null); }, []);
@@ -70,7 +77,11 @@ export const StepTTSSynthesis: React.FC = () => {
     if (previewingVoiceId) return;
     setPreviewingVoiceId(voiceId);
     try {
-      const result = await API.voice.preview(ttsEngine, voiceId, "欢迎使用 Zentect 智能剪辑，这是一段语音合成测试。");
+      const state = useStore.getState();
+      const selectedParagraph = state.scriptParagraphs?.[0];
+      const previewText = (selectedParagraph?.audioSafeText || selectedParagraph?.cleanText || selectedParagraph?.text || '').trim()
+        || "欢迎使用 Zentect 智能剪辑，这是一段语音合成测试。";
+      const result = await API.voice.preview(ttsEngine, voiceId, previewText);
       if (result?.audioPath) {
         stopAudio();
         let url = result.audioPath;
@@ -104,7 +115,7 @@ export const StepTTSSynthesis: React.FC = () => {
     <StepTTSSynthesisView
       ttsEngine={ttsEngine} ttsVoiceId={ttsVoiceId} ttsProgress={ttsProgress} ttsResults={ttsResults}
       scriptParagraphs={scriptParagraphs} isProcessing={isProcessing}
-      voices={VOICE_OPTIONS[ttsEngine] || []} clonedVoices={clonedVoices}
+      voices={ttsEngine === 'moss' && mossVoices.length > 0 ? mossVoices : VOICE_OPTIONS[ttsEngine] || []} clonedVoices={clonedVoices}
       speechRate={speechRate} previewingVoiceId={previewingVoiceId} playingIdx={playingIdx}
       successCount={successCount} failedCount={failedCount}
       onSetTtsEngine={setTtsEngine} onSetTtsVoiceId={setTtsVoiceId} onSetSpeechRate={setSpeechRate}

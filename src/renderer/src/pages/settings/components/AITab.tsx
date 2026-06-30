@@ -38,7 +38,7 @@ const PIPELINE_NODES = [
   { key: 'taskVisualModel', bindingKey: 'visual', label: 'VLM 图片分析', icon: '👁️', useModelPool: true },
   { key: 'taskSentiment', bindingKey: 'sentiment', label: '情绪识别', icon: '😊', useModelPool: true },
   { key: 'taskScriptModel', bindingKey: 'script', label: 'AI 故事生成', icon: '✍️', useModelPool: true },
-  { key: 'taskTTS', bindingKey: 'tts', label: 'TTS 配音合成', icon: '🎙️', localOptions: ['Edge TTS', '本地 SoVITS', 'Fish Audio', '火山引擎'] },
+  { key: 'taskTTS', label: 'TTS 配音合成', icon: '🎙️', hint: '由下方语音合成配置决定', disabled: true },
 ] as const;
 
 /**
@@ -246,6 +246,19 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         <p className="text-[11px] text-muted-foreground mb-4">为每个管线节点选择使用的模型供应商</p>
         <div className="glass-card-sm p-5 flex flex-col gap-4">
           {PIPELINE_NODES.map((node) => {
+            /** disabled 节点只显示提示文字，不渲染下拉框 */
+            if ((node as any).disabled) {
+              return (
+                <div key={node.key} className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-sm">{node.icon}</span>
+                    <span className="text-xs text-foreground font-medium">{node.label}</span>
+                  </div>
+                  <span className="text-[11px] text-muted-foreground italic">{(node as any).hint}</span>
+                </div>
+              );
+            }
+
             /** LLM 节点从用户配置的 modelPool 动态取选项，本地引擎节点用固定选项 */
             const options: string[] = 'useModelPool' in node
               ? (modelPool && modelPool.length > 0 ? modelPool : [])

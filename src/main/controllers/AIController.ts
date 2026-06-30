@@ -6,6 +6,7 @@ import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../shared/utils/LogConstants';
 import { VisionExtractStrategy } from '../engine/strategies/VisionExtractStrategy';
 import { LLMFactory } from '../engine/adapters/LLMFactory';
+import { AIEngine } from '../engine/AIEngine';
 import { PathManager } from '../utils/pathManager';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -257,6 +258,64 @@ export class AIController {
         return await res.json();
       } catch (e: any) {
         return { code: -1, detail: e.message };
+      }
+    });
+
+    // 🔊 音色试听
+    IpcRouter.handle(IPC_CHANNELS.VOICE_PREVIEW, async (_, payload: { provider: string; voiceId?: string; text?: string }) => {
+      const previewText = payload.text || '欢迎使用 Zentect 智能剪辑';
+      const audioPath = await AIEngine.generateTTS(previewText,
+        payload.provider as any, undefined, payload.voiceId);
+      return { audioPath };
+    });
+
+    // 🔊 引擎音色列表
+    const HARDCODED_VOICES: Record<string, any[]> = {
+      edge: [
+        { id: 'zh-CN-XiaoxiaoNeural', name: '晓晓 (女)', lang: 'zh-CN' },
+        { id: 'zh-CN-YunxiNeural', name: '云希 (男)', lang: 'zh-CN' },
+        { id: 'zh-CN-XiaoyiNeural', name: '晓伊 (女)', lang: 'zh-CN' },
+        { id: 'zh-CN-YunyangNeural', name: '云扬 (男)', lang: 'zh-CN' },
+        { id: 'zh-CN-XiaochenNeural', name: '晓辰 (女)', lang: 'zh-CN' },
+        { id: 'en-US-JennyNeural', name: 'Jenny (EN)', lang: 'en-US' },
+      ],
+      doubao: [
+        { id: 'zh_female_meilinvyou_saturn_bigtts', name: '魅力女友 (女)', lang: 'zh' },
+        { id: 'zh_male_shaonv_saturn_bigtts', name: '少年 (男)', lang: 'zh' },
+      ],
+      fish: [
+        { id: 'reference', name: '参考音频克隆', lang: 'any' },
+      ],
+    };
+
+    IpcRouter.handle(IPC_CHANNELS.VOICE_LIST_BY_ENGINE, async (_, engine: string) => {
+      if (engine === 'moss') {
+        try {
+          const res = await fetch('http://127.0.0.1:9881/voices');
+          const data = await res.json();
+          return Object.entries(data.voices).map(([id, info]: [string, any]) => ({
+            id,
+            name: info.display_name || id,
+            lang: info.group || '',
+          }));
+        } catch {
+          return [];
+        }
+      }
+      return HARDCODED_VOICES[engine] || [];
+    });
+
+    // 🔊 克隆音色列表
+    IpcRouter.handle('voice:get-cloned-voices', async () => {
+      try {
+        const clonesDir = path.join(PathManager.getUserDataPath(), 'cloned_voices');
+        if (!fs.existsSync(clonesDir)) return [];
+        const dirs = fs.readdirSync(clonesDir, { withFileTypes: true })
+          .filter(d => d.isDirectory())
+          .map(d => ({ id: d.name, name: d.name, lang: 'custom' }));
+        return dirs;
+      } catch {
+        return [];
       }
     });
   }

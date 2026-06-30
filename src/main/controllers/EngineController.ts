@@ -329,7 +329,7 @@ export class EngineController {
 
     // V1.1: 音色列表 — 根据引擎类型返回可用音色清单
     IpcRouter.handle(IPC_CHANNELS.VOICE_LIST_BY_ENGINE, async (_, engine: string) => {
-      const voices = getVoicesForEngine(engine);
+      const voices = await getVoicesForEngine(engine);
       return voices;
     });
 
@@ -435,7 +435,7 @@ export class EngineController {
 }
 
 /** V1.1: 获取指定 TTS 引擎的可用音色清单 */
-function getVoicesForEngine(engine: string): Array<{ id: string; name: string; gender: string; locale: string }> {
+async function getVoicesForEngine(engine: string): Promise<Array<{ id: string; name: string; lang?: string; gender?: string; locale?: string }>> {
   switch (engine) {
     case 'edge':
       return [
@@ -461,6 +461,24 @@ function getVoicesForEngine(engine: string): Array<{ id: string; name: string; g
       return [
         { id: 'default', name: '本地 SoVITS 音色 (需克隆)', gender: 'unknown', locale: 'zh-CN' },
       ];
+    case 'moss': {
+      try {
+        const response = await fetch('http://127.0.0.1:9881/voices');
+        const data = await response.json();
+        if (data?.voices && Array.isArray(data.voices)) {
+          const langMap: Record<string, string> = { zh: '中文', en: '英文', ja: '日文' };
+          const genderMap: Record<string, string> = { male: '男', female: '女' };
+          return data.voices.map((v: any) => ({
+            id: v.id,
+            name: v.name,
+            lang: `${langMap[v.language] || v.language}·${genderMap[v.gender] || v.gender}`,
+          }));
+        }
+      } catch {
+        // tts_worker 未启动时返回空数组，前端以硬编码 VOICE_OPTIONS 兜底
+      }
+      return [];
+    }
     default:
       return [];
   }

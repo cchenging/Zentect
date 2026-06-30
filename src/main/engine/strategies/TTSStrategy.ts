@@ -87,7 +87,7 @@ export class TTSStrategy extends BaseNodeStrategy {
     if (input.scriptShots && Array.isArray(input.scriptShots) && input.scriptShots.length > 0) {
       shots = input.scriptShots.map((s: any, idx: number) => ({
         shotId: s.shotId || s.id || `shot_${idx + 1}`,
-        text: s.text || s.cleanText || s.audioSafeText || '',
+        text: s.audioSafeText || s.cleanText || s.text || '',
         duration: s.duration || 3,
       })).filter((s: any) => s.text && s.text.trim().length > 0);
       AppLogger.info(LOG_TAGS.AI_AGENT, `TTS 从 scriptShots 获取到 ${shots.length} 段剧本文本`);
@@ -100,7 +100,7 @@ export class TTSStrategy extends BaseNodeStrategy {
           if (busData?.shots && Array.isArray(busData.shots)) {
             shots = busData.shots.map((s: any, idx: number) => ({
               shotId: s.shotId || `shot_${idx + 1}`,
-              text: s.text || '',
+              text: s.audioSafeText || s.cleanText || s.text || '',
               duration: s.duration || 3,
             })).filter((s: any) => s.text && s.text.trim().length > 0);
           }

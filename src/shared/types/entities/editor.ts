@@ -21,6 +21,7 @@ export interface VlmFrame {
 /** 解说文案段落 */
 export interface ScriptParagraph {
   id: string; shotId?: string; text: string; duration?: number; emotion?: string; editing: boolean;
+  audioSafeText?: string; cleanText?: string;
 }
 
 /** 管线 R/S/T/P 参数 */

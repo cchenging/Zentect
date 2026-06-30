@@ -1,4 +1,5 @@
-import { spawn, ChildProcess } from 'child_process'
+﻿import { spawn, ChildProcess } from 'child_process'
+import path from 'path'
 import * as http from 'http'
 import { PathManager } from '../utils/pathManager'
 import { ProcessManager } from '../utils/processManager'
@@ -70,6 +71,8 @@ export class AiRuntimeManager {
         script: scriptPath, port: this.runtimePort, device: deviceType
       })
 
+      const pyLibsPath = path.join(PathManager.getResourcesPath(), 'scripts', 'py_libs');
+      const pythonEnv = { ...process.env, PYTHONPATH: pyLibsPath };
       const proc = spawn(pythonPath, [
         scriptPath,
         '--port', String(this.runtimePort),
@@ -217,6 +220,8 @@ export class AiRuntimeManager {
     const modelsDir = PathManager.getModelsPath()
 
     return async (_label: string, _restartCount: number): Promise<ChildProcess> => {
+      const pyLibsPath = path.join(PathManager.getResourcesPath(), 'scripts', 'py_libs');
+      const pythonEnv = { ...process.env, PYTHONPATH: pyLibsPath };
       const proc = spawn(pythonPath, [
         scriptPath,
         '--port', String(port),

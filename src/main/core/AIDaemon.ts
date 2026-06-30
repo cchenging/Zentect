@@ -1,4 +1,4 @@
-import * as path from 'path';
+﻿import * as path from 'path';
 import * as http from 'http';
 import { ChildProcess, spawn } from 'child_process';
 import { PathManager } from '../utils/pathManager';
@@ -89,6 +89,8 @@ export class AIDaemon {
 
     AppLogger.info(LOG_TAGS.AI_DAEMON, 'Starting MOSS-TTS worker...', { script: scriptPath, port: this.ttsPort, modelDir });
 
+    const pyLibsPath = path.join(PathManager.getResourcesPath(), 'scripts', 'py_libs');
+    const pythonEnv = { ...process.env, PYTHONPATH: pyLibsPath };
     this.ttsProcess = spawn(pythonExe, [
       scriptPath,
       '--port', this.ttsPort.toString(),

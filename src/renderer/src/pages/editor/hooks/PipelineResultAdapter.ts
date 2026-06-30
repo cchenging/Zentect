@@ -48,6 +48,8 @@ export function classifyNodeResult(nodeId: string, data: unknown): PipelineStepR
       id: p.id || p.shotId || `para_${idx}`,
       shotId: p.shotId, text: p.text || p.content || p.narration || '',
       duration: p.duration, emotion: p.emotion || '', editing: false,
+      audioSafeText: p.audioSafeText || '',
+      cleanText: p.cleanText || '',
     }));
     return { type: 'script_gen', paragraphs };
   }
