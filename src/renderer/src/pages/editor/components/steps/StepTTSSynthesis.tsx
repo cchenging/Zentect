@@ -56,6 +56,20 @@ export const StepTTSSynthesis: React.FC = () => {
   const [clonedVoices, setClonedVoices] = useState<TtsVoiceOption[]>([]);
   const [mossVoices, setMossVoices] = useState<TtsVoiceOption[]>([]);
   const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
+
+  const PREVIEW_TEXT_MAP: Record<string, string> = {
+    zh: '欢迎使用 Zentect 智能剪辑，这是一段语音合成测试。',
+    en: 'Welcome to Zentect, this is a voice synthesis preview.',
+    ja: 'Zentectへようこそ、これは音声合成のテストです。',
+  };
+
+  const getPreviewText = (voiceId: string): string => {
+    if (['Ava', 'Bella', 'Adam', 'Nathan', 'Trump'].includes(voiceId)) return PREVIEW_TEXT_MAP.en;
+    if (['Sakura', 'Yui', 'Aoi', 'Hina', 'Mei'].includes(voiceId)) return PREVIEW_TEXT_MAP.ja;
+    if (voiceId.startsWith('en-')) return PREVIEW_TEXT_MAP.en;
+    if (voiceId.startsWith('ja-')) return PREVIEW_TEXT_MAP.ja;
+    return PREVIEW_TEXT_MAP.zh;
+  };
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
@@ -88,8 +102,7 @@ export const StepTTSSynthesis: React.FC = () => {
     setPreviewingVoiceId(voiceId);
     try {
       const state = useStore.getState();
-      const selectedParagraph = state.scriptParagraphs?.[0];
-      const previewText = (selectedParagraph?.text || '').trim()
+      const previewText = getPreviewText(voiceId)
         || "欢迎使用 Zentect 智能剪辑，这是一段语音合成测试。";
       const result = await API.voice.preview(ttsEngine, voiceId, previewText);
       if (result?.audioPath) {
