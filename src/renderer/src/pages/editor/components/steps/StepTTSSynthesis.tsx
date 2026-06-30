@@ -89,7 +89,7 @@ export const StepTTSSynthesis: React.FC = () => {
     try {
       const state = useStore.getState();
       const selectedParagraph = state.scriptParagraphs?.[0];
-      const previewText = (selectedParagraph?.audioSafeText || selectedParagraph?.cleanText || selectedParagraph?.text || '').trim()
+      const previewText = (selectedParagraph?.text || '').trim()
         || "欢迎使用 Zentect 智能剪辑，这是一段语音合成测试。";
       const result = await API.voice.preview(ttsEngine, voiceId, previewText);
       if (result?.audioPath) {
