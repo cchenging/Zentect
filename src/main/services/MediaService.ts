@@ -1,4 +1,4 @@
-// 📁 路径: src/main/services/MediaService.ts
+// Path: src/main/services/MediaService.ts
 import { MediaRepository } from '../database/repositories/MediaRepository';
 import { ProjectRepository } from '../database/repositories/ProjectRepository';
 import { PathManager } from '../utils/pathManager';
@@ -11,11 +11,8 @@ import { spawn } from 'child_process';
 import { ProjectService } from './ProjectService';
 import { VideoProcessor } from '../engine/media/VideoProcessor';
 import { DICT } from '../../shared/locales/dictionary';
+import { BrowserWindow } from 'electron';
 
-/** Chromium 原生支持的视频容器格式 */
-const NATIVE_VIDEO_FORMATS = ['mp4', 'webm', 'ogg'];
-
-/** 需要转码的视频格式 */
 const TRANSCODE_FORMATS = ['mkv', 'avi', 'mov', 'wmv', 'flv', 'ts', 'rmvb', 'rm', '3gp', 'vob'];
 
 export class MediaService {
@@ -24,14 +21,14 @@ export class MediaService {
   private projectRepo = new ProjectRepository();
 
   /**
-   * 🚀 导入媒体文件到项目
+   * Import media files - returns immediately with basic info, processes metadata/cover in background
    */
   public async importMedia(projectId: string, filePaths: string[]): Promise<MediaItem[]> {
     const results: MediaItem[] = [];
 
     for (const filePath of filePaths) {
       if (!fs.existsSync(filePath)) {
-        AppLogger.warn(LOG_TAGS.MEDIA, `文件不存在，跳过导入: ${filePath}`);
+        AppLogger.warn(LOG_TAGS.MEDIA, `File not found, skipping: ${filePath}`);
         continue;
       }
 
@@ -47,290 +44,199 @@ export class MediaService {
           type = DICT.MEDIA_TYPE.AUDIO as MediaItem['type'];
         }
 
-        let metadata: any = { formattedTime: '00:00:00', duration: 0, width: 0, height: 0, fps: 0 };
-        let pureCoverName = '';
-        let playableFilePath = filePath; // 最终用于播放的文件路径
-        let needsTranscode = false; // 是否需要异步转码
-
-        // 非原生格式自动转码为 MP4，确保 Chromium 可播放
-        if (type === 'video' && TRANSCODE_FORMATS.includes(ext)) {
-          AppLogger.info(LOG_TAGS.MEDIA, `检测到非原生格式 .${ext}，标记异步转码: ${fileName}`);
-          needsTranscode = true;
-        }
-
-        // MP4 文件检测 HEVC 编码，Chromium 不支持 HEVC 播放，需转码为 H.264
-        if (type === 'video' && ext === 'mp4') {
-          const isHevc = await this.detectHevcCodec(filePath);
-          if (isHevc) {
-            AppLogger.info(LOG_TAGS.MEDIA, `检测到 HEVC 编码 MP4，标记异步转码: ${fileName}`);
-            needsTranscode = true;
-          }
-        }
-
-        // 异步转码：先返回原始路径，后台启动转码，完成后更新数据库
-        if (needsTranscode) {
-          const transcodedPath = this.getTranscodedPath(projectId, mediaId);
-          if (fs.existsSync(transcodedPath)) {
-            // 已有转码文件，直接使用
-            playableFilePath = transcodedPath;
-            needsTranscode = false;
-          } else {
-            // 后台异步转码，不阻塞导入
-            this.transcodeAsync(filePath, projectId, mediaId, transcodedPath);
-          }
-        }
-
-        if (type === 'video') {
-          metadata = await VideoProcessor.extractMetadata(playableFilePath);
-          pureCoverName = await VideoProcessor.generateCover(playableFilePath, PathManager.getProjectThumbnailsDir(projectId), mediaId);
-        }
-
-        const relativeCoverPath = pureCoverName ? `thumbnails/${pureCoverName}` : '';
-        const mediaItem: MediaItem & { duration: number, width: number, height: number, fps: number } = {
+        // Create media item immediately with basic info - no waiting for ffprobe/ffmpeg
+        const mediaItem: any = {
           id: mediaId, projectId, type, name: fileName,
-          filePath: playableFilePath, coverPath: relativeCoverPath,
-          status: 'parsed',
-          duration: metadata.duration || 0,
-          width: metadata.width || 0, height: metadata.height || 0, fps: metadata.fps || 0
+          filePath: filePath, coverPath: '',
+          status: 'importing',
+          duration: 0, width: 0, height: 0, fps: 0
         };
 
-        // 通过仓储层写入
         this.repo.insertMedia(mediaItem);
 
-        // 同步更新项目封面（用于首页卡片展示）
-        if (relativeCoverPath) {
-          this.projectRepo.updateCover(projectId, relativeCoverPath);
-        }
-
-        // 返回给前端前，组装前端需要的字段
+        // Return immediately to frontend
         const frontendMediaItem: MediaItem = {
           id: mediaItem.id, projectId: mediaItem.projectId, name: mediaItem.name, type: mediaItem.type,
-          filePath: mediaItem.filePath, coverPath: mediaItem.coverPath, duration: metadata.formattedTime, status: 'parsed'
+          filePath: mediaItem.filePath, coverPath: '', duration: '00:00:00', status: 'importing'
         };
         results.push(this.projectService.hydratePaths({ mediaItems: [frontendMediaItem] }, projectId).mediaItems[0]);
+
+        // Process metadata + cover in background (non-blocking)
+        this.processMediaInBackground(projectId, mediaId, filePath, type, ext);
+
       } catch (error) {
-        AppLogger.error(LOG_TAGS.MEDIA, `导入媒体失败: ${filePath}`, error);
+        AppLogger.error(LOG_TAGS.MEDIA, `Import failed: ${filePath}`, error);
       }
     }
     return results;
   }
 
   /**
-   * 获取转码输出路径（不执行转码）
+   * Background processing: extract metadata, generate cover, detect HEVC, transcode if needed
+   * Updates the database and notifies frontend when done
    */
-  private getTranscodedPath(projectId: string, mediaId: string): string {
-    const outputDir = PathManager.getProjectExtractionsDir(projectId, 'transcoded');
-    return path.join(outputDir, `${mediaId}.mp4`);
-  }
+  private async processMediaInBackground(
+    projectId: string, mediaId: string, filePath: string,
+    type: string, ext: string
+  ): Promise<void> {
+    try {
+      let playableFilePath = filePath;
+      let needsTranscode = false;
 
-  /**
-   * 异步转码：后台启动 FFmpeg 转码，完成后更新数据库中的 filePath
-   * 不阻塞导入流程，用户可以立即看到导入结果
-   */
-  private transcodeAsync(sourcePath: string, projectId: string, mediaId: string, outputPath: string): void {
-    const ffmpegExe = PathManager.getBinPath(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
-    if (!fs.existsSync(ffmpegExe)) {
-      AppLogger.warn(LOG_TAGS.MEDIA, 'FFmpeg 不存在，无法异步转码');
-      return;
-    }
-
-    const outputDir = path.dirname(outputPath);
-    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-
-    AppLogger.info(LOG_TAGS.MEDIA, `[异步转码] 后台启动: ${sourcePath.split(/[\\/]/).pop()} → MP4`);
-
-    const args = [
-      '-i', sourcePath,
-      '-c:v', 'libx264',
-      '-preset', 'fast',
-      '-crf', '23',
-      '-c:a', 'aac',
-      '-b:a', '128k',
-      '-movflags', '+faststart',
-      '-y',
-      outputPath
-    ];
-
-    const proc = spawn(ffmpegExe, args, { windowsHide: true });
-    let stderrOutput = '';
-
-    proc.stderr?.on('data', (data: Buffer) => { stderrOutput += data.toString(); });
-
-    proc.on('close', (code) => {
-      if (code === 0 && fs.existsSync(outputPath)) {
-        AppLogger.info(LOG_TAGS.MEDIA, `[异步转码] 完成: ${mediaId}`);
-        /** 转码完成，更新数据库中的 filePath */
-        try {
-          this.repo.updateMedia(mediaId, { filePath: outputPath, status: 'transcoded' });
-        } catch (e) {
-          AppLogger.warn(LOG_TAGS.MEDIA, `[异步转码] 更新数据库失败: ${mediaId}`, e);
-        }
-      } else {
-        AppLogger.error(LOG_TAGS.MEDIA, `[异步转码] 失败 (code: ${code}): ${mediaId}`, { stderr: stderrOutput.slice(-300) });
-        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
+      // Check if transcoding needed
+      if (type === 'video' && TRANSCODE_FORMATS.includes(ext)) {
+        AppLogger.info(LOG_TAGS.MEDIA, `Non-native format .${ext}, async transcode: ${filePath.split(/[\\/]/).pop()}`);
+        needsTranscode = true;
       }
-    });
 
-    proc.on('error', (err) => {
-      AppLogger.error(LOG_TAGS.MEDIA, `[异步转码] 进程启动失败: ${mediaId}`, err);
-    });
+      if (type === 'video' && ext === 'mp4') {
+        const isHevc = await this.detectHevcCodec(filePath);
+        if (isHevc) {
+          AppLogger.info(LOG_TAGS.MEDIA, `HEVC MP4 detected, async transcode: ${filePath.split(/[\\/]/).pop()}`);
+          needsTranscode = true;
+        }
+      }
+
+      // Start background transcoding (fire and forget)
+      if (needsTranscode) {
+        const transcodedPath = this.getTranscodedPath(projectId, mediaId);
+        if (!fs.existsSync(transcodedPath)) {
+          this.transcodeAsync(filePath, projectId, mediaId, transcodedPath);
+        } else {
+          playableFilePath = transcodedPath;
+        }
+      }
+
+      // Extract metadata (non-blocking, but we await here in background)
+      let metadata: any = { formattedTime: '00:00:00', duration: 0, width: 0, height: 0, fps: 0 };
+      let pureCoverName = '';
+
+      if (type === 'video') {
+        try {
+          metadata = await VideoProcessor.extractMetadata(playableFilePath);
+        } catch (e) {
+          AppLogger.warn(LOG_TAGS.MEDIA, `extractMetadata failed for ${mediaId}, using defaults`);
+        }
+        try {
+          pureCoverName = await VideoProcessor.generateCover(playableFilePath, PathManager.getProjectThumbnailsDir(projectId), mediaId);
+        } catch (e) {
+          AppLogger.warn(LOG_TAGS.MEDIA, `generateCover failed for ${mediaId}`);
+        }
+      }
+
+      // Update database with real metadata
+      const relativeCoverPath = pureCoverName ? `thumbnails/${pureCoverName}` : '';
+      this.repo.updateMedia(mediaId, {
+        coverPath: relativeCoverPath,
+        status: 'parsed',
+        duration: metadata.duration || 0,
+        width: metadata.width || 0,
+        height: metadata.height || 0,
+        fps: metadata.fps || 0,
+      });
+
+      if (relativeCoverPath) {
+        this.projectRepo.updateCover(projectId, relativeCoverPath);
+      }
+
+      // Notify frontend to refresh
+      this.notifyFrontend(projectId, mediaId, {
+        coverPath: relativeCoverPath,
+        duration: metadata.formattedTime,
+        status: 'parsed',
+      });
+
+      AppLogger.info(LOG_TAGS.MEDIA, `Background processing done: ${mediaId} (${metadata.formattedTime})`);
+    } catch (error) {
+      AppLogger.error(LOG_TAGS.MEDIA, `Background processing failed: ${mediaId}`, error);
+      this.repo.updateMedia(mediaId, { status: 'parsed' });
+      this.notifyFrontend(projectId, mediaId, { status: 'parsed' });
+    }
   }
 
   /**
-   * 检测视频文件是否使用 HEVC (H.265) 编码
-   * 通过 ffprobe 检测视频流编码名称
+   * Notify frontend via IPC that media processing is done
    */
+  private notifyFrontend(projectId: string, mediaId: string, updates: any): void {
+    try {
+      const windows = BrowserWindow.getAllWindows();
+      for (const win of windows) {
+        if (!win.isDestroyed()) {
+          win.webContents.send('media:updated', { projectId, mediaId, ...updates });
+        }
+      }
+    } catch {}
+  }
+
+  private getTranscodedPath(projectId: string, mediaId: string): string {
+    const dir = PathManager.getProjectMediaDir(projectId);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return path.join(dir, `${mediaId}_transcoded.mp4`);
+  }
+
   private async detectHevcCodec(filePath: string): Promise<boolean> {
     const ffprobeExe = PathManager.getBinPath(process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
-    if (!fs.existsSync(ffprobeExe)) {
-      AppLogger.warn(LOG_TAGS.MEDIA, 'ffprobe 不存在，跳过 HEVC 检测');
-      return false;
-    }
+    if (!fs.existsSync(ffprobeExe)) return false;
 
     return new Promise((resolve) => {
-      const args = [
-        '-v', 'quiet',
-        '-select_streams', 'v:0',
-        '-show_entries', 'stream=codec_name',
-        '-of', 'csv=p=0',
-        filePath
-      ];
-
-      const proc = spawn(ffprobeExe, args, { windowsHide: true });
+      const proc = spawn(ffprobeExe, [
+        '-v', 'quiet', '-select_streams', 'v:0',
+        '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', filePath
+      ], { windowsHide: true });
       let output = '';
-
       proc.stdout?.on('data', (data: Buffer) => { output += data.toString(); });
       proc.stderr?.on('data', () => {});
-
       proc.on('close', (code) => {
         if (code === 0) {
           const codecName = output.trim().toLowerCase();
-          const isHevc = codecName.includes('hevc') || codecName.includes('h265') || codecName.includes('libx265');
-          if (isHevc) {
-            AppLogger.info(LOG_TAGS.MEDIA, `检测到 HEVC 编码: codec=${codecName} file=${filePath.split(/[\\/]/).pop()}`);
-          }
-          resolve(isHevc);
-        } else {
-          resolve(false);
-        }
+          resolve(codecName.includes('hevc') || codecName.includes('h265') || codecName.includes('libx265'));
+        } else { resolve(false); }
       });
-
-      proc.on('error', () => { resolve(false); });
+      proc.on('error', () => resolve(false));
     });
   }
 
-  /**
-   * 将非原生格式视频转码为 MP4（H.264 + AAC），确保 Chromium 可播放
-   */
-  private async transcodeToMp4(sourcePath: string, projectId: string, mediaId: string): Promise<string | null> {
+  private transcodeAsync(filePath: string, projectId: string, mediaId: string, outputPath: string): void {
     const ffmpegExe = PathManager.getBinPath(process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
     if (!fs.existsSync(ffmpegExe)) {
-      AppLogger.warn(LOG_TAGS.MEDIA, 'FFmpeg 不存在，无法转码');
-      return null;
+      AppLogger.warn(LOG_TAGS.MEDIA, 'FFmpeg not found, cannot transcode');
+      return;
     }
-
-    const outputDir = PathManager.getProjectExtractionsDir(projectId, 'transcoded');
-    const outputPath = path.join(outputDir, `${mediaId}.mp4`);
-
-    // 如果已经转码过，直接返回
-    if (fs.existsSync(outputPath)) return outputPath;
-
-    return new Promise((resolve) => {
-      const args = [
-        '-i', sourcePath,
-        '-c:v', 'libx264',       // H.264 视频编码
-        '-preset', 'fast',        // 快速转码
-        '-crf', '23',             // 质量平衡
-        '-c:a', 'aac',            // AAC 音频编码
-        '-b:a', '128k',           // 音频码率
-        '-movflags', '+faststart', // 流式播放优化
-        '-y',                     // 覆盖输出
-        outputPath
-      ];
-
-      const proc = spawn(ffmpegExe, args, { windowsHide: true });
-      let stderrOutput = '';
-
-      proc.stderr?.on('data', (data: Buffer) => {
-        stderrOutput += data.toString();
-      });
-
-      proc.on('close', (code) => {
-        if (code === 0 && fs.existsSync(outputPath)) {
-          resolve(outputPath);
-        } else {
-          AppLogger.error(LOG_TAGS.MEDIA, `FFmpeg 转码失败 (exit code: ${code})`, { stderr: stderrOutput.slice(-500) });
-          // 清理不完整文件
-          try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch {}
-          resolve(null);
-        }
-      });
-
-      proc.on('error', (err) => {
-        AppLogger.error(LOG_TAGS.MEDIA, `FFmpeg 进程启动失败`, err);
-        resolve(null);
-      });
+    const args = ['-i', filePath, '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+      '-c:a', 'aac', '-y', outputPath];
+    const proc = spawn(ffmpegExe, args, { windowsHide: true });
+    proc.on('close', (code) => {
+      if (code === 0) {
+        AppLogger.info(LOG_TAGS.MEDIA, `Transcode complete: ${mediaId}`);
+        this.repo.updateMedia(mediaId, { filePath: outputPath });
+        this.notifyFrontend(projectId, mediaId, { filePath: outputPath });
+      } else {
+        AppLogger.error(LOG_TAGS.MEDIA, `Transcode failed (code ${code}): ${mediaId}`);
+      }
     });
+    proc.on('error', (err) => AppLogger.error(LOG_TAGS.MEDIA, `Transcode error: ${mediaId}`, err));
   }
 
-  /**
-   * 按项目获取媒体列表
-   */
-  public async getMediaByProject(projectId: string) {
-    const medias = await this.repo.getByProject(projectId);
-    return this.projectService.hydratePaths({ mediaItems: medias }, projectId).mediaItems;
-  }
-
-  /** 根据 mediaId 获取单个媒体资产 */
-  public async getMediaById(mediaId: string) {
-    return this.repo.findById(mediaId);
-  }
-
-  /**
-   * 更新媒体信息（提取结果等）
-   */
-  public async updateMedia(mediaId: string, data: any) {
-    this.repo.updateMedia(mediaId, data);
-    return true;
-  }
-
-  /**
-   * 删除媒体（包含物理文件）
-   */
-  public async deleteMedia(projectId: string, mediaId: string) {
-    this.repo.deleteMediaById(projectId, mediaId);
-
+  async deleteMedia(projectId: string, mediaId: string): Promise<void> {
     try {
-      // 智能清道夫：精准识别带有该 mediaId 的任何散落文件
-      const deleteFilesWithId = async (dirPath: string, id: string) => {
-        try {
-          const files = await fs.promises.readdir(dirPath);
-          for (const file of files) {
-            if (file.includes(id)) {
-              try {
-                await fs.promises.unlink(path.join(dirPath, file));
-              } catch (e) { }
-            }
-          }
-        } catch (e) { }
-      };
-
-      // 清剿封面、音频、台词
-      await deleteFilesWithId(PathManager.getProjectThumbnailsDir(projectId), mediaId);
-      await deleteFilesWithId(PathManager.getProjectExtractionsDir(projectId, 'audio'), mediaId);
-      await deleteFilesWithId(PathManager.getProjectExtractionsDir(projectId, 'whisper'), mediaId);
-
-      // 清剿抽帧和人脸目录
-      const framesAbsDir = path.join(PathManager.getProjectExtractionsDir(projectId, 'frames'), mediaId);
-      try { await fs.promises.rm(framesAbsDir, { recursive: true, force: true }); } catch (e) { }
-
-      const facesAbsDir = path.join(PathManager.getProjectExtractionsDir(projectId, 'faces'), mediaId);
-      try { await fs.promises.rm(facesAbsDir, { recursive: true, force: true }); } catch (e) { }
-
-    } catch (e) {
-      AppLogger.error(LOG_TAGS.MEDIA, `清理物理沙盒失败: ${mediaId}`, e);
+      const media = this.repo.findById(mediaId);
+      if (media?.coverPath) {
+        await this.deleteThumbnail(PathManager.getProjectThumbnailsDir(projectId), mediaId);
+      }
+      this.repo.delete(mediaId);
+    } catch (error) {
+      AppLogger.error(LOG_TAGS.MEDIA, `Delete media failed: ${mediaId}`, error);
     }
+  }
 
-    return true;
+  private async deleteThumbnail(dir: string, mediaId: string): Promise<void> {
+    try {
+      const files = fs.readdirSync(dir);
+      for (const file of files) {
+        if (file.startsWith(mediaId)) {
+          fs.unlinkSync(path.join(dir, file));
+        }
+      }
+    } catch {}
   }
 }
