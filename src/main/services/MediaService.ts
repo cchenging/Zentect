@@ -1,4 +1,4 @@
-// Path: src/main/services/MediaService.ts
+﻿// Path: src/main/services/MediaService.ts
 import { MediaRepository } from '../database/repositories/MediaRepository';
 import { ProjectRepository } from '../database/repositories/ProjectRepository';
 import { PathManager } from '../utils/pathManager';
@@ -59,7 +59,7 @@ export class MediaService {
           id: mediaItem.id, projectId: mediaItem.projectId, name: mediaItem.name, type: mediaItem.type,
           filePath: mediaItem.filePath, coverPath: '', duration: '00:00:00', status: 'importing'
         };
-        results.push(this.projectService.hydratePaths({ mediaItems: [frontendMediaItem] }, projectId).mediaItems[0]);
+        results.push(frontendMediaItem);
 
         // Process metadata + cover in background (non-blocking)
         this.processMediaInBackground(projectId, mediaId, filePath, type, ext);
