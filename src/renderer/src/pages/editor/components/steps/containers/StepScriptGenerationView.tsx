@@ -51,16 +51,16 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
 
       {/* 风格选择 */}
       <div className="flex items-center gap-2">
-        <span className="text-[11px] text-muted-foreground shrink-0">风格:</span>
+        <span className="text-[13px] text-muted-foreground shrink-0">风格:</span>
         <select value={scriptStyle} onChange={(e) => onSetScriptStyle(e.target.value)} disabled={isGenerating}
-          className="text-[11px] px-2 py-1 rounded-md bg-bg-secondary border border-border/30 text-foreground outline-none cursor-pointer">
+          className="text-[13px] px-2 py-1 rounded-md bg-bg-secondary border border-border/30 text-foreground outline-none cursor-pointer">
           {SCRIPT_STYLES.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
       </div>
 
       {/* R/S/T/P 参数 */}
       <div className="glass-card-sm p-3 flex flex-col gap-3">
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground"><Sliders size={12} /> 管线参数</div>
+        <div className="flex items-center gap-2 text-[13px] text-muted-foreground"><Sliders size={12} /> 管线参数</div>
         <ParameterSlider label="经典保留" code="R" value={pipelineParams.R} onChange={(v) => onSetPipelineParams({ ...pipelineParams, R: v })} disabled={isGenerating} unit="%" />
         <ParameterSlider label="原台词保留" code="S" value={pipelineParams.S} onChange={(v) => onSetPipelineParams({ ...pipelineParams, S: v })} disabled={isGenerating} unit="%" />
         <ParameterSlider label="TTS覆盖" code="T" value={pipelineParams.T} onChange={(v) => onSetPipelineParams({ ...pipelineParams, T: v })} disabled={isGenerating} unit="%" />
@@ -70,7 +70,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
       {/* 语速 */}
       <div className="glass-card-sm p-3 flex flex-col gap-2">
         <div className="flex items-center justify-between">
-          <span className="text-[11px] text-muted-foreground">语速控制</span>
+          <span className="text-[13px] text-muted-foreground">语速控制</span>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-secondary text-accent font-mono">{speechRate}字/秒</span>
         </div>
         <div className="flex items-center gap-3 text-[10px] text-muted-foreground">
@@ -80,7 +80,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
         <div className="flex flex-wrap gap-1.5">
           {SPEECH_RATE_OPTIONS.map((opt) => (
             <button key={opt.value} onClick={() => onSetSpeechRate(opt.value)} disabled={isGenerating}
-              className={`text-[11px] px-2.5 py-1 rounded-md border transition-all cursor-pointer ${speechRate === opt.value ? "border-accent bg-accent/10 text-accent font-medium" : "border-border/30 bg-bg-secondary text-muted-foreground hover:border-accent/40"} ${isGenerating ? "opacity-50" : ""}`}>
+              className={`text-[13px] px-2.5 py-1 rounded-md border transition-all cursor-pointer ${speechRate === opt.value ? "border-accent bg-accent/10 text-accent font-medium" : "border-border/30 bg-bg-secondary text-muted-foreground hover:border-accent/40"} ${isGenerating ? "opacity-50" : ""}`}>
               {opt.label}
             </button>
           ))}
@@ -118,7 +118,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             );
           })}
           <button onClick={onRegenerate} disabled={isGenerating}
-            className="flex items-center justify-center gap-2 py-2 rounded-md text-[12px] bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50 font-medium cursor-pointer">
+            className="flex items-center justify-center gap-2 py-2 rounded-md text-[13px] bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50 font-medium cursor-pointer">
             <RefreshCw size={14} className={isGenerating ? "animate-pulse" : ""} />{isGenerating ? "生成中..." : "重新生成"}
           </button>
         </div>

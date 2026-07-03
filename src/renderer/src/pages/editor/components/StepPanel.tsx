@@ -116,10 +116,10 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
             </div>
             <h2 className="text-lg font-bold mb-2">工作空间装载失败</h2>
             <div className="flex gap-3">
-              <button onClick={() => window.location.reload()} className="flex items-center gap-2 px-6 py-2.5 bg-bg-secondary hover:bg-muted rounded-xl text-[12px] transition-all cursor-pointer outline-none">
+              <button onClick={() => window.location.reload()} className="flex items-center gap-2 px-6 py-2.5 bg-bg-secondary hover:bg-muted rounded-xl text-[13px] transition-all cursor-pointer outline-none">
                 <RefreshCcw size={14} /> 强制重载
               </button>
-              <button onClick={() => navigate('/')} className="flex items-center gap-2 px-6 py-2.5 bg-bg-secondary hover:bg-muted rounded-xl text-[12px] transition-all cursor-pointer outline-none">
+              <button onClick={() => navigate('/')} className="flex items-center gap-2 px-6 py-2.5 bg-bg-secondary hover:bg-muted rounded-xl text-[13px] transition-all cursor-pointer outline-none">
                 返回首页
               </button>
             </div>
@@ -135,7 +135,7 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
 
       {/* 全局操作栏：固定在底部 */}
       <div className="flex items-center justify-between px-4 py-2.5 border-t border-border/30 shrink-0 bg-bg-secondary/50">
-        <span className="text-[12px] text-muted-foreground">
+        <span className="text-[13px] text-muted-foreground">
           步骤 {currentStep}/5 · {STEPS[currentStep - 1].label}
           {stepStatuses[currentStep - 1] === 'completed' && <Badge variant="success" className="ml-1">已完成</Badge>}
           {stepStatuses[currentStep - 1] === 'failed' && <Badge variant="danger" className="ml-1">失败</Badge>}
@@ -143,12 +143,12 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
         </span>
         <div className="flex items-center gap-2">
           <button onClick={onStart} disabled={pipelineRunning || stepStatuses[currentStep - 1] === 'running'}
-            className="h-7 px-4 rounded-md bg-gradient-to-r from-accent to-accent-purple text-white text-[11px] font-semibold shadow-sm hover:brightness-110 transition-all cursor-pointer outline-none flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed">
+            className="h-7 px-4 rounded-md bg-gradient-to-r from-accent to-accent-purple text-white text-[13px] font-semibold shadow-sm hover:brightness-110 transition-all cursor-pointer outline-none flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed">
             <Play size={11} /> {pipelineRunning ? '执行中...' : '启动'}
           </button>
           {!isAutoMode && stepStatuses[currentStep - 1] === 'completed' && currentStep < 5 && (
             <button onClick={onNextStep}
-              className="h-7 px-4 rounded-md bg-bg-secondary border border-border/50 text-[11px] font-medium hover:border-accent/40 hover:text-accent transition-all cursor-pointer outline-none flex items-center gap-1.5">
+              className="h-7 px-4 rounded-md bg-bg-secondary border border-border/50 text-[13px] font-medium hover:border-accent/40 hover:text-accent transition-all cursor-pointer outline-none flex items-center gap-1.5">
               下一步 <ChevronRight size={11} />
             </button>
           )}

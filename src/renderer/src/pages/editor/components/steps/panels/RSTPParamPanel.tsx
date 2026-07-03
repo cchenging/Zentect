@@ -20,7 +20,7 @@ export const RSTPParamPanel: React.FC<RSTPParamPanelProps> = ({ params, onChange
   const keys = Object.keys(params) as (keyof PipelineParams)[];
   return (
     <div className="glass-card-sm p-3 flex flex-col gap-3">
-      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+      <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
         <Sliders size={12} /> 管线参数
       </div>
       {keys.map((key) => (

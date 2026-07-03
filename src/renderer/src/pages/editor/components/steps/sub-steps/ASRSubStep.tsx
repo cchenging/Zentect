@@ -18,14 +18,14 @@ export const ASRSubStep: React.FC<ASRSubStepProps> = ({ expanded, onToggle }) =>
 
   return (
     <CollapsibleCard expanded={expanded} onExpandedChange={onToggle}
-      title={<><StatusIcon status={status === 'idle' ? 'pending' : status} /><span className="text-[12px] font-semibold">ASR 台词识别</span></>}
-      extra={<span className="text-[11px] text-muted-foreground">{asrLines.length} 句</span>}>
+      title={<><StatusIcon status={status === 'idle' ? 'pending' : status} /><span className="text-[13px] font-semibold">ASR 台词识别</span></>}
+      extra={<span className="text-[13px] text-muted-foreground">{asrLines.length} 句</span>}>
       {asrLines.map((line: any, idx: number) => {
         const isModified = line.originalText !== undefined && line.text !== line.originalText;
         return (
           <div key={idx} className="flex items-center gap-2 px-3 py-1.5 border-b border-border/10 group">
-            <span className="text-[11px] font-mono text-accent w-12">{line.start || '00:00'}</span>
-            <span className="flex-1 text-[12px] cursor-pointer" onClick={() => updateAsrLine(idx, line.text)}>{line.text}</span>
+            <span className="text-[13px] font-mono text-accent w-12">{line.start || '00:00'}</span>
+            <span className="flex-1 text-[13px] cursor-pointer" onClick={() => updateAsrLine(idx, line.text)}>{line.text}</span>
             <Badge variant={isModified ? 'danger' : 'success'}>{isModified ? '已修改' : '已确认'}</Badge>
             <button onClick={() => setCurrentTime(parseTime(line.start))} className="opacity-0 group-hover:opacity-100"><Play size={11} /></button>
             {isModified && <button onClick={() => updateAsrLine(idx, line.originalText)} className="opacity-0 group-hover:opacity-100"><UndoDot size={11} /></button>}

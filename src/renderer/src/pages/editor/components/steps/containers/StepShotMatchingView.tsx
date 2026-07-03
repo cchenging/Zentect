@@ -44,7 +44,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
             <StatHeader value={matchResults.length} unit="个镜头" secondary={`已确认 ${matchResults.filter((m) => m.confirmed).length}/${matchResults.length}`} />
           )}
           <button onClick={onRematch} disabled={isProcessing}
-            className="flex items-center gap-1.5 px-3 py-1 bg-accent text-accent-foreground rounded-md text-[11px] font-medium transition-all hover:opacity-90 disabled:opacity-50 cursor-pointer">
+            className="flex items-center gap-1.5 px-3 py-1 bg-accent text-accent-foreground rounded-md text-[13px] font-medium transition-all hover:opacity-90 disabled:opacity-50 cursor-pointer">
             <RefreshCw size={12} className={isProcessing ? "animate-spin" : ""} />
             {isProcessing ? "匹配中..." : "重新匹配"}
           </button>
@@ -63,7 +63,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                   </div>
                   <div className="flex-1 flex flex-col gap-1.5 min-w-0">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-semibold truncate">{m.shotId}</span>
+                      <span className="text-[13px] font-semibold truncate">{m.shotId}</span>
                       <Badge variant={m.score > 0.8 ? "success" : m.score > 0.5 ? "warning" : "danger"} className="text-[9px] shrink-0">{Math.round(m.score * 100)}%</Badge>
                     </div>
                     {m.audioDurationMs && m.audioDurationMs > 0 && <div className="text-[10px] text-muted-foreground bg-bg-secondary/40 px-1.5 py-0.5 rounded">{(m.audioDurationMs / 1000).toFixed(2)}s</div>}

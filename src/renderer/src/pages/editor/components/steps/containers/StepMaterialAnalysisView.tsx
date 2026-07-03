@@ -60,9 +60,9 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisProps> = (pr
     <div className="flex flex-col gap-1">
       {/* 1. 关键帧提取 */}
       <CollapsibleCard expanded={expandedSubSteps.frames} onExpandedChange={(v) => toggleSubStep("frames")}
-        title={<><StatusIcon status={framesStatus === "idle" ? "pending" : framesStatus} /><span className={`text-[12px] font-semibold ${framesStatus === "completed" ? "text-accent-green" : framesStatus === "failed" ? "text-accent-rose" : ""}`}>关键帧提取</span></>}
+        title={<><StatusIcon status={framesStatus === "idle" ? "pending" : framesStatus} /><span className={`text-[13px] font-semibold ${framesStatus === "completed" ? "text-accent-green" : framesStatus === "failed" ? "text-accent-rose" : ""}`}>关键帧提取</span></>}
         extra={<>
-          <span className="text-[11px] text-muted-foreground">{framesStatus === "completed" ? `已提取 ${frameCount} 张` : framesStatus === "running" ? `提取中 ${subStepProgresses["frames"] || 0}%` : framesStatus === "failed" ? "提取失败" : "等待执行"}</span>
+          <span className="text-[13px] text-muted-foreground">{framesStatus === "completed" ? `已提取 ${frameCount} 张` : framesStatus === "running" ? `提取中 ${subStepProgresses["frames"] || 0}%` : framesStatus === "failed" ? "提取失败" : "等待执行"}</span>
           {framesStatus !== "running" && <button onClick={(e) => { e.stopPropagation(); onRetrySubStep("frames"); }} className="ml-auto text-muted-foreground hover:text-primary transition-colors cursor-pointer" title="重新提取"><RotateCcw size={13} /></button>}
         </>}
         borderColor={framesStatus === "failed" ? "var(--accent-rose)" : undefined}>
@@ -71,8 +71,8 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisProps> = (pr
 
       {/* 2. 音频分离 */}
       <CollapsibleCard expanded={expandedSubSteps.audio} onExpandedChange={(v) => toggleSubStep("audio")}
-        title={<><StatusIcon status={audioStatus === "idle" ? "pending" : audioStatus} /><span className={`text-[12px] font-semibold ${audioStatus === "completed" ? "text-accent-green" : audioStatus === "failed" ? "text-accent-rose" : ""}`}>音频分离</span></>}
-        extra={<span className="text-[11px] text-muted-foreground">{audioStatus === "completed" ? "人声 + BGM" : audioStatus === "running" ? `执行中 ${subStepProgresses["audio"] || 0}%` : audioStatus === "failed" ? "执行失败" : "等待执行"}</span>}
+        title={<><StatusIcon status={audioStatus === "idle" ? "pending" : audioStatus} /><span className={`text-[13px] font-semibold ${audioStatus === "completed" ? "text-accent-green" : audioStatus === "failed" ? "text-accent-rose" : ""}`}>音频分离</span></>}
+        extra={<span className="text-[13px] text-muted-foreground">{audioStatus === "completed" ? "人声 + BGM" : audioStatus === "running" ? `执行中 ${subStepProgresses["audio"] || 0}%` : audioStatus === "failed" ? "执行失败" : "等待执行"}</span>}
         borderColor={audioStatus === "failed" ? "var(--accent-rose)" : undefined}>
         {audioStatus === "completed" && (
           <div className="p-2 rounded-md bg-bg-secondary border border-border/20">
@@ -82,7 +82,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisProps> = (pr
                   <div key={item.id} className="flex items-center justify-between py-1.5 px-2 text-[13px] hover:bg-bg-glass/50 rounded cursor-pointer transition-colors" onClick={() => onSetActivePlaySource(item)}>
                     <Music size={14} className="text-muted-foreground shrink-0" />
                     <span className="flex-1 mx-2 truncate">{item.fileName || item.name || "未命名音频"}</span>
-                    {item.duration && <span className="text-[11px] text-muted-foreground shrink-0">{item.duration}s</span>}
+                    {item.duration && <span className="text-[13px] text-muted-foreground shrink-0">{item.duration}s</span>}
                     <button className="text-accent hover:text-accent/80 cursor-pointer ml-2 shrink-0" title="播放"><Play size={13} /></button>
                   </div>
                 ))}
@@ -94,9 +94,9 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisProps> = (pr
 
       {/* 3. ASR 台词识别 */}
       <CollapsibleCard expanded={expandedSubSteps.whisper} onExpandedChange={(v) => toggleSubStep("whisper")}
-        title={<><StatusIcon status={whisperStatus === "idle" ? "pending" : whisperStatus} /><span className={`text-[12px] font-semibold ${whisperStatus === "completed" ? "text-accent-green" : whisperStatus === "failed" ? "text-accent-rose" : ""}`}>ASR 台词识别</span></>}
+        title={<><StatusIcon status={whisperStatus === "idle" ? "pending" : whisperStatus} /><span className={`text-[13px] font-semibold ${whisperStatus === "completed" ? "text-accent-green" : whisperStatus === "failed" ? "text-accent-rose" : ""}`}>ASR 台词识别</span></>}
         extra={<>
-          {whisperStatus === "completed" ? <StatHeader value={asrLines.length} unit="句台词" secondary={`已确认 ${confirmed} 句`} /> : <span className="text-[11px] text-muted-foreground">{whisperStatus === "running" ? `执行中 ${subStepProgresses["whisper"] || 0}%` : whisperStatus === "failed" ? "执行失败" : "等待执行"}</span>}
+          {whisperStatus === "completed" ? <StatHeader value={asrLines.length} unit="句台词" secondary={`已确认 ${confirmed} 句`} /> : <span className="text-[13px] text-muted-foreground">{whisperStatus === "running" ? `执行中 ${subStepProgresses["whisper"] || 0}%` : whisperStatus === "failed" ? "执行失败" : "等待执行"}</span>}
         </>}
         borderColor={whisperStatus === "failed" ? "var(--accent-rose)" : undefined}>
         {whisperStatus === "completed" && asrLines.length > 0 && (
@@ -105,11 +105,11 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisProps> = (pr
               const isModified = line.originalText !== undefined && line.text !== line.originalText;
               return (
                 <div key={idx} className={`flex items-center gap-2 px-3 py-2 border-b border-border/10 last:border-0 group ${isModified ? "bg-accent/5 border-l-2 border-l-accent-rose" : ""}`}>
-                  <span className="text-[11px] font-mono text-accent shrink-0 w-12">{line.start || "00:00"}</span>
+                  <span className="text-[13px] font-mono text-accent shrink-0 w-12">{line.start || "00:00"}</span>
                   {line.editing ? (
-                    <input value={line.text} onChange={(e) => onUpdateAsrLine(idx, e.target.value)} onBlur={() => toggleEditing(idx, false)} onKeyDown={(e) => { if (e.key === "Enter") toggleEditing(idx, false); }} className="flex-1 text-[12px] bg-bg-secondary px-2 py-1 rounded border border-accent/30 outline-none" autoFocus />
+                    <input value={line.text} onChange={(e) => onUpdateAsrLine(idx, e.target.value)} onBlur={() => toggleEditing(idx, false)} onKeyDown={(e) => { if (e.key === "Enter") toggleEditing(idx, false); }} className="flex-1 text-[13px] bg-bg-secondary px-2 py-1 rounded border border-accent/30 outline-none" autoFocus />
                   ) : (
-                    <span className="flex-1 text-[12px] text-foreground cursor-pointer hover:text-accent transition-colors" onClick={() => toggleEditing(idx, true)}>{line.text}</span>
+                    <span className="flex-1 text-[13px] text-foreground cursor-pointer hover:text-accent transition-colors" onClick={() => toggleEditing(idx, true)}>{line.text}</span>
                   )}
                   <Badge variant={isModified ? "danger" : "success"}>{isModified ? "已修改" : "已确认"}</Badge>
                   <div className="flex items-center gap-1 shrink-0">
@@ -126,8 +126,8 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisProps> = (pr
 
       {/* 4. 人物识别 */}
       <CollapsibleCard expanded={expandedSubSteps.faces} onExpandedChange={(v) => toggleSubStep("faces")}
-        title={<><StatusIcon status={facesStatus === "idle" ? "pending" : facesStatus} /><span className={`text-[12px] font-semibold ${facesStatus === "completed" ? "text-accent-purple" : facesStatus === "failed" ? "text-accent-rose" : ""}`}>人物识别</span></>}
-        extra={<span className="text-[11px] text-muted-foreground">{facesStatus === "completed" ? `检测到 ${roles.length} 个角色` : facesStatus === "running" ? `执行中 ${subStepProgresses["faces"] || 0}%` : facesStatus === "failed" ? "执行失败" : "等待执行"}</span>}
+        title={<><StatusIcon status={facesStatus === "idle" ? "pending" : facesStatus} /><span className={`text-[13px] font-semibold ${facesStatus === "completed" ? "text-accent-purple" : facesStatus === "failed" ? "text-accent-rose" : ""}`}>人物识别</span></>}
+        extra={<span className="text-[13px] text-muted-foreground">{facesStatus === "completed" ? `检测到 ${roles.length} 个角色` : facesStatus === "running" ? `执行中 ${subStepProgresses["faces"] || 0}%` : facesStatus === "failed" ? "执行失败" : "等待执行"}</span>}
         borderColor={facesStatus === "failed" ? "var(--accent-rose)" : undefined}>
         {facesStatus === "completed" && roles.length > 0 && (
           <div className="grid grid-cols-3 gap-2">
@@ -136,7 +136,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisProps> = (pr
                 <div className="w-12 h-12 rounded-full bg-bg-primary overflow-hidden">
                   {role.avatarPath && <img src={getSafeMediaUrl(role.avatarPath)} className="w-full h-full object-cover" />}
                 </div>
-                <input value={role.name} onChange={(e) => onUpdateRole(role.id, { name: e.target.value })} className="text-[11px] font-medium bg-transparent text-center outline-none border-b border-transparent focus:border-accent/30" />
+                <input value={role.name} onChange={(e) => onUpdateRole(role.id, { name: e.target.value })} className="text-[13px] font-medium bg-transparent text-center outline-none border-b border-transparent focus:border-accent/30" />
                 {role.appearances && <span className="text-[9px] text-muted-foreground">出现 {role.appearances} 次</span>}
               </div>
             ))}

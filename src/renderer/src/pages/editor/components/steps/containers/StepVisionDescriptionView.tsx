@@ -64,9 +64,9 @@ export const StepVisionDescriptionView: React.FC<StepVisionDescriptionProps> = (
                   <textarea value={frame.description}
                     onChange={(e) => onUpdateDescription(idx, e.target.value)}
                     onBlur={() => onSetEditing(idx, false)}
-                    className="flex-1 text-[12px] bg-bg-secondary px-2 py-1.5 rounded border border-accent/30 outline-none resize-none min-h-[40px]" autoFocus />
+                    className="flex-1 text-[13px] bg-bg-secondary px-2 py-1.5 rounded border border-accent/30 outline-none resize-none min-h-[40px]" autoFocus />
                 ) : (
-                  <div className="text-[12px] text-foreground leading-relaxed cursor-pointer hover:text-accent transition-colors"
+                  <div className="text-[13px] text-foreground leading-relaxed cursor-pointer hover:text-accent transition-colors"
                     onClick={() => onSetEditing(idx, true)}>
                     {frame.description || "点击添加描述"}
                   </div>
@@ -77,16 +77,16 @@ export const StepVisionDescriptionView: React.FC<StepVisionDescriptionProps> = (
           ))}
           {storyLineText && (
             <div className="p-3 rounded-lg bg-gradient-to-br from-accent-purple/10 via-accent/5 to-transparent border border-accent-purple/20">
-              <div className="text-[12px] font-semibold mb-2 flex items-center gap-2 text-accent-purple">
+              <div className="text-[13px] font-semibold mb-2 flex items-center gap-2 text-accent-purple">
                 <BookOpen size={14} /> 故事脉络
               </div>
-              <div className="text-[12px] text-foreground leading-relaxed whitespace-pre-wrap">{storyLineText}</div>
+              <div className="text-[13px] text-foreground leading-relaxed whitespace-pre-wrap">{storyLineText}</div>
             </div>
           )}
         </div>
       ) : (
         <EmptyState title="VLM 画面描述待生成" description="执行素材分析后，VLM 画面描述将在此展示，支持逐帧编辑和修正" iconType="media" size="md" className="glass-card-sm"
-          action={onGoToStep1 ? <button onClick={onGoToStep1} className="text-[11px] px-3 py-1 rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors cursor-pointer outline-none">前往素材分析</button> : undefined} />
+          action={onGoToStep1 ? <button onClick={onGoToStep1} className="text-[13px] px-3 py-1 rounded-md bg-accent/10 text-accent hover:bg-accent/20 transition-colors cursor-pointer outline-none">前往素材分析</button> : undefined} />
       )}
       {zoomIndex !== null && vlmFrames[zoomIndex] && (
         <div className="fixed inset-0 z-[500] bg-black/85 flex items-center justify-center" onClick={closeZoom} onKeyDown={handleKeyDown} tabIndex={-1}>

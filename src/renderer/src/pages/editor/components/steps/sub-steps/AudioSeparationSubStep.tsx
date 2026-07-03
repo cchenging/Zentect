@@ -15,12 +15,12 @@ export const AudioSeparationSubStep: React.FC<AudioSeparationSubStepProps> = ({ 
 
   return (
     <CollapsibleCard expanded={expanded} onExpandedChange={onToggle}
-      title={<><StatusIcon status={status === 'idle' ? 'pending' : status} /><span className="text-[12px] font-semibold">音频分离</span></>}
-      extra={<span className="text-[11px] text-muted-foreground">{status === 'completed' ? '人声+BGM' : '等待'}</span>}>
+      title={<><StatusIcon status={status === 'idle' ? 'pending' : status} /><span className="text-[13px] font-semibold">音频分离</span></>}
+      extra={<span className="text-[13px] text-muted-foreground">{status === 'completed' ? '人声+BGM' : '等待'}</span>}>
       {status === 'completed' && audioItems.length > 0 && (
         <div className="flex flex-col gap-1">
           {audioItems.map((item: any) => (
-            <div key={item.id} className="flex items-center gap-2 py-1 px-2 text-[12px] cursor-pointer hover:bg-bg-secondary rounded" onClick={() => setActivePlaySource(item)}>
+            <div key={item.id} className="flex items-center gap-2 py-1 px-2 text-[13px] cursor-pointer hover:bg-bg-secondary rounded" onClick={() => setActivePlaySource(item)}>
               <Music size={12} /><span className="flex-1 truncate">{item.name || '音频'}</span>
               {item.duration && <span className="text-[10px] text-muted-foreground">{item.duration}s</span>}
               <Play size={11} className="text-accent" />

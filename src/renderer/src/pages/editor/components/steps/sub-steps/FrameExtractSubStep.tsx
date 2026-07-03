@@ -17,8 +17,8 @@ export const FrameExtractSubStep: React.FC<FrameExtractSubStepProps> = ({ expand
 
   return (
     <CollapsibleCard expanded={expanded} onExpandedChange={onToggle}
-      title={<><StatusIcon status={status === '等待' ? 'pending' : status} /><span className="text-[12px] font-semibold">Frame Extract</span></>}
-      extra={<span className="text-[11px] text-muted-foreground">{statusText}</span>}>
+      title={<><StatusIcon status={status === '等待' ? 'pending' : status} /><span className="text-[13px] font-semibold">Frame Extract</span></>}
+      extra={<span className="text-[13px] text-muted-foreground">{statusText}</span>}>
       <FrameExtractConfig />
     </CollapsibleCard>
   );

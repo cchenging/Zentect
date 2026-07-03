@@ -17,7 +17,7 @@ const OPTIONS = [
 export const SpeechRateSelector: React.FC<SpeechRateSelectorProps> = ({ value, onChange, disabled }) => (
   <div className="glass-card-sm p-3 flex flex-col gap-2">
     <div className="flex items-center justify-between">
-      <span className="text-[11px] text-muted-foreground">语速控制</span>
+      <span className="text-[13px] text-muted-foreground">语速控制</span>
       <span className="text-[10px] px-1.5 py-0.5 rounded bg-bg-secondary text-accent font-mono">{value}字/秒</span>
     </div>
     <div className="flex flex-wrap gap-1.5">
@@ -27,7 +27,7 @@ export const SpeechRateSelector: React.FC<SpeechRateSelectorProps> = ({ value, o
           onClick={() => onChange(opt.value)}
           disabled={disabled}
           title={opt.desc}
-          className={`text-[11px] px-2.5 py-1 rounded-md border transition-all cursor-pointer outline-none ${
+          className={`text-[13px] px-2.5 py-1 rounded-md border transition-all cursor-pointer outline-none ${
             value === opt.value
               ? "border-accent bg-accent/10 text-accent font-medium"
               : "border-border/30 bg-bg-secondary text-muted-foreground hover:border-accent/40"

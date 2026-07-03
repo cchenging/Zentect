@@ -48,7 +48,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisProps> = (props) => 
 
       {/* 引擎选择 */}
       <div className="flex items-center gap-2">
-        <span className="text-[11px] text-muted-foreground shrink-0">引擎:</span>
+        <span className="text-[13px] text-muted-foreground shrink-0">引擎:</span>
         <div className="flex items-center gap-1 flex-wrap">
           {(["edge", "moss", "doubao", "fish", "sovits"] as const).map((eng) => (
             <Badge key={eng} variant={ttsEngine === eng ? "accent" : "default"} interactive="selectable" selected={ttsEngine === eng}
@@ -61,7 +61,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisProps> = (props) => 
 
       {/* 音色选择 */}
       <div className="glass-card-sm p-3">
-        <div className="flex items-center gap-2 mb-2 text-[11px] text-muted-foreground"><User size={12} /> 音色选择</div>
+        <div className="flex items-center gap-2 mb-2 text-[13px] text-muted-foreground"><User size={12} /> 音色选择</div>
         <div className="grid grid-cols-3 gap-1.5 max-h-[200px] overflow-y-auto">
           {currentVoices.map((voice) => (
             <VoiceCard key={voice.id} id={voice.id} name={voice.name} lang={voice.lang}
@@ -74,7 +74,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisProps> = (props) => 
 
       {/* 语速 */}
       <div className="glass-card-sm p-3">
-        <div className="flex items-center gap-2 mb-2 text-[11px] text-muted-foreground"><Volume2 size={12} /> 语速调节</div>
+        <div className="flex items-center gap-2 mb-2 text-[13px] text-muted-foreground"><Volume2 size={12} /> 语速调节</div>
         <div className="flex items-center gap-3">
           <span className="text-[10px] text-muted-foreground">0.5x</span>
           <input type="range" min={0.5} max={2.0} step={0.1} value={speechRate}
@@ -95,7 +95,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisProps> = (props) => 
       {/* 结果列表 */}
       {scriptParagraphs.length > 0 ? (
         <div className="flex flex-col gap-2">
-          <div className="text-[12px] font-semibold flex items-center gap-2"><Mic size={14} /> 配音列表</div>
+          <div className="text-[13px] font-semibold flex items-center gap-2"><Mic size={14} /> 配音列表</div>
           {scriptParagraphs.map((p, idx) => {
             const pId = p.shotId || p.id || ''; const result = ttsResults.find((r: any) => (r.shotId || '') === pId) || ttsResults[idx] || null;
             const status = result ? (result._failed ? "failed" : result.audioUrl ? "completed" : "failed") : null;
@@ -110,7 +110,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisProps> = (props) => 
                     </Badge>
                     {p.duration && <span className="text-[10px] text-muted-foreground">{p.duration}s</span>}
                   </div>
-                  <div className="text-[11px] text-foreground truncate mt-0.5">{p.text}</div>
+                  <div className="text-[13px] text-foreground truncate mt-0.5">{p.text}</div>
                 </div>
                 <button onClick={() => result?.audioUrl && onPreview(idx, result.audioUrl!)}
                   disabled={!result?.audioUrl || result._failed || isProcessing}
@@ -122,7 +122,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisProps> = (props) => 
             );
           })}
           <button onClick={onSynthesize} disabled={isProcessing}
-            className="flex items-center justify-center gap-2 py-2 rounded-md text-[12px] bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 disabled:opacity-50 font-medium cursor-pointer">
+            className="flex items-center justify-center gap-2 py-2 rounded-md text-[13px] bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 disabled:opacity-50 font-medium cursor-pointer">
             <Mic size={14} className={isProcessing ? "animate-pulse" : ""} />{isProcessing ? "合成中..." : "开始合成"}
           </button>
         </div>
