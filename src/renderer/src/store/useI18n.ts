@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { zhCN } from '../../../shared/locales/zh-CN';
+import { zhCN } from '../../../infra/i18n/zh-CN';
 
 const locales = { 'zh-CN': zhCN };
 type LangType = keyof typeof locales;

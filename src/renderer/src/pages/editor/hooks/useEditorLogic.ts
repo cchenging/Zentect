@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/hooks/useEditorLogic.ts
+ * 请使用 import { useEditorHydration, useEditorAutoSave, useSyncDaemon } from '@/modules/editor/shell'
+ */
+
 // 📁 路径: src/renderer/src/pages/editor/hooks/useEditorLogic.ts
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';

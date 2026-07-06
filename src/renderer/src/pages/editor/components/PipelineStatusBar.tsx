@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/components/PipelineStatusBar.tsx
+ * 请使用 import { PipelineStatusBar } from '@/modules/editor/shell'
+ */
+
 import React from 'react';
 import { useStore } from '../../../store/useStore';
 import { AlertTriangle } from 'lucide-react';

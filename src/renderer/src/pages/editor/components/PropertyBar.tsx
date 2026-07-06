@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/components/PropertyBar.tsx
+ * 请使用 import { PropertyBar } from '@/modules/editor/shell'
+ */
+
 import React from 'react'
 import { Clock, Mic, User, Info } from 'lucide-react'
 import { useStore } from '../../../store/useStore'

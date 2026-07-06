@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/preview/frontend/components/PlayerControls.tsx
+ * 请使用 import { PlayerControls } from '@/modules/editor/preview'
+ */
+
 import React, { useState, useEffect } from 'react';
 import { Play, Pause, Volume2, VolumeX, MonitorPlay, ZoomIn, Maximize, Check } from 'lucide-react';
 

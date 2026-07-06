@@ -1,3 +1,7 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/components/TopBar.tsx
+ * 请使用 import { TopBar } from '@/modules/editor/shell'
+ */
 // 📁 路径: src/renderer/src/pages/editor/components/top-bar/index.tsx
 // 编辑器顶部工具栏 - V3 原型对齐
 // Logo + 项目名(可编辑) + 保存状态 + 导出按钮 + 设置按钮 + 窗口控制

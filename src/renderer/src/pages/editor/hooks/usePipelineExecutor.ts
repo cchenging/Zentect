@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/hooks/usePipelineExecutor.ts
+ * 请使用 import { usePipelineExecutor } from '@/modules/editor/shell'
+ */
+
 // 📁 路径: src/renderer/src/pages/editor/hooks/usePipelineExecutor.ts
 import { useEffect, useCallback, useRef } from 'react';
 import { useEditorStore } from '../../../store/useStore';

@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/hooks/useTaskProgress.ts
+ * 请使用 import { useTaskProgress } from '@/modules/editor/shell'
+ */
+
 import { useEffect, useRef } from 'react';
 import { useStore } from '../../../store/useStore';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';

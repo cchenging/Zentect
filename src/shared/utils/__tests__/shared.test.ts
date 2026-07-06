@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { AppError, ErrorCode } from '../AppError';
+import { AppError, ErrorCode } from '../../../infra/error/AppError';
 import { IPC_CHANNELS } from '../IpcConstants';
 
 describe('AppError', () => {

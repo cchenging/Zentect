@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/hooks/useResizablePanel.ts
+ * 请使用 import { useResizablePanel } from '@/modules/editor/shell'
+ */
+
 import { useEffect, useCallback, useState, useRef } from 'react';
 
 /** 可拖拽分隔条面板 Hook 的配置 */

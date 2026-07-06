@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/storyboard/frontend/components/ShotCard.tsx
+ * 请使用 import { ShotCard } from '@/modules/editor/storyboard'
+ */
+
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Shot, Role } from '../../../../../../shared/types';
 import { getSafeMediaUrl } from '../../../../utils/formatUrl';

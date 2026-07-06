@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/preview/frontend/components/VideoCanvas.tsx
+ * 请使用 import { VideoCanvas } from '@/modules/editor/preview'
+ */
+
 import { useRef } from 'react';
 import { useEditorStore } from '../../../../store/useStore';
 import { getSafeMediaUrl } from '../../../../utils/formatUrl';

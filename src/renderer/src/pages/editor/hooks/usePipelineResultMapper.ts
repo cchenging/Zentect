@@ -1,11 +1,28 @@
-import { useStore } from '../../../store/useStore';
 import { classifyNodeId, PipelineNodeType } from '../utils/pipelineConstants';
+
+/**
+ * 管线结果映射器所需的 Setter 对象（阶段四：从依赖 useStore.getState() 改为各模块 Store 的 Setter 桥接对象）
+ */
+export interface PipelineResultMappers {
+  setAudioSeparated: (separated: boolean) => void;
+  setAsrLines: (lines: any[]) => void;
+  setFrameCount: (count: number) => void;
+  setExtractedData: (data: any) => void;
+  setVlmFrames: (frames: any[]) => void;
+  setScriptParagraphs: (paragraphs: any[]) => void;
+  setTtsResults: (results: any[]) => void;
+  setTtsProgress: (progress: number) => void;
+  setMatchResults: (results: any[]) => void;
+  setVideoChunks: (chunks: any[]) => void;
+  setBeatTimestamps: (beats: number[]) => void;
+}
 
 /**
  * 将管线执行结果映射到编辑器各步骤状态
  * @param result 管线执行返回的结果对象（按 nodeId 索引）
+ * @param mappers 各模块 Store 的 Setter 桥接对象
  */
-export const mapPipelineResultToState = (result: Record<string, any>, store: any) => {
+export const mapPipelineResultToState = (result: Record<string, any>, mappers: PipelineResultMappers) => {
   if (!result || typeof result !== 'object') return;
 
   for (const [nodeId, nodeResult] of Object.entries(result)) {
@@ -15,12 +32,12 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
 
     switch (nodeType) {
       case PipelineNodeType.AUDIO_SEPARATE:
-        store.setAudioSeparated(true);
+        mappers.setAudioSeparated(true);
         break;
 
       case PipelineNodeType.ASR:
         if (nodeResult.lines) {
-          store.setAsrLines(nodeResult.lines.map((l: any) => ({
+          mappers.setAsrLines(nodeResult.lines.map((l: any) => ({
             start: l.start || l.begin || '00:00',
             text: l.text || l.content || '',
             editing: false
@@ -29,13 +46,13 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
         break;
 
       case PipelineNodeType.FRAME_EXTRACT:
-        if (nodeResult.framesCount) store.setFrameCount(nodeResult.framesCount);
-        if (nodeResult.framePaths) store.setFrameCount(nodeResult.framePaths.length);
+        if (nodeResult.framesCount) mappers.setFrameCount(nodeResult.framesCount);
+        if (nodeResult.framePaths) mappers.setFrameCount(nodeResult.framePaths.length);
         /** 将帧路径数组持久化到 store，修复"抽得到图片但前端看不见" */
         if (nodeResult.framePaths && Array.isArray(nodeResult.framePaths)) {
-          store.setExtractedData?.({ framePaths: nodeResult.framePaths, frameCount: nodeResult.framePaths.length });
+          mappers.setExtractedData({ framePaths: nodeResult.framePaths, frameCount: nodeResult.framePaths.length });
         } else if (nodeResult.frames && Array.isArray(nodeResult.frames)) {
-          store.setExtractedData?.({ framePaths: nodeResult.frames, frameCount: nodeResult.frames.length });
+          mappers.setExtractedData({ framePaths: nodeResult.frames, frameCount: nodeResult.frames.length });
         }
         break;
 
@@ -46,7 +63,7 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
          *  关键修复：framePaths 是绝对路径，需通过 getSafeMediaUrl 转换为可显示的 URL */
         const frames = nodeResult.frames || nodeResult.frameDescriptions || [];
         if (Array.isArray(frames) && frames.length > 0 && typeof frames[0] === 'object') {
-          store.setVlmFrames(frames.map((f: any) => ({
+          mappers.setVlmFrames(frames.map((f: any) => ({
             url: f.url || f.framePath || f.thumbnail || '',
             description: f.description || f.text || f.content || '',
             editing: false,
@@ -55,7 +72,7 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
         } else if (nodeResult.sceneDescriptions) {
           const descriptions = nodeResult.sceneDescriptions.split('\n').filter((s: string) => s.trim());
           const framePaths = nodeResult.framePaths || [];
-          store.setVlmFrames(descriptions.map((desc: string, idx: number) => ({
+          mappers.setVlmFrames(descriptions.map((desc: string, idx: number) => ({
             url: framePaths[idx] || '',
             description: desc.replace(/^\d+[\.\)、]\s*/, ''),
             editing: false,
@@ -70,7 +87,7 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
         if (paragraphs.length > 0) {
           /** 确保 id 唯一：当 shotId 重复时追加索引后缀，避免编辑时多段联动 */
           const idCountMap: Record<string, number> = {};
-          store.setScriptParagraphs(paragraphs.map((p: any, idx: number) => {
+          mappers.setScriptParagraphs(paragraphs.map((p: any, idx: number) => {
             const baseId = p.id || p.shotId || `para_${idx}`;
             const count = (idCountMap[baseId] || 0) + 1;
             idCountMap[baseId] = count;
@@ -92,7 +109,7 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
         /** TTS 结果映射：兼容逐段合成结果 { shots: [...] } 和旧格式 */
         const ttsShots = nodeResult.shots || nodeResult.results || [];
         if (ttsShots.length > 0) {
-          store.setTtsResults(ttsShots.map((r: any) => {
+          mappers.setTtsResults(ttsShots.map((r: any) => {
             /** 将本地绝对路径转为 magic://local/ URL，供前端 Audio 标签播放 */
             let audioUrl = r.audioUrl || r.audioPath || '';
             if (audioUrl && !audioUrl.startsWith('http') && !audioUrl.startsWith('magic://')) {
@@ -107,14 +124,14 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
             };
           }));
         }
-        store.setTtsProgress(100);
+        mappers.setTtsProgress(100);
         break;
       }
 
       case PipelineNodeType.MATCH: {
         const matches = nodeResult.matches || nodeResult.results || [];
         if (matches.length > 0) {
-          store.setMatchResults(matches.map((m: any) => ({
+          mappers.setMatchResults(matches.map((m: any) => ({
             shotId: m.shotId || m.id,
             mediaType: m.mediaType || 'frame',
             mediaId: m.mediaId || m.chunkId || m.frameId || '',
@@ -128,7 +145,7 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
             confirmed: m.confirmed || false
           })));
         } else if (nodeResult.segments && nodeResult.segments.length > 0) {
-          store.setMatchResults(nodeResult.segments.map((seg: any, idx: number) => ({
+          mappers.setMatchResults(nodeResult.segments.map((seg: any, idx: number) => ({
             shotId: seg.shotId || seg.id || `shot_${idx}`,
             mediaType: seg.mediaType || 'frame',
             mediaId: seg.mediaId || seg.chunkId || seg.frameId || '',
@@ -144,10 +161,10 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
         }
         /** 同步视频切片池和 BGM 节拍到 Store */
         if (nodeResult.videoChunks) {
-          store.setVideoChunks(nodeResult.videoChunks);
+          mappers.setVideoChunks(nodeResult.videoChunks);
         }
         if (nodeResult.bgmBeats) {
-          store.setBeatTimestamps(nodeResult.bgmBeats.map((b: number) => Math.round(b * 1000)));
+          mappers.setBeatTimestamps(nodeResult.bgmBeats.map((b: number) => Math.round(b * 1000)));
         }
         break;
       }
@@ -155,7 +172,4 @@ export const mapPipelineResultToState = (result: Record<string, any>, store: any
   }
 };
 
-/** Hook：提供管线结果映射函数 */
-export const usePipelineResultMapper = () => {
-  return { mapPipelineResultToState };
-};
+

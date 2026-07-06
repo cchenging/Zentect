@@ -80,8 +80,6 @@ export const API = {
     runSingleTTS: (projectId: string, shot: any) => invokeSafe(IPC_CHANNELS.AI_RUN_SINGLE_TTS, projectId, shot),
     runGlobalTTS: (projectId: string, shots: any[]) => invokeSafe(IPC_CHANNELS.AI_RUN_GLOBAL_TTS, projectId, shots),
     visionSingle: (data: any) => invokeSafe(IPC_CHANNELS.AI_VISION_SINGLE, data),
-    /** 画面描述：直接调用 VLM 分析帧图片 */
-    visionExtract: (projectId: string, mediaPath: string, mediaId: string, framePaths?: string[]) => invokeSafe(IPC_CHANNELS.AI_VISION_EXTRACT, { projectId, mediaPath, mediaId, framePaths }),
     emotionSingle: (data: any) => invokeSafe(IPC_CHANNELS.AI_EMOTION_SINGLE, data),
     generateAiScript: (data: any) => invokeSafe(IPC_CHANNELS.AI_GENERATE_SCRIPT, data),
     streamText: (payload: any) => window.api.ai.streamText(payload),

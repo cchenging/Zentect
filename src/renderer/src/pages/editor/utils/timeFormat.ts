@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/preview/utils/timeFormat.ts
+ * 请使用 import { formatTime } from '@/modules/editor/preview'
+ */
+
 /** 格式化秒数为 MM:SS 格式，NaN/Infinity 安全防护 */
 export const formatTime = (t: number): string => {
   if (!Number.isFinite(t)) return '00:00';

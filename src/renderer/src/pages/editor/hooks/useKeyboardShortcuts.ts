@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/hooks/useKeyboardShortcuts.ts
+ * 请使用 import { useKeyboardShortcuts } from '@/modules/editor/shell'
+ */
+
 import { useEffect } from 'react';
 import { useEditorStore } from '../../../store/useStore';
 import { DraftService } from '../../../services/DraftService';

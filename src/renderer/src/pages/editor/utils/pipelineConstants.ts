@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/utils/pipelineConstants.ts
+ * 请使用 import { STEPS, STEP_CODE_MAP } from '@/modules/editor/shell'
+ */
+
 import { Search, PictureInPicture, PenLine, Mic, Clapperboard, Film, Music, Image, type LucideIcon } from 'lucide-react';
 
 /** 步骤定义 */

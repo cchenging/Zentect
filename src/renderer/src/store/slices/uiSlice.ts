@@ -16,6 +16,9 @@ declare module '../storeTypes' {
     saveStatus: 'idle' | 'saving' | 'saved';
     lastSavedTime: string;
     isSettingsOpen: boolean;
+    /**
+     * @deprecated 已迁移至 useStep1Store.extractionConfig，请使用 useStep1Store
+     */
     extractionConfig: {
       targetLanguage: string;
       frames: {
@@ -34,6 +37,9 @@ declare module '../storeTypes' {
     };
 
     toggleLeftPanel: () => void;
+    /**
+     * @deprecated 已迁移至 useStep1Store.updateExtractionConfig，请使用 useStep1Store
+     */
     updateExtractionConfig: (config: Partial<UISlice['extractionConfig']>) => void;
     setWorkflowState: (state: 'idle' | 'processing' | 'finetuning') => void;
     setPipelineMessage: (message: string) => void;

@@ -1,25 +1,30 @@
+/**
+ * @deprecated 子组件已迁移至 src/modules/editor/{shell,preview,storyboard}
+ * 本文件为过渡期消费者，逐步替换为新模块入口
+ */
+
 // 📁 路径: src/renderer/src/pages/editor/index.tsx
 // 编辑器页面 - 精简布局壳，逻辑已拆分至 hooks/ 和 components/
 import { useEffect, useState, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { getSafeMediaUrl } from '../../utils/formatUrl';
-import { Music, Image, Check, Film } from 'lucide-react';
+import { Music, Image, Check } from 'lucide-react';
 import { useStore } from '../../store/useStore';
-import { TopBar } from './components/top-bar';
+import { TopBar } from '@modules/editor/shell';
 import { API } from '../../api';
-import { useEditorHydration, useEditorAutoSave, useSyncDaemon } from './hooks/useEditorLogic';
-import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
-import { usePipelineExecutor } from './hooks/usePipelineExecutor';
-import { useResizablePanel } from './hooks/useResizablePanel';
-import { useTaskProgress } from './hooks/useTaskProgress';
-import { useExtractionHandler } from './hooks/useExtractionHandler';
-import { useStepRunner } from './hooks/useStepRunner';
-import { usePipelineOrchestrator } from './hooks/usePipelineOrchestrator';
-import { StepPanel } from './components/StepPanel';
-import PreviewMonitor from './components/storyboard/PreviewMonitor';
+import { useEditorHydration, useEditorAutoSave, useSyncDaemon } from '@modules/editor/shell';
+import { useKeyboardShortcuts } from '@modules/editor/shell';
+import { usePipelineExecutor } from '@modules/editor/shell';
+import { useResizablePanel } from '@modules/editor/shell';
+import { useTaskProgress } from '@modules/editor/shell';
+import { useExtractionHandler } from '@modules/editor/shell';
+import { useStepRunner } from '@modules/editor/shell';
+import { usePipelineOrchestrator } from '@modules/editor/shell';
+import { StepPanel } from '@modules/editor/shell';
+import PreviewMonitor from '@modules/editor/preview';
 
-import { MEDIA_TABS } from './utils/pipelineConstants';
-import { formatTime } from './utils/timeFormat';
+import { MEDIA_TABS } from '@modules/editor/shell';
+import { formatTime } from '@modules/editor/preview';
 
 export default function Editor() {
   const { id } = useParams();
@@ -125,9 +130,9 @@ export default function Editor() {
           {/* 视频播放器 */}
           <div className="glass-card overflow-hidden flex flex-col shrink-0">
             <PreviewMonitor
-              mediaPath={activePlaySource?.filePath}
-              startTimeMs={activePlaySource?.startMs || 0}
-              endTimeMs={activePlaySource?.endMs || 0}
+              mediaPath={activePlaySource?.filePath ?? null}
+              startMs={(activePlaySource as any)?.startMs || 0}
+              endMs={(activePlaySource as any)?.endMs || 0}
               onTimeUpdate={(t) => setCurrentTime(t)}
               onImportClick={handleVideoImport}
             />

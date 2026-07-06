@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/hooks/useStepRunner.ts
+ * 请使用 import { useStepRunner } from '@/modules/editor/shell'
+ */
+
 import { useCallback } from 'react';
 import { useStore } from '../../../store/useStore';
 import { API } from '../../../api';

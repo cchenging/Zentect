@@ -46,6 +46,7 @@ export function usePipeline(projectId?: string) {
     try {
       const activeMedia = state.mediaItems?.[0];
 
+      // 步骤2 前置检查：需要关键帧
       if (step === 2) {
         const existingFrames = state.extractedData?.framePaths || [];
         if (existingFrames.length === 0) {
@@ -54,45 +55,35 @@ export function usePipeline(projectId?: string) {
           AppNotifier.warning('请先完成步骤1（素材分析），提取关键帧后再执行画面描述');
           return;
         }
-        const result = await API.ai.visionExtract(
-          state.projectId, activeMedia?.filePath || '', activeMedia?.id || '', existingFrames,
-        );
-        if (result) {
-          const vlmData = result as any;
-          if (vlmData.sceneDescriptions || vlmData.framePaths) {
-            const descriptions = vlmData.sceneDescriptions ? vlmData.sceneDescriptions.split('\n').filter((s: string) => s.trim()) : [];
-            const framePaths: string[] = vlmData.framePaths || [];
-            const vlmFrames = framePaths.map((url: string, i: number) => ({
-              url, description: descriptions[i] || '', editing: false, confirmed: !!(descriptions[i] && descriptions[i].trim()),
-            }));
-            if (vlmFrames.length > 0) state.setVlmFrames(vlmFrames);
-          }
-        }
-      } else {
-        const sequence = STEP_SEQUENCES[step];
-        if (!sequence) { AppNotifier.error(`步骤 ${step} 未配置管线节点`); return; }
-        const enrichedSequence = sequence.map(node => ({
-          ...node,
-          params: {
-            ...(node.params || {}),
-            mediaPath: activeMedia?.filePath || '',
-            mediaId: activeMedia?.id || '',
-            ...(step === 3 ? {
-              scriptStyle: state.scriptStyle || '叙事', speechRate: state.speechRate || 4.5,
-              pipelineParams: pState.pipelineParams,
-              visionResult: { sceneDescriptions: state.vlmFrames?.map((f: any) => f.description || '').filter(Boolean).join('\n') || '' },
-            } : {}),
-            ...(step === 4 ? { ttsEngine: state.ttsEngine || 'edge', voiceId: state.ttsVoiceId || '', scriptShots: state.scriptParagraphs || [] } : {}),
-            ...(step === 5 ? {
-              scriptShots: state.scriptParagraphs || [],
-              visionResult: { sceneDescriptions: state.vlmFrames?.map((f: any) => f.description || '').filter(Boolean).join('\n') || '', frames: state.vlmFrames || [] },
-              ttsDurations: state.ttsResults || [], bgmInfo: state.activeBgm ? { id: state.activeBgm.id, filePath: state.activeBgm.filePath } : null,
-            } : {}),
-          },
-        }));
-        const result = await API.engine.runPipeline({ projectId: state.projectId, sequence: enrichedSequence, sourceMedia: activeMedia?.filePath || '' });
-        if (result) mapPipelineResultToState(result?.data || result, useStore.getState());
       }
+
+      const sequence = STEP_SEQUENCES[step];
+      if (!sequence) { AppNotifier.error(`步骤 ${step} 未配置管线节点`); return; }
+      const enrichedSequence = sequence.map(node => ({
+        ...node,
+        params: {
+          ...(node.params || {}),
+          mediaPath: activeMedia?.filePath || '',
+          mediaId: activeMedia?.id || '',
+          ...(step === 2 ? {
+            framePaths: state.extractedData?.framePaths || [],
+            projectId: state.projectId,
+          } : {}),
+          ...(step === 3 ? {
+            scriptStyle: state.scriptStyle || '叙事', speechRate: state.speechRate || 4.5,
+            pipelineParams: pState.pipelineParams,
+            visionResult: { sceneDescriptions: state.vlmFrames?.map((f: any) => f.description || '').filter(Boolean).join('\n') || '' },
+          } : {}),
+          ...(step === 4 ? { ttsEngine: state.ttsEngine || 'edge', voiceId: state.ttsVoiceId || '', scriptShots: state.scriptParagraphs || [] } : {}),
+          ...(step === 5 ? {
+            scriptShots: state.scriptParagraphs || [],
+            visionResult: { sceneDescriptions: state.vlmFrames?.map((f: any) => f.description || '').filter(Boolean).join('\n') || '', frames: state.vlmFrames || [] },
+            ttsDurations: state.ttsResults || [], bgmInfo: state.activeBgm ? { id: state.activeBgm.id, filePath: state.activeBgm.filePath } : null,
+          } : {}),
+        },
+      }));
+      const result = await API.engine.runPipeline({ projectId: state.projectId, sequence: enrichedSequence, sourceMedia: activeMedia?.filePath || '' });
+      if (result) mapPipelineResultToState(result?.data || result, useStore.getState());
 
       pState.setStepCompleted(step, true);
       pState.setStepStatus(step, 'completed');

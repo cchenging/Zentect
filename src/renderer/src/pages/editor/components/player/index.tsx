@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/preview/frontend/components/Player.tsx
+ * 请使用 import { Player } from '@/modules/editor/preview'
+ */
+
 import React from 'react';
 import { VideoCanvas } from './VideoCanvas';
 import { PlayerControls } from './PlayerControls';

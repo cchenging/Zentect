@@ -16,6 +16,9 @@ const INITIAL_SUB_STEP_PROGRESSES: Record<string, number> = {
 };
 
 export interface PipelineStore {
+  // 编辑器加载/水合状态
+  hydrationStatus: 'IDLE' | 'LOADING' | 'READY' | 'ERROR';
+
   // 步骤执行状态
   stepStatuses: StepStatus[];
   stepCompleted: boolean[];
@@ -32,6 +35,9 @@ export interface PipelineStore {
   // 参数配置
   pipelineParams: PipelineParams;
   extractionConfig: ExtractionConfig | null;
+
+  // Actions — 编辑器状态
+  setHydrationStatus: (status: PipelineStore['hydrationStatus']) => void;
 
   // Actions — 步骤状态
   setStepStatus: (step: number, status: StepStatus) => void;
@@ -53,6 +59,8 @@ export interface PipelineStore {
 }
 
 export const usePipelineStore = create<PipelineStore>()((set) => ({
+  hydrationStatus: 'IDLE',
+
   stepStatuses: [...INITIAL_STEP_STATUSES],
   stepCompleted: [false, false, false, false, false],
   subStepStatuses: { ...INITIAL_SUB_STEP_STATUSES },
@@ -94,6 +102,8 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
       subStepStatuses: { ...INITIAL_SUB_STEP_STATUSES },
       subStepProgresses: { ...INITIAL_SUB_STEP_PROGRESSES },
     }),
+
+  setHydrationStatus: (status) => set({ hydrationStatus: status }),
 
   setPipelineRunning: (running) => set({ pipelineRunning: running }),
   setPipelineProgress: (progress, node) => set({ pipelineProgress: progress, pipelineNode: node || '' }),

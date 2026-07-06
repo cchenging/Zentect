@@ -1,4 +1,4 @@
-import { DICT } from '../locales/dictionary';
+import { DICT } from '../../infra/i18n/dictionary';
 
 /**
  * 1. 基础媒体实体

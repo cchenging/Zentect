@@ -168,3 +168,11 @@ pnpm-workspace.yaml
 pnpm-lock.yaml
 
 /scripts/
+
+# ── 11. 时间戳备份文件 ──────────────────────────────────
+src/main/engine/capabilities/TTSProvider_*.ts
+src/main/engine/capabilities/index_*.ts
+src/main/engine/strategies/TTSStrategy_*.ts
+src/renderer/src/pages/editor/components/steps/StepTTSSynthesis_*.tsx
+src/renderer/src/pages/editor/components/steps/containers/StepTTSSynthesisView_*.tsx
+src/renderer/src/pages/home/index_*.tsx

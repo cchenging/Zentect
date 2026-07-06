@@ -1,14 +1,22 @@
-﻿import React from 'react';
+﻿/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/components/StepPanel.tsx
+ * 请使用 import { StepPanel } from '@/modules/editor/shell'
+ *
+ * 阶段四迁移：useStore → useEditorNavStore + usePipelineStore
+ */
+
+import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useStore } from '../../../store/useStore';
+import { useEditorNavStore } from '../../../../../modules/editor/stores/useEditorNavStore';
+import { usePipelineStore } from '../../../store/usePipelineStore';
 import { STEPS } from '../utils/pipelineConstants';
 import { PipelineStatusBar } from './PipelineStatusBar';
 import { PropertyBar } from './PropertyBar';
-import { StepMaterialAnalysis } from './steps/StepMaterialAnalysis';
-import { StepVisionDescription } from './steps/StepVisionDescription';
-import { StepScriptGeneration } from './steps/StepScriptGeneration';
-import { StepTTSSynthesis } from './steps/StepTTSSynthesis';
-import { StepShotMatching } from './steps/StepShotMatching';
+import { StepMaterialAnalysis } from '../../../../../modules/pipeline/step1-material/frontend/Container';
+import { StepVisionDescription } from '../../../../../modules/pipeline/step2-vision/frontend/Container';
+import { StepScriptGeneration } from '../../../../../modules/pipeline/step3-script/frontend/Container';
+import { StepTTSSynthesis } from '../../../../../modules/pipeline/step4-tts/frontend/Container';
+import { StepShotMatching } from '../../../../../modules/pipeline/step5-match/frontend/Container';
 import { Play, ChevronRight, RefreshCcw } from 'lucide-react';
 import { Badge, StatusIcon } from '../../../components/shared';
 import { StepIndicator } from '../../../components/shared/StepIndicator';
@@ -24,14 +32,14 @@ interface StepPanelProps {
 /** 步骤导航面板 - 包含步骤进度条、管线状态、步骤内容和底部操作栏 */
 export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => {
   const navigate = useNavigate();
-  const currentStep = useStore((s) => s.currentStep);
-  const isAutoMode = useStore((s) => s.isAutoMode);
-  const pipelineRunning = useStore((s) => s.pipelineRunning);
-  const stepCompleted = useStore((s) => s.stepCompleted);
-  const stepStatuses = useStore((s) => s.stepStatuses);
-  const hydrationStatus = useStore((s) => s.hydrationStatus);
-  const setCurrentStep = useStore((s) => s.setCurrentStep);
-  const setIsAutoMode = useStore((s) => s.setIsAutoMode);
+  const currentStep = useEditorNavStore((s) => s.currentStep);
+  const isAutoMode = useEditorNavStore((s) => s.isAutoMode);
+  const pipelineRunning = usePipelineStore((s) => s.pipelineRunning);
+  const stepCompleted = usePipelineStore((s) => s.stepCompleted);
+  const stepStatuses = usePipelineStore((s) => s.stepStatuses);
+  const hydrationStatus = usePipelineStore((s) => s.hydrationStatus);
+  const setCurrentStep = useEditorNavStore((s) => s.setCurrentStep);
+  const setIsAutoMode = useEditorNavStore((s) => s.setIsAutoMode);
 
   /** 步骤跳转前置条件验证：只能跳到已完成步骤或当前步骤+1 */
   const handleStepClick = (targetStep: number) => {

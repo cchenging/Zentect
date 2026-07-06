@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/preview/frontend/View.tsx
+ * 请使用 import { PreviewMonitor } from '@/modules/editor/preview'
+ */
+
 import { useRef, useState, useEffect, useCallback } from 'react';
 import { getSafeMediaUrl } from '../../../../utils/formatUrl';
 import {

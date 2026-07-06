@@ -1,3 +1,8 @@
+/**
+ * @deprecated 已迁移至 src/modules/editor/shell/frontend/hooks/useExtractionHandler.ts
+ * 请使用 import { useExtractionHandler } from '@/modules/editor/shell'
+ */
+
 import { useEffect } from 'react';
 import { useStore } from '../../../store/useStore';
 import { API } from '../../../api';

@@ -2,7 +2,7 @@
  * 前端 EditorLogger - 步骤组件的结构化日志
  * 批量 flush 到主进程，避免频繁 IPC
  */
-import { LogLevel, LOG_TAGS } from '../../../../shared/utils/LogConstants';
+import { LogLevel, LOG_TAGS } from '../../../../infra/logger/LogConstants';
 
 interface LogEntry {
   level: LogLevel; module: string; message: string;
