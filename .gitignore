@@ -160,14 +160,13 @@ migrate_*.sql
 debug-*.md
 
 # ── 9. Husky Git Hooks ────────────────────────────────────
-.husky/
+# .husky/ is committed — shared git hook infrastructure
 
 # ── 10. 包管理器配置 ──────────────────────────────────────
 .npmrc
 pnpm-workspace.yaml
-pnpm-lock.yaml
-
-/scripts/
+# pnpm-lock.yaml is committed — CI uses pnpm
+# /scripts/ is committed — dev scripts and test harnesses
 
 # ── 11. 时间戳备份文件 ──────────────────────────────────
 src/main/engine/capabilities/TTSProvider_*.ts
