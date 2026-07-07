@@ -1,18 +1,18 @@
 /** shared 通用组件统一导出 */
-export { Badge, badgeVariants } from './Badge'
-export type { BadgeProps } from './Badge'
+export { Badge, badgeVariants } from './badge'
+export type { BadgeProps } from './badge'
 
-export { Progress, progressVariants } from './Progress'
-export type { ProgressProps } from './Progress'
+export { Progress, progressVariants } from './progress'
+export type { ProgressProps } from './progress'
 
-export { StatHeader } from './StatHeader'
-export type { StatHeaderProps } from './StatHeader'
+export { StatHeader } from './stat-header'
+export type { StatHeaderProps } from './stat-header'
 
-export { EmptyState } from './EmptyState'
-export type { EmptyStateProps } from './EmptyState'
+export { EmptyState } from './empty-state'
+export type { EmptyStateProps } from './empty-state'
 
-export { StatusIcon, statusIconVariants } from './StatusIcon'
-export type { StatusIconProps } from './StatusIcon'
+export { StatusIcon, statusIconVariants } from './status-icon'
+export type { StatusIconProps } from './status-icon'
 
-export { CollapsibleCard } from './CollapsibleCard'
-export type { CollapsibleCardProps } from './CollapsibleCard'
+export { CollapsibleCard } from './collapsible-card'
+export type { CollapsibleCardProps } from './collapsible-card'

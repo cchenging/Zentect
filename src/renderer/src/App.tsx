@@ -8,9 +8,9 @@ import { useEditorStore } from './store/useStore';
 import { API } from './api';
 import { FrontendLogger } from './utils/logger';
 import { useTaskStore } from './store/useTaskStore';
-import { GlobalToaster } from './components/GlobalToaster';
-import { ErrorBoundary } from './components/ErrorBoundary';
-import { AuthModal } from './components/AuthModal';
+import { GlobalToaster } from './components/global-toaster';
+import { ErrorBoundary } from './components/error-boundary';
+import { AuthModal } from './components/auth-modal';
 import { useUserStore } from './store/useUserStore';
 import { useNotificationCenter } from './services/NotificationCenter';
 

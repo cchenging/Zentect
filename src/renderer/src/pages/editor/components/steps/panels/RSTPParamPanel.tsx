@@ -1,6 +1,6 @@
 ﻿import React from "react";
 import { Sliders } from "lucide-react";
-import { ParameterSlider } from "../../../../components/shared/ParameterSlider";
+import { ParameterSlider } from "../../../../components/shared/parameter-slider";
 import type { PipelineParams } from "../../../../../shared/types/entities/editor";
 
 export interface RSTPParamPanelProps {

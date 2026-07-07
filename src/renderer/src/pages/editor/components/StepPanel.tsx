@@ -19,7 +19,7 @@ import { StepTTSSynthesis } from '../../../../../modules/pipeline/step4-tts/fron
 import { StepShotMatching } from '../../../../../modules/pipeline/step5-match/frontend/Container';
 import { Play, ChevronRight, RefreshCcw } from 'lucide-react';
 import { Badge, StatusIcon } from '../../../components/shared';
-import { StepIndicator } from '../../../components/shared/StepIndicator';
+import { StepIndicator } from '../../../components/shared/step-indicator';
 import { AppNotifier } from '../../../core/AppNotifier';
 
 interface StepPanelProps {
