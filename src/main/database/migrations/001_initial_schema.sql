@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS projects (
   category TEXT DEFAULT 'short',
   cover_path TEXT,
   duration TEXT,
+  disk_size REAL DEFAULT 0,
   status TEXT DEFAULT 'active',
   canvas_data TEXT,
   create_time DATETIME DEFAULT CURRENT_TIMESTAMP,

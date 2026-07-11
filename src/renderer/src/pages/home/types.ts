@@ -4,9 +4,10 @@ export interface ProjectRecord {
   type?: string;
   coverPath: string | null;
   duration: string | null;
+  size?: number;
+  step5Status?: string;
   createdAt: string;
   updatedAt: string;
-  diskSize?: number;
 }
 
 export type Project = ProjectRecord;

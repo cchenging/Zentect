@@ -1,7 +1,9 @@
 export const PROJECT_SQL = {
   // --- 基础读写 ---
   FIND_ALL: `
-    SELECT id, name, type, category, cover_path as coverPath, duration, create_time as createdAt, update_time as updatedAt
+    SELECT id, name, type, category, cover_path as coverPath, duration,
+           json_extract(metadata, '$.stepStatuses[4]') as step5Status,
+           disk_size as size, create_time as createdAt, update_time as updatedAt
     FROM projects WHERE is_deleted = 0 ORDER BY create_time DESC, update_time DESC
   `,
   FIND_BY_ID: `\n    SELECT id, name, category, cover_path as coverPath, duration, \n           canvas_data as canvasData,\n           create_time as createdAt, update_time as updatedAt \n    FROM projects WHERE id = @id AND is_deleted = 0\n  `,

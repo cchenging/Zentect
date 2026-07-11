@@ -1,10 +1,10 @@
 // 📁 路径：src/modules/home/frontend/hooks/useProjectManager.ts
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useI18n } from '../../../../../renderer/src/store/useI18n';
-import { API } from '../../../../../renderer/src/api';
-import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
-import type { ProjectRecord } from '../../../types';
-import { FrontendLogger } from '../../../../../renderer/src/utils/logger';
+import { useI18n } from '../../../../renderer/src/store/useI18n';
+import { API } from '../../../../renderer/src/api';
+import { AppNotifier } from '../../../../renderer/src/core/AppNotifier';
+import type { ProjectRecord } from '../types';
+import { FrontendLogger } from '../../../../renderer/src/utils/logger';
 
 /**
  * 项目管理 Hook
@@ -18,7 +18,7 @@ export const useProjectManager = () => {
   /** 获取工程列表 */
   const fetchProjects = useCallback(async () => {
     try {
-      const result = await API.project.list();
+      const result = await API.project.getList();
       if (result && Array.isArray(result)) {
         const mapped: ProjectRecord[] = result.map((item: any) => ({
           id: item.id,
@@ -26,6 +26,7 @@ export const useProjectManager = () => {
           type: item.type,
           coverPath: item.cover || item.coverPath || null,
           duration: item.duration || null,
+          step5Status: item.step5Status || null,
           createdAt: item.createdAt || item.created_at || '',
           updatedAt: item.updatedAt || item.updated_at || '',
           size: item.size || 0,

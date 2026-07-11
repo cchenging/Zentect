@@ -15,6 +15,7 @@ output/
 
 # 架构 / PRD / 内部设计文档（不上传 git）
 docs/
+doc/
 
 # ── 2. 构建产物 / 编译缓存 ──────────────────────────────────
 # electron-vite / tsc / vitest 输出

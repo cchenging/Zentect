@@ -76,6 +76,28 @@ export class ProjectRepository {
     this.db.prepare(PROJECT_SQL.UPDATE_NAME_AND_PATH).run({ id, name, path: dir });
   }
 
+  /** 回写项目目录磁盘占用大小（字节） */
+  public updateDiskSize(id: string, size: number) {
+    this.db.prepare(`
+      UPDATE projects SET disk_size = @size, update_time = datetime('now', 'localtime') WHERE id = @id
+    `).run({ id, size });
+  }
+
+  /** 回写项目总时长（秒数，TEXT 类型） */
+  public updateDuration(id: string, duration: string) {
+    this.db.prepare(`
+      UPDATE projects SET duration = @duration, update_time = datetime('now', 'localtime') WHERE id = @id
+    `).run({ id, duration });
+  }
+
+  /** 汇总项目关联素材的总时长（秒数，从 media_assets 聚合） */
+  public getMediaTotalDuration(projectId: string): number | null {
+    const row = this.db.prepare(
+      `SELECT SUM(duration) as total FROM media_assets WHERE project_id = ? AND is_deleted = 0`
+    ).get(projectId) as { total: number | null };
+    return row?.total ?? null;
+  }
+
   public duplicate(oldId: string, newId: string, newName: string, suffix: string, oldProject: any, newPath: string) {
     const transaction = this.db.transaction(() => {
       this.db.prepare(PROJECT_SQL.COPY_PROJECT).run({

@@ -5,10 +5,10 @@ import { ProjectRepository } from '../database/repositories/ProjectRepository';
 import { TaskRepository } from '../database/repositories/TaskRepository';
 import { PathManager } from '../utils/pathManager';
 import { Validator } from '../../shared/utils/Validator';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { SQLiteConnection } from '../database/core/SQLiteConnection';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import * as fsSync from 'fs';
 
 export class ProjectService {
@@ -167,16 +167,64 @@ export class ProjectService {
     return true; 
   }
 
-  public getList() {
-    return this.repo.findAll().map(p => {
+  /** 递归计算目录磁盘占用大小（字节），纯 Node.js 异步方案 */
+  private async calcDirSize(dirPath: string): Promise<number> {
+    try {
+      let totalSize = 0;
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry.name);
+        if (entry.isFile()) {
+          try {
+            const stat = await fs.stat(fullPath);
+            totalSize += stat.size;
+          } catch {
+            // 无权限等，跳过
+          }
+        } else if (entry.isDirectory()) {
+          totalSize += await this.calcDirSize(fullPath);
+        }
+      }
+      return totalSize;
+    } catch {
+      return 0;
+    }
+  }
+
+  public async getList() {
+    const projects = this.repo.findAll().map(p => {
       const project = { ...p };
       if (project.coverPath && typeof project.coverPath === 'string' && !project.coverPath.startsWith('http') && !project.coverPath.startsWith('magic://')) {
         project.coverPath = `magic://${project.id}/${project.coverPath.replace(/\\/g, '/')}`;
       }
       return project;
     });
+
+    // 异步启动 size 计算，不阻塞列表返回；计算完成后异步回写 DB
+    for (const project of projects) {
+      if (!project.size || project.size === 0) {
+        const dirPath = PathManager.getProjectDir(project.id);
+        this.calcDirSize(dirPath).then(size => {
+          if (size > 0) {
+            this.repo.updateDiskSize(project.id, size);
+          }
+        });
+      }
+    }
+
+    // 异步启动 duration 计算：对 duration 为 NULL 或 "0" 的，从 media_assets 聚合后回写
+    for (const project of projects) {
+      if (!project.duration || project.duration === '0') {
+        const totalSeconds = this.repo.getMediaTotalDuration(project.id);
+        if (totalSeconds !== null && totalSeconds > 0) {
+          this.repo.updateDuration(project.id, String(totalSeconds));
+        }
+      }
+    }
+
+    return projects;
   }
-  public getRecent() { return this.getList().slice(0, 5); }
+  public async getRecent() { return (await this.getList()).slice(0, 5); }
 
   public async createProject(payload: { name?: string, type?: string }) {
     // 1. 生成物理安全的 ID

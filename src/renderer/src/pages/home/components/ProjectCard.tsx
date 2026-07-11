@@ -92,6 +92,22 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRe
         {/* 护眼遮罩层：防止封面太亮导致白色按钮看不清 */}
         <div className="absolute inset-0 bg-gradient-to-bl from-black/40 via-transparent to-transparent opacity-0 group-hover/cover:opacity-100 transition-opacity duration-300 pointer-events-none" />
         
+        {/* 项目完成状态标签 — 纯图标角标风格，主题自适应 */}
+        <div className="absolute top-1.5 right-1.5">
+          <div className="w-[22px] h-[22px] flex items-center justify-center rounded-full light:bg-black/25 bg-black/40">
+            {project.step5Status === 'completed' ? (
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-success">
+                <path d="M3.5 6.5L5.5 9L9.5 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            ) : (
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-muted-foreground">
+                <circle cx="6.5" cy="6.5" r="4.8" stroke="currentColor" strokeWidth="1.2"/>
+                <path d="M6.5 4V6.8L8.5 7.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+            )}
+          </div>
+        </div>
+        
         {/* 💥 美学重构 2：毛玻璃正圆形按钮 (rounded-full) */}
         <div className="absolute top-2 right-2" onClick={e => e.stopPropagation()}>
           <DropdownMenu>
