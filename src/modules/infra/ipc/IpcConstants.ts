@@ -135,6 +135,8 @@ export const IPC_CHANNELS = {
 
   // V1.0: 文件系统
   SYSTEM_OPEN_PATH: 'system:open-path',
+  SYSTEM_OPEN_FILE: 'dialog:openFile',
+  SYSTEM_READ_FILE: 'system:readFile',
 
   // --- V1.1 工作流持久化 ---
   WORKFLOW_SAVE: 'workflow:save',

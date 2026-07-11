@@ -15,5 +15,6 @@ export { usePipelineExecutor } from './frontend/hooks/usePipelineExecutor';
 export { useTaskProgress } from './frontend/hooks/useTaskProgress';
 export { useExtractionHandler } from './frontend/hooks/useExtractionHandler';
 export { useKeyboardShortcuts } from './frontend/hooks/useKeyboardShortcuts';
+export { useMediaUpdatedListener } from './frontend/hooks/useMediaUpdatedListener';
 
 export { STEPS, STEP_SEQUENCES, SCRIPT_STYLES, MEDIA_TABS, CODE_TO_NAME, PipelineNodeType, classifyNodeId } from './utils/pipelineConstants';

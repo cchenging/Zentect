@@ -8,7 +8,7 @@
  */
 
 import { create } from 'zustand';
-import type { MatchResult } from '../../../../shared/types/entities/editor';
+import type { MatchResult } from '../../../shared/types/entities/editor';
 
 export interface BgmInfo {
   id: string;

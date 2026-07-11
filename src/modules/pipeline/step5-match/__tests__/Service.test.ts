@@ -3,7 +3,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MatchService } from '../backend/Service';
 import type { MatchPipelineInput, PipelineAPI } from '../backend/Service';
-import { AppError, ErrorCode } from '../../../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../../infra/error/AppError';
 
 // ---------- helpers ----------
 

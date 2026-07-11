@@ -9,7 +9,7 @@
  */
 
 import { create } from 'zustand';
-import type { ScriptParagraph } from '../../../../shared/types/entities/editor';
+import type { ScriptParagraph } from '../../../shared/types/entities/editor';
 
 export interface PipelineParams {
   R: number;

@@ -11,8 +11,8 @@
  */
 
 import { create } from 'zustand';
-import type { AsrLine } from '../../../../shared/types/entities/editor';
-import type { VlmFrame } from '../../../../shared/types/entities/editor';
+import type { AsrLine } from '../../../shared/types/entities/editor';
+import type { VlmFrame } from '../../../shared/types/entities/editor';
 
 export interface ExtractionConfig {
   targetLanguage: string;

@@ -5,6 +5,7 @@ import { Film, ScanFace, ListMusic, Mic, Cpu, XCircle, RefreshCw, Loader2, Alert
 import { useStore } from '../../../../store/useStore';
 import { useTaskStore } from '../../../../store/useTaskStore';
 import { useI18n } from '../../../../store/useI18n';
+import { useStep1Store } from '../../../../../../modules/pipeline/stores/useStep1Store';
 import { Button } from '../../../../components/ui/button';
 import { Switch } from '../../../../components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../components/ui/select';
@@ -121,8 +122,9 @@ const StepCard = React.memo<StepCardProps>(({
 StepCard.displayName = 'StepCard';
 
 export const MediaParser: React.FC = () => {
-  const { selectedItemId, mediaItems: mediaItemsStore, projectId, extractionConfig, updateExtractionConfig,
+  const { selectedItemId, mediaItems: mediaItemsStore, projectId, updateExtractionConfig,
     subStepStatuses, setSubStepStatus, setStepStatus, setPipelineError, isAutoMode } = useStore();
+  const extractionConfig = useStep1Store((s) => s.extractionConfig);
   const { tasks } = useTaskStore();
   const { t } = useI18n();
 
@@ -318,7 +320,7 @@ export const MediaParser: React.FC = () => {
 
   /** 获取子步骤结果摘要 */
   const getSubStepSummary = useCallback((key: string): string => {
-    const state = useStore.getState();
+    const state = useStep1Store.getState();
     switch (key) {
       case 'frames': return state.frameCount > 0 ? `已提取 ${state.frameCount} 帧` : '';
       case 'audio': return state.audioSeparated ? '人声与BGM已分离' : '';

@@ -12,7 +12,7 @@
  */
 
 import { create } from 'zustand';
-import type { MediaItem, Shot, Role } from '../../../../shared/types';
+import type { MediaItem, Shot, Role } from '../../../shared/types';
 import { AppNotifier } from '../../../renderer/src/core/AppNotifier';
 import { API } from '../../../renderer/src/api';
 

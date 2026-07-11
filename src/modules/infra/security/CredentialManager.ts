@@ -1,5 +1,5 @@
-import { encryptData, decryptData } from '../../main/utils/crypto';
-import { SENSITIVE_CONFIG_KEYS, isSensitiveConfig } from '../../shared/config/keys';
+import { encryptData, decryptData } from '../../../main/utils/crypto';
+import { SENSITIVE_CONFIG_KEYS, isSensitiveConfig } from '../../../shared/config/keys';
 import { AppLogger } from '../logger/AppLogger';
 import { LOG_TAGS } from '../logger/LogConstants';
 

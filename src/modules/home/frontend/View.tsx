@@ -1,11 +1,11 @@
 // Home 模块 — 纯 View 组件（不访问 Store / API / Hooks）
 import React from 'react';
 import { Play, Search, LayoutGrid, List, FolderOpen, Upload } from 'lucide-react';
-import type { ProjectRecord } from '../../types';
+import type { ProjectRecord } from '../types';
 import { ProjectCard } from './components/ProjectCard';
 import { RenameModal } from './components/RenameModal';
 import { DeleteModal } from './components/DeleteModal';
-import { ParticleEngine } from '../../../../renderer/src/components/ParticleEngine';
+import { ParticleEngine } from '../../../renderer/src/components/ParticleEngine';
 
 export interface HomeViewProps {
   filteredProjects: ProjectRecord[];

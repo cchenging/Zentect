@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { useStore } from '../../../store/useStore';
+import { usePipelineStore } from '../../../store/usePipelineStore';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 import { CODE_TO_NAME } from '../utils/pipelineConstants';
 
@@ -65,7 +65,7 @@ export const useTaskProgress = () => {
 
       if (!code) return;
 
-      const state = useStore.getState();
+      const state = usePipelineStore.getState();
 
       /** 去重：相同 code 且进度未变化时跳过 */
       const progressKey = `${code}:${percent}`;
@@ -76,7 +76,7 @@ export const useTaskProgress = () => {
 
       /** 管线整体完成 → 批量标记所有子步骤完成 */
       if (code === 'TASK_SUCCESS' || status === 'completed') {
-        useStore.setState({
+        usePipelineStore.setState({
           pipelineProgress: 100,
           pipelineNode: CODE_TO_NAME[code] || code || '',
           subStepStatuses: { frames: 'completed', audio: 'completed', whisper: 'completed', faces: 'completed' },
@@ -96,7 +96,7 @@ export const useTaskProgress = () => {
           }
         });
         if (hasChanges) {
-          useStore.setState({ subStepStatuses: newSubStepStatuses });
+          usePipelineStore.setState({ subStepStatuses: newSubStepStatuses });
         }
         return;
       }
@@ -104,7 +104,7 @@ export const useTaskProgress = () => {
       /** 完成类 code → 标记对应子步骤为完成 */
       const completionKey = COMPLETION_CODES[code];
       if (completionKey) {
-        useStore.setState({
+        usePipelineStore.setState({
           subStepStatuses: { ...state.subStepStatuses, [completionKey]: 'completed' },
           subStepProgresses: { ...state.subStepProgresses, [completionKey]: 100 },
         });
@@ -125,10 +125,10 @@ export const useTaskProgress = () => {
             [subStepKey]: toLocalProgress(subStepKey, percent),
           };
         }
-        useStore.setState(updates);
+        usePipelineStore.setState(updates);
       } else if (typeof percent === 'number') {
         /** 未知 code 但有进度 → 仅更新进度条 */
-        useStore.setState({
+        usePipelineStore.setState({
           pipelineProgress: percent,
           pipelineNode: CODE_TO_NAME[code] || code || '',
         });

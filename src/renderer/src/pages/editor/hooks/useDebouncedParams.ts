@@ -1,11 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { useEditorStore } from '../../../store/useStore';
+import { useStep3Store } from '../../../../../modules/pipeline/stores/useStep3Store';
 import { API } from '../../../api';
 
 /** V1.1 R/S/T/P 参数 500ms 防抖 → 重新计算 Timeline */
 export const useDebouncedParams = () => {
   const projectId = useEditorStore((s) => s.projectId);
-  const pipelineParams = useEditorStore((s) => s.pipelineParams);
+  const pipelineParams = useStep3Store((s) => s.pipelineParams);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {

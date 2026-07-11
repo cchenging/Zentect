@@ -4,7 +4,7 @@ import React from "react";
 import { Play, Square, Volume2, Mic, User } from "lucide-react";
 import { Badge, Progress, StatHeader, EmptyState } from "../../../../renderer/src/components/shared";
 import { VoiceCard } from "../../../../renderer/src/components/shared/VoiceCard";
-import type { ScriptParagraph } from "../../../shared/types/entities/editor";
+import type { ScriptParagraph } from "../../../../shared/types/entities/editor";
 import type { TTSResult, TtsVoiceOption } from "../types";
 
 export interface StepTTSSynthesisViewProps {

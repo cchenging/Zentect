@@ -1,5 +1,6 @@
 ﻿import React from 'react';
 import { useStore } from '../../../../store/useStore';
+import { useStep1Store } from '../../../../../../../modules/pipeline/stores/useStep1Store';
 import { StatusIcon, CollapsibleCard } from '../../../../components/shared';
 import { FrameExtractConfig } from '../../inspectors/configs/FrameExtractConfig';
 
@@ -9,7 +10,7 @@ export interface FrameExtractSubStepProps {
 }
 
 export const FrameExtractSubStep: React.FC<FrameExtractSubStepProps> = ({ expanded, onToggle }) => {
-  const frameCount = useStore((s) => s.frameCount);
+  const frameCount = useStep1Store((s) => s.frameCount);
   const status = useStore((s) => (s.subStepStatuses as any)['张'] || '等待');
   const progress = useStore((s) => (s.subStepProgresses as any)['张'] || 0);
 

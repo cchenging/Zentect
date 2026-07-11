@@ -3,7 +3,7 @@
  * 在日志输出前自动脱敏 API Key、密码、Token 等敏感字段，
  * 防止凭证泄露到本地日志文件或远程上报
  */
-import { SENSITIVE_CONFIG_KEYS } from '../../shared/config/keys';
+import { SENSITIVE_CONFIG_KEYS } from '../../../shared/config/keys';
 
 interface SanitizeRule {
   pattern: RegExp;

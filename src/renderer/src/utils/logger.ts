@@ -1,5 +1,5 @@
 import { API } from '../api';
-import { LogLevel, LogProcess } from '../../../infra/logger/LogConstants';
+import { LogLevel, LogProcess } from '../../../modules/infra/logger/LogConstants';
 
 /**
  * @class FrontendLogger

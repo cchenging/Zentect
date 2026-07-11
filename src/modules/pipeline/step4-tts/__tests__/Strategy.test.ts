@@ -29,7 +29,7 @@ vi.mock('../../../../main/engine/AIEngine', () => ({
   },
 }));
 
-import { AIEngine } from '../../../main/engine/AIEngine';
+import { AIEngine } from '../../../../main/engine/AIEngine';
 
 // 动态导入被测模块（mock 已在顶层设置）
 // Strategy.ts 内部有 runConcurrent 私有函数和 TTSStrategy 类

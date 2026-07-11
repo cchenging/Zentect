@@ -8,7 +8,7 @@
  */
 
 import { create } from 'zustand';
-import type { TtsResult } from '../../../../shared/types/entities/editor';
+import type { TtsResult } from '../../../shared/types/entities/editor';
 
 export interface Step4Store {
   // 步骤4专属数据

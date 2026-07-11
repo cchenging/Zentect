@@ -3,6 +3,11 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../../../../../renderer/src/store/useStore';
+import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
+import { useStep2Store } from '../../../../pipeline/stores/useStep2Store';
+import { useProjectStore } from '../../../../editor/stores/useProjectStore';
+import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
+import { useEditorNavStore } from '../../../../editor/stores/useEditorNavStore';
 import { API } from '../../../../../renderer/src/api';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -17,9 +22,10 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
   useEffect(() => {
     API.events.onExtractionSuccess(async (payload: any) => {
       const state = useStore.getState();
-      state.setStepCompleted(1, true);
-      state.setStepStatus(1, 'completed');
-      state.setPipelineRunning(false);
+      const pipelineState = usePipelineStore.getState();
+      pipelineState.setStepCompleted(1, true);
+      pipelineState.setStepStatus(1, 'completed');
+      pipelineState.setPipelineRunning(false);
 
       const shots = payload.shots || [];
       const hasAsrLines = shots.some((s: any) => s.originalText && s.originalText.trim());
@@ -31,10 +37,10 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
       console.log('[DEBUG ASR] shots count:', shots.length, 'hasAsrLines:', hasAsrLines,
         'sample originalTexts:', shots.slice(0, 3).map((s: any) => s.originalText?.substring(0, 20)));
 
-      state.setSubStepStatus('frames', hasFrames ? 'completed' : (state.subStepStatuses.frames || 'idle'));
-      state.setSubStepStatus('audio', hasAudio ? 'completed' : (state.subStepStatuses.audio || 'idle'));
-      state.setSubStepStatus('whisper', hasAsrLines ? 'completed' : (state.subStepStatuses.whisper || 'idle'));
-      state.setSubStepStatus('faces', hasRoles ? 'completed' : (state.subStepStatuses.faces || 'idle'));
+      pipelineState.setSubStepStatus('frames', hasFrames ? 'completed' : (pipelineState.subStepStatuses.frames || 'idle'));
+      pipelineState.setSubStepStatus('audio', hasAudio ? 'completed' : (pipelineState.subStepStatuses.audio || 'idle'));
+      pipelineState.setSubStepStatus('whisper', hasAsrLines ? 'completed' : (pipelineState.subStepStatuses.whisper || 'idle'));
+      pipelineState.setSubStepStatus('faces', hasRoles ? 'completed' : (pipelineState.subStepStatuses.faces || 'idle'));
 
       let updatedMediaItems = [...state.mediaItems];
       const mediaId: string | null = payload.mediaId || payload.media?.id;
@@ -52,23 +58,23 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
         });
 
       if (media) {
-        if (hasAudio) { state.setAudioSeparated(true); }
+        if (hasAudio) { useStep1Store.getState().setAudioSeparated(true); }
 
         if (asrLines.length > 0) {
-          state.setAsrLines(asrLines);
+          useStep1Store.getState().setAsrLines(asrLines);
         } else if (media.asrLines || media.transcription) {
-          state.setAsrLines(media.asrLines || media.transcription || []);
+          useStep1Store.getState().setAsrLines(media.asrLines || media.transcription || []);
         }
 
         const frameCount = media.frames?.length || media.frameCount || 0;
-        if (frameCount > 0) { state.setFrameCount(frameCount); }
+        if (frameCount > 0) { useStep1Store.getState().setFrameCount(frameCount); }
 
         if (media.frames && Array.isArray(media.frames) && media.frames.length > 0) {
           const frameUrls = media.frames.map((frame: any) =>
             typeof frame === 'string' ? frame : (frame.path || frame.filePath || frame.thumbnail || '')
           ).filter(Boolean);
           if (frameUrls.length > 0) {
-            state.setExtractedData({ framePaths: frameUrls, frameCount: frameUrls.length });
+            useProjectStore.getState().setExtractedData({ framePaths: frameUrls, frameCount: frameUrls.length });
           }
         }
 
@@ -81,7 +87,7 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             editing: false,
             confirmed: !!(s.visionText && s.visionText.trim()),
           }));
-        if (vlmFramesData.length > 0) { state.setVlmFrames(vlmFramesData); }
+        if (vlmFramesData.length > 0) { useStep2Store.getState().setVlmFrames(vlmFramesData); }
 
         updatedMediaItems = updatedMediaItems.map(item => {
           if (item.id === mediaId) {
@@ -154,7 +160,7 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
           } catch { }
         }
       } else if (asrLines.length > 0) {
-        state.setAsrLines(asrLines);
+        useStep1Store.getState().setAsrLines(asrLines);
       }
 
       if (shots.length > 0) {
@@ -171,17 +177,17 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
           await API.project.saveData(latestState.projectId, {
             shots: latestState.shots, aiShots: latestState.aiShots,
             roles: latestState.roles, mediaItems: latestState.mediaItems,
-            asrLines: latestState.asrLines, frameCount: latestState.frameCount,
+            asrLines: useStep1Store.getState().asrLines, frameCount: useStep1Store.getState().frameCount,
             framePaths: latestState.extractedData?.framePaths || [],
-            audioSeparated: latestState.audioSeparated,
-            subStepStatuses: latestState.subStepStatuses,
-            subStepProgresses: latestState.subStepProgresses,
-            stepStatuses: latestState.stepStatuses,
-            stepCompleted: latestState.stepCompleted,
+            audioSeparated: useStep1Store.getState().audioSeparated,
+            subStepStatuses: pipelineState.subStepStatuses,
+            subStepProgresses: pipelineState.subStepProgresses,
+            stepStatuses: pipelineState.stepStatuses,
+            stepCompleted: pipelineState.stepCompleted,
             currentStep: latestState.currentStep,
             storyboardMode: latestState.storyboardMode,
-            extractionConfig: latestState.extractionConfig,
-            vlmFrames: latestState.vlmFrames,
+            extractionConfig: useStep1Store.getState().extractionConfig,
+            vlmFrames: useStep2Store.getState().vlmFrames,
           });
         } catch { }
       }

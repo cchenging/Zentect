@@ -5,8 +5,8 @@ import { Edit3, User, Music, Play, UndoDot, RotateCcw } from "lucide-react";
 import { getSafeMediaUrl } from "../../../../renderer/src/utils/formatUrl";
 import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "../../../../renderer/src/components/shared";
 import { FrameExtractConfig } from "./components/FrameExtractConfig";
-import type { AsrLine, Role, MediaItem } from "../../../shared/types";
-import type { StepStatus } from "../../../shared/types/entities/editor";
+import type { AsrLine, Role, MediaItem } from "../../../../shared/types";
+import type { StepStatus } from "../../../../shared/types/entities/editor";
 import type { StepMaterialAnalysisViewProps } from "../types";
 
 export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> = (props) => {

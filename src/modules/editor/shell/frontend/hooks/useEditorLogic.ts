@@ -4,10 +4,13 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore, useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
+import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
 import { DraftService } from '../../../../../renderer/src/services/DraftService';
+import { resetAllLocalStores, syncHydratedStateToStores } from '../../../../../renderer/src/pages/editor/hooks/syncHydrate';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
-import { AppError, ErrorCode } from '../../../../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../../../infra/error/AppError';
 
 export const useEditorHydration = (id: string | undefined) => {
   const navigate = useNavigate();
@@ -22,6 +25,7 @@ export const useEditorHydration = (id: string | undefined) => {
     const store = useEditorStore.getState();
 
     store.resetProjectState();
+    resetAllLocalStores();
 
     const initWorkspace = async () => {
       useStore.getState().setHydrationStatus?.('LOADING');
@@ -41,6 +45,7 @@ export const useEditorHydration = (id: string | undefined) => {
 
         if (projectSnapshot && isMounted) {
           store.hydrateProjectData(projectSnapshot);
+          syncHydratedStateToStores(projectSnapshot);
 
           const mediaItems = projectSnapshot.mediaItems || [];
           const videoMedia = mediaItems.find((m: any) => m.type === 'video' || m.filePath);
@@ -64,7 +69,7 @@ export const useEditorHydration = (id: string | undefined) => {
               const meta = typeof projectSnapshot.metadata === 'string'
                 ? JSON.parse(projectSnapshot.metadata)
                 : projectSnapshot.metadata;
-              if (meta.asrLines) store.setAsrLines?.(meta.asrLines);
+              if (meta.asrLines) useStep1Store.getState().setAsrLines(meta.asrLines);
             } catch {}
           }
 
@@ -95,18 +100,20 @@ export const useEditorAutoSave = (id: string | undefined) => {
 
     const handleBeforeUnload = () => {
       const storeState = useEditorStore.getState();
+      const step1State = useStep1Store.getState();
+      const pipelineState = usePipelineStore.getState();
       const snapshot = {
         shots: storeState.shots,
         aiShots: storeState.aiShots,
         roles: storeState.roles,
         mediaItems: storeState.mediaItems,
-        asrLines: storeState.asrLines,
-        frameCount: storeState.frameCount,
-        audioSeparated: storeState.audioSeparated,
+        asrLines: step1State.asrLines,
+        frameCount: step1State.frameCount,
+        audioSeparated: step1State.audioSeparated,
         subStepStatuses: storeState.subStepStatuses,
         subStepProgresses: storeState.subStepProgresses,
-        stepStatuses: storeState.stepStatuses,
-        stepCompleted: storeState.stepCompleted,
+        stepStatuses: pipelineState.stepStatuses,
+        stepCompleted: pipelineState.stepCompleted,
         storyboardMode: storeState.storyboardMode
       };
       DraftService.saveDraft(id, JSON.stringify(snapshot)).catch(() => {});

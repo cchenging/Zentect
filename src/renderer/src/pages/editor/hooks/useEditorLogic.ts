@@ -7,7 +7,9 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore, useEditorStore } from '../../../store/useStore';
+import { useStep1Store } from '../../../../../modules/pipeline/stores/useStep1Store';
 import { DraftService } from '../../../services/DraftService';
+import { resetAllLocalStores, syncHydratedStateToStores } from './syncHydrate';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 import { AppNotifier } from '../../../core/AppNotifier';
 
@@ -25,6 +27,7 @@ export const useEditorHydration = (id: string | undefined) => {
 
     // 进场前，第一毫秒清空内存残留，防止串工程污染
     store.resetProjectState();
+    resetAllLocalStores();
 
     const initWorkspace = async () => {
       useStore.getState().setHydrationStatus?.('LOADING');
@@ -72,14 +75,17 @@ export const useEditorHydration = (id: string | undefined) => {
               const meta = typeof projectSnapshot.metadata === 'string'
                 ? JSON.parse(projectSnapshot.metadata)
                 : projectSnapshot.metadata;
-              if (meta.asrLines) store.setAsrLines?.(meta.asrLines);
+              if (meta.asrLines) useStep1Store.getState().setAsrLines(meta.asrLines);
             } catch {}
           }
 
           console.log(`[工作台自愈水合大胜利] 🛠️ 全量本地资产已完美水合归位！mediaItems=${mediaItems.length}`);
         }
 
-        if (isMounted) useStore.getState().setHydrationStatus?.('READY');
+        if (isMounted) {
+          syncHydratedStateToStores(projectSnapshot);
+          useStore.getState().setHydrationStatus?.('READY');
+        }
       } catch (error: any) {
         console.error('[左右工作区水合异常]:', error);
         if (isMounted) {
@@ -104,14 +110,15 @@ export const useEditorAutoSave = (id: string | undefined) => {
 
     const handleBeforeUnload = () => {
       const storeState = useEditorStore.getState();
+      const step1 = useStep1Store.getState();
       const snapshot = {
         shots: storeState.shots,
         aiShots: storeState.aiShots,
         roles: storeState.roles,
         mediaItems: storeState.mediaItems,
-        asrLines: storeState.asrLines,
-        frameCount: storeState.frameCount,
-        audioSeparated: storeState.audioSeparated,
+        asrLines: step1.asrLines,
+        frameCount: step1.frameCount,
+        audioSeparated: step1.audioSeparated,
         subStepStatuses: storeState.subStepStatuses,
         subStepProgresses: storeState.subStepProgresses,
         stepStatuses: storeState.stepStatuses,

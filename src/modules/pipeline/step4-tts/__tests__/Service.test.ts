@@ -28,7 +28,7 @@ import os from 'os';
 import path from 'path';
 
 import { TTSProvider } from '../backend/Service';
-import { AppError, ErrorCode } from '../../../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../../infra/error/AppError';
 
 // ---------- helpers ----------
 

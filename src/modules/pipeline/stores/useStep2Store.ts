@@ -9,7 +9,7 @@
  */
 
 import { create } from 'zustand';
-import type { VlmFrame } from '../../../../shared/types/entities/editor';
+import type { VlmFrame } from '../../../shared/types/entities/editor';
 
 export interface Step2Store {
   // 步骤2专属数据

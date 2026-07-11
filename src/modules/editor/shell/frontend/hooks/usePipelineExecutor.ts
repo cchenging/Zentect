@@ -3,12 +3,15 @@
 
 import { useEffect, useCallback, useRef } from 'react';
 import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
+import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
 import { API } from '../../../../../renderer/src/api';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
 
 export const usePipelineExecutor = () => {
   const store = useEditorStore();
+  const pipelineStore = usePipelineStore();
   const asrBufferRef = useRef<any[]>([]);
   const renderTimerRef = useRef<any>(null);
 
@@ -20,14 +23,15 @@ export const usePipelineExecutor = () => {
 
     const { progress, status, results, error, nodeName } = payload;
     const storeState = useEditorStore.getState();
+    const pipelineState = usePipelineStore.getState();
 
     console.log(`[工作台大总线] 捕获长连接信号 -> 进度: ${progress}% | 状态: ${status}`);
 
-    if (typeof storeState.setPipelineProgress === 'function') {
-      storeState.setPipelineProgress(progress, nodeName || `AI 核心提取管线全力运转中...`);
+    if (typeof pipelineState.setPipelineProgress === 'function') {
+      pipelineState.setPipelineProgress(progress, nodeName || `AI 核心提取管线全力运转中...`);
     }
     if (status === 'processing' || progress < 100) {
-      storeState.setPipelineRunning?.(true);
+      pipelineState.setPipelineRunning?.(true);
     }
 
     if (results) {
@@ -69,7 +73,7 @@ export const usePipelineExecutor = () => {
       const nodeId: string = payload.nodeId || '';
       const isFrameNode = nodeId.includes('frame') || nodeId.includes('extract') || nodeId.includes('vision');
       if (isFrameNode && actualExtractedImages.length > 0) {
-        useEditorStore.setState({ frameCount: actualExtractedImages.length });
+        useStep1Store.getState().setFrameCount(actualExtractedImages.length);
         AppNotifier.success(`智能分析中心：资产切片无损入库，共生成 ${actualExtractedImages.length} 个高清分镜！`);
       }
 
@@ -78,15 +82,15 @@ export const usePipelineExecutor = () => {
         isSaveAction: true,
         extractedData: finalPayload
       }).catch(() => {}).finally(() => {
-        const stepStatuses = (storeState as any).stepStatuses;
+        const stepStatuses = pipelineState.stepStatuses;
         if (!stepStatuses || !stepStatuses.some((s: any) => s === 'running')) {
-          storeState.setPipelineRunning?.(false);
+          pipelineState.setPipelineRunning?.(false);
         }
       });
     }
 
     if (status === 'error') {
-      storeState.setPipelineRunning?.(false);
+      pipelineState.setPipelineRunning?.(false);
       AppNotifier.error(`核心引擎算力中断: ${error || '未知底层微服务崩溃'}`);
     }
   }, []);
@@ -104,11 +108,12 @@ export const usePipelineExecutor = () => {
 
   const triggerLinearPipeline = useCallback(async () => {
     const storeState = useEditorStore.getState();
+    const pipelineState = usePipelineStore.getState();
     if (!storeState.projectId) return AppNotifier.error('项目上下文丢失，无法运行');
 
     try {
-      storeState.setPipelineRunning?.(true);
-      storeState.setPipelineProgress?.(2, '唤醒本地大模型与音轨提取微服务中...');
+      pipelineState.setPipelineRunning?.(true);
+      pipelineState.setPipelineProgress?.(2, '唤醒本地大模型与音轨提取微服务中...');
       asrBufferRef.current = [];
 
       await window.api.ipc.invoke(IPC_CHANNELS.ENGINE_RUN_PIPELINE, {
@@ -120,5 +125,5 @@ export const usePipelineExecutor = () => {
     }
   }, []);
 
-  return { triggerLinearPipeline, isRunning: store.pipelineRunning };
+  return { triggerLinearPipeline, isRunning: pipelineStore.pipelineRunning };
 };

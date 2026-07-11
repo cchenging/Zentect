@@ -13,7 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { CompileShot } from '../types';
 import type { JianyingExportInput, JianyingExportOutput } from '../types';
-import { AppError, ErrorCode } from '../../../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../../infra/error/AppError';
 
 // ──────────────────────────────────────────────
 // 服务实现

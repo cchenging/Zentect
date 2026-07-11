@@ -2,9 +2,9 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ScriptGenerator } from '../backend/Service';
-import { AppError, ErrorCode } from '../../../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../../infra/error/AppError';
 import type { Step3Input, Step3Output } from '../types';
-import type { ScriptParagraph } from '../../../shared/types/entities/editor';
+import type { ScriptParagraph } from '../../../../shared/types/entities/editor';
 
 // ---------- helpers ----------
 

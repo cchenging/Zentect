@@ -3,19 +3,21 @@
 
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useStore } from '../../../../../../renderer/src/store/useStore';
+import { useStore } from '../../../../../renderer/src/store/useStore';
+import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
+import { useEditorNavStore } from '../../../stores/useEditorNavStore';
 import { STEPS } from '../../utils/pipelineConstants';
 import { PipelineStatusBar } from './PipelineStatusBar';
 import { PropertyBar } from './PropertyBar';
-import { StepMaterialAnalysis } from '../../../../../../modules/pipeline/step1-material/frontend/Container';
-import { StepVisionDescription } from '../../../../../../modules/pipeline/step2-vision/frontend/Container';
-import { StepScriptGeneration } from '../../../../../../modules/pipeline/step3-script/frontend/Container';
-import { StepTTSSynthesis } from '../../../../../../modules/pipeline/step4-tts/frontend/Container';
-import { StepShotMatching } from '../../../../../../modules/pipeline/step5-match/frontend/Container';
+import { StepMaterialAnalysis } from '../../../../pipeline/step1-material/frontend/Container';
+import { StepVisionDescription } from '../../../../pipeline/step2-vision/frontend/Container';
+import { StepScriptGeneration } from '../../../../pipeline/step3-script/frontend/Container';
+import { StepTTSSynthesis } from '../../../../pipeline/step4-tts/frontend/Container';
+import { StepShotMatching } from '../../../../pipeline/step5-match/frontend/Container';
 import { Play, ChevronRight, RefreshCcw } from 'lucide-react';
-import { Badge, StatusIcon } from '../../../../../../renderer/src/components/shared';
-import { StepIndicator } from '../../../../../../renderer/src/components/shared/StepIndicator';
-import { AppNotifier } from '../../../../../../renderer/src/core/AppNotifier';
+import { Badge, StatusIcon } from '../../../../../renderer/src/components/shared';
+import { StepIndicator } from '../../../../../renderer/src/components/shared/StepIndicator';
+import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
 
 interface StepPanelProps {
   onStart: () => void;
@@ -24,16 +26,17 @@ interface StepPanelProps {
 
 export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => {
   const navigate = useNavigate();
-  const currentStep = useStore((s) => s.currentStep);
-  const isAutoMode = useStore((s) => s.isAutoMode);
-  const pipelineRunning = useStore((s) => s.pipelineRunning);
-  const stepCompleted = useStore((s) => s.stepCompleted);
-  const stepStatuses = useStore((s) => s.stepStatuses);
+  const currentStep = useEditorNavStore((s) => s.currentStep);
+  const isAutoMode = useEditorNavStore((s) => s.isAutoMode);
+  const pipelineRunning = usePipelineStore((s) => s.pipelineRunning);
+  const stepCompleted = usePipelineStore((s) => s.stepCompleted) ?? [];
+  const stepStatuses = usePipelineStore((s) => s.stepStatuses) ?? [];
   const hydrationStatus = useStore((s) => s.hydrationStatus);
-  const setCurrentStep = useStore((s) => s.setCurrentStep);
-  const setIsAutoMode = useStore((s) => s.setIsAutoMode);
+  const setCurrentStep = useEditorNavStore((s) => s.setCurrentStep);
+  const setIsAutoMode = useEditorNavStore((s) => s.setIsAutoMode);
 
   const handleStepClick = (targetStep: number) => {
+    if (targetStep < 1 || targetStep > STEPS.length) return;
     if (targetStep === currentStep) return;
     if (targetStep <= currentStep) {
       setCurrentStep(targetStep);
@@ -48,7 +51,10 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
       setCurrentStep(targetStep);
       return;
     }
-    AppNotifier.warn(`请先完成步骤 ${targetStep - 1}（${STEPS[targetStep - 2].label}）再进入此步骤`);
+    const prevStep = STEPS[targetStep - 2];
+    if (prevStep) {
+      AppNotifier.warn(`请先完成步骤 ${targetStep - 1}（${prevStep.label}）再进入此步骤`);
+    }
   };
 
   const renderStepContent = () => {
@@ -130,7 +136,7 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
 
       <div className="flex items-center justify-between px-4 py-2.5 border-t border-border/30 shrink-0 bg-bg-secondary/50">
         <span className="text-[13px] text-muted-foreground">
-          步骤 {currentStep}/5 · {STEPS[currentStep - 1].label}
+          步骤 {currentStep}/5 · {STEPS[currentStep - 1]?.label ?? '未知'}
           {stepStatuses[currentStep - 1] === 'completed' && <Badge variant="success" className="ml-1">已完成</Badge>}
           {stepStatuses[currentStep - 1] === 'failed' && <Badge variant="danger" className="ml-1">失败</Badge>}
           {stepStatuses[currentStep - 1] === 'idle' && <Badge variant="default" className="ml-1">等待管线执行</Badge>}

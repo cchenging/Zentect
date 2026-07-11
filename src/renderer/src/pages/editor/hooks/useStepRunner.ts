@@ -5,6 +5,7 @@
 
 import { useCallback } from 'react';
 import { useStore } from '../../../store/useStore';
+import { useEditorNavStore } from '../../../../modules/editor/stores/useEditorNavStore';
 import { API } from '../../../api';
 import { usePipelineOrchestrator } from './usePipelineOrchestrator';
 
@@ -22,8 +23,8 @@ interface StepRunnerResult {
  * 委托给统一管线编排器，管理步骤导航和视频导入
  */
 export const useStepRunner = (projectId: string | undefined): StepRunnerResult => {
-  const currentStep = useStore((s) => s.currentStep);
-  const setCurrentStep = useStore((s) => s.setCurrentStep);
+  const currentStep = useEditorNavStore((s) => s.currentStep);
+  const setCurrentStep = useEditorNavStore((s) => s.setCurrentStep);
   const addMediaItems = useStore((s) => s.addMediaItems);
   const setActivePlaySource = useStore((s) => s.setActivePlaySource);
 

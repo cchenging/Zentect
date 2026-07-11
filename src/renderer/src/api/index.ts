@@ -50,6 +50,8 @@ export const API = {
     openDirectory: () => invokeSafe<string | null>(IPC_CHANNELS.SYSTEM_OPEN_DIR),
     openMediaDialog: () => invokeSafe<string[]>(IPC_CHANNELS.SYSTEM_OPEN_MEDIA),
     openPath: (filePath: string) => invokeSafe(IPC_CHANNELS.SYSTEM_OPEN_PATH, filePath),
+    openFile: (options?: { filters?: Array<{ name: string; extensions: string[] }>; properties?: string[] }) => invokeSafe<string | null>(IPC_CHANNELS.SYSTEM_OPEN_FILE, options ?? null),
+    readFile: (filePath: string) => invokeSafe<string>(IPC_CHANNELS.SYSTEM_READ_FILE, filePath),
 
     // 兼容旧 API 的额外接口
     switchView: (viewName: string) => window.api.system.switchView(viewName),

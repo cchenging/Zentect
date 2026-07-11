@@ -5,8 +5,8 @@ import React, { useCallback } from "react";
 import { useStep1Store } from "../../stores/useStep1Store";
 import { useProjectStore } from "../../../editor/stores/useProjectStore";
 import { usePlayerStore } from "../../../editor/stores/usePlayerStore";
-import type { MediaItem, Role } from "../../../shared/types";
-import type { AsrLine, StepStatus } from "../../../shared/types/entities/editor";
+import type { MediaItem, Role } from "../../../../shared/types";
+import type { AsrLine, StepStatus } from "../../../../shared/types/entities/editor";
 import type { Step1Config } from "../types";
 import { StepMaterialAnalysisView } from "./View";
 

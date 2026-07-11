@@ -1,9 +1,9 @@
 // 📁 路径：src/modules/home/frontend/hooks/useWorkflowImport.ts
 import { useCallback, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { API } from '../../../../../renderer/src/api'
-import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier'
-import { FrontendLogger } from '../../../../../renderer/src/utils/logger'
+import { API } from '../../../../renderer/src/api'
+import { AppNotifier } from '../../../../renderer/src/core/AppNotifier'
+import { FrontendLogger } from '../../../../renderer/src/utils/logger'
 
 /**
  * 工作流导入 Hook

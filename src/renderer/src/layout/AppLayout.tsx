@@ -1,7 +1,7 @@
 // 📁 路径：src/renderer/src/layout/AppLayout.tsx
 import React from 'react';
 import { Outlet } from 'react-router-dom';
-import { TitleBar } from '../components/title-Bar';
+import { TitleBar } from '../components/title-bar';
 import { AppSidebar } from './components/AppSidebar';
 import { useEditorStore } from '../store/useStore';
 

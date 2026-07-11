@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { PathManager } from '../../main/utils/pathManager';
+import { PathManager } from '../../../main/utils/pathManager';
 import { AppLogger } from '../logger/AppLogger';
 import { LOG_TAGS } from '../logger/LogConstants';
 import { MigrationManager } from './MigrationManager';

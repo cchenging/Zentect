@@ -10,7 +10,7 @@
  */
 
 import { create } from 'zustand';
-import type { MediaItem } from '../../../../shared/types';
+import type { MediaItem } from '../../../shared/types';
 
 export interface PlayerStore {
   activePlaySource: MediaItem | null;

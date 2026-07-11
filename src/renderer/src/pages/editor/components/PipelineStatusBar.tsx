@@ -4,19 +4,19 @@
  */
 
 import React from 'react';
-import { useStore } from '../../../store/useStore';
+import { usePipelineStore } from '../../../store/usePipelineStore';
 import { AlertTriangle } from 'lucide-react';
 import { Progress } from '../../../components/shared';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 
 /** 管线状态栏 - 展示管线进度、错误提示和中止按钮 */
 export const PipelineStatusBar: React.FC = () => {
-  const pipelineRunning = useStore((s) => s.pipelineRunning);
-  const pipelineProgress = useStore((s) => s.pipelineProgress);
-  const pipelineNode = useStore((s) => s.pipelineNode);
-  const pipelineError = useStore((s) => s.pipelineError);
-  const resetPipeline = useStore((s) => s.resetPipeline);
-  const setPipelineRunning = useStore((s) => s.setPipelineRunning);
+  const pipelineRunning = usePipelineStore((s) => s.pipelineRunning);
+  const pipelineProgress = usePipelineStore((s) => s.pipelineProgress);
+  const pipelineNode = usePipelineStore((s) => s.pipelineNode);
+  const pipelineError = usePipelineStore((s) => s.pipelineError);
+  const resetPipeline = usePipelineStore((s) => s.resetPipeline);
+  const setPipelineRunning = usePipelineStore((s) => s.setPipelineRunning);
 
   /** 中止管线执行，使用 IPC 常量而非硬编码字符串 */
   const handleAbort = async () => {

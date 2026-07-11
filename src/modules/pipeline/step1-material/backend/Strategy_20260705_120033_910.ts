@@ -1,12 +1,12 @@
 // Module: pipeline/step1-material - Pipeline Strategy
 
-import { BaseNodeStrategy, ExecutionContext } from '../../../main/engine/strategies/BaseNodeStrategy';
-import { VideoProcessor } from '../../../main/engine/media/VideoProcessor';
-import { AudioProcessor } from '../../../main/engine/media/AudioProcessor';
-import { VisionProcessor } from '../../../main/engine/media/VisionProcessor';
-import { LocalWhisperStrategy } from '../../../main/engine/strategies/LocalWhisperStrategy';
-import { PathManager } from '../../../main/utils/pathManager';
-import { AppLogger } from '../../../main/core/AppLogger';
+import { BaseNodeStrategy, ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
+import { VideoProcessor } from '../../../../main/engine/media/VideoProcessor';
+import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
+import { VisionProcessor } from '../../../../main/engine/media/VisionProcessor';
+import { LocalWhisperStrategy } from '../../../../main/engine/strategies/LocalWhisperStrategy';
+import { PathManager } from '../../../../main/utils/pathManager';
+import { AppLogger } from '../../../../main/core/AppLogger';
 import { LOG_TAGS } from '../../../infra/logger/LogConstants';
 import * as path from 'path';
 import * as fs from 'fs';

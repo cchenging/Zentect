@@ -1,10 +1,10 @@
 // 📁 路径：src/modules/home/frontend/components/DeleteModal.tsx
 import React from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../../../../../renderer/src/components/ui/dialog';
-import { Button } from '../../../../../renderer/src/components/ui/button';
-import { AppIcon } from '../../../../../renderer/src/components/app-icon';
-import { useI18n } from '../../../../../renderer/src/store/useI18n';
-import { FrontendLogger } from '../../../../../renderer/src/utils/logger';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../../../../renderer/src/components/ui/dialog';
+import { Button } from '../../../../renderer/src/components/ui/button';
+import { AppIcon } from '../../../../renderer/src/components/app-icon';
+import { useI18n } from '../../../../renderer/src/store/useI18n';
+import { FrontendLogger } from '../../../../renderer/src/utils/logger';
 
 interface DeleteModalProps {
   visible: boolean;

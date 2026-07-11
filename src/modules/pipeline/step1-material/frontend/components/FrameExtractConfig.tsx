@@ -4,7 +4,7 @@ import React from 'react';
 import { Sparkles, Clock, Zap, Crosshair, Sliders, Image as ImageIcon } from 'lucide-react';
 import { Slider } from '../../../../../renderer/src/components/ui/slider';
 import { Input } from '../../../../../renderer/src/components/ui/input';
-import { useStore } from '../../../../../renderer/src/store/useStore';
+import { useStep1Store } from '../../../stores/useStep1Store';
 
 const STRATEGY_OPTIONS = [
   { value: 'VLM_OPTIMIZED', label: 'VLM 最优化', desc: '转场+兜底', Icon: Sparkles },
@@ -20,8 +20,8 @@ const SCALE_OPTIONS = [
 ];
 
 export const FrameExtractConfig: React.FC = () => {
-  const extractionConfig = useStore((s) => s.extractionConfig);
-  const updateExtractionConfig = useStore((s) => s.updateExtractionConfig);
+  const extractionConfig = useStep1Store((s) => s.extractionConfig);
+  const updateExtractionConfig = useStep1Store((s) => s.updateExtractionConfig);
 
   const frames = extractionConfig?.frames || {};
   const rawMode = (frames.mode || 'VLM_OPTIMIZED').toUpperCase();

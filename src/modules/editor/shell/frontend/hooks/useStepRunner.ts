@@ -3,6 +3,7 @@
 
 import { useCallback } from 'react';
 import { useStore } from '../../../../../renderer/src/store/useStore';
+import { useEditorNavStore } from '../../../stores/useEditorNavStore';
 import { API } from '../../../../../renderer/src/api';
 import { usePipelineOrchestrator } from './usePipelineOrchestrator';
 
@@ -15,8 +16,8 @@ interface StepRunnerResult {
 }
 
 export const useStepRunner = (projectId: string | undefined): StepRunnerResult => {
-  const currentStep = useStore((s) => s.currentStep);
-  const setCurrentStep = useStore((s) => s.setCurrentStep);
+  const currentStep = useEditorNavStore((s) => s.currentStep);
+  const setCurrentStep = useEditorNavStore((s) => s.setCurrentStep);
   const addMediaItems = useStore((s) => s.addMediaItems);
   const setActivePlaySource = useStore((s) => s.setActivePlaySource);
 
@@ -47,6 +48,7 @@ export const useStepRunner = (projectId: string | undefined): StepRunnerResult =
       if (filePaths && filePaths.length > 0) {
         const newItems = await API.media.import(projectId, filePaths);
         if (Array.isArray(newItems) && newItems.length > 0) {
+          useStore.setState({ currentTime: 0, isPlaying: false });
           addMediaItems(newItems);
           setActivePlaySource(newItems[0]);
           useStore.setState({ selectedItemId: newItems[0].id, selectedItemType: 'media' });

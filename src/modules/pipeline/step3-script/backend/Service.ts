@@ -1,8 +1,8 @@
 // Module: pipeline/step3-script - Script Generation Service
 
 import type { Step3Input, Step3Output } from '../types';
-import type { ScriptParagraph, VlmFrame } from '../../../shared/types/entities/editor';
-import { AppError, ErrorCode } from '../../../../infra/error/AppError';
+import type { ScriptParagraph, VlmFrame } from '../../../../shared/types/entities/editor';
+import { AppError, ErrorCode } from '../../../infra/error/AppError';
 
 /** 风格到 Prompt 指令的映射（从 ScriptGenStrategy 提取） */
 const STYLE_PROMPTS: Record<string, string> = {

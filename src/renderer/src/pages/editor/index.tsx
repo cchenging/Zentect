@@ -10,6 +10,8 @@ import { useParams } from 'react-router-dom';
 import { getSafeMediaUrl } from '../../utils/formatUrl';
 import { Music, Image, Check } from 'lucide-react';
 import { useStore } from '../../store/useStore';
+import { useStep1Store } from '../../../../modules/pipeline/stores/useStep1Store';
+import { useStep5Store } from '../../../../modules/pipeline/stores/useStep5Store';
 import { TopBar } from '@modules/editor/shell';
 import { API } from '../../api';
 import { useEditorHydration, useEditorAutoSave, useSyncDaemon } from '@modules/editor/shell';
@@ -20,6 +22,7 @@ import { useTaskProgress } from '@modules/editor/shell';
 import { useExtractionHandler } from '@modules/editor/shell';
 import { useStepRunner } from '@modules/editor/shell';
 import { usePipelineOrchestrator } from '@modules/editor/shell';
+import { useMediaUpdatedListener } from '@modules/editor/shell';
 import { StepPanel } from '@modules/editor/shell';
 import PreviewMonitor from '@modules/editor/preview';
 
@@ -36,6 +39,7 @@ export default function Editor() {
   useKeyboardShortcuts();
   usePipelineExecutor();
   useTaskProgress();
+  useMediaUpdatedListener();
 
   /** 管线编排器，提供 executeStep 供自动模式递进 */
   const { executeStep } = usePipelineOrchestrator();
@@ -54,11 +58,11 @@ export default function Editor() {
   const activePlaySource = useStore((s) => s.activePlaySource);
   const currentTime = useStore((s) => s.currentTime);
   const mediaItems = useStore((s) => s.mediaItems);
-  const videoChunks = useStore((s) => s.videoChunks);
+  const videoChunks = useStep5Store((s) => s.videoChunks);
   const setCurrentTime = useStore((s) => s.setCurrentTime);
   const setActivePlaySource = useStore((s) => s.setActivePlaySource);
   const extractedData = useStore((s) => s.extractedData);
-  const extractionConfig = useStore((s) => s.extractionConfig);
+  const extractionConfig = useStep1Store((s) => s.extractionConfig);
   const fps = extractionConfig?.frames?.fps || 2;
 
   /** 格式化帧时间：根据帧序号和 fps 计算时间码 */

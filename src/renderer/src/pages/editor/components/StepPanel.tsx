@@ -43,6 +43,7 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
 
   /** 步骤跳转前置条件验证：只能跳到已完成步骤或当前步骤+1 */
   const handleStepClick = (targetStep: number) => {
+    if (targetStep < 1 || targetStep > STEPS.length) return;
     if (targetStep === currentStep) return;
     if (targetStep <= currentStep) {
       setCurrentStep(targetStep);
@@ -57,7 +58,10 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
       setCurrentStep(targetStep);
       return;
     }
-    AppNotifier.warn(`请先完成步骤 ${targetStep - 1}（${STEPS[targetStep - 2].label}）再进入此步骤`);
+    const prevStep = STEPS[targetStep - 2];
+    if (prevStep) {
+      AppNotifier.warn(`请先完成步骤 ${targetStep - 1}（${prevStep.label}）再进入此步骤`);
+    }
   };
 
   /** 渲染当前步骤内容 */
@@ -144,7 +148,7 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
       {/* 全局操作栏：固定在底部 */}
       <div className="flex items-center justify-between px-4 py-2.5 border-t border-border/30 shrink-0 bg-bg-secondary/50">
         <span className="text-[13px] text-muted-foreground">
-          步骤 {currentStep}/5 · {STEPS[currentStep - 1].label}
+          步骤 {currentStep}/5 · {STEPS[currentStep - 1]?.label ?? '未知'}
           {stepStatuses[currentStep - 1] === 'completed' && <Badge variant="success" className="ml-1">已完成</Badge>}
           {stepStatuses[currentStep - 1] === 'failed' && <Badge variant="danger" className="ml-1">失败</Badge>}
           {stepStatuses[currentStep - 1] === 'idle' && <Badge variant="default" className="ml-1">等待管线执行</Badge>}

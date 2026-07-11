@@ -75,7 +75,7 @@ const UserSettings: React.FC = () => {
         properties: ['openFile'],
       })
       if (filePath && userInfo) {
-        await API.user.updateAvatar(userInfo.userId, filePath)
+        await API.user.updateProfile(userInfo.userId, { avatar: filePath })
         AppNotifier.success('头像已更新')
         // 刷新用户资料
         await useUserStore.getState().fetchProfile()

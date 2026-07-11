@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { useEditorStore } from '../../../../../store/useStore';
+import { useStep3Store } from '../../../../../../../modules/pipeline/stores/useStep3Store';
 import { getSafeMediaUrl } from '../../../../../utils/formatUrl';
 import { formatDurationStandard } from '../../../../../utils/timeUtils';
 import { AppNotifier } from '../../../../../core/AppNotifier';
@@ -190,7 +191,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       }
       /** 文案 TXT 导出：前端生成文本内容，通过 IPC 写入文件 */
       if (exportTxt) {
-        const txtContent = generateTXT(state.scriptParagraphs || []);
+        const txtContent = generateTXT(useStep3Store.getState().scriptParagraphs || []);
         tasks.push(API.export.txt({
           ...payload,
           content: txtContent,

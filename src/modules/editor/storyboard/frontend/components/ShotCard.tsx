@@ -2,8 +2,8 @@
 // 原 editor/components/storyboard/ShotCard.tsx — 已迁移
 
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { Shot, Role } from '../../../../../../shared/types';
-import { getSafeMediaUrl } from '../../../../../../renderer/src/utils/formatUrl';
+import type { Shot, Role } from '../../../../../shared/types';
+import { getSafeMediaUrl } from '../../../../../renderer/src/utils/formatUrl';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
@@ -11,7 +11,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '../../../../../../renderer/src/components/ui/dropdown-menu';
+} from '../../../../../renderer/src/components/ui/dropdown-menu';
 import { GripVertical } from 'lucide-react';
 
 interface ShotCardProps {

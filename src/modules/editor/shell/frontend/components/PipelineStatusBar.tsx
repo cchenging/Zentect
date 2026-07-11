@@ -2,18 +2,18 @@
 // 原 editor/components/PipelineStatusBar.tsx — 已迁移
 
 import React from 'react';
-import { useStore } from '../../../../../../renderer/src/store/useStore';
+import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
 import { AlertTriangle } from 'lucide-react';
-import { Progress } from '../../../../../../renderer/src/components/shared';
-import { IPC_CHANNELS } from '../../../../../../shared/utils/IpcConstants';
+import { Progress } from '../../../../../renderer/src/components/shared';
+import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 
 export const PipelineStatusBar: React.FC = () => {
-  const pipelineRunning = useStore((s) => s.pipelineRunning);
-  const pipelineProgress = useStore((s) => s.pipelineProgress);
-  const pipelineNode = useStore((s) => s.pipelineNode);
-  const pipelineError = useStore((s) => s.pipelineError);
-  const resetPipeline = useStore((s) => s.resetPipeline);
-  const setPipelineRunning = useStore((s) => s.setPipelineRunning);
+  const pipelineRunning = usePipelineStore((s) => s.pipelineRunning);
+  const pipelineProgress = usePipelineStore((s) => s.pipelineProgress);
+  const pipelineNode = usePipelineStore((s) => s.pipelineNode);
+  const pipelineError = usePipelineStore((s) => s.pipelineError);
+  const resetPipeline = usePipelineStore((s) => s.resetPipeline);
+  const setPipelineRunning = usePipelineStore((s) => s.setPipelineRunning);
 
   const handleAbort = async () => {
     try { await window.api.ipc.invoke(IPC_CHANNELS.ENGINE_ABORT_PIPELINE); } catch {}

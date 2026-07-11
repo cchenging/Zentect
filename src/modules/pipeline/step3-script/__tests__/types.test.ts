@@ -10,7 +10,7 @@ import type {
   ScriptParagraph,
   PipelineParams,
   VlmFrame,
-} from '../../../shared/types/entities/editor';
+} from '../../../../shared/types/entities/editor';
 
 describe('Step3 Types', () => {
   // ==================== Step3Input ====================

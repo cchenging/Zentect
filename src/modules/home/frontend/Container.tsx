@@ -5,9 +5,9 @@ import { HomeView } from './View';
 import { useProjectManager } from './hooks/useProjectManager';
 import { useWorkflowImport } from './hooks/useWorkflowImport';
 import type { ProjectRecord } from '../types';
-import { API } from '../../../../renderer/src/api';
-import { FrontendLogger } from '../../../../renderer/src/utils/logger';
-import { AppNotifier } from '../../../../renderer/src/core/AppNotifier';
+import { API } from '../../../renderer/src/api';
+import { FrontendLogger } from '../../../renderer/src/utils/logger';
+import { AppNotifier } from '../../../renderer/src/core/AppNotifier';
 
 export const HomeContainer: React.FC = () => {
   const navigate = useNavigate();

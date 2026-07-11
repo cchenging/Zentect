@@ -1,6 +1,6 @@
 // Module: pipeline/step2-vision - Types
 
-import type { VlmFrame } from '../../../../shared/types/entities/editor';
+import type { VlmFrame } from '../../../shared/types/entities/editor';
 
 /** Step2 输入接口 */
 export interface Step2Input {

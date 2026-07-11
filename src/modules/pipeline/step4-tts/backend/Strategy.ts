@@ -1,10 +1,10 @@
 // Module: pipeline/step4-tts - Pipeline Strategy
 
-import { BaseNodeStrategy, ExecutionContext } from '../../../main/engine/strategies/BaseNodeStrategy';
-import { AppLogger } from '../../../main/core/AppLogger';
+import { BaseNodeStrategy, ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
+import { AppLogger } from '../../../../main/core/AppLogger';
 import { LOG_TAGS } from '../../../infra/logger/LogConstants';
-import { AIEngine } from '../../../main/engine/AIEngine';
-import { ProviderManager } from '../../../main/engine/config/ProviderManager';
+import { AIEngine } from '../../../../main/engine/AIEngine';
+import { ProviderManager } from '../../../../main/engine/config/ProviderManager';
 
 /** TTS 引擎类型 */
 type TTSProvider = 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss';

@@ -1,11 +1,11 @@
 // 📁 路径：src/modules/home/frontend/components/RenameModal.tsx
 import React, { useState, useEffect } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../../../../../renderer/src/components/ui/dialog';
-import { Button } from '../../../../../renderer/src/components/ui/button';
-import { Input } from '../../../../../renderer/src/components/ui/input';
-import { useI18n } from '../../../../../renderer/src/store/useI18n';
-import type { ProjectRecord } from '../../../types';
-import { FrontendLogger } from '../../../../../renderer/src/utils/logger';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../../../../renderer/src/components/ui/dialog';
+import { Button } from '../../../../renderer/src/components/ui/button';
+import { Input } from '../../../../renderer/src/components/ui/input';
+import { useI18n } from '../../../../renderer/src/store/useI18n';
+import type { ProjectRecord } from '../types';
+import { FrontendLogger } from '../../../../renderer/src/utils/logger';
 import { Validator } from '../../../../shared/utils/Validator'; // 💥 引入本地前置校验
 
 interface RenameModalProps {

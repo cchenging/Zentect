@@ -1,12 +1,12 @@
 // Module: pipeline/step4-tts - TTS Service
 
-import { ProviderManager } from '../../../main/engine/config/ProviderManager'
-import { PathManager } from '../../../main/utils/pathManager'
+import { ProviderManager } from '../../../../main/engine/config/ProviderManager'
+import { PathManager } from '../../../../main/utils/pathManager'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import crypto from 'crypto'
-import { AppError, ErrorCode } from '../../../../infra/error/AppError'
+import { AppError, ErrorCode } from '../../../infra/error/AppError'
 
 export type TTSVendor = 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss'
 

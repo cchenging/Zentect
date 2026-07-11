@@ -5,6 +5,11 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../../../store/useStore';
+import { useProjectStore } from '../../../../../modules/editor/stores/useProjectStore';
+import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
+import { useEditorNavStore } from '../../../../../modules/editor/stores/useEditorNavStore';
+import { useStep1Store } from '../../../../../modules/pipeline/stores/useStep1Store';
+import { useStep2Store } from '../../../../../modules/pipeline/stores/useStep2Store';
 import { API } from '../../../api';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -68,20 +73,20 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
 
         /** 音频分离状态（hasAudio 已在上面声明） */
         if (hasAudio) {
-          state.setAudioSeparated(true);
+          useStep1Store.getState().setAudioSeparated(true);
         }
 
         /** ASR 台词：优先从 shots 提取，其次从 media 字段取 */
         if (asrLines.length > 0) {
-          state.setAsrLines(asrLines);
+          useStep1Store.getState().setAsrLines(asrLines);
         } else if (media.asrLines || media.transcription) {
-          state.setAsrLines(media.asrLines || media.transcription || []);
+          useStep1Store.getState().setAsrLines(media.asrLines || media.transcription || []);
         }
 
         /** 帧数量 */
         const frameCount = media.frames?.length || media.frameCount || 0;
         if (frameCount > 0) {
-          state.setFrameCount(frameCount);
+          useStep1Store.getState().setFrameCount(frameCount);
         }
 
         /** 将帧路径写入 extractedData.framePaths，供帧预览网格使用 */
@@ -90,7 +95,7 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             typeof frame === 'string' ? frame : (frame.path || frame.filePath || frame.thumbnail || '')
           ).filter(Boolean);
           if (frameUrls.length > 0) {
-            state.setExtractedData({ framePaths: frameUrls, frameCount: frameUrls.length });
+            useProjectStore.getState().setExtractedData({ framePaths: frameUrls, frameCount: frameUrls.length });
           }
         }
 
@@ -205,7 +210,7 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
         }
       } else if (asrLines.length > 0) {
         /** 没有 media 但有 shots 中的 ASR 数据 */
-        state.setAsrLines(asrLines);
+        useStep1Store.getState().setAsrLines(asrLines);
       }
 
       /** 更新 shots 和 roles 数据 */
@@ -231,11 +236,11 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             aiShots: latestState.aiShots,
             roles: latestState.roles,
             mediaItems: latestState.mediaItems,
-            asrLines: latestState.asrLines,
-            frameCount: latestState.frameCount,
+            asrLines: useStep1Store.getState().asrLines,
+            frameCount: useStep1Store.getState().frameCount,
             /** 💥 显式持久化帧路径数组，确保重进项目帧预览不丢失 */
             framePaths: latestState.extractedData?.framePaths || [],
-            audioSeparated: latestState.audioSeparated,
+            audioSeparated: useStep1Store.getState().audioSeparated,
             subStepStatuses: latestState.subStepStatuses,
             subStepProgresses: latestState.subStepProgresses,
             stepStatuses: latestState.stepStatuses,

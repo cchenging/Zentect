@@ -1,7 +1,8 @@
 // 📁 路径：src/renderer/src/store/slices/dataSlice.ts
 import type { StateCreator } from 'zustand';
-import type { EditorState, DataSlice } from '../storeTypes';
+import type { EditorState, DataSlice, StepStatus } from '../storeTypes';
 import type { Shot } from '../../../../shared/types';
+import type { HydrationStatusType } from '../constants';
 import { AppNotifier } from '../../core/AppNotifier';
 import { API } from '../../api';
 
@@ -39,6 +40,21 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
     framePaths: []
   },
 
+  /** EditorSlice 字段初始化默认值，防止组件在 Store 未注水前读取 undefined */
+  hydrationStatus: 'IDLE' as HydrationStatusType,
+  currentStep: 1,
+  isAutoMode: false,
+  stepStatuses: ['idle', 'idle', 'idle', 'idle', 'idle'] as StepStatus[],
+  stepCompleted: [false, false, false, false, false],
+  subStepStatuses: { frames: 'idle', audio: 'idle', whisper: 'idle', faces: 'idle' } as Record<string, StepStatus>,
+  subStepProgresses: {} as Record<string, number>,
+  pipelineRunning: false,
+  pipelineProgress: 0,
+  pipelineNode: '',
+  pipelineError: null,
+  nodes: [] as any[],
+  edges: [] as any[],
+
   saveSnapshot: () => {
     const state = get();
     const snapshot = { shots: JSON.parse(JSON.stringify(state.shots)), aiShots: JSON.parse(JSON.stringify(state.aiShots)) };
@@ -67,7 +83,12 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
   setStoryboardMode: (mode) => set({ storyboardMode: mode }),
 
   addMediaItem: (item) => set((state) => ({ mediaItems: [...state.mediaItems, item] })),
-  addMediaItems: (items) => set((state) => ({ mediaItems: [...state.mediaItems, ...items] })),
+  addMediaItems: (items) => set((state) => {
+    const existingIds = new Set(state.mediaItems.map((i: any) => i.id));
+    const uniqueItems = items.filter((i: any) => !existingIds.has(i.id));
+    if (uniqueItems.length === 0) return { mediaItems: state.mediaItems };
+    return { mediaItems: [...state.mediaItems, ...uniqueItems] };
+  }),
   setMediaItems: (items) => set({ mediaItems: items }),
   updateMediaItem: (id, updates) => set((state) => ({ mediaItems: state.mediaItems.map(item => item.id === id ? { ...item, ...updates } : item) })),
 
@@ -229,9 +250,12 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
     pipelineProgress: 0,
     pipelineNode: '',
     pipelineError: null,
-    asrLines: [],
-    frameCount: 0,
-    audioSeparated: false,
+    // 补充 EditorSlice 字段重置，与 initialState 保持一致
+    hydrationStatus: 'IDLE' as HydrationStatusType,
+    isAutoMode: false,
+    subStepProgresses: {} as Record<string, number>,
+    nodes: [] as any[],
+    edges: [] as any[],
   })),
 
   /** 💥 单职责 Action：专门负责重新进入项目或算法完工后的全量反序列化注水 */
@@ -251,7 +275,6 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
     const background = raw.backgroundPath || parsed.backgroundPath || '';
     const asr = raw.asrLines || parsed.asrLines || [];
     const frameCount = raw.frameCount || parsed.frameCount || 0;
-    const audioSeparated = raw.audioSeparated || parsed.audioSeparated || !!(vocal || background);
 
     // 如果有视频路径但 mediaItems 为空，自动构建媒体项确保播放器能识别
     let mediaItems = raw.mediaItems || state.mediaItems;
@@ -396,23 +419,6 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
       } catch {}
     }
 
-    /** 💥 从 metadata 恢复 extractionConfig，确保重进项目后抽帧参数不丢失 */
-    const savedExtractionConfig = raw.extractionConfig || parsed.extractionConfig;
-
-    /** 💥 从 metadata 恢复 vlmFrames，确保重进项目后步骤2画面描述数据不丢失 */
-    const savedVlmFrames = raw.vlmFrames || parsed.vlmFrames;
-
-    /** 💥 从 metadata 恢复步骤3解说文案数据，确保重进项目后文案不丢失 */
-    const savedScriptParagraphs = raw.scriptParagraphs || parsed.scriptParagraphs;
-    const savedScriptStyle = raw.scriptStyle || parsed.scriptStyle;
-    const savedSpeechRate = raw.speechRate || parsed.speechRate;
-    const savedPipelineParams = raw.pipelineParams || parsed.pipelineParams;
-
-    /** 💥 从 metadata 恢复步骤4配音结果，确保重进项目后配音数据不丢失 */
-    const savedTtsResults = raw.ttsResults || parsed.ttsResults;
-    const savedTtsEngine = raw.ttsEngine || parsed.ttsEngine;
-    const savedTtsVoiceId = raw.ttsVoiceId || parsed.ttsVoiceId;
-
     /** 💥 自动修正状态不一致：如果 subStepStatuses 全是 completed 但 stepStatuses[0] 还是 running 且 stepCompleted[0] 是 false */
     if (
       subStepStatuses &&
@@ -431,15 +437,6 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
       stepCompleted = [...stepCompleted];
       stepCompleted[0] = true;
     }
-
-    /** 💥 防御 extractionConfig 为 undefined 的情况：深度合并时确保基础结构存在 */
-    const baseConfig = state.extractionConfig || {
-      targetLanguage: 'zh-CN',
-      frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, fps: 2, scale: 1024 },
-      audio: { enabled: true, engine: 'mdx-net' },
-      whisper: { enabled: true, engine: 'sensevoice' },
-      faces: { enabled: true, engine: 'insightface' },
-    };
 
     return {
       projectId: raw.id || state.projectId,
@@ -461,46 +458,10 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
       shots: raw.shots || parsed.shots || state.shots,
       aiShots: raw.aiShots || parsed.aiShots || state.aiShots,
       roles: raw.roles || parsed.roles || state.roles,
-      asrLines: (() => {
-          /** 💥 关键修复：空数组 [] 不应覆盖 store 中已有的 asrLines（如从 shots 提取的台词） */
-          const lines = (Array.isArray(asr) && asr.length > 0) ? asr : state.asrLines;
-          return lines.map((l: any) => l.originalText === undefined ? { ...l, originalText: l.text || '' } : l);
-        })(),
-      frameCount,
-      audioSeparated,
       subStepStatuses,
       subStepProgresses,
       stepStatuses,
       stepCompleted,
-      /** 💥 恢复抽帧配置：优先用持久化数据，否则保留 store 默认值，
-       *  确保所有子字段（frames/audio/whisper/faces）都有默认值，防止 undefined 导致运行时报错 */
-      extractionConfig: savedExtractionConfig
-        ? {
-            ...baseConfig,
-            ...savedExtractionConfig,
-            frames: { ...baseConfig.frames, ...(savedExtractionConfig.frames || {}) },
-            audio: { ...baseConfig.audio, ...(savedExtractionConfig.audio || {}) },
-            whisper: { ...baseConfig.whisper, ...(savedExtractionConfig.whisper || {}) },
-            faces: { ...baseConfig.faces, ...(savedExtractionConfig.faces || {}) },
-          }
-        : baseConfig,
-      /** 💥 恢复 VLM 画面描述数据：空数组不覆盖已有数据 */
-      vlmFrames: (Array.isArray(savedVlmFrames) && savedVlmFrames.length > 0)
-        ? savedVlmFrames
-        : state.vlmFrames,
-      /** 💥 恢复步骤3解说文案数据：空数组不覆盖已有数据 */
-      scriptParagraphs: (Array.isArray(savedScriptParagraphs) && savedScriptParagraphs.length > 0)
-        ? savedScriptParagraphs
-        : state.scriptParagraphs,
-      scriptStyle: savedScriptStyle || state.scriptStyle,
-      speechRate: savedSpeechRate || state.speechRate,
-      pipelineParams: savedPipelineParams || state.pipelineParams,
-      /** 💥 恢复步骤4配音结果：空数组不覆盖已有数据 */
-      ttsResults: (Array.isArray(savedTtsResults) && savedTtsResults.length > 0)
-        ? savedTtsResults
-        : state.ttsResults,
-      ttsEngine: savedTtsEngine || state.ttsEngine,
-      ttsVoiceId: savedTtsVoiceId || state.ttsVoiceId,
       extractedData: {
         videoPath: video,
         vocalPath: vocal,
@@ -519,8 +480,6 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
     const nextFramePaths = data.framePaths || state.extractedData.framePaths || [];
     return {
       extractedData: { ...state.extractedData, ...data, framePaths: nextFramePaths },
-      /** 响应式联动：framePaths 变化时自动更新 frameCount */
-      frameCount: data.frameCount ?? nextFramePaths.length,
     };
   }),
 

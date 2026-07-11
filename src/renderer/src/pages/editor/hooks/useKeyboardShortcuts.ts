@@ -8,11 +8,8 @@ import { useEditorStore } from '../../../store/useStore';
 import { DraftService } from '../../../services/DraftService';
 
 export const useKeyboardShortcuts = () => {
-  const nodes = useEditorStore(s => s.nodes);
-  const edges = useEditorStore(s => s.edges);
   const projectId = useEditorStore(s => s.projectId);
   const setInspectorOpen = useEditorStore(s => s.setInspectorOpen);
-  const setActiveNode = useEditorStore(s => s.setActiveNode);
   const undo = useEditorStore(s => s.undo);
   const redo = useEditorStore(s => s.redo);
 
@@ -24,8 +21,7 @@ export const useKeyboardShortcuts = () => {
       if (isCtrlOrCmd && e.key === 's') {
         e.preventDefault();
         if (projectId) {
-          const snapshot = JSON.stringify({ nodes, edges });
-          DraftService.saveDraft(projectId, snapshot).catch(() => {});
+          DraftService.saveDraft(projectId, '{}').catch(() => {});
         }
         return;
       }
@@ -47,12 +43,11 @@ export const useKeyboardShortcuts = () => {
       // Escape: 关闭面板
       if (e.key === 'Escape') {
         setInspectorOpen(false);
-        setActiveNode(null, null);
         return;
       }
     };
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [nodes, edges, projectId, setInspectorOpen, setActiveNode, undo, redo]);
+  }, [projectId, setInspectorOpen, undo, redo]);
 };

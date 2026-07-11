@@ -4,12 +4,12 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Settings as SettingsIcon, Loader2 } from 'lucide-react';
-import { useEditorStore } from '../../../../../../renderer/src/store/useStore';
-import { useI18n } from '../../../../../../renderer/src/store/useI18n';
-import { WindowControls } from '../../../../../../renderer/src/components/window-controls';
-import { ExportModal } from '../../../../../../renderer/src/pages/editor/components/top-bar/components/ExportModal';
-import { API } from '../../../../../../renderer/src/api';
-import { AppNotifier } from '../../../../../../renderer/src/core/AppNotifier';
+import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { useI18n } from '../../../../../renderer/src/store/useI18n';
+import { WindowControls } from '../../../../../renderer/src/components/window-controls';
+import { ExportModal } from '../../../../../renderer/src/pages/editor/components/top-bar/components/ExportModal';
+import { API } from '../../../../../renderer/src/api';
+import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
 
 const SaveStatus: React.FC = () => {
   const saveStatus = useEditorStore((s) => s.saveStatus);

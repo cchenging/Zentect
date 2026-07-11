@@ -2,7 +2,7 @@
 // 原 editor/hooks/useTaskProgress.ts — 已迁移
 
 import { useEffect, useRef } from 'react';
-import { useStore } from '../../../../../renderer/src/store/useStore';
+import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 import { CODE_TO_NAME } from '../../utils/pipelineConstants';
 
@@ -54,7 +54,7 @@ export const useTaskProgress = () => {
       const { code, percent, status } = payload;
       if (!code) return;
 
-      const state = useStore.getState();
+      const state = usePipelineStore.getState();
       const progressKey = `${code}:${percent}`;
       if (lastProgressRef.current[code] === percent && code !== 'TASK_SUCCESS' && code !== 'TASK_FAILED') {
         return;
@@ -62,7 +62,7 @@ export const useTaskProgress = () => {
       lastProgressRef.current[code] = percent;
 
       if (code === 'TASK_SUCCESS' || status === 'completed') {
-        useStore.setState({
+        usePipelineStore.setState({
           pipelineProgress: 100,
           pipelineNode: CODE_TO_NAME[code] || code || '',
           subStepStatuses: { frames: 'completed', audio: 'completed', whisper: 'completed', faces: 'completed' },
@@ -81,14 +81,14 @@ export const useTaskProgress = () => {
           }
         });
         if (hasChanges) {
-          useStore.setState({ subStepStatuses: newSubStepStatuses });
+          usePipelineStore.setState({ subStepStatuses: newSubStepStatuses });
         }
         return;
       }
 
       const completionKey = COMPLETION_CODES[code];
       if (completionKey) {
-        useStore.setState({
+        usePipelineStore.setState({
           subStepStatuses: { ...state.subStepStatuses, [completionKey]: 'completed' },
           subStepProgresses: { ...state.subStepProgresses, [completionKey]: 100 },
         });
@@ -108,9 +108,9 @@ export const useTaskProgress = () => {
             [subStepKey]: toLocalProgress(subStepKey, percent),
           };
         }
-        useStore.setState(updates);
+        usePipelineStore.setState(updates);
       } else if (typeof percent === 'number') {
-        useStore.setState({
+        usePipelineStore.setState({
           pipelineProgress: percent,
           pipelineNode: CODE_TO_NAME[code] || code || '',
         });

@@ -6,12 +6,15 @@
 // 📁 路径: src/renderer/src/pages/editor/hooks/usePipelineExecutor.ts
 import { useEffect, useCallback, useRef } from 'react';
 import { useEditorStore } from '../../../store/useStore';
+import { usePipelineStore } from '../../../store/usePipelineStore';
+import { useStep1Store } from '../../../../../modules/pipeline/stores/useStep1Store';
 import { API } from '../../../api';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 import { AppNotifier } from '../../../core/AppNotifier';
 
 export const usePipelineExecutor = () => {
   const store = useEditorStore();
+  const pipelineStore = usePipelineStore;
   const asrBufferRef = useRef<any[]>([]);
   const renderTimerRef = useRef<any>(null);
 
@@ -27,11 +30,12 @@ export const usePipelineExecutor = () => {
     console.log(`[工作台大总线] 捕获长连接信号 -> 进度: ${progress}% | 状态: ${status}`);
 
     // 1. 同步更新前台右侧流程面板上的百分比进度条与转圈状态，解除假死感
-    if (typeof storeState.setPipelineProgress === 'function') {
-      storeState.setPipelineProgress(progress, nodeName || `AI 核心提取管线全力运转中...`);
+    const ps = pipelineStore.getState();
+    if (typeof ps.setPipelineProgress === 'function') {
+      ps.setPipelineProgress(progress, nodeName || `AI 核心提取管线全力运转中...`);
     }
     if (status === 'processing' || progress < 100) {
-      storeState.setPipelineRunning?.(true);
+      ps.setPipelineRunning?.(true);
     }
 
     // 2. 💥【增量高性能回填】：将音轨路径、ASR文本真正塞回 Zustand 对应的状态房间里
@@ -80,7 +84,7 @@ export const usePipelineExecutor = () => {
       const nodeId: string = payload.nodeId || '';
       const isFrameNode = nodeId.includes('frame') || nodeId.includes('extract') || nodeId.includes('vision');
       if (isFrameNode && actualExtractedImages.length > 0) {
-        useEditorStore.setState({ frameCount: actualExtractedImages.length });
+        useStep1Store.getState().setFrameCount(actualExtractedImages.length);
         AppNotifier.success(`⚙️ 智能分析中心：资产切片无损入库，共生成 ${actualExtractedImages.length} 个高清分镜！`);
       }
 
@@ -93,13 +97,13 @@ export const usePipelineExecutor = () => {
         /** 仅在非步骤模式下重置 running 状态，步骤模式由 usePipelineOrchestrator 管理 */
         const stepStatuses = (storeState as any).stepStatuses;
         if (!stepStatuses || !stepStatuses.some((s: any) => s === 'running')) {
-          storeState.setPipelineRunning?.(false);
+          pipelineStore.getState().setPipelineRunning?.(false);
         }
       });
     }
 
     if (status === 'error') {
-      storeState.setPipelineRunning?.(false);
+      pipelineStore.getState().setPipelineRunning?.(false);
       AppNotifier.error(`核心引擎算力中断: ${error || '未知底层微服务崩溃'}`);
     }
   }, []);
@@ -122,8 +126,8 @@ export const usePipelineExecutor = () => {
     if (!storeState.projectId) return AppNotifier.error('项目上下文丢失，无法运行');
 
     try {
-      storeState.setPipelineRunning?.(true);
-      storeState.setPipelineProgress?.(2, '唤醒本地大模型与音轨提取微服务中...');
+      pipelineStore.getState().setPipelineRunning?.(true);
+      pipelineStore.getState().setPipelineProgress?.(2, '唤醒本地大模型与音轨提取微服务中...');
       asrBufferRef.current = [];
 
       await window.api.ipc.invoke(IPC_CHANNELS.ENGINE_RUN_PIPELINE, {
@@ -135,5 +139,5 @@ export const usePipelineExecutor = () => {
     }
   }, []);
 
-  return { triggerLinearPipeline, isRunning: store.pipelineRunning };
+  return { triggerLinearPipeline, isRunning: usePipelineStore.getState().pipelineRunning };
 };

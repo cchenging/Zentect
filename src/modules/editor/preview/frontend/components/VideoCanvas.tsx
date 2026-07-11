@@ -2,12 +2,18 @@
 // 原 editor/components/player/VideoCanvas.tsx — 已迁移
 
 import { useRef } from 'react';
-import { useEditorStore } from '../../../../../../renderer/src/store/useStore';
-import { getSafeMediaUrl } from '../../../../../../renderer/src/utils/formatUrl';
+import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { getSafeMediaUrl } from '../../../../../renderer/src/utils/formatUrl';
+import { usePlaybackEngine } from '../../../../../renderer/src/pages/editor/components/player/hooks/usePlaybackEngine';
 
 export const VideoCanvas = () => {
-  const { activePlaySource, activeScript, activeShots, setCurrentTime, setVideoDuration } = useEditorStore();
+  const activePlaySource = useEditorStore((s) => s.activePlaySource);
+  const activeScript = useEditorStore((s) => s.activeScript);
+  const activeShots = useEditorStore((s) => s.activeShots);
+  const setCurrentTime = useEditorStore((s) => s.setCurrentTime);
+  const setVideoDuration = useEditorStore((s) => s.setVideoDuration);
   const videoRef = useRef<HTMLVideoElement>(null);
+  usePlaybackEngine(videoRef);
 
   return (
     <div className="relative w-full h-full bg-[#050505] flex items-center justify-center overflow-hidden">

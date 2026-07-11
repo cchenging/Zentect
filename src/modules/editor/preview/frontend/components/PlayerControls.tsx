@@ -4,14 +4,14 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Pause, Volume2, VolumeX, MonitorPlay, ZoomIn, Maximize, Check } from 'lucide-react';
 
-import { Slider } from '../../../../../../renderer/src/components/ui/slider';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../../../../renderer/src/components/ui/dropdown-menu';
-import { Popover, PopoverContent, PopoverTrigger } from '../../../../../../renderer/src/components/ui/popover';
-import { Button } from '../../../../../../renderer/src/components/ui/button';
+import { Slider } from '../../../../../renderer/src/components/ui/slider';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../../../renderer/src/components/ui/dropdown-menu';
+import { Popover, PopoverContent, PopoverTrigger } from '../../../../../renderer/src/components/ui/popover';
+import { Button } from '../../../../../renderer/src/components/ui/button';
 
-import { useEditorStore } from '../../../../../../renderer/src/store/useStore';
-import { PlaybackEngine } from '../../../../../../renderer/src/pages/editor/core/PlaybackEngine';
-import { useI18n } from '../../../../../../renderer/src/store/useI18n';
+import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { PlaybackEngine } from '../../../../../renderer/src/pages/editor/core/PlaybackEngine';
+import { useI18n } from '../../../../../renderer/src/store/useI18n';
 
 const formatTimecode = (seconds: number) => {
   if (isNaN(seconds) || seconds < 0) return '00:00:00:00';

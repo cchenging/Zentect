@@ -9,7 +9,7 @@ export interface ASRSubStepProps {
 }
 
 export const ASRSubStep: React.FC<ASRSubStepProps> = ({ expanded, onToggle }) => {
-  const asrLines = useStore((s) => s.asrLines);
+  const asrLines = useStep1Store((s) => s.asrLines);
   const updateAsrLine = useStore((s) => s.updateAsrLine);
   const setCurrentTime = useStore((s) => s.setCurrentTime);
   const status = useStore((s) => s.subStepStatuses['whisper'] || 'idle');
