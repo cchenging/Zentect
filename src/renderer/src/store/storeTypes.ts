@@ -16,7 +16,10 @@ export type ItemType = 'media' | 'role' | 'shot' | null;
 
 // --- 切片定义: UI Slice ---
 export interface UISlice {
-  theme: 'dark' | 'light';
+  mode: 'dark' | 'light' | 'system';
+  skin: string;
+  scale: string;
+  particleStyle: string;
   leftTab: LeftTabType;
   selectedItemId: string | null;
   selectedItemType: ItemType;
@@ -30,7 +33,9 @@ export interface UISlice {
   activeRoleFilter: string | null;
   semanticSearchResults: Array<{shotId: string, score: number}> | null;
 
-  toggleTheme: () => void;
+  setMode: (mode: 'dark' | 'light' | 'system') => void;
+  cycleMode: () => void;
+  hydrateUI: () => Promise<void>;
   setLeftTab: (tab: LeftTabType) => void;
   selectItem: (id: string | null, type: ItemType) => void;
   clearSelection: () => void;

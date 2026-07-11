@@ -28,6 +28,10 @@ export const CONFIG_KEYS = {
 
   UI_LANGUAGE: 'ui.language',
   UI_THEME: 'ui.theme',
+  UI_MODE: 'ui.mode',
+  UI_SKIN: 'ui.skin',
+  UI_SCALE: 'ui.scale',
+  UI_PARTICLE_STYLE: 'ui.particleStyle',
   UI_FONT_SIZE: 'ui.fontSize',
 
   FEATURE_EDITOR_ENABLED: 'feature.editor.enabled',

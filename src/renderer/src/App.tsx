@@ -24,19 +24,39 @@ const ModelsPage = React.lazy(() => import('./pages/models'));
 const UserSettingsPage = React.lazy(() => import('./pages/user-settings'));
 
 function App() {
-  const theme = useEditorStore((state) => state.theme);
+  const mode = useEditorStore((state) => state.mode);
+  const hydrateUI = useEditorStore((state) => state.hydrateUI);
+
+  useEffect(() => {
+    hydrateUI();
+  }, []);
 
   useEffect(() => {
     // — 致命修复：双端同步！
     // 既修改 html 的 class (服务于 Tailwind v4 原生引擎)
     // 又修改 body 的 attribute (服务于我们写的 CSS 强压变量)
+    const resolvedMode = mode === 'system'
+      ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+      : mode;
     const root = window.document.documentElement;
     root.classList.remove('light', 'dark');
-    root.classList.add(theme);
-    document.body.setAttribute('theme-mode', theme);
+    root.classList.add(resolvedMode);
+    document.body.setAttribute('theme-mode', resolvedMode);
     // — 注入：主题切换追踪
-    FrontendLogger.info('AppRoot', `System theme switched to: ${theme}`);
-  }, [theme]);
+    FrontendLogger.info('AppRoot', `System theme switched to: ${resolvedMode}`);
+
+    if (mode === 'system') {
+      const mq = window.matchMedia('(prefers-color-scheme: dark)');
+      const listener = (e: MediaQueryListEvent) => {
+        const newMode = e.matches ? 'dark' : 'light';
+        document.documentElement.classList.remove('light', 'dark');
+        document.documentElement.classList.add(newMode);
+        document.body.setAttribute('theme-mode', newMode);
+      };
+      mq.addEventListener('change', listener);
+      return () => mq.removeEventListener('change', listener);
+    }
+  }, [mode]);
 
   // ==========================================================
   // — 引擎点火握手信号发射器

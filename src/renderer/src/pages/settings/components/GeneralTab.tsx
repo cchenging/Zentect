@@ -91,9 +91,9 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({ data, onUpdate }) => {
               {(['dark', 'light', 'system'] as const).map(mode => (
                 <button
                   key={mode}
-                  onClick={() => onUpdate('general', 'theme', mode)}
+                  onClick={() => onUpdate('general', 'mode', mode)}
                   className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-all cursor-pointer outline-none ${
-                    (data.theme || 'dark') === mode
+                    (data.mode || 'dark') === mode
                       ? 'bg-gradient-to-r from-accent to-accent-purple text-white shadow-sm shadow-accent/20'
                       : 'text-muted-foreground hover:text-foreground'
                   }`}

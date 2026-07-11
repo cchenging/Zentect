@@ -16,8 +16,8 @@ export const TitleBar: React.FC = () => {
   const navigate = useNavigate();
   const { t } = useI18n();
 
-  const theme = useEditorStore((state) => state.theme);
-  const toggleTheme = useEditorStore((state) => state.toggleTheme);
+  const mode = useEditorStore((state) => state.mode);
+  const cycleMode = useEditorStore((state) => state.cycleMode);
 
   return (
     /* 💥 使用 Tailwind 任意值替换 style as any，重塑纯净的类型安全体系 */
@@ -28,10 +28,10 @@ export const TitleBar: React.FC = () => {
         <div className="flex items-center gap-0.5">
           <button
             className={`${UI_CONFIG.ICON_BTN_SIZE} flex items-center justify-center bg-transparent border-none rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors cursor-pointer outline-none`}
-            onClick={toggleTheme}
-            title={theme === 'dark' ? t.common?.theme_light || '亮色模式' : t.common?.theme_dark || '暗黑模式'}
+            onClick={cycleMode}
+            title={mode === 'dark' ? '暗色模式' : mode === 'light' ? '亮色模式' : '跟随系统'}
           >
-            {theme === 'dark' ? <Sun size={UI_CONFIG.ICON_SIZE} /> : <Moon size={UI_CONFIG.ICON_SIZE} />}
+            {mode === 'dark' ? <Moon size={UI_CONFIG.ICON_SIZE} /> : mode === 'light' ? <Sun size={UI_CONFIG.ICON_SIZE} /> : <Monitor size={UI_CONFIG.ICON_SIZE} />}
           </button>
 
           <NotificationPanel />

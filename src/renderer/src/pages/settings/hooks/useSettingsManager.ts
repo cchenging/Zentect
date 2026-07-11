@@ -4,6 +4,13 @@ import { AppNotifier } from '../../../core/AppNotifier';
 
 // Schema：定义所有设置的键名及其默认值
 const DEFAULT_SETTINGS_SCHEMA: Record<string, any> = {
+  mode: 'dark',
+  skin: 'v3',
+  scale: 'default',
+  particleStyle: 'auto',
+  language: 'zh-CN',
+  autoSaveInterval: 5,
+  gpuAcceleration: true,
   jianyingPath: '',
   deepseekKey: '', deepseekModels: null,
   qwenKey: '', qwenModels: null,
@@ -15,7 +22,6 @@ const DEFAULT_SETTINGS_SCHEMA: Record<string, any> = {
   ttsProvider: 'edge', sovitsUrl: 'http://127.0.0.1:9880',
   fishKey: '', doubaoTtsAppId: '', doubaoTtsToken: '', doubaoTtsVoice: 'zh_female_meilinvyou_saturn_bigtts',
   mossUrl: 'http://127.0.0.1:9881', mossModelDir: '',
-  enableGpuAcceleration: false
 };
 
 const parseModels = (val: any, defaultModels: string[]) => {

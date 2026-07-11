@@ -16,6 +16,10 @@ declare module '../storeTypes' {
     saveStatus: 'idle' | 'saving' | 'saved';
     lastSavedTime: string;
     isSettingsOpen: boolean;
+    mode: 'dark' | 'light' | 'system';
+    skin: string;
+    scale: string;
+    particleStyle: string;
     /**
      * @deprecated 已迁移至 useStep1Store.extractionConfig，请使用 useStep1Store
      */
@@ -53,11 +57,17 @@ declare module '../storeTypes' {
     editorMode: 'simple' | 'pro';
     setEditorMode: (mode: 'simple' | 'pro') => void;
     toggleEditorMode: () => void;
+    setMode: (mode: 'dark' | 'light' | 'system') => void;
+    cycleMode: () => void;
+    hydrateUI: () => Promise<void>;
   }
 }
 
 export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, get) => ({
-  theme: 'dark',
+  mode: 'dark' as 'dark' | 'light' | 'system',
+  skin: 'v3',
+  scale: 'default',
+  particleStyle: 'auto',
   leftTab: 'workflow',
   leftPanelOpen: true,
   leftPanelWidth: 260,
@@ -92,7 +102,24 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
     faces: { enabled: true, engine: 'insightface' }
   },
 
-  toggleTheme: () => set((state) => ({ theme: state.theme === 'dark' ? 'light' : 'dark' })),
+  setMode: (mode) => set({ mode }),
+  cycleMode: () => set((state) => {
+    const cycle: Record<string, 'dark' | 'light' | 'system'> = {
+      dark: 'light',
+      light: 'system',
+      system: 'dark',
+    };
+    return { mode: cycle[state.mode] || 'dark' };
+  }),
+  hydrateUI: async () => {
+    try {
+      const mode = await API.system.getSetting('mode', 'dark');
+      const skin = await API.system.getSetting('skin', 'v3');
+      const scale = await API.system.getSetting('scale', 'default');
+      const particleStyle = await API.system.getSetting('particleStyle', 'auto');
+      set({ mode: mode as 'dark' | 'light' | 'system', skin, scale, particleStyle });
+    } catch { /* 静默回退默认值 */ }
+  },
 
   setLeftTab: (tab) => set({
     leftTab: tab,

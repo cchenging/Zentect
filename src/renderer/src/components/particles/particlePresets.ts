@@ -1,0 +1,108 @@
+/* ============================================================
+   粒子预设注册表
+   一期 6 套，均为圆点，共用 CircleRenderer
+   ============================================================ */
+
+import type { ParticlePreset } from './types'
+
+export const particlePresets: Record<string, ParticlePreset> = {
+  dandelion: {
+    id: 'dandelion',
+    name: '蒲公英',
+    count: 40,
+    colorTokens: ['--accent', '--accent-cyan'],
+    sizeRange: [1, 3.2],
+    opacityRange: [0.1, 0.4],
+    vxRange: [-0.25, 0.25],
+    vyRange: [-0.8, -0.1],
+    drift: 0.15,
+    lifeRange: [300, 500],
+    respawn: 'bottom-up',
+    twinkle: false,
+    lightMode: { countScale: 0.7, opacityScale: 0.6 },
+  },
+  stardust: {
+    id: 'stardust',
+    name: '星尘',
+    count: 60,
+    colorTokens: ['--accent', '--accent-purple'],
+    sizeRange: [0.5, 2],
+    opacityRange: [0.15, 0.5],
+    vxRange: [-0.3, 0.3],
+    vyRange: [-0.5, -0.05],
+    drift: 0.08,
+    lifeRange: [200, 600],
+    respawn: 'random',
+    twinkle: true,
+    lightMode: { countScale: 0.7, opacityScale: 0.5 },
+  },
+  dust: {
+    id: 'dust',
+    name: '微尘',
+    count: 25,
+    colorTokens: ['--accent', '--accent-warm'],
+    sizeRange: [0.6, 1.8],
+    opacityRange: [0.08, 0.25],
+    vxRange: [-0.1, 0.1],
+    vyRange: [-0.2, -0.02],
+    drift: 0.03,
+    lifeRange: [600, 1200],
+    respawn: 'random',
+    twinkle: false,
+    lightMode: { countScale: 0.8, opacityScale: 0.6 },
+  },
+  snow: {
+    id: 'snow',
+    name: '雪花',
+    count: 50,
+    colorTokens: ['--foreground'],
+    sizeRange: [1.5, 3.5],
+    opacityRange: [0.2, 0.5],
+    vxRange: [-0.15, 0.15],
+    vyRange: [0.1, 0.5],
+    drift: 0.2,
+    lifeRange: [400, 800],
+    respawn: 'top-down',
+    twinkle: false,
+    lightMode: { countScale: 0.6, opacityScale: 0.5 },
+  },
+  firefly: {
+    id: 'firefly',
+    name: '萤火',
+    count: 30,
+    colorTokens: ['--accent-warm', '--accent-green'],
+    sizeRange: [1, 2.5],
+    opacityRange: [0.2, 0.6],
+    vxRange: [-0.1, 0.1],
+    vyRange: [-0.3, -0.05],
+    drift: 0.12,
+    lifeRange: [300, 500],
+    respawn: 'bottom-up',
+    twinkle: true,
+    lightMode: { countScale: 0.6, opacityScale: 0.4 },
+  },
+  none: {
+    id: 'none',
+    name: '关闭',
+    count: 0,
+    colorTokens: [],
+    sizeRange: [1, 1],
+    opacityRange: [0, 0],
+    vxRange: [0, 0],
+    vyRange: [0, 0],
+    drift: 0,
+    lifeRange: [0, 0],
+    respawn: 'bottom-up',
+    twinkle: false,
+  },
+}
+
+export const PARTICLE_PRESET_IDS = Object.keys(particlePresets) as string[]
+
+/** 皮肤 → 默认粒子映射（auto 模式解析用） */
+export const SKIN_DEFAULT_PARTICLE: Record<string, string> = {
+  v3: 'dandelion',
+  apple: 'none',
+  linear: 'stardust',
+  notion: 'dust',
+}
