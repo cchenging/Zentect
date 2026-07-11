@@ -1,4 +1,4 @@
-/** @deprecated 请改用 src/infra/i18n/dictionary */
+/** @deprecated 请改用 src/modules/infra/i18n/dictionary */
 export {
   DICT,
   ErrorConfig,
@@ -9,4 +9,4 @@ export {
   type AppDictionary,
   SUPPORTED_EXTENSIONS,
   ALL_MEDIA_EXTENSIONS,
-} from '../../infra/i18n/dictionary';
+} from '../../modules/infra/i18n/dictionary';

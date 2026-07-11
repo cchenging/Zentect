@@ -2,7 +2,7 @@
 import { IpcRouter } from '../core/IpcRouter';
 import { SettingsService } from '../services/SettingsService';
 import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 
 /** 设置域扩展 IPC 频道常量（后续合并到 IpcConstants.ts） */
 const SETTINGS_IPC_CHANNELS = {

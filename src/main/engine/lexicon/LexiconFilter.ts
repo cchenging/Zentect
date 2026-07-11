@@ -1,6 +1,6 @@
 import { LexiconLoader, LexiconLevel } from './LexiconLoader';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 
 export interface LexiconScanResult {
   original: string;

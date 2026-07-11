@@ -2,7 +2,7 @@
 // Layer 4 进阶: 流式调用断点保护 — 网络熔断时验证完整性，破损则回滚为空契约
 import { NetworkPipeline } from './NetworkPipeline';
 import { AppLogger } from './AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
 export class StreamBufferGuard {
   /** 流式数据块缓存 */

@@ -7,7 +7,7 @@ import * as path from 'path';
 import { PathManager } from '../../utils/pathManager';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 
 /** 渲染作业数据结构 */
 export interface RenderJob {

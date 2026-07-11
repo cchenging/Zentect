@@ -1,10 +1,10 @@
 import { BrowserWindow } from 'electron';
 import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
-import { DICT } from '../../infra/i18n/dictionary';
+import { DICT } from '../../modules/infra/i18n/dictionary';
 import type { TaskCompletedPayload, AppNotifyPayload } from '../../shared/types';
 import { TaskRepository } from '../database/repositories/TaskRepository';
 import { AppLogger } from './AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
 /** 主进程通知器：统一管理 IPC 推送与任务状态持久化 */
 export class MainNotifier {

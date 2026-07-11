@@ -2,9 +2,9 @@
 import { BrowserWindow } from 'electron';
 import { IpcRouter } from '../core/IpcRouter';
 import { ModelService } from '../services/ModelService';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
 /**
  * 模型管理 IPC 频道常量

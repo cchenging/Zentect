@@ -5,7 +5,7 @@ import { PathManager } from '../utils/pathManager'
 import { ProcessManager } from '../utils/processManager'
 import { ProcessSupervisor, RestartCallback } from './ProcessSupervisor'
 import { AppLogger } from './AppLogger'
-import { LOG_TAGS } from '../../infra/logger/LogConstants'
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 import { SettingsRepository } from '../database/repositories/SettingsRepository'
 import { RuntimeVersionGuard } from './RuntimeVersionGuard'
 

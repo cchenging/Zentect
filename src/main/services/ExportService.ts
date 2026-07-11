@@ -4,7 +4,7 @@ import { JianyingExportService } from '../../modules/export/jianying';
 import { SrtExportService } from '../../modules/export/srt';
 import { TxtExportService } from '../../modules/export/txt';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { ProjectRepository } from '../database/repositories/ProjectRepository';
 
 export class ExportService {

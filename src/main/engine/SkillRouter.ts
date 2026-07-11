@@ -2,7 +2,7 @@
 // V1.2: 技能路由 — 将技能映射为系统动作并入队
 
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { Skill, SkillRouteResult, BUILTIN_SKILLS } from '../../shared/types/skill';
 import { BatchQueueEngine, BatchJobInput } from './BatchQueueEngine';
 

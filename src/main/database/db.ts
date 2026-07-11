@@ -1,7 +1,7 @@
 // 📁 路径: src/main/database/db.ts
 import { SQLiteConnection } from './core/SQLiteConnection';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { encryptData, decryptData } from '../utils/crypto';
 import type Database from 'better-sqlite3';
 

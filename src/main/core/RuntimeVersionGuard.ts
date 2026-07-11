@@ -3,7 +3,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { PathManager } from '../utils/pathManager'
 import { AppLogger } from './AppLogger'
-import { LOG_TAGS } from '../../infra/logger/LogConstants'
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 
 interface VersionInfo {
   /** 语义化版本号，如 "1.2.0" */

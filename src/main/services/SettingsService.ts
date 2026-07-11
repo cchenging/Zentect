@@ -1,9 +1,9 @@
 // 📁 路径: src/main/services/SettingsService.ts
 import fs from 'fs/promises';
 import { SettingsRepository } from '../database/repositories/SettingsRepository';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
 /** 默认设置值字典 */
 const DEFAULT_SETTINGS: Record<string, string> = {

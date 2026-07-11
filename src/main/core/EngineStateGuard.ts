@@ -1,7 +1,7 @@
 // 📁 路径：src/main/core/EngineStateGuard.ts
 // Layer 3: 主进程算力互斥锁 — 阻断前端高频重复点击穿透到核心算力层
 import { AppLogger } from './AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
 export class EngineStateGuard {
   /** 内存常驻，追踪当前正在执行高负载算力的节点 ID */

@@ -1,10 +1,10 @@
 ﻿/**
  * BaseRepository - 通用 Repository 基类
  *
- * DB 句柄获取已迁移至 src/infra/database/SQLiteConnection，
- * 本类向后兼容，后续阶段将移至 src/infra/database/
+ * DB 句柄获取已迁移至 src/modules/infra/database/SQLiteConnection，
+ * 本类向后兼容，后续阶段将移至 src/modules/infra/database/
  */
-import { SQLiteConnection } from '../../../infra/database/SQLiteConnection';
+import { SQLiteConnection } from '../../../modules/infra/database/SQLiteConnection';
 
 export interface IEntity {
   id: string;

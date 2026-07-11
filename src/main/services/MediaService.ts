@@ -11,7 +11,7 @@
 import { ImportService } from '../../modules/media/import/backend/ImportService';
 import { MediaRepository } from '../../modules/media/import/data/MediaRepository';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import * as fs from 'fs';
 import * as path from 'path';
 

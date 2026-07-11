@@ -2,7 +2,7 @@ import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
 import { PipelineTask } from '../../../shared/types';
 import { LLMFactory } from '../adapters/LLMFactory';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 
 export class LLMProcessorStrategy extends BaseNodeStrategy {
   readonly nodeType = 'llm-processor';

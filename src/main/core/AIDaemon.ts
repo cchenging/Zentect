@@ -4,7 +4,7 @@ import { ChildProcess, spawn } from 'child_process';
 import { PathManager } from '../utils/pathManager';
 import { ProcessManager } from '../utils/processManager';
 import { AppLogger } from './AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { SettingsRepository } from '../database/repositories/SettingsRepository';
 import { AiRuntimeManager } from './AiRuntimeManager';
 

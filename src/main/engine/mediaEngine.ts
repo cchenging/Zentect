@@ -6,10 +6,10 @@ import { VideoProcessor } from './media/VideoProcessor';
 import { AIEngine } from './AIEngine';
 import { MediaRepository } from '../database/repositories/MediaRepository';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { ProjectService } from '../services/ProjectService';
 import { MediaItem, Shot, Role, PipelineExtractionResult } from '../../shared/types';
-import { DICT, ENGINE_STATUS } from '../../infra/i18n/dictionary';
+import { DICT, ENGINE_STATUS } from '../../modules/infra/i18n/dictionary';
 
 export class MediaEngine {
 

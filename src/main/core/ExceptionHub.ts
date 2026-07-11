@@ -1,8 +1,8 @@
 // 📁 路径：src/main/core/ExceptionHub.ts
 // Layer 5: 异常归一化翻译官 — 将各种野鸡报错清洗为标准 I18N Key 契约载荷
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { AppLogger } from './AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
 /** 标准化 I18N 错误载荷 — 主进程只传递 Key，前端字典负责渲染具体语种 */
 export interface I18NErrorPayload {

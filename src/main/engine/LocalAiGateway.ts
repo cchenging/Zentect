@@ -1,6 +1,6 @@
 import { HttpClient } from '../core/HttpClient'
 import { AppLogger } from '../core/AppLogger'
-import { LOG_TAGS } from '../../infra/logger/LogConstants'
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 
 interface VoiceItem {
   id: string

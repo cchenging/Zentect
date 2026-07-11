@@ -1,5 +1,5 @@
 import { AppLogger } from './AppLogger'
-import { LOG_TAGS } from '../../infra/logger/LogConstants'
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 import os from 'os'
 
 interface ResourceSnapshot {

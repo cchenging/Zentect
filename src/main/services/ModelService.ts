@@ -1,8 +1,8 @@
 // 📁 路径: src/main/services/ModelService.ts
 import { ModelRepository, PipelineModelConfigRepository } from '../database/repositories/ModelRepository';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as https from 'https';

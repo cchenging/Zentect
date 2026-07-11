@@ -2,7 +2,7 @@
 // V1.2: 批量任务队列引擎 + 黑灯工厂 — FIFO 调度 MP4 渲染 + 发布素材包
 
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { FFmpegRenderer, RenderJob, RenderShot } from './media/FFmpegRenderer';
 import { BatchJobRepository } from '../database/repositories/BatchJobRepository';
 import { PipelineEngine } from './PipelineEngine';

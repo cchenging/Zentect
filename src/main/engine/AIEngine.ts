@@ -13,14 +13,14 @@ import { PromptBuilder } from './prompts/PromptBuilder';
 import { LLMFactory } from './adapters/LLMFactory'; 
 import { ProviderManager } from './config/ProviderManager'; // 💥 唯一合法的配置出处
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { Shot } from '../../shared/types';
-import { ENGINE_STATUS } from '../../infra/i18n/dictionary';
+import { ENGINE_STATUS } from '../../modules/infra/i18n/dictionary';
 import { ChatHistoryRepository } from '../database/repositories/ChatHistoryRepository';
 import { MediaRepository } from '../database/repositories/MediaRepository';
 

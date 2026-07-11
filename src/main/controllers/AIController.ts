@@ -3,7 +3,7 @@ import { IpcRouter } from '../core/IpcRouter';
 import { AIService } from '../services/AIService';
 import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { AIEngine } from '../engine/AIEngine';
 import { PathManager } from '../utils/pathManager';
 import * as path from 'path';

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PathManager } from '../../utils/pathManager';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 
 export type LexiconLevel = 'high' | 'medium' | 'low';
 

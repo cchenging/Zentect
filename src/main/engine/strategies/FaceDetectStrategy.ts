@@ -2,7 +2,7 @@ import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
 import { PipelineTask } from '../../../shared/types';
 import { AIDaemon } from '../../core/AIDaemon';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 
 export class FaceDetectStrategy extends BaseNodeStrategy {
   readonly nodeType = 'face-detect';

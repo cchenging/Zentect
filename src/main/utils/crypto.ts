@@ -4,7 +4,7 @@ import os from 'os';
 import fs from 'fs';
 import { safeStorage } from 'electron';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
 // ⚠️ 安全注意：以下硬编码值仅作为 safeStorage 不可用时的回退方案
 // Electron 桌面应用打包后无法读取环境变量，因此保留硬编码回退

@@ -1,7 +1,7 @@
 import { SQLiteConnection } from '../database/core/SQLiteConnection'
 import { TelemetryOptInGate } from '../core/TelemetryOptInGate'
 import { AppLogger } from '../core/AppLogger'
-import { LOG_TAGS } from '../../infra/logger/LogConstants'
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 
 interface UsageEvent {
   category: 'pipeline' | 'export' | 'editor' | 'settings' | 'project'

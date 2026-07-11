@@ -10,7 +10,7 @@ import * as path from 'path';
 import { PathManager } from '../../utils/pathManager';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 import {
   buildCoverCommand,
   buildProbeCommand,
@@ -140,9 +140,14 @@ export class VideoProcessor {
        });
 
        const child = spawn(ffmpegExe, args);
+       let stderr = '';
+       child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
        child.on('close', (code) => {
          if (code === 0 && fs.existsSync(coverFullPath)) resolve(coverFileName);
-         else resolve('');
+         else {
+           if (stderr) AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面生成失败 (code=${code}): ${stderr.slice(0, 500)}`);
+           resolve('');
+         }
        });
        child.on('error', () => resolve(''));
        ProcessManager.register(child, 'FFmpeg-生成封面');

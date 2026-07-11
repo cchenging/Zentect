@@ -26,7 +26,7 @@ import { ProcessManager } from './utils/processManager'
 import { AppLogger } from './core/AppLogger'
 import { FeedbackBus } from './core/FeedbackBus'
 import { MainNotifier } from './core/MainNotifier'
-import { LOG_TAGS } from '../infra/logger/LogConstants'
+import { LOG_TAGS } from '../modules/infra/logger/LogConstants'
 
 // — 引入所有规范化控制器
 import { ProjectController } from './controllers/ProjectController'

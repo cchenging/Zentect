@@ -1,7 +1,7 @@
 import { ChildProcess } from 'child_process'
 import { ProcessManager } from '../utils/processManager'
 import { AppLogger } from './AppLogger'
-import { LOG_TAGS } from '../../infra/logger/LogConstants'
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 import * as os from 'os'
 
 interface SupervisedProcess {

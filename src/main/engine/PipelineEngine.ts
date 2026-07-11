@@ -1,6 +1,6 @@
 ﻿// 📁 src/main/engine/PipelineEngine.ts
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { PipelineTask, PipelinePayload, TaskProgressPayload } from '../../shared/types';
 import { INodeStrategy, ExecutionContext } from './strategies/BaseNodeStrategy';
 import { VisionExtractStrategy } from './strategies/VisionExtractStrategy';

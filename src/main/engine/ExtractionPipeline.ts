@@ -10,8 +10,8 @@ import { VisionProcessor } from './media/VisionProcessor';
 import { MediaEngine } from './mediaEngine';
 import { PathManager } from '../utils/pathManager';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 
 import * as path from 'path';
 import * as fs from 'fs';

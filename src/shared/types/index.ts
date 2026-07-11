@@ -1,4 +1,4 @@
-import { DICT } from '../../infra/i18n/dictionary';
+import { DICT } from '../../modules/infra/i18n/dictionary';
 
 /**
  * 1. 基础媒体实体

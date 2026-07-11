@@ -1,5 +1,5 @@
 import { AppLogger } from '../core/AppLogger'
-import { LOG_TAGS } from '../../infra/logger/LogConstants'
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 
 type QueueTask<T = void> = {
   execute: () => T

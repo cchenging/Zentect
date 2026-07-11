@@ -3,8 +3,8 @@ import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
 import { PipelineTask } from '../../../shared/types';
 import { LocalWhisperStrategy } from './LocalWhisperStrategy';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
-import { AppError, ErrorCode } from '../../../infra/error/AppError';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
+import { AppError, ErrorCode } from '../../../modules/infra/error/AppError';
 import * as path from 'path';
 import * as fs from 'fs';
 

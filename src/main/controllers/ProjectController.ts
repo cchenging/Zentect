@@ -4,7 +4,7 @@ import { ProjectService } from '../services/ProjectService';
 import { JobRepository } from '../database/repositories/JobRepository';
 import { ProjectRepository } from '../database/repositories/ProjectRepository';
 import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { DraftShadowGuard } from '../core/DraftShadowGuard';
 
 export class ProjectController {

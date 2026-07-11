@@ -3,7 +3,7 @@ import { app } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { SettingsRepository } from '../database/repositories/SettingsRepository';
 import { SQLiteConnection } from '../database/core/SQLiteConnection';
 

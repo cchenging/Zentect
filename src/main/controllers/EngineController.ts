@@ -15,7 +15,7 @@ import { WorkflowService } from '../services/WorkflowService';
 import { RoleRepository } from '../database/repositories/RoleRepository';
 import { TTSProvider } from '../../modules/pipeline/step4-tts/backend/Service';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { SettingsRepository } from '../database/repositories/SettingsRepository';
 import { FFmpegRenderer } from '../engine/media/FFmpegRenderer'
 import { BatchQueueEngine } from '../engine/BatchQueueEngine'

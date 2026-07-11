@@ -1,7 +1,7 @@
 // 📁 路径: src/main/controllers/UserController.ts
 import { IpcRouter } from '../core/IpcRouter';
 import { UserService } from '../services/UserService';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 
 /**
  * 用户相关 IPC 频道常量

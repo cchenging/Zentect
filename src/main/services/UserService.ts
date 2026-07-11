@@ -3,9 +3,9 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { UserRepository, SessionRepository, VipActivationRepository } from '../database/repositories/UserRepository';
 import type { UserRecord } from '../database/repositories/UserRepository';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
 /** 登录失败次数上限，超过后锁定账户 */
 const MAX_FAILED_ATTEMPTS = 5;

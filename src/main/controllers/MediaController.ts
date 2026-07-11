@@ -5,12 +5,12 @@ import * as fs from 'fs';
 import { IpcRouter } from '../core/IpcRouter';
 import { JobScheduler } from '../core/JobScheduler';
 import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
-import { ALL_MEDIA_EXTENSIONS } from '../../infra/i18n/dictionary';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
+import { ALL_MEDIA_EXTENSIONS } from '../../modules/infra/i18n/dictionary';
 import { MediaService } from '../services/MediaService';
 import { PathManager } from '../utils/pathManager';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { VideoProcessor } from '../engine/media/VideoProcessor';
 // @deprecated 抽帧功能已迁移至 src/modules/media/frames/，此 import 保留兼容
 import type { FrameStrategy } from '../../modules/media/frames';
@@ -36,7 +36,7 @@ export class MediaController {
         filePaths = selectedPaths;
       }
 
-      const newMediaItems = await this.mediaService.importMedia(projectId, filePaths);
+      const newMediaItems = await this.mediaService.importMedia(projectId, filePaths, PathManager, VideoProcessor);
 
       // 补全封面字段一致性
       if (Array.isArray(newMediaItems)) {

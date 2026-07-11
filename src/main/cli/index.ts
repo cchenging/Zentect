@@ -2,7 +2,7 @@
 // V1.2: 命令行工具入口 — 支持无界面执行管线、队列管理、配置查看
 
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { SkillRouter } from '../engine/SkillRouter';
 import { BatchQueueEngine } from '../engine/BatchQueueEngine';
 import { PathManager } from '../utils/pathManager';

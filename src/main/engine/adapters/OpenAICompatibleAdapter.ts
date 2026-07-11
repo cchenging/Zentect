@@ -2,7 +2,7 @@
 import { ILLMProvider, LLMResponse } from './ILLMProvider';
 import { WebContents } from 'electron';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 import { StreamBufferGuard } from '../../core/StreamBufferGuard';
 import { IPC_CHANNELS } from '../../../shared/utils/IpcConstants';
 

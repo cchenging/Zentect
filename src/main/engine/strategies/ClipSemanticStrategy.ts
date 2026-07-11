@@ -4,7 +4,7 @@
 import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
 import { VisionProcessor } from '../media/VisionProcessor';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 
 export class ClipSemanticStrategy extends BaseNodeStrategy {
   readonly nodeType = 'clip-semantic';

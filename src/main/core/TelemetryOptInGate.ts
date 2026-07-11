@@ -1,6 +1,6 @@
 import { SettingsRepository } from '../database/repositories/SettingsRepository'
 import { AppLogger } from '../core/AppLogger'
-import { LOG_TAGS } from '../../infra/logger/LogConstants'
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 
 export class TelemetryOptInGate {
   private static instance: TelemetryOptInGate

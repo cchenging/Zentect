@@ -1,6 +1,6 @@
 import { TaskEventBus } from '../engine/TaskEventBus'
 import { AppLogger } from '../core/AppLogger'
-import { LOG_TAGS } from '../../infra/logger/LogConstants'
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 
 interface SuspendContext {
   projectId: string

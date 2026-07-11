@@ -1,5 +1,5 @@
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { PathManager } from '../utils/pathManager';
 import { AIEngine } from './AIEngine';
 import { CheckpointRepository } from '../pipeline/CheckpointRepository';

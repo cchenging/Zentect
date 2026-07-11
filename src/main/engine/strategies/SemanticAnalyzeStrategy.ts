@@ -2,7 +2,7 @@ import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
 import { PipelineTask } from '../../../shared/types';
 import { AIDaemon } from '../../core/AIDaemon';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 import { PathManager } from '../../utils/pathManager';
 import * as path from 'path';
 import * as fs from 'fs';

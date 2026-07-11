@@ -1,8 +1,8 @@
 // 📁 路径：src/main/core/MultiChannelPipeline.ts
 // Layer 4 进阶: AI 通道熔断自动切换 — 主通道失败后自动降级到备用通道
 import { AppLogger } from './AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
-import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
+import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 
 export class MultiChannelPipeline {
   /** 默认主通道重试次数 */

@@ -2,7 +2,7 @@
 // Layer 5 异常归一化单元测试
 import { describe, it, expect } from 'vitest';
 import { ExceptionHub } from '../ExceptionHub';
-import { ErrorCode } from '../../../infra/error/AppError';
+import { ErrorCode } from '../../../modules/infra/error/AppError';
 
 describe('ExceptionHub', () => {
   it('401 错误应归一化为鉴权失败', () => {

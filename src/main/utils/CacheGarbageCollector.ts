@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { PathManager } from './pathManager';
 import { AppLogger } from '../core/AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
 export class CacheGarbageCollector {
   /** 缓存过期红线：7 天 */

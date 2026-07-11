@@ -1,6 +1,6 @@
 // 📁 src/main/engine/strategies/BaseNodeStrategy.ts
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 import { PipelineTask } from '../../../shared/types';
 import { PathManager } from '../../utils/pathManager';
 import { PipelineModelConfigRepository } from '../../database/repositories/ModelRepository';

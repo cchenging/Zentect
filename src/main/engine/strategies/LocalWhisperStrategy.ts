@@ -2,8 +2,8 @@
 import { ITextExtractor, TextExtractResult } from './IExtractor';
 import { AIDaemon } from '../../core/AIDaemon';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
-import { AppError, ErrorCode } from '../../../infra/error/AppError';
+import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
+import { AppError, ErrorCode } from '../../../modules/infra/error/AppError';
 import { detectFromASRJson } from '../media/MediaLanguageDetector';
 import { PathManager } from '../../utils/pathManager';
 import { ProcessManager } from '../../utils/processManager';

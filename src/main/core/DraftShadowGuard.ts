@@ -3,7 +3,7 @@
 import { SQLiteConnection } from '../database/core/SQLiteConnection';
 import { DatabaseWriteQueue } from '../pipeline/DatabaseWriteQueue';
 import { AppLogger } from './AppLogger';
-import { LOG_TAGS } from '../../infra/logger/LogConstants';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import type { Statement } from 'better-sqlite3';
 
 export class DraftShadowGuard {

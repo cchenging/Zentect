@@ -1,5 +1,5 @@
 import { AppLogger } from './AppLogger'
-import { LOG_TAGS } from '../../infra/logger/LogConstants'
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
