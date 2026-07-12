@@ -7,7 +7,7 @@ import { Settings as SettingsIcon, Loader2 } from 'lucide-react';
 import { useEditorStore } from '../../../../../renderer/src/store/useStore';
 import { useI18n } from '../../../../../renderer/src/store/useI18n';
 import { WindowControls } from '../../../../../renderer/src/components/window-controls';
-import { ExportModal } from '../../../../../renderer/src/pages/editor/components/top-bar/components/ExportModal';
+import { ExportModal } from './ExportModal';
 import { API } from '../../../../../renderer/src/api';
 import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
 

@@ -54,7 +54,7 @@ vi.mock('../../../../../renderer/src/components/window-controls', () => ({
     }, 'WindowControls'),
 }));
 
-vi.mock('../../../../../renderer/src/pages/editor/components/top-bar/components/ExportModal', () => ({
+vi.mock('../frontend/components/ExportModal', () => ({
   ExportModal: () => React.createElement('div', { 'data-testid': 'export-modal' }, 'ExportModal'),
 }));
 

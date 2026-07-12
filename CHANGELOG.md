@@ -39,7 +39,7 @@
 ### Cleaned (C1 — Deprecated Code Removal, Round 1)
 - **pages/editor @deprecated 批量清理 (R1)**: 移除重构遗留死码 34 个文件（2,240 行），含 Step/View 容器家族、hooks 家族 (useEditorLogic 等 8 个)、工具函数 (timeFormat/pipelineConstants)、入口页面 (editor/home index)、废弃组件 (PipelineStatusBar/PropertyBar/StepPanel)
 - **core/parsers 死码移除**: AudioSeparateParser + barrel index.ts，全仓 0 引
-- **pages/modules 同名重复清理 (R2)**: 6 组内容等价文件迁移 — usePipelineResultMapper / scriptDiffTree / ExportCheckbox / DeleteModal / RenameModal / useWorkflowImport，4 处 import 从 `pages/` 切至 `modules/`
+- **pages/modules 同名重复清理 (R2+R3)**: 9 组内容等价/升级文件迁移 — R2 6 组（usePipelineResultMapper / scriptDiffTree / ExportCheckbox / DeleteModal / RenameModal / useWorkflowImport，4 处 import）；R3 3 组升级版（ExportModal → editorStore 收口 / ProjectCard → 函数重写 / useProjectManager → 字段兼容映射，2 处 import）
 - **备份文件清理**: 5 个 `_20260704_` 时间戳备份文件物理删除
 
 ### Added (B5 — Skin System & UI Polish)
