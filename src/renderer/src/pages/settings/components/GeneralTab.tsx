@@ -104,6 +104,36 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({ data, onUpdate }) => {
               ))}
             </div>
           </div>
+          {/* 皮肤选择 */}
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs text-foreground font-medium">皮肤</div>
+              <div className="text-[10px] text-muted-foreground">品牌人格与视觉语言</div>
+            </div>
+            <div className="flex items-center gap-0.5 bg-bg-secondary rounded-lg p-[3px]">
+              {([
+                { id: 'v3', name: '深空' },
+                { id: 'apple', name: '极简' },
+                { id: 'linear', name: '晴白' },
+                { id: 'notion', name: '纸感' },
+              ] as const).map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    onUpdate('general', 'skin', item.id);
+                    useEditorStore.getState().setSkin(item.id);
+                  }}
+                  className={`px-3 py-1.5 rounded-md text-[11px] font-medium transition-all cursor-pointer outline-none ${
+                    (data.skin || 'v3') === item.id
+                      ? 'bg-gradient-to-r from-accent to-accent-purple text-white shadow-sm shadow-accent/20'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {item.name}
+                </button>
+              ))}
+            </div>
+          </div>
           {/* 语言选择 */}
           <div className="flex items-center justify-between">
             <div>

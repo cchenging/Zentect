@@ -37,7 +37,7 @@ function App() {
     // 又修改 body 的 attribute (服务于我们写的 CSS 强压变量)
     const resolvedMode = mode === 'system'
       ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : mode;
+      : (mode || 'dark');
     const root = window.document.documentElement;
     root.classList.remove('light', 'dark');
     root.classList.add(resolvedMode);

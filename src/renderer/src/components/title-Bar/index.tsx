@@ -1,6 +1,6 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sun, Moon, Settings as SettingsIcon } from 'lucide-react';
+import { Sun, Moon, Monitor, Settings as SettingsIcon } from 'lucide-react';
 import { useEditorStore } from '../../store/useStore';
 import { UI_CONFIG } from '../../constants/ui';
 import { useI18n } from '../../store/useI18n';
