@@ -125,6 +125,42 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({ data, onUpdate }) => {
               ))}
             </div>
           </div>
+          {/* 粒子风格 */}
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs text-foreground font-medium">粒子风格</div>
+              <div className="text-[10px] text-muted-foreground">首页背景粒子动画效果</div>
+            </div>
+            <div className="flex items-center gap-0.5 bg-bg-secondary rounded-lg p-[3px] overflow-x-auto">
+              {([
+                { id: 'auto', name: '自动' },
+                { id: 'dandelion', name: '蒲公英' },
+                { id: 'stardust', name: '星尘' },
+                { id: 'dust', name: '微尘' },
+                { id: 'snow', name: '雪花' },
+                { id: 'firefly', name: '萤火' },
+                { id: 'none', name: '关闭' },
+              ] as const).map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    onUpdate('general', 'particleStyle', item.id);
+                    try {
+                      const { useEditorStore } = require('../../../store/useStore');
+                      useEditorStore.getState().setParticleStyle(item.id);
+                    } catch {}
+                  }}
+                  className={`px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-all cursor-pointer outline-none whitespace-nowrap ${
+                    (data.particleStyle || 'auto') === item.id
+                      ? 'bg-gradient-to-r from-accent to-accent-purple text-white shadow-sm shadow-accent/20'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {item.name}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 

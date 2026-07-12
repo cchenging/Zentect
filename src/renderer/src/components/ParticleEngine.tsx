@@ -190,7 +190,7 @@ const ParticleEngine: React.FC<ParticleEngineProps> = ({
       window.removeEventListener('resize', resize)
       motionQuery.removeEventListener('change', handleMotionChange)
     }
-  }, [effectivePreset.id, initParticles])
+  }, [effectivePreset.id, resolvedColors.join(','), initParticles])
 
   // none 预设不渲染 canvas
   if (effectivePreset.count === 0) return null

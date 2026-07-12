@@ -6,6 +6,7 @@ import { ProjectCard } from './components/ProjectCard';
 import { RenameModal } from './components/RenameModal';
 import { DeleteModal } from './components/DeleteModal';
 import { ParticleEngine } from '../../../renderer/src/components/ParticleEngine';
+import type { ParticlePreset } from '../../../renderer/src/components/particles/types';
 
 export interface HomeViewProps {
   filteredProjects: ProjectRecord[];
@@ -32,6 +33,7 @@ export interface HomeViewProps {
   searchOpen: boolean;
   onToggleSearch: () => void;
   formatDate: (dateStr: string) => string;
+  particlePreset?: ParticlePreset;
 }
 
 export const HomeView: React.FC<HomeViewProps> = ({
@@ -41,10 +43,11 @@ export const HomeView: React.FC<HomeViewProps> = ({
   renameVisible, currentEditProj, onRenameClose, onRenameConfirm,
   deleteVisible, currentDeleteProj, onDeleteClose, onDeleteConfirm,
   viewMode, onViewModeChange, searchOpen, onToggleSearch, formatDate,
+  particlePreset,
 }) => {
   return (
     <div className="flex flex-col h-full w-full bg-bg-primary text-foreground overflow-hidden relative [-webkit-app-region:no-drag]">
-      <ParticleEngine className="w-full h-full" />
+      <ParticleEngine preset={particlePreset} className="w-full h-full" />
 
       <div className="flex-1 overflow-y-auto px-6 pt-4 pb-12">
         <div className="w-full">

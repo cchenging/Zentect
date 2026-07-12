@@ -59,6 +59,9 @@ declare module '../storeTypes' {
     toggleEditorMode: () => void;
     setMode: (mode: 'dark' | 'light' | 'system') => void;
     cycleMode: () => void;
+    setParticleStyle: (style: string) => void;
+    setSkin: (skin: string) => void;
+    setScale: (scale: string) => void;
     hydrateUI: () => Promise<void>;
   }
 }
@@ -102,7 +105,38 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
     faces: { enabled: true, engine: 'insightface' }
   },
 
-  setMode: (mode) => set({ mode }),
+  setMode: (mode) => {
+    set({ mode });
+    document.documentElement.dataset.mode = mode;
+    clearTimeout((setMode as any).__timer);
+    (setMode as any).__timer = setTimeout(() => {
+      API.system.setSetting('mode', mode).catch(() => {});
+    }, 300);
+  },
+  setParticleStyle: (style) => {
+    set({ particleStyle: style });
+    document.documentElement.dataset.particleStyle = style;
+    clearTimeout((setParticleStyle as any).__timer);
+    (setParticleStyle as any).__timer = setTimeout(() => {
+      API.system.setSetting('particleStyle', style).catch(() => {});
+    }, 300);
+  },
+  setSkin: (skin) => {
+    set({ skin });
+    document.documentElement.dataset.skin = skin;
+    clearTimeout((setSkin as any).__timer);
+    (setSkin as any).__timer = setTimeout(() => {
+      API.system.setSetting('skin', skin).catch(() => {});
+    }, 300);
+  },
+  setScale: (scale) => {
+    set({ scale });
+    document.documentElement.dataset.scale = scale;
+    clearTimeout((setScale as any).__timer);
+    (setScale as any).__timer = setTimeout(() => {
+      API.system.setSetting('scale', scale).catch(() => {});
+    }, 300);
+  },
   cycleMode: () => set((state) => {
     const cycle: Record<string, 'dark' | 'light' | 'system'> = {
       dark: 'light',

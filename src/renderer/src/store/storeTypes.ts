@@ -48,6 +48,10 @@ export interface UISlice {
 
   setActiveRoleFilter: (clusterId: string | null) => void;
   setSemanticSearchResults: (results: Array<{shotId: string, score: number}> | null) => void;
+
+  setParticleStyle: (style: string) => void;
+  setSkin: (skin: string) => void;
+  setScale: (scale: string) => void;
 }
 
 // --- 切片定义: Player Slice (高频状态区) ---

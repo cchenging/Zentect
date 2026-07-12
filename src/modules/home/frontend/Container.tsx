@@ -8,6 +8,9 @@ import type { ProjectRecord } from '../types';
 import { API } from '../../../renderer/src/api';
 import { FrontendLogger } from '../../../renderer/src/utils/logger';
 import { AppNotifier } from '../../../renderer/src/core/AppNotifier';
+import { useEditorStore } from '../../../renderer/src/store/useStore';
+import { particlePresets, SKIN_DEFAULT_PARTICLE } from '../../../renderer/src/components/particles';
+import type { ParticlePreset } from '../../../renderer/src/components/particles/types';
 
 export const HomeContainer: React.FC = () => {
   const navigate = useNavigate();
@@ -30,6 +33,17 @@ export const HomeContainer: React.FC = () => {
     API.system.switchView('home');
     API.system.resizeWindow(1280, 800).catch(console.error);
   }, []);
+
+  const particleStyle = useEditorStore((s) => s.particleStyle);
+  const skin = useEditorStore((s) => s.skin);
+
+  const resolvedParticlePreset: ParticlePreset = (() => {
+    if (particleStyle === 'auto') {
+      const presetId = SKIN_DEFAULT_PARTICLE[skin] || 'dandelion';
+      return particlePresets[presetId] || particlePresets.dandelion;
+    }
+    return particlePresets[particleStyle] || particlePresets.dandelion;
+  })();
 
   const handleCreateProject = useCallback(async () => {
     const traceId = FrontendLogger.generateTraceId();
@@ -96,6 +110,7 @@ export const HomeContainer: React.FC = () => {
 
   return (
     <HomeView
+      particlePreset={resolvedParticlePreset}
       filteredProjects={filteredProjects}
       searchText={searchText}
       onSearchChange={setSearchText}
