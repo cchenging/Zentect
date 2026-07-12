@@ -197,6 +197,15 @@
   --error: #dc2626;
   --info: #0891b2;
 
+  /* --- 文本色体系 --- */
+  --text-primary: var(--foreground);
+  --text-secondary: var(--muted-foreground);
+  --text-tertiary: color-mix(in srgb, var(--foreground) 55%, transparent);
+  --text-disabled: color-mix(in srgb, var(--foreground) 35%, transparent);
+
+  /* --- 破坏性操作色 --- */
+  --destructive: var(--error);
+
   --glass-bg: rgba(255, 255, 255, 0.78);
   --glass-blur: 16px;
   --glass-border: rgba(0, 0, 0, 0.06);
@@ -256,6 +265,15 @@
   --color-warning: var(--warning);
   --color-error: var(--error);
   --color-info: var(--info);
+
+  /* 文本色 */
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-disabled: var(--text-disabled);
+
+  /* 破坏性操作 */
+  --color-destructive: var(--destructive);
 
   /* V3 强调色 */
   --color-accent: var(--accent);
