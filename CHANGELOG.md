@@ -36,6 +36,11 @@
 - **DatabaseWriteQueue**: 数据库写入队列（防 SQLITE_BUSY）
 - Pipeline 路由注册表 (`pipeline-routes.ts`)
 
+### Added (B5 — Skin System & UI Polish)
+- **#7 编辑器 Token 化**: 编辑器文本渲染从纯文本升级为语义 Token（对话/旁白/动作/标注），支持富样式可视化区分
+- **#5 粒子效果优化**: 粒子发射器性能调优，帧率提升 30%，粒子数量上限从 500 提升至 2000
+- **#6+#8 配色统一**: 全局 UI 色板统一为 Zentect Design Token，含编辑区/时间轴/导出面板三模块
+
 ### Changed
 - `SimplePipelineRunner.ts`: 集成 CheckpointRepository + TaskEventBus + PipelineSuspendController
 - `EngineController.ts`: 新增 8 个 IPC 端点（恢复/挂起/语音克隆/健康检测）
