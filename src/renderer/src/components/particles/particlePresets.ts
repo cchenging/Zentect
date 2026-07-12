@@ -1,6 +1,6 @@
 /* ============================================================
    粒子预设注册表
-   一期 6 套，均为圆点，共用 CircleRenderer
+   一期 6 套，形态各异（见 shape 字段），共用 MotionEngine
    ============================================================ */
 
 import type { ParticlePreset } from './types'
@@ -9,6 +9,7 @@ export const particlePresets: Record<string, ParticlePreset> = {
   dandelion: {
     id: 'dandelion',
     name: '蒲公英',
+    shape: 'dandelion',
     count: 40,
     colorTokens: ['--accent', '--accent-cyan'],
     sizeRange: [1, 3.2],
@@ -24,6 +25,7 @@ export const particlePresets: Record<string, ParticlePreset> = {
   stardust: {
     id: 'stardust',
     name: '星尘',
+    shape: 'stardust',
     count: 60,
     colorTokens: ['--accent', '--accent-purple'],
     sizeRange: [0.5, 2],
@@ -39,6 +41,7 @@ export const particlePresets: Record<string, ParticlePreset> = {
   dust: {
     id: 'dust',
     name: '微尘',
+    shape: 'dust',
     count: 25,
     colorTokens: ['--accent', '--accent-warm'],
     sizeRange: [0.6, 1.8],
@@ -54,6 +57,7 @@ export const particlePresets: Record<string, ParticlePreset> = {
   snow: {
     id: 'snow',
     name: '雪花',
+    shape: 'snow',
     count: 50,
     colorTokens: ['--foreground'],
     sizeRange: [1.5, 3.5],
@@ -69,6 +73,7 @@ export const particlePresets: Record<string, ParticlePreset> = {
   firefly: {
     id: 'firefly',
     name: '萤火',
+    shape: 'firefly',
     count: 30,
     colorTokens: ['--accent-warm', '--accent-green'],
     sizeRange: [1, 2.5],
@@ -84,6 +89,7 @@ export const particlePresets: Record<string, ParticlePreset> = {
   none: {
     id: 'none',
     name: '关闭',
+    shape: 'none',
     count: 0,
     colorTokens: [],
     sizeRange: [1, 1],

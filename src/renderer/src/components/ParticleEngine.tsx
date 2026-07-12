@@ -1,16 +1,19 @@
-import React, { useRef, useEffect, useCallback } from 'react'
-import type { ParticlePreset, CircleParticle } from './particles/types'
+import React, { useRef, useEffect, useCallback, useMemo } from 'react'
+import type { ParticlePreset, Particle } from './particles/types'
 import { particlePresets } from './particles/particlePresets'
-import { circleRenderer } from './particles/circleRenderer'
+import { motionEngine } from './particles/motion'
+import { shapeDrawers } from './particles/shapes'
+import { resolveColors } from './particles/colors'
 
 /* ============================================================
    ParticleEngine · 粒子引擎壳（策略模式）
-   
+
    管理 canvas / rAF / resize / devicePixelRatio / reduced-motion。
-   粒子逻辑委托给 renderer（circleRenderer），差异由 preset 参数表控制。
+   运动学委托 motionEngine（共享），绘制委托 shapeDrawers[preset.shape]。
+   颜色由外部传入（Container 解析，随 skin 重算）或兜底自解析。
 
    使用：
-     <ParticleEngine preset={particlePresets.stardust} />
+     <ParticleEngine preset={particlePresets.stardust} colors={colors} />
      <ParticleEngine profile="dandelion" />  // 向后兼容
    ============================================================ */
 
@@ -18,78 +21,20 @@ type BackCompatProfile = 'v3' | 'dandelion' | 'none'
 
 interface ParticleEngineProps {
   className?: string
-  /**
-   * 粒子预设对象（来自 particlePresets）。
-   * 优先级高于 profile。
-   */
+  /** 粒子预设对象（来自 particlePresets） */
   preset?: ParticlePreset
-  /**
-   * 向后兼容：'v3'/'dandelion' → dandelion, 'none' → none
-   * preset 未传时使用。
-   */
+  /** 向后兼容：'v3'/'dandelion' → dandelion, 'none' → none */
   profile?: BackCompatProfile
-  /**
-   * 预解析的颜色模板列表 ["rgba(R,G,B,VAR)", ...]。
-   * 未传时自动从 preset.colorTokens 读取 CSS 变量解析。
-   */
+  /** 预解析的颜色模板列表（推荐由 Container 传入，随 skin 重算）。
+   *  未传时自动从 preset.colorTokens 解析。 */
   colors?: string[]
-}
-
-// ──────────── 颜色解析 ────────────
-
-function hexToRgb(hex: string): [number, number, number] | null {
-  const h = hex.replace('#', '').trim()
-  if (h.length === 3) {
-    return [
-      parseInt(h[0] + h[0], 16),
-      parseInt(h[1] + h[1], 16),
-      parseInt(h[2] + h[2], 16),
-    ]
-  }
-  if (h.length >= 6) {
-    return [
-      parseInt(h.substring(0, 2), 16),
-      parseInt(h.substring(2, 4), 16),
-      parseInt(h.substring(4, 6), 16),
-    ]
-  }
-  return null
-}
-
-function parseColor(value: string): [number, number, number] | null {
-  if (!value) return null
-  // hex
-  if (value.startsWith('#')) return hexToRgb(value)
-  // rgb(a)
-  const m = value.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/)
-  if (m) return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])]
-  return null
-}
-
-/** 从 CSS 变量名列表解析为 "rgba(R,G,B,VAR)" 模板数组 */
-function resolveColors(tokenNames: string[]): string[] {
-  const style = getComputedStyle(document.documentElement)
-  const colors: string[] = []
-  for (const name of tokenNames) {
-    const raw = style.getPropertyValue(name).trim()
-    if (!raw) continue
-    const rgb = parseColor(raw)
-    if (rgb) {
-      colors.push(`rgba(${rgb[0]},${rgb[1]},${rgb[2]},VAR)`)
-    }
-  }
-  // 兜底
-  if (colors.length === 0) colors.push('rgba(99,102,241,VAR)')
-  return colors
 }
 
 /** profile 字符串 → preset */
 function resolvePreset(profile?: BackCompatProfile): ParticlePreset {
   if (profile === 'none') return particlePresets.none
-  return particlePresets.dandelion // 'v3' | 'dandelion' | undefined 都走 dandelion
+  return particlePresets.dandelion
 }
-
-// ──────────── 组件 ────────────
 
 const ParticleEngine: React.FC<ParticleEngineProps> = ({
   className,
@@ -99,14 +44,17 @@ const ParticleEngine: React.FC<ParticleEngineProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const animFrameRef = useRef<number>(0)
-  const particlesRef = useRef<CircleParticle[]>([])
+  const particlesRef = useRef<Particle[]>([])
   const prefersReducedMotion = useRef(false)
 
-  // 确定生效的 preset
   const effectivePreset = preset ?? resolvePreset(profile)
 
-  // 解析颜色（依赖 preset 的 colorTokens）
-  const resolvedColors = colorsProp ?? resolveColors(effectivePreset.colorTokens)
+  // 颜色：优先外部传入；兜底自解析（useMemo 避免每次 render 重算 getComputedStyle）
+  const resolvedColors = useMemo(
+    () => colorsProp ?? resolveColors(effectivePreset.colorTokens),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [colorsProp, effectivePreset.id, effectivePreset.colorTokens.join(',')],
+  )
 
   // 缓存最新值，避免动画闭包过时
   const presetRef = useRef(effectivePreset)
@@ -120,7 +68,7 @@ const ParticleEngine: React.FC<ParticleEngineProps> = ({
       particlesRef.current = []
       return
     }
-    particlesRef.current = circleRenderer.init(w, h, p, colorsRef.current)
+    particlesRef.current = motionEngine.init(w, h, p, colorsRef.current)
   }, [])
 
   useEffect(() => {
@@ -133,7 +81,6 @@ const ParticleEngine: React.FC<ParticleEngineProps> = ({
 
     const canvas = canvasRef.current
     if (!canvas) return
-
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
@@ -160,7 +107,6 @@ const ParticleEngine: React.FC<ParticleEngineProps> = ({
       if (!ctx || !canvas) return
       const w = canvas.width / (window.devicePixelRatio || 1)
       const h = canvas.height / (window.devicePixelRatio || 1)
-
       ctx.clearRect(0, 0, w, h)
 
       if (prefersReducedMotion.current) {
@@ -169,15 +115,28 @@ const ParticleEngine: React.FC<ParticleEngineProps> = ({
       }
 
       const p = presetRef.current
-      if (p.count === 0) {
+      const shape = p.shape
+      if (p.count === 0 || shape === 'none') {
+        animFrameRef.current = requestAnimationFrame(animate)
+        return
+      }
+
+      const drawer = shapeDrawers[shape]
+      if (!drawer) {
         animFrameRef.current = requestAnimationFrame(animate)
         return
       }
 
       const ps = particlesRef.current
       for (let i = 0; i < ps.length; i++) {
-        circleRenderer.update(ps[i], w, h, p, colorsRef.current)
-        circleRenderer.draw(ctx, ps[i], p)
+        const part = ps[i]
+        motionEngine.update(part, w, h, p, colorsRef.current)
+
+        // 帧级透明度（生命周期淡入淡出 + 闪烁）
+        const lifeRatio = part.life / part.maxLife
+        let op = part.opacity * (1 - lifeRatio) * (lifeRatio < 0.1 ? lifeRatio * 10 : 1)
+        if (p.twinkle) op *= 0.5 + 0.5 * Math.sin(part.twinklePhase)
+        if (op > 0) drawer.draw(ctx, part, p, op)
       }
 
       animFrameRef.current = requestAnimationFrame(animate)
@@ -193,7 +152,7 @@ const ParticleEngine: React.FC<ParticleEngineProps> = ({
   }, [effectivePreset.id, resolvedColors.join(','), initParticles])
 
   // none 预设不渲染 canvas
-  if (effectivePreset.count === 0) return null
+  if (effectivePreset.count === 0 || effectivePreset.shape === 'none') return null
 
   return (
     <canvas

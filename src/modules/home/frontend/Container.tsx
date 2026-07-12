@@ -1,5 +1,5 @@
 // Home 模块 — Container 组件（持有状态/Hooks，传 Props 给 View）
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { HomeView } from './View';
 import { useProjectManager } from './hooks/useProjectManager';
@@ -9,7 +9,7 @@ import { API } from '../../../renderer/src/api';
 import { FrontendLogger } from '../../../renderer/src/utils/logger';
 import { AppNotifier } from '../../../renderer/src/core/AppNotifier';
 import { useEditorStore } from '../../../renderer/src/store/useStore';
-import { particlePresets, SKIN_DEFAULT_PARTICLE } from '../../../renderer/src/components/particles';
+import { particlePresets, SKIN_DEFAULT_PARTICLE, resolveColors } from '../../../renderer/src/components/particles';
 import type { ParticlePreset } from '../../../renderer/src/components/particles/types';
 
 export const HomeContainer: React.FC = () => {
@@ -44,6 +44,13 @@ export const HomeContainer: React.FC = () => {
     }
     return particlePresets[particleStyle] || particlePresets.dandelion;
   })();
+
+  // 颜色解析：依赖 preset.id + skin（skin 变 → CSS 变量变 → 重算）
+  const resolvedColors = useMemo(
+    () => resolveColors(resolvedParticlePreset.colorTokens),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [resolvedParticlePreset.id, skin],
+  );
 
   const handleCreateProject = useCallback(async () => {
     const traceId = FrontendLogger.generateTraceId();
@@ -111,6 +118,7 @@ export const HomeContainer: React.FC = () => {
   return (
     <HomeView
       particlePreset={resolvedParticlePreset}
+      particleColors={resolvedColors}
       filteredProjects={filteredProjects}
       searchText={searchText}
       onSearchChange={setSearchText}
