@@ -74,7 +74,7 @@ export const AuthModal: React.FC = () => {
 
         {/* 品牌区 */}
         <div className="pt-8 pb-4 px-8 text-center">
-          <div className="w-12 h-12 mx-auto rounded-xl bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-[#6366f1]/20 mb-4">
+          <div className="w-12 h-12 mx-auto rounded-xl bg-gradient-to-br from-[var(--accent)] to-[var(--accent-purple)] flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-[var(--accent)]/20 mb-4">
             Z
           </div>
           <h2 className="text-xl font-semibold text-white">
@@ -91,7 +91,7 @@ export const AuthModal: React.FC = () => {
             onClick={() => switchTab('login')}
             className={`flex-1 h-9 rounded-md text-sm font-medium transition-all cursor-pointer outline-none ${
               authModalTab === 'login'
-                ? 'bg-[#6366f1] text-white shadow-md shadow-[#6366f1]/25'
+                ? 'bg-[var(--accent)] text-white shadow-md shadow-[var(--accent)]/25'
                 : 'text-white/50 hover:text-white/80'
             }`}
           >
@@ -101,7 +101,7 @@ export const AuthModal: React.FC = () => {
             onClick={() => switchTab('register')}
             className={`flex-1 h-9 rounded-md text-sm font-medium transition-all cursor-pointer outline-none ${
               authModalTab === 'register'
-                ? 'bg-[#6366f1] text-white shadow-md shadow-[#6366f1]/25'
+                ? 'bg-[var(--accent)] text-white shadow-md shadow-[var(--accent)]/25'
                 : 'text-white/50 hover:text-white/80'
             }`}
           >
@@ -122,7 +122,7 @@ export const AuthModal: React.FC = () => {
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="请输入用户名"
-              className="h-10 px-3 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/25 outline-none focus:border-[#6366f1]/60 focus:ring-1 focus:ring-[#6366f1]/30 transition-all"
+              className="h-10 px-3 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/25 outline-none focus:border-[var(--accent)]/60 focus:ring-1 focus:ring-[var(--accent)]/30 transition-all"
               autoComplete="username"
               autoFocus
             />
@@ -137,7 +137,7 @@ export const AuthModal: React.FC = () => {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={authModalTab === 'register' ? '至少 6 位密码' : '请输入密码'}
-                className="h-10 w-full px-3 pr-10 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/25 outline-none focus:border-[#6366f1]/60 focus:ring-1 focus:ring-[#6366f1]/30 transition-all"
+                className="h-10 w-full px-3 pr-10 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/25 outline-none focus:border-[var(--accent)]/60 focus:ring-1 focus:ring-[var(--accent)]/30 transition-all"
                 autoComplete={authModalTab === 'login' ? 'current-password' : 'new-password'}
               />
               <button
@@ -159,7 +159,7 @@ export const AuthModal: React.FC = () => {
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 placeholder="再次输入密码"
-                className="h-10 px-3 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/25 outline-none focus:border-[#6366f1]/60 focus:ring-1 focus:ring-[#6366f1]/30 transition-all"
+                className="h-10 px-3 rounded-lg bg-white/5 border border-white/10 text-sm text-white placeholder-white/25 outline-none focus:border-[var(--accent)]/60 focus:ring-1 focus:ring-[var(--accent)]/30 transition-all"
                 autoComplete="new-password"
               />
             </div>
@@ -167,7 +167,7 @@ export const AuthModal: React.FC = () => {
 
           {/* 错误提示 */}
           {error && (
-            <div className="px-3 py-2 rounded-lg bg-[#e11d48]/10 border border-[#e11d48]/20 text-xs text-[#e11d48]">
+            <div className="px-3 py-2 rounded-lg bg-[var(--destructive)]/10 border border-[var(--destructive)]/20 text-xs text-[var(--destructive)]">
               {error}
             </div>
           )}
@@ -176,7 +176,7 @@ export const AuthModal: React.FC = () => {
           <button
             type="submit"
             disabled={isLoading || !username.trim() || !password.trim()}
-            className="h-10 mt-2 rounded-lg bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] text-white text-sm font-semibold shadow-lg shadow-[#6366f1]/25 hover:shadow-[#6366f1]/40 hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer outline-none flex items-center justify-center gap-2"
+            className="h-10 mt-2 rounded-lg bg-gradient-to-r from-[var(--accent)] to-[var(--accent-purple)] text-white text-sm font-semibold shadow-lg shadow-[var(--accent)]/25 hover:shadow-[var(--accent)]/40 hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer outline-none flex items-center justify-center gap-2"
           >
             {isLoading ? (
               <Loader2 size={16} className="animate-spin" />

@@ -446,31 +446,31 @@ body {
 .badge-accent {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
-  background: rgba(99, 102, 241, 0.15); color: #6366f1;
+  background: rgba(99, 102, 241, 0.15); color: var(--accent);
   border: 1px solid rgba(99, 102, 241, 0.2);
 }
 .badge-cyan {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
-  background: rgba(6, 182, 212, 0.15); color: #06b6d4;
+  background: rgba(6, 182, 212, 0.15); color: var(--accent-cyan);
   border: 1px solid rgba(6, 182, 212, 0.2);
 }
 .badge-rose {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
-  background: rgba(225, 29, 72, 0.15); color: #e11d48;
+  background: rgba(225, 29, 72, 0.15); color: var(--accent-rose);
   border: 1px solid rgba(225, 29, 72, 0.2);
 }
 .badge-success {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
-  background: rgba(34, 197, 94, 0.15); color: #22c55e;
+  background: rgba(34, 197, 94, 0.15); color: var(--accent-green);
   border: 1px solid rgba(34, 197, 94, 0.2);
 }
 .badge-warm {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
-  background: rgba(245, 158, 11, 0.15); color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15); color: var(--accent-warm);
   border: 1px solid rgba(245, 158, 11, 0.2);
 }
 

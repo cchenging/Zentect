@@ -21,11 +21,11 @@ interface AITabProps {
 
 /** 供应商配置定义 */
 const PROVIDERS = [
-  { id: 'deepseek', name: 'DeepSeek 深度求索', keyField: 'deepseekKey', modelsField: 'deepseekModels', baseURL: 'https://api.deepseek.com/v1', link: 'https://platform.deepseek.com/', color: '#6366f1', hasBaseUrl: false },
-  { id: 'qwen', name: '阿里云 通义千问', keyField: 'qwenKey', modelsField: 'qwenModels', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', link: 'https://dashscope.console.aliyun.com/api-key', color: '#8b5cf6', hasBaseUrl: false },
-  { id: 'tencent', name: '腾讯 混元大模型', keyField: 'tencentKey', modelsField: 'tencentModels', baseURL: 'https://api.hunyuan.cloud.tencent.com/v1', link: 'https://console.cloud.tencent.com/hunyuan/api-key', color: '#06b6d4', hasBaseUrl: false },
-  { id: 'doubao', name: '字节跳动 豆包大模型', keyField: 'doubaoKey', modelsField: 'doubaoModels', baseURL: 'https://ark.cn-beijing.volces.com/api/v3', link: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey', color: '#f59e0b', hasBaseUrl: false },
-  { id: 'openai', name: 'OpenAI 协议中转', keyField: 'openaiKey', modelsField: 'openaiModels', baseURL: '', link: 'https://cloud.siliconflow.cn/', color: '#22c55e', hasBaseUrl: true },
+  { id: 'deepseek', name: 'DeepSeek 深度求索', keyField: 'deepseekKey', modelsField: 'deepseekModels', baseURL: 'https://api.deepseek.com/v1', link: 'https://platform.deepseek.com/', color: 'var(--accent)', hasBaseUrl: false },
+  { id: 'qwen', name: '阿里云 通义千问', keyField: 'qwenKey', modelsField: 'qwenModels', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', link: 'https://dashscope.console.aliyun.com/api-key', color: 'var(--accent-purple)', hasBaseUrl: false },
+  { id: 'tencent', name: '腾讯 混元大模型', keyField: 'tencentKey', modelsField: 'tencentModels', baseURL: 'https://api.hunyuan.cloud.tencent.com/v1', link: 'https://console.cloud.tencent.com/hunyuan/api-key', color: 'var(--accent-cyan)', hasBaseUrl: false },
+  { id: 'doubao', name: '字节跳动 豆包大模型', keyField: 'doubaoKey', modelsField: 'doubaoModels', baseURL: 'https://ark.cn-beijing.volces.com/api/v3', link: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey', color: 'var(--accent-warm)', hasBaseUrl: false },
+  { id: 'openai', name: 'OpenAI 协议中转', keyField: 'openaiKey', modelsField: 'openaiModels', baseURL: '', link: 'https://cloud.siliconflow.cn/', color: 'var(--accent-green)', hasBaseUrl: true },
 ];
 
 /** 管线节点映射定义 - V3 原型6节点
