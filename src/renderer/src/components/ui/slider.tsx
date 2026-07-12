@@ -21,7 +21,7 @@ const Slider = React.forwardRef<
       <SliderPrimitive.Range className="absolute h-full bg-primary" />
     </SliderPrimitive.Track>
     {/* 💥 暗黑美学：游标默认隐藏或极小，悬浮时化作精致光点，去除廉价实线边框 */}
-    <SliderPrimitive.Thumb className="block h-2.5 w-2.5 rounded-full bg-primary shadow-[0_0_10px_rgba(229,193,88,0.8)] transition-all duration-200 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 cursor-grab active:cursor-grabbing border-[1.5px] border-black/50" />
+    <SliderPrimitive.Thumb className="block h-2.5 w-2.5 rounded-full bg-primary shadow-[var(--slider-thumb-glow)] transition-all duration-200 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50 cursor-grab active:cursor-grabbing border-[1.5px] border-black/50" />
   </SliderPrimitive.Root>
 ));
 Slider.displayName = SliderPrimitive.Root.displayName;

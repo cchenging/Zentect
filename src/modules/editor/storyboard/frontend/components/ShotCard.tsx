@@ -31,9 +31,9 @@ function getShotStatus(shot: Shot): 'completed' | 'processing' | 'pending' {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  completed: 'bg-green-500',
-  processing: 'bg-blue-500',
-  pending: 'bg-gray-500',
+  completed: 'bg-success',
+  processing: 'bg-info',
+  pending: 'bg-muted',
 };
 
 function getRoleName(shot: Shot, roles: Role[]): string | null {

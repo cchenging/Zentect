@@ -13,13 +13,13 @@ export const stardustDrawer: ShapeDrawer = {
     ctx.translate(p.x, p.y)
     ctx.rotate(p.rotation)
 
-    // 十字光线
+    // 十字光线 —— 长度需明显大于中心点才能辨出星芒
     ctx.strokeStyle = p.color.replace('VAR', (opacity * 0.8).toFixed(4))
-    ctx.lineWidth = size * 0.3
+    ctx.lineWidth = size * 0.35
     ctx.lineCap = 'round'
     ctx.beginPath()
-    ctx.moveTo(-size * 2, 0); ctx.lineTo(size * 2, 0)
-    ctx.moveTo(0, -size * 2); ctx.lineTo(0, size * 2)
+    ctx.moveTo(-size * 2.5, 0); ctx.lineTo(size * 2.5, 0)
+    ctx.moveTo(0, -size * 2.5); ctx.lineTo(0, size * 2.5)
     ctx.stroke()
 
     // 中心亮点

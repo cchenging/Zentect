@@ -19,9 +19,9 @@ export const GlobalToaster: React.FC = () => {
       toastOptions={{
         duration: UI_CONSTANTS.DURATION.TOAST_NORMAL,
         style: {
-          background: UI_CONSTANTS.COLORS.BACKGROUND.DARK,
-          color: UI_CONSTANTS.COLORS.TEXT.MUTED,
-          border: `1px solid ${UI_CONSTANTS.COLORS.BORDER.DEFAULT}`,
+          background: 'var(--bg-secondary)',
+          color: 'var(--text-secondary)',
+          border: '1px solid var(--border-default)',
           boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)',
           fontSize: '14px',
           backdropFilter: 'blur(10px)',
@@ -29,15 +29,15 @@ export const GlobalToaster: React.FC = () => {
         },
         success: {
           iconTheme: {
-            primary: UI_CONSTANTS.COLORS.STATUS.SUCCESS,
-            secondary: UI_CONSTANTS.COLORS.BACKGROUND.DARK,
+            primary: 'var(--success)',
+            secondary: 'var(--bg-secondary)',
           },
         },
         error: {
           duration: UI_CONSTANTS.DURATION.TOAST_LONG,
           iconTheme: {
-            primary: UI_CONSTANTS.COLORS.STATUS.ERROR,
-            secondary: UI_CONSTANTS.COLORS.BACKGROUND.DARK,
+            primary: 'var(--destructive)',
+            secondary: 'var(--bg-secondary)',
           },
         },
       }}

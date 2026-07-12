@@ -53,6 +53,18 @@
   --error: #e11d48;
   --info: #00e5ff;
 
+  /* --- 文本色体系（语义别名，与 light 块对称） --- */
+  --text-primary: var(--foreground);
+  --text-secondary: var(--muted-foreground);
+  --text-tertiary: color-mix(in srgb, var(--foreground) 55%, transparent);
+  --text-disabled: color-mix(in srgb, var(--foreground) 35%, transparent);
+
+  /* --- 破坏性操作色 --- */
+  --destructive: var(--error);
+
+  /* --- 组件级派生变量 --- */
+  --slider-thumb-glow: 0 0 10px color-mix(in srgb, var(--accent) 80%, transparent);
+
   /* --- 毛玻璃参数 --- */
   --glass-bg: rgba(20, 20, 40, 0.78);
   --glass-blur: 16px;
@@ -205,6 +217,9 @@
 
   /* --- 破坏性操作色 --- */
   --destructive: var(--error);
+
+  /* --- 组件级派生变量 --- */
+  --slider-thumb-glow: 0 0 10px color-mix(in srgb, var(--accent) 80%, transparent);
 
   --glass-bg: rgba(255, 255, 255, 0.78);
   --glass-blur: 16px;

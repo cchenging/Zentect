@@ -25,9 +25,9 @@ export class AppNotifier {
    */
   private static getBaseStyle() {
     return {
-      background: UI_CONSTANTS.COLORS.BACKGROUND.DARK,
-      color: UI_CONSTANTS.COLORS.TEXT.PRIMARY,
-      border: `1px solid ${UI_CONSTANTS.COLORS.BORDER.DEFAULT}`,
+      background: 'var(--bg-secondary)',
+      color: 'var(--text-primary)',
+      border: '1px solid var(--border-default)',
     };
   }
 
@@ -57,8 +57,8 @@ export class AppNotifier {
       duration: duration || UI_CONSTANTS.DURATION.TOAST_NORMAL,
       style: this.getBaseStyle(),
       iconTheme: {
-        primary: UI_CONSTANTS.COLORS.STATUS.SUCCESS,
-        secondary: UI_CONSTANTS.COLORS.BACKGROUND.DARK,
+        primary: 'var(--success)',
+        secondary: 'var(--bg-secondary)',
       },
     });
     this.syncToNotificationCenter('success', msg);
@@ -74,8 +74,8 @@ export class AppNotifier {
       duration: UI_CONSTANTS.DURATION.TOAST_LONG,
       style: this.getBaseStyle(),
       iconTheme: {
-        primary: UI_CONSTANTS.COLORS.STATUS.ERROR,
-        secondary: UI_CONSTANTS.COLORS.BACKGROUND.DARK,
+        primary: 'var(--destructive)',
+        secondary: 'var(--bg-secondary)',
       },
     });
     if (errorObj) {

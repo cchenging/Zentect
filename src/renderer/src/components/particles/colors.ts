@@ -40,7 +40,16 @@ export function resolveColors(tokenNames: string[]): string[] {
     const rgb = parseColor(raw)
     if (rgb) colors.push(`rgba(${rgb[0]},${rgb[1]},${rgb[2]},VAR)`)
   }
-  // 兜底：accent 解析失败时用 v3 默认靛紫
-  if (colors.length === 0) colors.push('rgba(99,102,241,VAR)')
+  // 兜底：所有 token 解析失败时，尝试通用 --accent；仍失败则用 v3 默认靛紫硬编码值
+  if (colors.length === 0) {
+    const accent = style.getPropertyValue('--accent').trim()
+    const accentRgb = accent ? parseColor(accent) : null
+    if (accentRgb) {
+      colors.push(`rgba(${accentRgb[0]},${accentRgb[1]},${accentRgb[2]},VAR)`)
+    } else {
+      // 极端兜底：CSS 未加载，用 v3 --accent 值（99,102,241）
+      colors.push('rgba(99,102,241,VAR)')
+    }
+  }
   return colors
 }

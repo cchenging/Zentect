@@ -36,9 +36,9 @@ function getShotStatus(shot: Shot): 'completed' | 'processing' | 'pending' {
 
 /** 状态指示器颜色映射 */
 const STATUS_COLORS: Record<string, string> = {
-  completed: 'bg-green-500',
-  processing: 'bg-blue-500',
-  pending: 'bg-gray-500',
+  completed: 'bg-success',
+  processing: 'bg-info',
+  pending: 'bg-muted',
 };
 
 /** 获取角色名称 */

@@ -14,25 +14,6 @@
 };
 
 export const UI_CONSTANTS = {
-  COLORS: {
-    BACKGROUND: {
-      DARK: '#18181b', 
-      DEEP: '#09090b', 
-    },
-    TEXT: {
-      PRIMARY: '#ffffff',
-      MUTED: 'rgba(255,255,255,0.7)',
-    },
-    STATUS: {
-      SUCCESS: '#10b981', 
-      ERROR: '#ef4444',   
-      WARNING: '#f59e0b', 
-      INFO: '#3b82f6',    
-    },
-    BORDER: {
-      DEFAULT: 'rgba(255,255,255,0.1)',
-    }
-  },
   DURATION: {
     TOAST_SHORT: 2000,
     TOAST_NORMAL: 3000,

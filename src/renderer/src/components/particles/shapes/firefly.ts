@@ -5,7 +5,8 @@
 
 import type { ShapeDrawer } from '../types'
 
-/** 从 "rgba(R,G,B,VAR)" 模板提取 R,G,B */
+/** 从 "rgba(R,G,B,VAR)" 模板提取 R,G,B
+ *  兜底 [255,255,255] 仅在 color 模板格式异常时触发（正常运行不会到达） */
 function extractRgb(template: string): [number, number, number] {
   const m = template.match(/rgba?\((\d+),(\d+),(\d+)/)
   return m ? [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])] : [255, 255, 255]
