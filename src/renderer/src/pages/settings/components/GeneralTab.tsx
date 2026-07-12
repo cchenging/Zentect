@@ -5,6 +5,7 @@ import { Input } from '../../../components/ui/input';
 import { Button } from '../../../components/ui/button';
 import { Switch } from '../../../components/ui/switch';
 import { useI18n } from '../../../store/useI18n';
+import { useEditorStore } from '../../../store/useStore';
 import { API } from '../../../api';
 
 interface GeneralTabProps {
@@ -145,10 +146,7 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({ data, onUpdate }) => {
                   key={item.id}
                   onClick={() => {
                     onUpdate('general', 'particleStyle', item.id);
-                    try {
-                      const { useEditorStore } = require('../../../store/useStore');
-                      useEditorStore.getState().setParticleStyle(item.id);
-                    } catch {}
+                    useEditorStore.getState().setParticleStyle(item.id);
                   }}
                   className={`px-2.5 py-1.5 rounded-md text-[11px] font-medium transition-all cursor-pointer outline-none whitespace-nowrap ${
                     (data.particleStyle || 'auto') === item.id

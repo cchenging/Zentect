@@ -137,14 +137,14 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
       API.system.setSetting('scale', scale).catch(() => {});
     }, 300);
   },
-  cycleMode: () => set((state) => {
+  cycleMode: () => {
     const cycle: Record<string, 'dark' | 'light' | 'system'> = {
       dark: 'light',
       light: 'system',
       system: 'dark',
     };
-    return { mode: cycle[state.mode] || 'dark' };
-  }),
+    get().setMode(cycle[get().mode] || 'dark');
+  },
   hydrateUI: async () => {
     try {
       const mode = await API.system.getSetting('mode', 'dark');
@@ -152,6 +152,10 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
       const scale = await API.system.getSetting('scale', 'default');
       const particleStyle = await API.system.getSetting('particleStyle', 'auto');
       set({ mode: mode as 'dark' | 'light' | 'system', skin, scale, particleStyle });
+      document.documentElement.dataset.mode = mode as string;
+      document.documentElement.dataset.skin = skin as string;
+      document.documentElement.dataset.scale = scale as string;
+      document.documentElement.dataset.particleStyle = particleStyle as string;
     } catch { /* 静默回退默认值 */ }
   },
 
