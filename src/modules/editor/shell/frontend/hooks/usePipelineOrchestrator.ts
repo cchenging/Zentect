@@ -7,7 +7,7 @@ import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
 import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
 import { API } from '../../../../../renderer/src/api';
 import { STEP_SEQUENCES } from '../../utils/pipelineConstants';
-import { mapPipelineResultToState, type PipelineResultMappers } from '../../../../../renderer/src/pages/editor/hooks/usePipelineResultMapper';
+import { mapPipelineResultToState, type PipelineResultMappers } from './usePipelineResultMapper';
 import { editorLogger } from '../../../../../renderer/src/core/logger/EditorLogger';
 import { AppError, ErrorCode } from '../../../../infra/error/AppError';
 import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';

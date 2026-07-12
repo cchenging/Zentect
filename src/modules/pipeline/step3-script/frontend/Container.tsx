@@ -8,10 +8,10 @@ import { useStep2Store } from "../../stores/useStep2Store";
 import { usePipelineStore } from "../../../../renderer/src/store/usePipelineStore";
 import { useProjectStore } from "../../../editor/stores/useProjectStore";
 import { API } from "../../../../renderer/src/api";
-import { mapPipelineResultToState } from "../../../../renderer/src/pages/editor/hooks/usePipelineResultMapper";
+import { mapPipelineResultToState } from "../../../../modules/editor/shell/frontend/hooks/usePipelineResultMapper";
 import { buildMappers } from "../../../../editor/shell/frontend/hooks/usePipelineOrchestrator";
 import { STEP_SEQUENCES } from "../../../../editor/shell/utils/pipelineConstants";
-import { diffParagraphs, applyDiffUpdate } from "../../../../renderer/src/pages/editor/utils/scriptDiffTree";
+import { diffParagraphs, applyDiffUpdate } from "../../../../modules/editor/shell/utils/scriptDiffTree";
 import { StepScriptGenerationView } from "./View";
 
 export const StepScriptGeneration: React.FC = () => {

@@ -10,7 +10,7 @@ import { useStep4Store } from "../../stores/useStep4Store";
 import { usePipelineStore } from "../../../../renderer/src/store/usePipelineStore";
 import { useProjectStore } from "../../../editor/stores/useProjectStore";
 import { API } from "../../../../renderer/src/api";
-import { mapPipelineResultToState } from "../../../../renderer/src/pages/editor/hooks/usePipelineResultMapper";
+import { mapPipelineResultToState } from "../../../../modules/editor/shell/frontend/hooks/usePipelineResultMapper";
 import { buildMappers } from "../../../../editor/shell/frontend/hooks/usePipelineOrchestrator";
 import { STEP_SEQUENCES } from "../../../../editor/shell/utils/pipelineConstants";
 import { StepShotMatchingView } from "./View";
