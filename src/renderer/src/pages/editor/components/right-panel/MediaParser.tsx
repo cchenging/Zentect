@@ -16,7 +16,7 @@ import { API } from '../../../../api';
 import { IPC_CHANNELS } from '../../../../../../shared/utils/IpcConstants';
 import { FrontendLogger } from '../../../../utils/logger';
 import type { StepStatus } from '../../../../store/storeTypes';
-import { FrameExtractConfig } from '../inspectors/configs/FrameExtractConfig';
+import { FrameExtractConfig } from '../../../../../../modules/pipeline/step1-material/frontend/components/FrameExtractConfig';
 
 /** 状态对应的颜色和图标映射 */
 const STATUS_STYLE: Record<StepStatus, { bg: string; text: string; border: string }> = {

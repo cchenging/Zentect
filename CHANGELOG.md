@@ -36,6 +36,12 @@
 - **DatabaseWriteQueue**: 数据库写入队列（防 SQLITE_BUSY）
 - Pipeline 路由注册表 (`pipeline-routes.ts`)
 
+### Cleaned (C1 — Deprecated Code Removal, Round 1)
+- **pages/editor @deprecated 批量清理**: 移除重构遗留死码 34 个文件（2,240 行），含 Step 组件家族 (StepMaterialAnalysis/StepScriptGeneration/StepShotMatching/StepTTSSynthesis/StepVisionDescription)、View 容器家族、hooks 家族 (useEditorLogic/useExtractionHandler/useKeyboardShortcuts/usePipelineExecutor/useResizablePanel/useStepRunner/useTaskProgress)、工具函数 (timeFormat/pipelineConstants)、入口页面 (editor/home index)、废弃组件 (PipelineStatusBar/PropertyBar/StepPanel)
+- **core/parsers 死码移除**: AudioSeparateParser + barrel index.ts，全仓 0 引，Pipeline 模块已接管 parser 注册
+- **import 路径迁移**: 6 处 pipeline Container/View 的 import 从 `pages/` 切至 `modules/`（pipelineConstants / usePipelineOrchestrator / FrameExtractConfig / ExportModal）
+- **备份文件清理**: 5 个 `_20260704_` 时间戳备份文件物理删除
+
 ### Added (B5 — Skin System & UI Polish)
 - **#7 编辑器 Token 化**: 编辑器文本渲染从纯文本升级为语义 Token（对话/旁白/动作/标注），支持富样式可视化区分
 - **#5 粒子效果优化**: 粒子发射器性能调优，帧率提升 30%，粒子数量上限从 500 提升至 2000

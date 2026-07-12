@@ -2,7 +2,7 @@
 import { useStore } from '../../../../store/useStore';
 import { useStep1Store } from '../../../../../../../modules/pipeline/stores/useStep1Store';
 import { StatusIcon, CollapsibleCard } from '../../../../components/shared';
-import { FrameExtractConfig } from '../../inspectors/configs/FrameExtractConfig';
+import { FrameExtractConfig } from '../../../../../../../modules/pipeline/step1-material/frontend/components/FrameExtractConfig';
 
 export interface FrameExtractSubStepProps {
   expanded: boolean;
