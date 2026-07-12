@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { IpcRouter } from '../core/IpcRouter';
 import { JobScheduler } from '../core/JobScheduler';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { ALL_MEDIA_EXTENSIONS } from '../../modules/infra/i18n/dictionary';
 import { MediaService } from '../services/MediaService';

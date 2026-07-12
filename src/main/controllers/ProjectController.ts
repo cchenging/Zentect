@@ -3,7 +3,7 @@ import { IpcRouter } from '../core/IpcRouter';
 import { ProjectService } from '../services/ProjectService';
 import { JobRepository } from '../database/repositories/JobRepository';
 import { ProjectRepository } from '../database/repositories/ProjectRepository';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { DraftShadowGuard } from '../core/DraftShadowGuard';
 

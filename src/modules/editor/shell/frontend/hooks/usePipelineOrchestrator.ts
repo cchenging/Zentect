@@ -4,7 +4,7 @@
 
 import { useCallback } from 'react';
 import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
-import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
 import { API } from '../../../../../renderer/src/api';
 import { STEP_SEQUENCES } from '../../utils/pipelineConstants';
 import { mapPipelineResultToState, type PipelineResultMappers } from './usePipelineResultMapper';

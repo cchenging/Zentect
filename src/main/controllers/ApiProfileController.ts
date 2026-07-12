@@ -1,5 +1,5 @@
 import { IpcRouter } from '../core/IpcRouter';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { ApiProfileRepository } from '../database/repositories/ApiProfileRepository';
 import { ProfileBindingRepository } from '../database/repositories/ProfileBindingRepository';
 

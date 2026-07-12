@@ -1,7 +1,7 @@
 // 📁 路径: src/main/controllers/ExportController.ts
 import { IpcRouter } from '../core/IpcRouter';
 import { ExportService } from '../services/ExportService';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 
 export class ExportController {
   private exportService = new ExportService();

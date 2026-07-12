@@ -1,7 +1,7 @@
 // 📁 路径: src/main/controllers/SettingsController.ts
 import { IpcRouter } from '../core/IpcRouter';
 import { SettingsService } from '../services/SettingsService';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 
 /** 设置域扩展 IPC 频道常量（后续合并到 IpcConstants.ts） */

@@ -23,7 +23,7 @@ import { WorkflowService } from '../services/WorkflowService';
 import { SettingsRepository } from '../database/repositories/SettingsRepository';
 import { EngineStateGuard } from '../core/EngineStateGuard';
 import { ExceptionHub } from '../core/ExceptionHub';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import * as path from 'path';
 import * as fs from 'fs';
 

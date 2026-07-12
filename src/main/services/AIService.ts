@@ -4,7 +4,7 @@ import { AIDaemon } from '../core/AIDaemon';
 import { ChatHistoryRepository } from '../database/repositories/ChatHistoryRepository';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { LLMFactory } from '../engine/adapters/LLMFactory';
 import { MediaRepository } from '../database/repositories/MediaRepository';
 import { PipelinePayload } from '../../shared/types';

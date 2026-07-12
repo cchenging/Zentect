@@ -37,6 +37,9 @@ dist-packages/
 # ESLint 缓存
 .eslintcache
 
+# 测试脚本目录（含 Python 字节码污染）
+test/
+
 # Electron 构建产物
 build/
 build/*.dmg

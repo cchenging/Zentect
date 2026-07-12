@@ -9,7 +9,7 @@ import { PipelineRecoveryService } from '../pipeline/PipelineRecoveryService';
 import { DICT } from '../../modules/infra/i18n/dictionary';
 import { AppLogger } from './AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { TaskProgressPayload } from '../../shared/types';
 import * as path from 'path';
 

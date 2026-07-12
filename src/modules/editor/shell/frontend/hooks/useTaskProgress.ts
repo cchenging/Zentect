@@ -3,7 +3,7 @@
 
 import { useEffect, useRef } from 'react';
 import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
-import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
 import { CODE_TO_NAME } from '../../utils/pipelineConstants';
 
 /** 启动类 code → 子步骤 key */

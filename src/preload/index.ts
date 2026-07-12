@@ -1,6 +1,6 @@
 ﻿// 📁 路径：src/preload/index.ts
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHANNELS } from '../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../modules/infra/ipc/IpcConstants';
 
 // =========================================================================
 // 💥 绝对防线：隔离 C++ 引擎与 JS 的类型转换崩溃！

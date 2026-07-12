@@ -7,7 +7,7 @@ import { API } from '../../../../api';
 import { AppNotifier } from '../../../../core/AppNotifier';
 import { ContextCompressor } from '../../../../core/ContextCompressor';
 import { ActionParser } from '../../../../core/ActionParser';
-import { IPC_CHANNELS } from '../../../../../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../../../../../modules/infra/ipc/IpcConstants';
 import { Textarea } from '../../../../components/ui/textarea';
 import { Input } from '../../../../components/ui/input';
 import { Button } from '../../../../components/ui/button';

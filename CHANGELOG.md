@@ -40,7 +40,9 @@
 - **pages/editor @deprecated 批量清理 (R1)**: 移除重构遗留死码 34 个文件（2,240 行），含 Step/View 容器家族、hooks 家族 (useEditorLogic 等 8 个)、工具函数 (timeFormat/pipelineConstants)、入口页面 (editor/home index)、废弃组件 (PipelineStatusBar/PropertyBar/StepPanel)
 - **core/parsers 死码移除**: AudioSeparateParser + barrel index.ts，全仓 0 引
 - **pages/modules 同名重复清理 (R2+R3)**: 9 组内容等价/升级文件迁移 — R2 6 组（usePipelineResultMapper / scriptDiffTree / ExportCheckbox / DeleteModal / RenameModal / useWorkflowImport，4 处 import）；R3 3 组升级版（ExportModal → editorStore 收口 / ProjectCard → 函数重写 / useProjectManager → 字段兼容映射，2 处 import）
+- **shared/ 跳板文件铲除 (R4)**: 8 个 @deprecated export 转发空壳全部删除，28 处 IpcConstants import 迁移至 modules/infra/ipc/，空目录 locales/ 一并清理
 - **备份文件清理**: 5 个 `_20260704_` 时间戳备份文件物理删除
+- **.gitignore**: 新增 `test/` 目录排除规则，防止 Python 字节码污染
 
 ### Added (B5 — Skin System & UI Polish)
 - **#7 编辑器 Token 化**: 编辑器文本渲染从纯文本升级为语义 Token（对话/旁白/动作/标注），支持富样式可视化区分

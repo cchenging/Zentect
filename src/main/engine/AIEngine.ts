@@ -8,7 +8,7 @@ import { ProcessManager } from '../utils/processManager';
 import { PathManager } from '../utils/pathManager';
 import { SQLiteConnection } from '../database/core/SQLiteConnection';
 import { AIDaemon } from '../core/AIDaemon';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { PromptBuilder } from './prompts/PromptBuilder';
 import { LLMFactory } from './adapters/LLMFactory'; 
 import { ProviderManager } from './config/ProviderManager'; // 💥 唯一合法的配置出处

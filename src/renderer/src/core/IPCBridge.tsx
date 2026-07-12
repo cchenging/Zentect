@@ -1,7 +1,7 @@
 // 📁 路径：src/renderer/src/core/IPCBridge.tsx
 // Layer 2: 前端 IPC 桥接层 — 统一侦听管线状态变更、I18N 错误契约载荷、流式安全数据、故事板卡片流式注入
 import React, { useEffect } from 'react';
-import { IPC_CHANNELS } from '../../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../../modules/infra/ipc/IpcConstants';
 import { useStore } from '../store/useStore';
 import { useI18n } from '../store/useI18n';
 import { AppNotifier } from './AppNotifier';

@@ -6,7 +6,7 @@ import { useEditorStore } from '../../../../../renderer/src/store/useStore';
 import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
 import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
 import { API } from '../../../../../renderer/src/api';
-import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
 import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
 
 export const usePipelineExecutor = () => {

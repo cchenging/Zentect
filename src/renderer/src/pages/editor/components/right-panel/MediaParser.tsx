@@ -13,7 +13,7 @@ import { Slider } from '../../../../components/ui/slider';
 import { AppNotifier } from '../../../../core/AppNotifier';
 import { getSafeMediaUrl } from '../../../../utils/formatUrl';
 import { API } from '../../../../api';
-import { IPC_CHANNELS } from '../../../../../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../../../../../modules/infra/ipc/IpcConstants';
 import { FrontendLogger } from '../../../../utils/logger';
 import type { StepStatus } from '../../../../store/storeTypes';
 import { FrameExtractConfig } from '../../../../../../modules/pipeline/step1-material/frontend/components/FrameExtractConfig';

@@ -5,7 +5,7 @@ import React from 'react';
 import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
 import { AlertTriangle } from 'lucide-react';
 import { Progress } from '../../../../../renderer/src/components/shared';
-import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
 
 export const PipelineStatusBar: React.FC = () => {
   const pipelineRunning = usePipelineStore((s) => s.pipelineRunning);

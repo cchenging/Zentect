@@ -1,5 +1,5 @@
 // 📁 路径: src/renderer/src/api/index.ts
-import { IPC_CHANNELS } from '../../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../../modules/infra/ipc/IpcConstants';
 import type { TaskProgressPayload, TaskCompletedPayload, AppNotifyPayload } from '../../../shared/types';
 
 /**

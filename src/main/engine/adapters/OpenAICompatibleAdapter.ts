@@ -4,7 +4,7 @@ import { WebContents } from 'electron';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
 import { StreamBufferGuard } from '../../core/StreamBufferGuard';
-import { IPC_CHANNELS } from '../../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../../modules/infra/ipc/IpcConstants';
 
 export class OpenAICompatibleAdapter implements ILLMProvider {
   public readonly providerName: string = 'openai_compatible';

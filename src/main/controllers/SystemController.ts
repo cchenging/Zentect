@@ -2,7 +2,7 @@
 import { dialog, BrowserWindow } from 'electron';
 import { IpcRouter } from '../core/IpcRouter';
 import { SystemService } from '../services/SystemService';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { ALL_MEDIA_EXTENSIONS } from '../../modules/infra/i18n/dictionary';
 import { SettingsRepository } from '../database/repositories/SettingsRepository';

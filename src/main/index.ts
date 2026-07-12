@@ -44,7 +44,7 @@ import { SettingsRepository } from './database/repositories/SettingsRepository'
 import { CrashReporter } from './core/CrashReporter'
 import { TelemetryOptInGate } from './core/TelemetryOptInGate'
 import { UsageStatsCollector } from './core/UsageStatsCollector'
-import { IPC_CHANNELS } from '../shared/utils/IpcConstants'
+import { IPC_CHANNELS } from '../modules/infra/ipc/IpcConstants'
 import { runCli } from './cli/index'
 
 // — 注册自定义协议的特权与流媒体播放权限

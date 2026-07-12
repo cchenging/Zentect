@@ -1,5 +1,5 @@
 import { BrowserWindow } from 'electron';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { DICT } from '../../modules/infra/i18n/dictionary';
 import type { TaskCompletedPayload, AppNotifyPayload } from '../../shared/types';
 import { TaskRepository } from '../database/repositories/TaskRepository';

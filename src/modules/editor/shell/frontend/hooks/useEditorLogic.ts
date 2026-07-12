@@ -8,7 +8,7 @@ import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
 import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
 import { DraftService } from '../../../../../renderer/src/services/DraftService';
 import { resetAllLocalStores, syncHydratedStateToStores } from '../../../../../renderer/src/pages/editor/hooks/syncHydrate';
-import { IPC_CHANNELS } from '../../../../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
 import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
 import { AppError, ErrorCode } from '../../../../infra/error/AppError';
 

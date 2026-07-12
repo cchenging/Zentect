@@ -1,5 +1,5 @@
 import { MainNotifier } from '../core/MainNotifier'
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants'
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants'
 
 type EventHandler = (...args: any[]) => void
 

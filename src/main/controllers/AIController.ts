@@ -1,7 +1,7 @@
 // 📁 覆盖文件: src/main/controllers/AIController.ts
 import { IpcRouter } from '../core/IpcRouter';
 import { AIService } from '../services/AIService';
-import { IPC_CHANNELS } from '../../shared/utils/IpcConstants';
+import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { AIEngine } from '../engine/AIEngine';
