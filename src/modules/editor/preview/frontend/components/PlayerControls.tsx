@@ -110,7 +110,7 @@ export const PlayerControls: React.FC = () => {
   };
 
   return (
-    <div className="relative h-10 shrink-0 bg-[#121212] border-t border-white/5 flex items-center px-4 select-none z-10 w-full">
+    <div className="relative h-10 shrink-0 bg-[var(--bg-secondary)] border-t border-[var(--border-default)] flex items-center px-4 select-none z-10 w-full">
       <div className="absolute top-0 left-0 right-0 z-20 px-0 -translate-y-1/2 group">
         <Slider
           value={[currentTime]}
@@ -126,49 +126,49 @@ export const PlayerControls: React.FC = () => {
           variant="ghost"
           size="icon"
           onClick={handlePlayToggle}
-          className="w-8 h-8 rounded-md text-white hover:bg-white/10 focus-visible:ring-1 focus-visible:ring-primary shadow-none transition-colors"
+          className="w-8 h-8 rounded-md text-[var(--foreground)] hover:bg-muted focus-visible:ring-1 focus-visible:ring-primary shadow-none transition-colors"
         >
           {isPlaying ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" className="ml-0.5" />}
         </Button>
       </div>
 
       <div className="flex items-center gap-2 font-mono tabular-nums tracking-wider whitespace-nowrap min-w-max">
-        <span className="text-white/90 text-[11px] font-semibold shrink-0">{formatTimecode(currentTime)}</span>
-        <span className="text-white/40 text-[10px] shrink-0">/ {formatTimecode(displayDuration)}</span>
+        <span className="text-[var(--foreground)] text-[11px] font-semibold shrink-0">{formatTimecode(currentTime)}</span>
+        <span className="text-[var(--muted-foreground)] text-[10px] shrink-0">/ {formatTimecode(displayDuration)}</span>
       </div>
 
       <div className="flex-1" />
 
       <Popover>
         <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon" className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 data-[state=open]:bg-white/10 transition-colors" title={t.editor?.tooltip_zoom || '缩放'}>
+          <Button variant="ghost" size="icon" className="w-8 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted data-[state=open]:bg-muted transition-colors" title={t.editor?.tooltip_zoom || '缩放'}>
             <ZoomIn size={14} />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="end" sideOffset={8} className="w-[200px] p-4 z-50 flex flex-col gap-4 bg-[#1a1a1a] border-white/10">
+        <PopoverContent align="end" sideOffset={8} className="w-[200px] p-4 z-50 flex flex-col gap-4 bg-[var(--bg-tertiary)] border-[var(--border-default)]">
           <div className="flex justify-between items-center">
-            <span className="text-white/90 text-[11px] font-medium">{t.editor?.zoom_title || '画布缩放'}</span>
-            <span className="font-mono text-[10px] text-white/40 bg-black/40 border border-white/5 px-1.5 py-0.5 rounded">{isCanvasFit ? t.editor?.zoom_fit_short || '自适应' : `${canvasZoom}%`}</span>
+            <span className="text-[var(--foreground)] text-[11px] font-medium">{t.editor?.zoom_title || '画布缩放'}</span>
+            <span className="font-mono text-[10px] text-[var(--muted-foreground)] bg-black/40 border border-[var(--border-default)] px-1.5 py-0.5 rounded">{isCanvasFit ? t.editor?.zoom_fit_short || '自适应' : `${canvasZoom}%`}</span>
           </div>
           <Slider value={[isCanvasFit ? 100 : canvasZoom]} min={25} max={400} step={1} onValueChange={handleZoomSliderChange} className="w-full cursor-pointer" />
           <div className="flex gap-2 mt-1">
-             <Button variant={isCanvasFit ? "default" : "outline"} size="sm" onClick={() => { setIsCanvasFit(true); setCanvasZoom(100); }} className={`flex-1 h-7 text-[10px] ${isCanvasFit ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-white/60 border-white/10 hover:bg-white/10 hover:text-white'}`}>{t.editor?.zoom_fit || '自适应'}</Button>
-             <Button variant={!isCanvasFit && canvasZoom === 100 ? "default" : "outline"} size="sm" onClick={() => { setIsCanvasFit(false); setCanvasZoom(100); }} className={`flex-1 h-7 text-[10px] ${!isCanvasFit && canvasZoom === 100 ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-white/60 border-white/10 hover:bg-white/10 hover:text-white'}`}>{t.editor?.zoom_100 || '100%'}</Button>
+             <Button variant={isCanvasFit ? "default" : "outline"} size="sm" onClick={() => { setIsCanvasFit(true); setCanvasZoom(100); }} className={`flex-1 h-7 text-[10px] ${isCanvasFit ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-[var(--muted-foreground)] border-[var(--border-default)] hover:bg-muted hover:text-[var(--foreground)]'}`}>{t.editor?.zoom_fit || '自适应'}</Button>
+             <Button variant={!isCanvasFit && canvasZoom === 100 ? "default" : "outline"} size="sm" onClick={() => { setIsCanvasFit(false); setCanvasZoom(100); }} className={`flex-1 h-7 text-[10px] ${!isCanvasFit && canvasZoom === 100 ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-[var(--muted-foreground)] border-[var(--border-default)] hover:bg-muted hover:text-[var(--foreground)]'}`}>{t.editor?.zoom_100 || '100%'}</Button>
           </div>
         </PopoverContent>
       </Popover>
 
-      <div className="w-[1px] h-4 bg-white/10 mx-1" />
+      <div className="w-[1px] h-4 bg-[var(--border-default)] mx-1" />
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 data-[state=open]:bg-white/10 transition-colors" title={`${t.editor?.tooltip_ratio || '画幅'}: ${projectRatio}`}>
+          <Button variant="ghost" size="icon" className="w-8 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted data-[state=open]:bg-muted transition-colors" title={`${t.editor?.tooltip_ratio || '画幅'}: ${projectRatio}`}>
             <MonitorPlay size={14} />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" sideOffset={8} className="w-32 z-50 bg-[#1a1a1a] border-white/10">
+        <DropdownMenuContent align="end" sideOffset={8} className="w-32 z-50 bg-[var(--bg-tertiary)] border-[var(--border-default)]">
           {['16:9','9:16','4:3','1:1'].map(opt => (
-            <DropdownMenuItem key={opt} onClick={() => setProjectRatio(opt as any)} className={`flex items-center justify-between cursor-pointer focus:bg-white/10 ${projectRatio === opt ? 'text-primary font-medium' : 'text-white/80'}`}>
+            <DropdownMenuItem key={opt} onClick={() => setProjectRatio(opt as any)} className={`flex items-center justify-between cursor-pointer focus:bg-muted ${projectRatio === opt ? 'text-primary font-medium' : 'text-[var(--foreground)]/80'}`}>
               <span className="text-[11px]">{opt}</span>
               {projectRatio === opt && <Check size={12} className="text-primary" />}
             </DropdownMenuItem>
@@ -176,26 +176,26 @@ export const PlayerControls: React.FC = () => {
         </DropdownMenuContent>
       </DropdownMenu>
 
-      <div className="w-[1px] h-4 bg-white/10 mx-1" />
+      <div className="w-[1px] h-4 bg-[var(--border-default)] mx-1" />
 
       <Popover>
         <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon" onClick={handleMuteToggle} className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-colors">
+          <Button variant="ghost" size="icon" onClick={handleMuteToggle} className="w-8 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted transition-colors">
             {isMuted || volume === 0 ? <VolumeX size={14} /> : <Volume2 size={14} />}
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="end" sideOffset={8} className="w-[140px] p-3 z-50 flex flex-col gap-2 bg-[#1a1a1a] border-white/10">
+        <PopoverContent align="end" sideOffset={8} className="w-[140px] p-3 z-50 flex flex-col gap-2 bg-[var(--bg-tertiary)] border-[var(--border-default)]">
           <div className="flex justify-between items-center">
-            <span className="text-white/90 text-[11px] font-medium">音量</span>
-            <span className="font-mono text-[10px] text-white/40">{isMuted ? '0' : volume}%</span>
+            <span className="text-[var(--foreground)] text-[11px] font-medium">音量</span>
+            <span className="font-mono text-[10px] text-[var(--muted-foreground)]">{isMuted ? '0' : volume}%</span>
           </div>
           <Slider value={[isMuted ? 0 : volume]} min={0} max={100} step={1} onValueChange={handleVolumeChange} className="w-full cursor-pointer" />
         </PopoverContent>
       </Popover>
 
-      <div className="w-[1px] h-4 bg-white/10 mx-1" />
+      <div className="w-[1px] h-4 bg-[var(--border-default)] mx-1" />
 
-      <Button variant="ghost" size="icon" onClick={handleFullscreen} className="w-8 h-8 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-colors" title={t.editor?.tooltip_fullscreen || '全屏'}>
+      <Button variant="ghost" size="icon" onClick={handleFullscreen} className="w-8 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted transition-colors" title={t.editor?.tooltip_fullscreen || '全屏'}>
         <Maximize size={14} />
       </Button>
     </div>

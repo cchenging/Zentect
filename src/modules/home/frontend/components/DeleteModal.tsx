@@ -32,7 +32,7 @@ export const DeleteModal: React.FC<DeleteModalProps> = ({ visible, projectId, pr
   return (
     <Dialog open={visible} onOpenChange={(open) => !open && onClose()}>
       {/* 💥 规范化：p-6, gap-6，并且给外层加一点红色的 border 晕染 */}
-      <DialogContent className="sm:max-w-[420px] p-6 gap-6 border-destructive/20 shadow-[0_10px_40px_-10px_rgba(220,38,38,0.1)]">
+      <DialogContent className="sm:max-w-[420px] p-6 gap-6 border-destructive/20 shadow-[0_10px_40px_-10px_color-mix(in_srgb,var(--destructive)_10%,transparent)]">
         
         <DialogHeader className="gap-2">
           <div className="flex items-center gap-2.5 text-destructive">
