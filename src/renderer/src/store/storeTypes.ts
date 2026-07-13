@@ -166,39 +166,17 @@ export type EditorState = UISlice & PlayerSlice & DataSlice & EditorSlice;
 export type StepStatus = 'idle' | 'running' | 'completed' | 'failed';
 
 // --- 切片定义: Editor Slice (编辑器核心状态) ---
-// 阶段四迁移：以下字段已拆分至独立 Store，但 dataSlice 内部逻辑（hydrate/reset）
-// 和多处遗留组件仍通过主 Store 访问。暂保留类型以维持编译通过，逐步清理。
+// 阶段五清理：仅保留 hydrationStatus 作为编辑器加载状态。
+// 其他字段已全部迁移至独立 Store：
+// - currentStep / isAutoMode → useEditorNavStore
+// - 管线状态（stepStatuses/pipelineRunning 等）→ usePipelineStore
+// - 步骤专属数据 → useStep1Store ~ useStep5Store
 export interface EditorSlice {
   // 水合与项目整体加载状态
   hydrationStatus: HydrationStatusType;
   setHydrationStatus: (status: HydrationStatusType) => void;
 
-  // === 导航状态（→ useEditorNavStore）===
-  currentStep: number;
-  isAutoMode: boolean;
-  setCurrentStep: (step: number) => void;
-  setIsAutoMode: (auto: boolean) => void;
-
-  // === 管线状态（→ usePipelineStore）===
-  stepStatuses: StepStatus[];
-  stepCompleted: boolean[];
-  subStepStatuses: Record<string, StepStatus>;
-  subStepProgresses: Record<string, number>;
-  pipelineRunning: boolean;
-  pipelineProgress: number;
-  pipelineNode: string;
-  pipelineError: string | null;
-
-  setStepStatus: (step: number, status: StepStatus) => void;
-  setStepCompleted: (step: number, completed: boolean) => void;
-  setSubStepStatus: (key: string, status: StepStatus) => void;
-  setSubStepProgress: (key: string, progress: number) => void;
-  setPipelineRunning: (running: boolean) => void;
-  setPipelineProgress: (progress: number, node?: string) => void;
-  setPipelineError: (error: string | null) => void;
-  resetPipeline: () => void;
-
-  // === Canvas 遗留字段 ===
+  // === Canvas 遗留字段（待后续清理）===
   nodes: any[];
   edges: any[];
   setActiveNode: (node: any, type?: any) => void;

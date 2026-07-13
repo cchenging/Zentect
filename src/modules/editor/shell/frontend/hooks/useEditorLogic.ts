@@ -6,8 +6,13 @@ import { useNavigate } from 'react-router-dom';
 import { useStore, useEditorStore } from '../../../../../renderer/src/store/useStore';
 import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
 import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
+import { useProjectStore } from '../../../../editor/stores/useProjectStore';
+import { useStep2Store } from '../../../../pipeline/stores/useStep2Store';
+import { useStep3Store } from '../../../../pipeline/stores/useStep3Store';
+import { useStep4Store } from '../../../../pipeline/stores/useStep4Store';
+import { useStep5Store } from '../../../../pipeline/stores/useStep5Store';
+import { useEditorNavStore } from '../../../../editor/stores/useEditorNavStore';
 import { DraftService } from '../../../../../renderer/src/services/DraftService';
-import { resetAllLocalStores, syncHydratedStateToStores } from '../../../../../renderer/src/pages/editor/hooks/syncHydrate';
 import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
 import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
 import { AppError, ErrorCode } from '../../../../infra/error/AppError';
@@ -25,7 +30,37 @@ export const useEditorHydration = (id: string | undefined) => {
     const store = useEditorStore.getState();
 
     store.resetProjectState();
-    resetAllLocalStores();
+    // 逐个重置局部 Store
+    useProjectStore.getState().resetProjectState?.();
+    usePipelineStore.getState().resetAllStepStatuses?.();
+    usePipelineStore.setState({ stepCompleted: [false, false, false, false, false] });
+    usePipelineStore.getState().setPipelineRunning?.(false);
+    usePipelineStore.getState().setPipelineProgress?.(0, '');
+    usePipelineStore.getState().setPipelineError?.(null);
+    usePipelineStore.getState().setExtractionConfig?.(null);
+    useStep1Store.getState().setAsrLines?.([]);
+    useStep1Store.getState().setFrameCount?.(0);
+    useStep1Store.getState().setAudioSeparated?.(false);
+    useStep1Store.getState().setSubStepStatus?.('frames', 'idle');
+    useStep1Store.getState().setSubStepStatus?.('audio', 'idle');
+    useStep1Store.getState().setSubStepStatus?.('whisper', 'idle');
+    useStep1Store.getState().setSubStepStatus?.('faces', 'idle');
+    useStep1Store.setState({ subStepProgresses: {} as Record<string, number>, extractionConfig: null as any });
+    useStep2Store.getState().setVlmFrames?.([]);
+    useStep3Store.getState().setScriptParagraphs?.([]);
+    useStep3Store.getState().setScriptStyle?.('赛博现实主义');
+    useStep3Store.getState().setSpeechRate?.(4.5);
+    useStep3Store.getState().setPipelineParams?.({ R: 70, S: 50, T: 80, P: 60 });
+    useStep4Store.getState().setTtsEngine?.('edge');
+    useStep4Store.getState().setTtsVoiceId?.('');
+    useStep4Store.getState().setTtsProgress?.(0);
+    useStep4Store.getState().setTtsResults?.([]);
+    useStep5Store.getState().setMatchResults?.([]);
+    useStep5Store.getState().setActiveBgm?.(null);
+    useStep5Store.getState().setBeatTimestamps?.([]);
+    useStep5Store.getState().setVideoChunks?.([]);
+    useEditorNavStore.getState().setCurrentStep?.(1);
+    useEditorNavStore.getState().setIsAutoMode?.(false);
 
     const initWorkspace = async () => {
       useStore.getState().setHydrationStatus?.('LOADING');
@@ -45,7 +80,6 @@ export const useEditorHydration = (id: string | undefined) => {
 
         if (projectSnapshot && isMounted) {
           store.hydrateProjectData(projectSnapshot);
-          syncHydratedStateToStores(projectSnapshot);
 
           const mediaItems = projectSnapshot.mediaItems || [];
           const videoMedia = mediaItems.find((m: any) => m.type === 'video' || m.filePath);
@@ -110,8 +144,8 @@ export const useEditorAutoSave = (id: string | undefined) => {
         asrLines: step1State.asrLines,
         frameCount: step1State.frameCount,
         audioSeparated: step1State.audioSeparated,
-        subStepStatuses: storeState.subStepStatuses,
-        subStepProgresses: storeState.subStepProgresses,
+        subStepStatuses: pipelineState.subStepStatuses,
+        subStepProgresses: pipelineState.subStepProgresses,
         stepStatuses: pipelineState.stepStatuses,
         stepCompleted: pipelineState.stepCompleted,
         storyboardMode: storeState.storyboardMode

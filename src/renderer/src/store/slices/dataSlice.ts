@@ -1,10 +1,16 @@
 // 📁 路径：src/renderer/src/store/slices/dataSlice.ts
 import type { StateCreator } from 'zustand';
-import type { EditorState, DataSlice, StepStatus } from '../storeTypes';
+import type { EditorState, DataSlice } from '../storeTypes';
 import type { Shot } from '../../../../shared/types';
-import type { HydrationStatusType } from '../constants';
 import { AppNotifier } from '../../core/AppNotifier';
 import { API } from '../../api';
+import { usePipelineStore } from '../usePipelineStore';
+import { useStep1Store } from '../../../../modules/pipeline/stores/useStep1Store';
+import { useStep2Store } from '../../../../modules/pipeline/stores/useStep2Store';
+import { useStep3Store } from '../../../../modules/pipeline/stores/useStep3Store';
+import { useStep4Store } from '../../../../modules/pipeline/stores/useStep4Store';
+import { useStep5Store } from '../../../../modules/pipeline/stores/useStep5Store';
+import { useEditorNavStore } from '../../../../modules/editor/stores/useEditorNavStore';
 
 /** 💥 工业级减法：防抖影子保存器，防止主进程磁盘 I/O 被高频更新锁死 */
 let shadowSaveTimer: any = null;
@@ -40,18 +46,7 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
     framePaths: []
   },
 
-  /** EditorSlice 字段初始化默认值，防止组件在 Store 未注水前读取 undefined */
-  hydrationStatus: 'IDLE' as HydrationStatusType,
-  currentStep: 1,
-  isAutoMode: false,
-  stepStatuses: ['idle', 'idle', 'idle', 'idle', 'idle'] as StepStatus[],
-  stepCompleted: [false, false, false, false, false],
-  subStepStatuses: { frames: 'idle', audio: 'idle', whisper: 'idle', faces: 'idle' } as Record<string, StepStatus>,
-  subStepProgresses: {} as Record<string, number>,
-  pipelineRunning: false,
-  pipelineProgress: 0,
-  pipelineNode: '',
-  pipelineError: null,
+  /** hydrationStatus 由 editorSlice 提供，此处不重复声明 */
   nodes: [] as any[],
   edges: [] as any[],
 
@@ -241,26 +236,14 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
     storyboardMode: 'original', aiShots: [],
     canvasData: null, pastSnapshots: [], futureSnapshots: [],
     extractedData: { videoPath: '', vocalPath: '', backgroundPath: '', asrLines: [], frameCount: 0, framePaths: [] },
-    // 重置编辑器步骤和管线状态，防止切换项目后残留旧状态
-    currentStep: 1,
-    stepCompleted: [false, false, false, false, false],
-    stepStatuses: ['idle', 'idle', 'idle', 'idle', 'idle'],
-    subStepStatuses: { frames: 'idle', audio: 'idle', whisper: 'idle', faces: 'idle' },
-    pipelineRunning: false,
-    pipelineProgress: 0,
-    pipelineNode: '',
-    pipelineError: null,
-    // 补充 EditorSlice 字段重置，与 initialState 保持一致
-    hydrationStatus: 'IDLE' as HydrationStatusType,
-    isAutoMode: false,
-    subStepProgresses: {} as Record<string, number>,
     nodes: [] as any[],
     edges: [] as any[],
   })),
 
   /** 💥 单职责 Action：专门负责重新进入项目或算法完工后的全量反序列化注水 */
-  hydrateProjectData: (projectData) => set((state) => {
-    if (!projectData) return state;
+  hydrateProjectData: (projectData) => {
+    const state = get();
+    if (!projectData) return;
 
     const raw = projectData as any;
     let parsed: any = {};
@@ -378,10 +361,10 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
 
     // 从 metadata 恢复子步骤状态
     /** 💥 关键修复：raw 顶层已包含 metadata 展开的字段，优先从 raw 读取 */
-    let subStepStatuses = state.subStepStatuses;
-    let subStepProgresses = state.subStepProgresses;
-    let stepStatuses = state.stepStatuses;
-    let stepCompleted = state.stepCompleted;
+    let subStepStatuses: Record<string, string> = state.subStepStatuses || {};
+    let subStepProgresses: Record<string, number> = state.subStepProgresses || {};
+    let stepStatuses: string[] = state.stepStatuses || ['idle', 'idle', 'idle', 'idle', 'idle'];
+    let stepCompleted: boolean[] = state.stepCompleted || [false, false, false, false, false];
 
     const rawSubStepStatuses = raw.subStepStatuses || parsed.subStepStatuses;
     if (rawSubStepStatuses) {
@@ -438,30 +421,92 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
       stepCompleted[0] = true;
     }
 
-    return {
+    /** 推算当前步骤 */
+    const calculatedCurrentStep = (() => {
+      const saved = raw.currentStep || parsed.currentStep;
+      if (saved && typeof saved === 'number') return saved;
+      const completed = stepCompleted || state.stepCompleted;
+      if (Array.isArray(completed)) {
+        const lastCompletedIdx = completed.lastIndexOf(true);
+        if (lastCompletedIdx >= 0 && lastCompletedIdx < completed.length - 1) return lastCompletedIdx + 2;
+        if (lastCompletedIdx === completed.length - 1) return completed.length;
+      }
+      return state.currentStep || 1;
+    })();
+
+    // ============ 直写局部 Store ============
+
+    // ── PipelineStore：步骤状态 ──
+    const ps = usePipelineStore.getState();
+    for (let i = 1; i <= 5; i++) {
+      if (typeof ps.setStepStatus === 'function') ps.setStepStatus(i, (stepStatuses[i - 1] as any) || 'idle');
+    }
+    for (let i = 1; i <= 5; i++) {
+      if (typeof ps.setStepCompleted === 'function') ps.setStepCompleted(i, !!stepCompleted[i - 1]);
+    }
+    if (typeof ps.setSubStepStatus === 'function') {
+      for (const [key, status] of Object.entries(subStepStatuses)) {
+        ps.setSubStepStatus(key, (status as string) || 'idle');
+      }
+    }
+    if (typeof ps.setSubStepProgress === 'function') {
+      for (const [key, progress] of Object.entries(subStepProgresses)) {
+        ps.setSubStepProgress(key, typeof progress === 'number' ? progress : 0);
+      }
+    }
+    if (raw.pipelineParams && typeof ps.setPipelineParams === 'function') ps.setPipelineParams(raw.pipelineParams as any);
+    if (raw.extractionConfig !== undefined && typeof ps.setExtractionConfig === 'function') ps.setExtractionConfig(raw.extractionConfig as any);
+
+    // ── Step1Store ──
+    const s1 = useStep1Store.getState();
+    if (typeof s1.setAsrLines === 'function') s1.setAsrLines(asr || []);
+    if (typeof s1.setFrameCount === 'function') s1.setFrameCount(Number(raw.frameCount || parsed.frameCount || 0));
+    if (typeof s1.setAudioSeparated === 'function') s1.setAudioSeparated(!!raw.audioSeparated);
+    if (typeof s1.setSubStepStatus === 'function') {
+      for (const [key, status] of Object.entries(subStepStatuses)) {
+        s1.setSubStepStatus(key, (status as string) || 'idle');
+      }
+    }
+    if (typeof s1.setSubStepProgress === 'function') {
+      for (const [key, progress] of Object.entries(subStepProgresses)) {
+        s1.setSubStepProgress(key, typeof progress === 'number' ? progress : 0);
+      }
+    }
+    if (raw.extractionConfig && typeof s1.updateExtractionConfig === 'function') s1.updateExtractionConfig(raw.extractionConfig as any);
+
+    // ── Step2Store ──
+    const s2 = useStep2Store.getState();
+    if (typeof s2.setVlmFrames === 'function') s2.setVlmFrames(Array.isArray(raw.vlmFrames) ? raw.vlmFrames : []);
+
+    // ── Step3Store ──
+    const s3 = useStep3Store.getState();
+    if (typeof s3.setScriptParagraphs === 'function') s3.setScriptParagraphs(Array.isArray(raw.scriptParagraphs) ? raw.scriptParagraphs : []);
+    if (raw.scriptStyle && typeof s3.setScriptStyle === 'function') s3.setScriptStyle(raw.scriptStyle as string);
+    if (raw.speechRate !== undefined && typeof s3.setSpeechRate === 'function') s3.setSpeechRate(Number(raw.speechRate) || 4.5);
+    if (raw.pipelineParams && typeof s3.setPipelineParams === 'function') s3.setPipelineParams(raw.pipelineParams as any);
+
+    // ── Step4Store ──
+    const s4 = useStep4Store.getState();
+    if (typeof s4.setTtsResults === 'function') s4.setTtsResults(Array.isArray(raw.ttsResults) ? raw.ttsResults : []);
+    if (raw.ttsEngine && typeof s4.setTtsEngine === 'function') s4.setTtsEngine(raw.ttsEngine as string);
+    if (raw.ttsVoiceId !== undefined && typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((raw.ttsVoiceId as string) || '');
+
+    // ── Step5Store ──
+    const s5 = useStep5Store.getState();
+    if (typeof s5.setVideoChunks === 'function') s5.setVideoChunks(Array.isArray(raw.videoChunks) ? raw.videoChunks : []);
+
+    // ── EditorNavStore ──
+    const nav = useEditorNavStore.getState();
+    if (typeof nav.setCurrentStep === 'function') nav.setCurrentStep(calculatedCurrentStep);
+
+    // ============ 写回全局 Store（仅保留 DataSlice 自身字段） ============
+    set(() => ({
       projectId: raw.id || state.projectId,
       projectName: raw.name || state.projectName,
-      /** 💥 恢复当前步骤：根据已完成的步骤数推算，确保重进后能继续下一步 */
-      currentStep: (() => {
-        const saved = raw.currentStep || parsed.currentStep;
-        if (saved && typeof saved === 'number') return saved;
-        /** 如果没有保存 currentStep，根据 stepCompleted 推算 */
-        const completed = stepCompleted || state.stepCompleted;
-        if (Array.isArray(completed)) {
-          const lastCompletedIdx = completed.lastIndexOf(true);
-          if (lastCompletedIdx >= 0 && lastCompletedIdx < completed.length - 1) return lastCompletedIdx + 2;
-          if (lastCompletedIdx === completed.length - 1) return completed.length;
-        }
-        return state.currentStep;
-      })(),
       mediaItems,
       shots: raw.shots || parsed.shots || state.shots,
       aiShots: raw.aiShots || parsed.aiShots || state.aiShots,
       roles: raw.roles || parsed.roles || state.roles,
-      subStepStatuses,
-      subStepProgresses,
-      stepStatuses,
-      stepCompleted,
       extractedData: {
         videoPath: video,
         vocalPath: vocal,
@@ -472,8 +517,8 @@ export const createDataSlice: StateCreator<EditorState, [], [], DataSlice> = (se
         framePaths: framePaths.length > 0 ? framePaths : (state.extractedData?.framePaths || []),
         frameCount: frameCount || framePaths.length || (state.extractedData?.framePaths?.length || 0)
       }
-    };
-  }),
+    }));
+  },
 
   /** 单职责 Action：更新音轨或 ASR 增量数据，联动 frameCount 原子更新 */
   setExtractedData: (data) => set((state) => {

@@ -44,6 +44,9 @@
 - **备份文件清理**: 5 个 `_20260704_` 时间戳备份文件物理删除
 - **.gitignore**: 新增 `test/` 目录排除规则，防止 Python 字节码污染
 
+### Refactored (R1 — Store 架构收口)
+- **syncHydrate 消除**: 218 行手动搬运胶水代码删除（28 字段，8 个局部 Store），`hydrateProjectData` 改为直写局部 Store（DB → 局部 Store，跳过全局中转），`dataSlice` / `storeTypes` 清理 22 个旧管线字段及 setter 声明，`useEditorAutoSave` 最后 2 处旧字段切至 `pipelineStore`
+
 ### Added (B5 — Skin System & UI Polish)
 - **#7 编辑器 Token 化**: 编辑器文本渲染从纯文本升级为语义 Token（对话/旁白/动作/标注），支持富样式可视化区分
 - **#5 粒子效果优化**: 粒子发射器性能调优，帧率提升 30%，粒子数量上限从 500 提升至 2000
