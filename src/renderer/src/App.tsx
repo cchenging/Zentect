@@ -18,8 +18,8 @@ import { useNotificationCenter } from './services/NotificationCenter';
 // — S-Tier 优化：路由懒加载 (Code Splitting)
 // 将工作台和重型剪辑器的 JS 物理分卷，极大提升首屏解析速度！
 // ==========================================================
-const Home = React.lazy(() => import('./pages/home').then(m => ({ default: m.Home })));
-const Editor = React.lazy(() => import('./pages/editor'));
+const Home = React.lazy(() => import('@modules/home').then(m => ({ default: m.HomeContainer })));
+const Editor = React.lazy(() => import('@modules/editor'));
 const ModelsPage = React.lazy(() => import('./pages/models'));
 const UserSettingsPage = React.lazy(() => import('./pages/user-settings'));
 

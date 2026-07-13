@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo } from "react";
 import { Sliders, RefreshCw, Tag, Search } from "lucide-react";
-import { SCRIPT_STYLES } from "../../../../editor/shell/utils/pipelineConstants";
+import { SCRIPT_STYLES } from "../../../../modules/editor/shell/utils/pipelineConstants";
 import { Badge, StatHeader, EmptyState } from "../../../../renderer/src/components/shared";
 import { ParameterSlider } from "../../../../renderer/src/components/shared/ParameterSlider";
 import type { StepScriptGenerationProps } from "../types";

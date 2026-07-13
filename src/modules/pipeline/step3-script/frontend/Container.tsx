@@ -9,8 +9,8 @@ import { usePipelineStore } from "../../../../renderer/src/store/usePipelineStor
 import { useProjectStore } from "../../../editor/stores/useProjectStore";
 import { API } from "../../../../renderer/src/api";
 import { mapPipelineResultToState } from "../../../../modules/editor/shell/frontend/hooks/usePipelineResultMapper";
-import { buildMappers } from "../../../../editor/shell/frontend/hooks/usePipelineOrchestrator";
-import { STEP_SEQUENCES } from "../../../../editor/shell/utils/pipelineConstants";
+import { buildMappers } from "../../../../modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
+import { STEP_SEQUENCES } from "../../../../modules/editor/shell/utils/pipelineConstants";
 import { diffParagraphs, applyDiffUpdate } from "../../../../modules/editor/shell/utils/scriptDiffTree";
 import { StepScriptGenerationView } from "./View";
 
