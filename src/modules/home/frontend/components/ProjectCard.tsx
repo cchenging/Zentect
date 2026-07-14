@@ -1,6 +1,6 @@
 // 📁 路径：src/modules/home/frontend/components/ProjectCard.tsx
 import React from 'react';
-import type { ProjectRecord } from '../types';
+import type { ProjectRecord } from '../../types';
 import { AppIcon } from '../../../../renderer/src/components/app-icon';
 import { useI18n } from '../../../../renderer/src/store/useI18n';
 import { formatDurationStandard } from '../../../../renderer/src/utils/timeUtils';

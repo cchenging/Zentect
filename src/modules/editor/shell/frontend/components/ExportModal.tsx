@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { useProjectStore } from '../../../../editor/stores/useProjectStore';
+import { useStep3Store } from '../../../../pipeline/stores/useStep3Store';
 import { getSafeMediaUrl } from '../../../../../renderer/src/utils/formatUrl';
 import { formatDurationStandard } from '../../../../../renderer/src/utils/timeUtils';
 import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
@@ -35,7 +36,7 @@ export const ExportModal: React.FC = () => {
   const { coverUrl, currentDuration, exactResolutionStr, estimatedSizeMB } = useMemo(() => {
     if (!open) return { coverUrl: '', currentDuration: 0, exactResolutionStr: '1920x1080', estimatedSizeMB: '0.0 MB' };
 
-    const state = useEditorStore.getState();
+    const state = useProjectStore.getState();
     const activeShots = state.storyboardMode === 'ai' ? state.aiShots : state.shots;
     const mediaArray = Array.isArray(state.mediaItems) ? state.mediaItems : [];
     let url = '';
@@ -64,7 +65,7 @@ export const ExportModal: React.FC = () => {
   }, [open, videoRes, exportRatio]);
 
   const handleOpen = async () => {
-    const state = useEditorStore.getState();
+    const state = useProjectStore.getState();
     const activeShots = state.storyboardMode === 'ai' ? state.aiShots : state.shots;
     if (!activeShots || activeShots.length === 0) {
       AppNotifier.warn('BIZ_TRACK_EMPTY');
@@ -150,7 +151,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     setIsExporting(true);
     setExportProgress(0);
     try {
-      const state = useEditorStore.getState();
+      const state = useProjectStore.getState();
       const isAiExport = state.storyboardMode === 'ai';
       const targetShots = isAiExport ? state.aiShots : state.shots;
       if (isAiExport && targetShots.find((s) => s.aiText && !s.audioPath))
@@ -190,7 +191,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       }
       /** 文案 TXT 导出：前端生成文本内容，通过 IPC 写入文件 */
       if (exportTxt) {
-        const txtContent = generateTXT(state.scriptParagraphs || []);
+        const txtContent = generateTXT(useStep3Store.getState().scriptParagraphs || []);
         tasks.push(API.export.txt({
           ...payload,
           content: txtContent,
@@ -226,12 +227,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if (!isExporting) setOpen(next);
   };
 
-  const projectName = useEditorStore((s) => s.projectName) || '';
-  const storyboardMode = useEditorStore((s) => s.storyboardMode);
+  const projectName = useProjectStore((s) => s.projectName) || '';
+  const storyboardMode = useProjectStore((s) => s.storyboardMode);
 
   return (
     <>
-      <Button size="sm" onClick={handleOpen} className="h-8 px-4 font-semibold shadow-sm text-[11px] rounded">
+      <Button size="sm" onClick={handleOpen} className="h-7 px-3 font-semibold shadow-sm text-[11px] rounded">
         {t.export.topbar_export}
       </Button>
 

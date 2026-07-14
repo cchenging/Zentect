@@ -2,7 +2,7 @@ import React, { useEffect, Suspense } from 'react';
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { AppLayout } from './layout/AppLayout';
-import { Settings as SettingsPage } from './pages/settings';
+import { Settings as SettingsPage } from '@modules/settings/frontend';
 import { IPCBridge } from './core/IPCBridge';
 import { useEditorStore } from './store/useStore';
 import { API } from './api';
@@ -20,8 +20,8 @@ import { useNotificationCenter } from './services/NotificationCenter';
 // ==========================================================
 const Home = React.lazy(() => import('@modules/home').then(m => ({ default: m.HomeContainer })));
 const Editor = React.lazy(() => import('@modules/editor'));
-const ModelsPage = React.lazy(() => import('./pages/models'));
-const UserSettingsPage = React.lazy(() => import('./pages/user-settings'));
+const ModelsPage = React.lazy(() => import('@modules/models'));
+const UserSettingsPage = React.lazy(() => import('@modules/user-settings'));
 
 function App() {
   const mode = useEditorStore((state) => state.mode);

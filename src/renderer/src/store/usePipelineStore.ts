@@ -4,8 +4,8 @@
  * 包括：步骤执行状态、子步骤状态、管线运行状态、参数配置
  */
 import { create } from 'zustand';
-import type { StepStatus } from '../../shared/types/entities/editor';
-import type { PipelineParams, ExtractionConfig } from '../../shared/types/entities/editor';
+import type { StepStatus } from '../../../shared/types/entities/editor';
+import type { PipelineParams, ExtractionConfig } from '../../../shared/types/entities/editor';
 
 const INITIAL_STEP_STATUSES: StepStatus[] = ['idle', 'idle', 'idle', 'idle', 'idle'];
 const INITIAL_SUB_STEP_STATUSES: Record<string, StepStatus> = {

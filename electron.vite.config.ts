@@ -32,6 +32,14 @@ export default defineConfig({
         ]
       }
     },
-    plugins: [react()]
+    plugins: [react()],
+    build: {
+      rollupOptions: {
+        external: ['better-sqlite3']
+      }
+    },
+    optimizeDeps: {
+      exclude: ['better-sqlite3']
+    }
   }
 })

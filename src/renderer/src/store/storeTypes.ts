@@ -102,65 +102,11 @@ export interface ExtractedData {
   framePaths: string[];
 }
 
-export interface DataSlice {
-  projectId: string | null;
-  projectPath: string | null;
-  projectName: string;
-  mediaItems: MediaItem[];
-  roles: Role[];
-  shots: Shot[];
-  aiShots: Shot[];
-  characterRelations: CharacterRelation[];
-  storyboardMode: 'original' | 'ai';
-  canvasData: any;
-
-  /** 💥 合并后的单职责核心资产区：完全承载音轨路径与 ASR 文本流契约 */
-  extractedData: ExtractedData;
-
-  pastSnapshots: HistorySnapshot[];
-  futureSnapshots: HistorySnapshot[];
-  saveSnapshot: () => void;
-  undo: () => void;
-  redo: () => void;
-
-  setProjectMeta: (id: string, name: string) => void;
-  resetProjectState: () => void;
-  hydrateProjectData: (data: Partial<EditorState>) => void;
-  setStoryboardMode: (mode: 'original' | 'ai') => void;
-
-  /** 💥 单职责 Action：更新音轨或 ASR 增量数据，并自动触发防抖落盘 */
-  setExtractedData: (data: Partial<ExtractedData>) => void;
-
-  addMediaItem: (item: MediaItem) => void;
-  addMediaItems: (items: MediaItem[]) => void;
-  setMediaItems: (items: MediaItem[]) => void;
-  updateMediaItem: (id: string, updates: Partial<MediaItem>) => void;
-  removeMediaItem: (id: string) => void;
-
-  updateShot: (id: string, updates: Partial<Shot>) => void;
-  removeShot: (id: string) => void;
-  addBlankShot: () => void;
-  moveShotByIndex: (fromIndex: number, toIndex: number) => void;
-  setAiShots: (shots: Shot[]) => void;
-  updateAiShot: (id: string, updates: Partial<Shot>) => void;
-  insertOriginalShot: (shot: Shot) => void;
-
-  updateRole: (id: string, updates: Partial<Role>) => void;
-  mergeRoles: (sourceRoleId: string, targetRoleId: string) => void;
-  unmergeRole: (sourceRoleId: string, targetRoleId: string) => void;
-
-  applyAudioDomino: (shotId: string, audioPath: string, audioDuration: number, strategy: 'slow' | 'freeze' | 'cut', target?: 'shots' | 'aiShots') => void;
-  reorderShot: (id: string, droppedTimeX: number) => void;
-  addShotFromMedia: (media: any, droppedTimeX: number) => void;
-  splitShot: (splitTime: number) => void;
-
-  addExtractedAssets: (newShots: any[], newRoles: any[]) => void;
-  replaceExtractedAssets: (mediaId: string, newShots: any[], newRoles: any[]) => void;
-
-  importNodeMedia: (nodeId?: string) => Promise<void>;
-}
-
-export type EditorState = UISlice & PlayerSlice & DataSlice & EditorSlice;
+/**
+ * @deprecated DataSlice 已迁移至 useProjectStore。
+ * 保留 ExtractedData / HistorySnapshot / CharacterRelation 作为独立类型供引用。
+ */
+export type EditorState = UISlice & PlayerSlice & EditorSlice;
 
 // --- 步骤状态类型 ---
 export type StepStatus = 'idle' | 'running' | 'completed' | 'failed';

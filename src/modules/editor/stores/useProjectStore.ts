@@ -2,19 +2,23 @@
  * useProjectStore — 项目核心数据独立 Store
  *
  * @description
- * 从 dataSlice 中提取的项目核心数据：媒体素材、角色、镜头、撤销/重做等。
- * dataSlice 原是全局 Store 中最复杂的 Slice（668 行），独立后成为项目生命周期内的核心数据源。
+ * 项目核心数据 Store：媒体素材、角色、镜头、撤销/重做等。
+ * 从原全局 Store 的 dataSlice 独立而来，现为项目生命周期内的核心数据源。
  *
- * 跨 Store 引用：迁移过渡期通过 useStore.getState() 访问尚在全局 Store 中的字段，
- * 待阶段三消费者迁移完成后切换为 useXxxStore.getState()。
- *
- * 迁移阶段：阶段一 — 基础设施（无行为变更）
+ * 迁移完成阶段：数据已完全独立，全局 Store 不再包含 DataSlice。
  */
 
 import { create } from 'zustand';
 import type { MediaItem, Shot, Role } from '../../../shared/types';
 import { AppNotifier } from '../../../renderer/src/core/AppNotifier';
 import { API } from '../../../renderer/src/api';
+import { usePipelineStore } from '../../../renderer/src/store/usePipelineStore';
+import { useStep1Store } from '../../pipeline/stores/useStep1Store';
+import { useStep2Store } from '../../pipeline/stores/useStep2Store';
+import { useStep3Store } from '../../pipeline/stores/useStep3Store';
+import { useStep4Store } from '../../pipeline/stores/useStep4Store';
+import { useStep5Store } from '../../pipeline/stores/useStep5Store';
+import { useEditorNavStore } from './useEditorNavStore';
 
 /** 💥 工业级减法：防抖影子保存器，防止主进程磁盘 I/O 被高频更新锁死 */
 let shadowSaveTimer: any = null;
@@ -119,9 +123,7 @@ export interface ProjectStore {
   importNodeMedia: (nodeId?: string) => Promise<void>;
 
   // === 以下方法在阶段三迁移后生效 ===
-  /** @deprecated 阶段三迁移到 useProjectStore 后启用完整重置逻辑 */
   resetProjectState: () => void;
-  /** @deprecated 阶段三迁移到 useProjectStore 后启用完整注水逻辑 */
   hydrateProjectData: (projectData: any) => void;
 }
 
@@ -198,7 +200,12 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
   setStoryboardMode: (mode) => set({ storyboardMode: mode }),
 
   addMediaItem: (item) => set((s) => ({ mediaItems: [...s.mediaItems, item] })),
-  addMediaItems: (items) => set((s) => ({ mediaItems: [...s.mediaItems, ...items] })),
+  addMediaItems: (items) => set((s) => {
+    const existingIds = new Set(s.mediaItems.map((i: any) => i.id));
+    const uniqueItems = items.filter((i: any) => !existingIds.has(i.id));
+    if (uniqueItems.length === 0) return { mediaItems: s.mediaItems };
+    return { mediaItems: [...s.mediaItems, ...uniqueItems] };
+  }),
   setMediaItems: (items) => set({ mediaItems: items }),
   updateMediaItem: (id, updates) =>
     set((s) => ({
@@ -543,103 +550,291 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     AppNotifier.success('✂️ 剃刀切割完成');
   },
 
-  /** @deprecated 阶段三迁移后启用完整重置逻辑，包括跨 Store 状态清理 */
-  resetProjectState: () =>
+  resetProjectState: () => set(() => ({
+    projectId: null, projectName: '加载中...',
+    mediaItems: [], roles: [], shots: [], characterRelations: [],
+    storyboardMode: 'original', aiShots: [],
+    canvasData: null, pastSnapshots: [], futureSnapshots: [],
+    extractedData: { videoPath: '', vocalPath: '', backgroundPath: '', asrLines: [], frameCount: 0, framePaths: [] },
+  })),
+
+  hydrateProjectData: (projectData) => {
+    const state = get();
+    if (!projectData) return;
+
+    const raw = projectData as any;
+    let parsed: any = {};
+    if (typeof raw.metadata === 'string' && raw.metadata.trim().length > 0) {
+      try { parsed = JSON.parse(raw.metadata); } catch { parsed = {}; }
+    } else if (raw.metadata && typeof raw.metadata === 'object') {
+      parsed = raw.metadata;
+    }
+
+    const video = raw.videoPath || raw.video_path || parsed.videoPath || '';
+    const vocal = raw.vocalPath || parsed.vocalPath || '';
+    const background = raw.backgroundPath || parsed.backgroundPath || '';
+    const asr = raw.asrLines || parsed.asrLines || [];
+    const frameCount = raw.frameCount || parsed.frameCount || 0;
+
+    // 如果有视频路径但 mediaItems 为空，自动构建媒体项确保播放器能识别
+    let mediaItems = raw.mediaItems || state.mediaItems;
+    if (video && (!mediaItems || mediaItems.length === 0)) {
+      mediaItems = [{
+        id: 'main-video-source',
+        name: '原始导入多媒体文件',
+        filePath: video,
+        path: video,
+        type: 'video'
+      }];
+    }
+
+    // === 从 mediaItems 的视频项或元数据中提取关键帧路径给帧预览网格！ ===
+    let framePaths: string[] = [];
+    const videoItems = mediaItems.filter((m: any) => m.type === 'video');
+
+    /** 💥 关键修复：始终优先从 mediaItems.frames（DB 最新数据）提取帧路径，
+     *  metadata.framePaths 可能是旧策略的残留（如 211 帧），而 DB 已更新为新值（如 13 帧） */
+    videoItems.forEach((media: any) => {
+      if (media.frames && Array.isArray(media.frames) && media.frames.length > 0) {
+        const frames = media.frames.map((frame: any) =>
+          typeof frame === 'string' ? frame : (frame.path || frame.filePath || frame.thumbnail || '')
+        ).filter(Boolean);
+        framePaths = [...framePaths, ...frames];
+      }
+    });
+
+    console.log('====== [HYDRATE 帧路径诊断] ======', {
+      videoItemsCount: videoItems.length,
+      firstVideoFrames: videoItems[0]?.frames?.slice?.(0, 3),
+      framePathsCount: framePaths.length,
+      framePathsSample: framePaths.slice(0, 3),
+      metaFramePaths: (raw.framePaths || parsed.framePaths)?.slice?.(0, 3),
+    });
+
+    /** 降级：如果 DB 中没有 frames，再从 metadata.framePaths 恢复 */
+    if (framePaths.length === 0) {
+      const metaFramePaths = raw.framePaths || parsed.framePaths;
+      if (metaFramePaths && Array.isArray(metaFramePaths) && metaFramePaths.length > 0) {
+        framePaths = metaFramePaths;
+      }
+    }
+
+    const existingAudioTypes = new Set(
+      mediaItems
+        .filter((m: any) => m.type === 'audio')
+        .map((m: any) => m.sourceType)
+    );
+    const newItems: any[] = [];
+
+    videoItems.forEach((media: any) => {
+      // 生成音频项
+      if (media.extractedVocals && !existingAudioTypes.has('vocals')) {
+        newItems.push({
+          id: crypto.randomUUID ? crypto.randomUUID() : `${media.id}_vocals_${Date.now()}`,
+          type: 'audio',
+          sourceType: 'vocals',
+          fileName: '分离人声',
+          name: '分离人声',
+          filePath: media.extractedVocals,
+          projectId: raw.id || state.projectId,
+          mediaId: media.id,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      if (media.extractedBgm && !existingAudioTypes.has('bgm')) {
+        newItems.push({
+          id: crypto.randomUUID ? crypto.randomUUID() : `${media.id}_bgm_${Date.now()}`,
+          type: 'audio',
+          sourceType: 'bgm',
+          fileName: '分离背景音',
+          name: '分离背景音',
+          filePath: media.extractedBgm,
+          projectId: raw.id || state.projectId,
+          mediaId: media.id,
+          createdAt: new Date().toISOString(),
+        });
+      }
+
+      if (media.extractedAudio && !media.extractedVocals && !media.extractedBgm && !existingAudioTypes.has('extracted')) {
+        newItems.push({
+          id: crypto.randomUUID ? crypto.randomUUID() : `${media.id}_extracted_${Date.now()}`,
+          type: 'audio',
+          sourceType: 'extracted',
+          fileName: '提取音频',
+          name: '提取音频',
+          filePath: media.extractedAudio,
+          projectId: raw.id || state.projectId,
+          mediaId: media.id,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    });
+
+    // 添加新生成的音频项
+    if (newItems.length > 0) {
+      mediaItems = [...mediaItems, ...newItems];
+    }
+
+    // 从 metadata 恢复子步骤状态
+    /** 💥 关键修复：raw 顶层已包含 metadata 展开的字段，优先从 raw 读取 */
+    let subStepStatuses: Record<string, string> = state.subStepStatuses || {};
+    let subStepProgresses: Record<string, number> = state.subStepProgresses || {};
+    let stepStatuses: string[] = state.stepStatuses || ['idle', 'idle', 'idle', 'idle', 'idle'];
+    let stepCompleted: boolean[] = state.stepCompleted || [false, false, false, false, false];
+
+    const rawSubStepStatuses = raw.subStepStatuses || parsed.subStepStatuses;
+    if (rawSubStepStatuses) {
+      try {
+        subStepStatuses = typeof rawSubStepStatuses === 'string'
+          ? JSON.parse(rawSubStepStatuses)
+          : rawSubStepStatuses;
+      } catch {}
+    }
+
+    const rawSubStepProgresses = raw.subStepProgresses || parsed.subStepProgresses;
+    if (rawSubStepProgresses) {
+      try {
+        subStepProgresses = typeof rawSubStepProgresses === 'string'
+          ? JSON.parse(rawSubStepProgresses)
+          : rawSubStepProgresses;
+      } catch {}
+    }
+
+    const rawStepStatuses = raw.stepStatuses || parsed.stepStatuses;
+    if (rawStepStatuses) {
+      try {
+        stepStatuses = typeof rawStepStatuses === 'string'
+          ? JSON.parse(rawStepStatuses)
+          : rawStepStatuses;
+      } catch {}
+    }
+
+    const rawStepCompleted = raw.stepCompleted || parsed.stepCompleted;
+    if (rawStepCompleted) {
+      try {
+        stepCompleted = typeof rawStepCompleted === 'string'
+          ? JSON.parse(rawStepCompleted)
+          : rawStepCompleted;
+      } catch {}
+    }
+
+    /** 💥 自动修正状态不一致：如果 subStepStatuses 全是 completed 但 stepStatuses[0] 还是 running 且 stepCompleted[0] 是 false */
+    if (
+      subStepStatuses &&
+      typeof subStepStatuses === 'object' &&
+      subStepStatuses.frames === 'completed' &&
+      subStepStatuses.audio === 'completed' &&
+      subStepStatuses.whisper === 'completed' &&
+      subStepStatuses.faces === 'completed' &&
+      Array.isArray(stepStatuses) &&
+      stepStatuses[0] === 'running' &&
+      Array.isArray(stepCompleted) &&
+      stepCompleted[0] === false
+    ) {
+      stepStatuses = [...stepStatuses];
+      stepStatuses[0] = 'completed';
+      stepCompleted = [...stepCompleted];
+      stepCompleted[0] = true;
+    }
+
+    /** 推算当前步骤 */
+    const calculatedCurrentStep = (() => {
+      const saved = raw.currentStep || parsed.currentStep;
+      if (saved && typeof saved === 'number') return saved;
+      const completed = stepCompleted || state.stepCompleted;
+      if (Array.isArray(completed)) {
+        const lastCompletedIdx = completed.lastIndexOf(true);
+        if (lastCompletedIdx >= 0 && lastCompletedIdx < completed.length - 1) return lastCompletedIdx + 2;
+        if (lastCompletedIdx === completed.length - 1) return completed.length;
+      }
+      return state.currentStep || 1;
+    })();
+
+    // ============ 直写局部 Store ============
+
+    // ── PipelineStore：步骤状态 ──
+    const ps = usePipelineStore.getState();
+    for (let i = 1; i <= 5; i++) {
+      if (typeof ps.setStepStatus === 'function') ps.setStepStatus(i, (stepStatuses[i - 1] as any) || 'idle');
+    }
+    for (let i = 1; i <= 5; i++) {
+      if (typeof ps.setStepCompleted === 'function') ps.setStepCompleted(i, !!stepCompleted[i - 1]);
+    }
+    if (typeof ps.setSubStepStatus === 'function') {
+      for (const [key, status] of Object.entries(subStepStatuses)) {
+        ps.setSubStepStatus(key, (status as string) || 'idle');
+      }
+    }
+    if (typeof ps.setSubStepProgress === 'function') {
+      for (const [key, progress] of Object.entries(subStepProgresses)) {
+        ps.setSubStepProgress(key, typeof progress === 'number' ? progress : 0);
+      }
+    }
+    if (raw.pipelineParams && typeof ps.setPipelineParams === 'function') ps.setPipelineParams(raw.pipelineParams as any);
+    if (raw.extractionConfig !== undefined && typeof ps.setExtractionConfig === 'function') ps.setExtractionConfig(raw.extractionConfig as any);
+
+    // ── Step1Store ──
+    const s1 = useStep1Store.getState();
+    if (typeof s1.setAsrLines === 'function') s1.setAsrLines(asr || []);
+    if (typeof s1.setFrameCount === 'function') s1.setFrameCount(Number(raw.frameCount || parsed.frameCount || 0));
+    if (typeof s1.setAudioSeparated === 'function') s1.setAudioSeparated(!!raw.audioSeparated);
+    if (typeof s1.setSubStepStatus === 'function') {
+      for (const [key, status] of Object.entries(subStepStatuses)) {
+        s1.setSubStepStatus(key, (status as string) || 'idle');
+      }
+    }
+    if (typeof s1.setSubStepProgress === 'function') {
+      for (const [key, progress] of Object.entries(subStepProgresses)) {
+        s1.setSubStepProgress(key, typeof progress === 'number' ? progress : 0);
+      }
+    }
+    if (raw.extractionConfig && typeof s1.updateExtractionConfig === 'function') s1.updateExtractionConfig(raw.extractionConfig as any);
+
+    // ── Step2Store ──
+    const s2 = useStep2Store.getState();
+    if (typeof s2.setVlmFrames === 'function') s2.setVlmFrames(Array.isArray(raw.vlmFrames) ? raw.vlmFrames : []);
+
+    // ── Step3Store ──
+    const s3 = useStep3Store.getState();
+    if (typeof s3.setScriptParagraphs === 'function') s3.setScriptParagraphs(Array.isArray(raw.scriptParagraphs) ? raw.scriptParagraphs : []);
+    if (raw.scriptStyle && typeof s3.setScriptStyle === 'function') s3.setScriptStyle(raw.scriptStyle as string);
+    if (raw.speechRate !== undefined && typeof s3.setSpeechRate === 'function') s3.setSpeechRate(Number(raw.speechRate) || 4.5);
+    if (raw.pipelineParams && typeof s3.setPipelineParams === 'function') s3.setPipelineParams(raw.pipelineParams as any);
+
+    // ── Step4Store ──
+    const s4 = useStep4Store.getState();
+    if (typeof s4.setTtsResults === 'function') s4.setTtsResults(Array.isArray(raw.ttsResults) ? raw.ttsResults : []);
+    if (raw.ttsEngine && typeof s4.setTtsEngine === 'function') s4.setTtsEngine(raw.ttsEngine as string);
+    if (raw.ttsVoiceId !== undefined && typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((raw.ttsVoiceId as string) || '');
+
+    // ── Step5Store ──
+    const s5 = useStep5Store.getState();
+    if (typeof s5.setVideoChunks === 'function') s5.setVideoChunks(Array.isArray(raw.videoChunks) ? raw.videoChunks : []);
+
+    // ── EditorNavStore ──
+    const nav = useEditorNavStore.getState();
+    if (typeof nav.setCurrentStep === 'function') nav.setCurrentStep(calculatedCurrentStep);
+
+    // ============ 写回独立 Store（仅保留项目核心字段） ============
     set(() => ({
-      projectId: null,
-      projectName: '加载中...',
-      mediaItems: [],
-      roles: [],
-      shots: [],
-      characterRelations: [],
-      storyboardMode: 'original',
-      aiShots: [],
-      canvasData: null,
-      pastSnapshots: [],
-      futureSnapshots: [],
+      projectId: raw.id || state.projectId,
+      projectName: raw.name || state.projectName,
+      mediaItems,
+      shots: raw.shots || parsed.shots || state.shots,
+      aiShots: raw.aiShots || parsed.aiShots || state.aiShots,
+      roles: raw.roles || parsed.roles || state.roles,
       extractedData: {
-        videoPath: '',
-        vocalPath: '',
-        backgroundPath: '',
-        asrLines: [],
-        frameCount: 0,
-        framePaths: [],
-      },
-    })),
-
-  /** @deprecated 阶段三迁移后启用完整注水逻辑，包括 extractionConfig / vlmFrames 等步骤数据恢复 */
-  hydrateProjectData: (projectData) =>
-    set((s) => {
-      if (!projectData) return s;
-      const raw = projectData as any;
-
-      let parsed: any = {};
-      if (typeof raw.metadata === 'string' && raw.metadata.trim().length > 0) {
-        try { parsed = JSON.parse(raw.metadata); } catch { parsed = {}; }
-      } else if (raw.metadata && typeof raw.metadata === 'object') {
-        parsed = raw.metadata;
+        videoPath: video,
+        vocalPath: vocal,
+        backgroundPath: background,
+        asrLines: (Array.isArray(asr) && asr.length > 0) ? asr : state.extractedData.asrLines,
+        /** 💥 关键修复：如果本次从 mediaItems 提取不到帧路径，保留 store 中已有的 framePaths，
+         *  防止第一次 hydrate（DB 原始数据无 frames）清空第二次 hydrate（metadata 含 frames）的结果 */
+        framePaths: framePaths.length > 0 ? framePaths : (state.extractedData?.framePaths || []),
+        frameCount: frameCount || framePaths.length || (state.extractedData?.framePaths?.length || 0)
       }
+    }));
+  },
 
-      const video = raw.videoPath || raw.video_path || parsed.videoPath || '';
-
-      let mediaItems = raw.mediaItems || s.mediaItems;
-      if (video && (!mediaItems || mediaItems.length === 0)) {
-        mediaItems = [
-          {
-            id: 'main-video-source',
-            name: '原始导入多媒体文件',
-            filePath: video,
-            path: video,
-            type: 'video',
-          },
-        ];
-      }
-
-      let framePaths: string[] = [];
-      const videoItems = mediaItems.filter((m: any) => m.type === 'video');
-      videoItems.forEach((media: any) => {
-        if (media.frames && Array.isArray(media.frames) && media.frames.length > 0) {
-          const frames = media.frames
-            .map((frame: any) =>
-              typeof frame === 'string'
-                ? frame
-                : frame.path || frame.filePath || frame.thumbnail || ''
-            )
-            .filter(Boolean);
-          framePaths = [...framePaths, ...frames];
-        }
-      });
-
-      if (framePaths.length === 0) {
-        const metaFramePaths = raw.framePaths || parsed.framePaths;
-        if (metaFramePaths && Array.isArray(metaFramePaths) && metaFramePaths.length > 0) {
-          framePaths = metaFramePaths;
-        }
-      }
-
-      return {
-        projectId: raw.id || s.projectId,
-        projectName: raw.name || s.projectName,
-        mediaItems,
-        shots: raw.shots || parsed.shots || s.shots,
-        aiShots: raw.aiShots || parsed.aiShots || s.aiShots,
-        roles: raw.roles || parsed.roles || s.roles,
-        extractedData: {
-          videoPath: video,
-          vocalPath: raw.vocalPath || parsed.vocalPath || '',
-          backgroundPath: raw.backgroundPath || parsed.backgroundPath || '',
-          asrLines: (raw.asrLines || parsed.asrLines || s.extractedData.asrLines || []),
-          framePaths:
-            framePaths.length > 0
-              ? framePaths
-              : s.extractedData?.framePaths || [],
-          frameCount:
-            raw.frameCount ||
-            parsed.frameCount ||
-            framePaths.length ||
-            s.extractedData?.framePaths?.length ||
-            0,
-        },
-      };
-    }),
 }));

@@ -2,12 +2,11 @@
 // 原 editor/hooks/useExtractionHandler.ts — 已迁移
 
 import { useEffect } from 'react';
-import { useStore } from '../../../../../renderer/src/store/useStore';
 import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
 import { useStep2Store } from '../../../../pipeline/stores/useStep2Store';
 import { useProjectStore } from '../../../../editor/stores/useProjectStore';
-import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
 import { useEditorNavStore } from '../../../../editor/stores/useEditorNavStore';
+import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
 import { API } from '../../../../../renderer/src/api';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -21,7 +20,8 @@ function formatSeconds(seconds: number): string {
 export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Promise<void>) => {
   useEffect(() => {
     API.events.onExtractionSuccess(async (payload: any) => {
-      const state = useStore.getState();
+      const projectState = useProjectStore.getState();
+      const navState = useEditorNavStore.getState();
       const pipelineState = usePipelineStore.getState();
       pipelineState.setStepCompleted(1, true);
       pipelineState.setStepStatus(1, 'completed');
@@ -42,7 +42,7 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
       pipelineState.setSubStepStatus('whisper', hasAsrLines ? 'completed' : (pipelineState.subStepStatuses.whisper || 'idle'));
       pipelineState.setSubStepStatus('faces', hasRoles ? 'completed' : (pipelineState.subStepStatuses.faces || 'idle'));
 
-      let updatedMediaItems = [...state.mediaItems];
+      let updatedMediaItems = [...projectState.mediaItems];
       const mediaId: string | null = payload.mediaId || payload.media?.id;
 
       const asrLines = shots
@@ -112,7 +112,7 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             updatedMediaItems.push({
               id: uuidv4(), type: 'audio', sourceType: 'vocals',
               fileName: '分离人声', name: '分离人声',
-              filePath: media.extractedVocals, projectId: state.projectId, mediaId,
+              filePath: media.extractedVocals, projectId: projectState.projectId, mediaId,
               createdAt: new Date().toISOString(),
             });
           }
@@ -126,7 +126,7 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             updatedMediaItems.push({
               id: uuidv4(), type: 'audio', sourceType: 'bgm',
               fileName: '分离背景音', name: '分离背景音',
-              filePath: media.extractedBgm, projectId: state.projectId, mediaId,
+              filePath: media.extractedBgm, projectId: projectState.projectId, mediaId,
               createdAt: new Date().toISOString(),
             });
           }
@@ -140,13 +140,13 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             updatedMediaItems.push({
               id: uuidv4(), type: 'audio', sourceType: 'extracted',
               fileName: '提取音频', name: '提取音频',
-              filePath: media.extractedAudio, projectId: state.projectId, mediaId,
+              filePath: media.extractedAudio, projectId: projectState.projectId, mediaId,
               createdAt: new Date().toISOString(),
             });
           }
         }
 
-        state.setMediaItems(updatedMediaItems);
+        projectState.setMediaItems(updatedMediaItems);
 
         if (mediaId) {
           try {
@@ -164,36 +164,37 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
       }
 
       if (shots.length > 0) {
-        state.hydrateProjectData({
+        projectState.hydrateProjectData({
           shots,
-          aiShots: payload.aiShots || state.aiShots,
-          roles: payload.roles || state.roles,
+          aiShots: payload.aiShots || projectState.aiShots,
+          roles: payload.roles || projectState.roles,
         });
       }
 
-      const latestState = useStore.getState();
-      if (latestState.projectId) {
+      const latestProjectState = useProjectStore.getState();
+      const latestNavState = useEditorNavStore.getState();
+      if (latestProjectState.projectId) {
         try {
-          await API.project.saveData(latestState.projectId, {
-            shots: latestState.shots, aiShots: latestState.aiShots,
-            roles: latestState.roles, mediaItems: latestState.mediaItems,
+          await API.project.saveData(latestProjectState.projectId, {
+            shots: latestProjectState.shots, aiShots: latestProjectState.aiShots,
+            roles: latestProjectState.roles, mediaItems: latestProjectState.mediaItems,
             asrLines: useStep1Store.getState().asrLines, frameCount: useStep1Store.getState().frameCount,
-            framePaths: latestState.extractedData?.framePaths || [],
+            framePaths: latestProjectState.extractedData?.framePaths || [],
             audioSeparated: useStep1Store.getState().audioSeparated,
             subStepStatuses: pipelineState.subStepStatuses,
             subStepProgresses: pipelineState.subStepProgresses,
             stepStatuses: pipelineState.stepStatuses,
             stepCompleted: pipelineState.stepCompleted,
-            currentStep: latestState.currentStep,
-            storyboardMode: latestState.storyboardMode,
+            currentStep: latestNavState.currentStep,
+            storyboardMode: latestProjectState.storyboardMode,
             extractionConfig: useStep1Store.getState().extractionConfig,
             vlmFrames: useStep2Store.getState().vlmFrames,
           });
         } catch { }
       }
 
-      if (state.isAutoMode && onAutoContinue) {
-        state.setCurrentStep(2);
+      if (navState.isAutoMode && onAutoContinue) {
+        navState.setCurrentStep(2);
         await onAutoContinue(2);
       }
     });

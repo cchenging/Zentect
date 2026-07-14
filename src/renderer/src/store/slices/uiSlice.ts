@@ -3,6 +3,7 @@ import type { StateCreator } from 'zustand';
 import { API } from '../../api';
 import { AppNotifier } from '../../core/AppNotifier';
 import type { EditorState, UISlice } from '../storeTypes';
+import { useProjectStore } from '../../../../modules/editor/stores/useProjectStore';
 
 // 💥 我们为 UISlice 补充缺失的 saveStatus 方法，补齐类型拼图。
 declare module '../storeTypes' {
@@ -215,7 +216,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
 
       set({ pipelineMessage: '正在抽取音频与关键帧...' });
 
-      const projectId = get().projectId;
+      const projectId = useProjectStore.getState().projectId;
       if (!projectId) {
         AppNotifier.error('项目ID不存在');
         set({ workflowState: 'idle' });
@@ -223,7 +224,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
       }
 
       const newItems = await API.media.import(projectId, paths);
-      get().addMediaItems(newItems);
+      useProjectStore.getState().addMediaItems(newItems);
       
       if (newItems.length > 0) {
          get().selectItem(newItems[0].id, 'media');

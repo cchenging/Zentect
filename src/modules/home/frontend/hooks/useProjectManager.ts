@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useI18n } from '../../../../renderer/src/store/useI18n';
 import { API } from '../../../../renderer/src/api';
 import { AppNotifier } from '../../../../renderer/src/core/AppNotifier';
-import type { ProjectRecord } from '../types';
+import type { ProjectRecord } from '../../types';
 import { FrontendLogger } from '../../../../renderer/src/utils/logger';
 
 /**

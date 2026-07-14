@@ -4,6 +4,7 @@
 import React from 'react'
 import { Clock, Mic, User, Info } from 'lucide-react'
 import { useStore } from '../../../../../renderer/src/store/useStore'
+import { useProjectStore } from '../../../../editor/stores/useProjectStore'
 import { cn } from '../../../../../renderer/src/lib/utils'
 
 interface PropertyBarProps {
@@ -11,8 +12,8 @@ interface PropertyBarProps {
 }
 
 const PropertyBar: React.FC<PropertyBarProps> = ({ className }) => {
-  const shots = useStore((s) => s.shots)
-  const roles = useStore((s) => s.roles)
+  const shots = useProjectStore((s) => s.shots)
+  const roles = useProjectStore((s) => s.roles)
   const selectedItemId = useStore((s) => s.selectedItemId)
   const selectedItemType = useStore((s) => s.selectedItemType)
 

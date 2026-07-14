@@ -3,16 +3,17 @@
 
 import { useEffect } from 'react';
 import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { useProjectStore } from '../../../../editor/stores/useProjectStore';
 import { DraftService } from '../../../../../renderer/src/services/DraftService';
 
 export const useKeyboardShortcuts = () => {
   const nodes = useEditorStore(s => s.nodes);
   const edges = useEditorStore(s => s.edges);
-  const projectId = useEditorStore(s => s.projectId);
+  const projectId = useProjectStore(s => s.projectId);
   const setInspectorOpen = useEditorStore(s => s.setInspectorOpen);
   const setActiveNode = useEditorStore(s => s.setActiveNode);
-  const undo = useEditorStore(s => s.undo);
-  const redo = useEditorStore(s => s.redo);
+  const undo = useProjectStore(s => s.undo);
+  const redo = useProjectStore(s => s.redo);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {

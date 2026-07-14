@@ -3,6 +3,7 @@
 
 import { useCallback } from 'react';
 import { useStore } from '../../../../../renderer/src/store/useStore';
+import { useProjectStore } from '../../../../editor/stores/useProjectStore';
 import { useEditorNavStore } from '../../../stores/useEditorNavStore';
 import { API } from '../../../../../renderer/src/api';
 import { usePipelineOrchestrator } from './usePipelineOrchestrator';
@@ -18,7 +19,7 @@ interface StepRunnerResult {
 export const useStepRunner = (projectId: string | undefined): StepRunnerResult => {
   const currentStep = useEditorNavStore((s) => s.currentStep);
   const setCurrentStep = useEditorNavStore((s) => s.setCurrentStep);
-  const addMediaItems = useStore((s) => s.addMediaItems);
+  const addMediaItems = useProjectStore((s) => s.addMediaItems);
   const setActivePlaySource = useStore((s) => s.setActivePlaySource);
 
   const { executeStep, startCurrentStep, abortPipeline } = usePipelineOrchestrator();

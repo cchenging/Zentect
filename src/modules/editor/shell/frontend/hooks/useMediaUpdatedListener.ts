@@ -7,6 +7,7 @@
  */
 import { useEffect } from 'react';
 import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { useProjectStore } from '../../../../editor/stores/useProjectStore';
 
 interface MediaUpdatedPayload {
   projectId: string;
@@ -23,7 +24,7 @@ export function useMediaUpdatedListener() {
       if (!payload || !payload.mediaId) return;
 
       const { mediaId, projectId: _projectId, ...updates } = payload;
-      const store = useEditorStore.getState();
+      const projectStore = useProjectStore.getState();
 
       // 只更新有实际值的字段，避免覆盖已有字段为 undefined
       const filtered: Record<string, any> = {};
@@ -34,12 +35,12 @@ export function useMediaUpdatedListener() {
       }
 
       if (Object.keys(filtered).length > 0) {
-        store.updateMediaItem(mediaId, filtered);
+        projectStore.updateMediaItem(mediaId, filtered);
 
         // 如果更新的 mediaId 恰好等于 activePlaySource.id，同步更新 activePlaySource
-        const currentSource = store.activePlaySource;
+        const currentSource = useEditorStore.getState().activePlaySource;
         if (currentSource && (currentSource as any).id === mediaId) {
-          store.setActivePlaySource({ ...currentSource, ...filtered } as any);
+          useEditorStore.getState().setActivePlaySource({ ...currentSource, ...filtered } as any);
         }
       }
     };

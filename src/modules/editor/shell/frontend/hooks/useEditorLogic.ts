@@ -28,8 +28,9 @@ export const useEditorHydration = (id: string | undefined) => {
 
     let isMounted = true;
     const store = useEditorStore.getState();
+    const projectStore = useProjectStore.getState();
 
-    store.resetProjectState();
+    projectStore.resetProjectState();
     // 逐个重置局部 Store
     useProjectStore.getState().resetProjectState?.();
     usePipelineStore.getState().resetAllStepStatuses?.();
@@ -70,7 +71,7 @@ export const useEditorHydration = (id: string | undefined) => {
         if (!currentProject) throw new AppError(ErrorCode.DB_RECORD_NOT_FOUND, `在底座数据库中未识别到工程: ${id}`);
 
         if (isMounted) {
-          store.setProjectMeta(currentProject.id, currentProject.name);
+          projectStore.setProjectMeta(currentProject.id, currentProject.name);
         }
 
         const loadRes = await window.api.ipc.invoke(IPC_CHANNELS.PROJECT_LOAD_DATA, id);
@@ -79,7 +80,7 @@ export const useEditorHydration = (id: string | undefined) => {
         console.log('====== [HYDRO项目进场大快照] ======', projectSnapshot);
 
         if (projectSnapshot && isMounted) {
-          store.hydrateProjectData(projectSnapshot);
+          projectStore.hydrateProjectData(projectSnapshot);
 
           const mediaItems = projectSnapshot.mediaItems || [];
           const videoMedia = mediaItems.find((m: any) => m.type === 'video' || m.filePath);
@@ -133,14 +134,14 @@ export const useEditorAutoSave = (id: string | undefined) => {
     if (!id) return;
 
     const handleBeforeUnload = () => {
-      const storeState = useEditorStore.getState();
+      const projectState = useProjectStore.getState();
       const step1State = useStep1Store.getState();
       const pipelineState = usePipelineStore.getState();
       const snapshot = {
-        shots: storeState.shots,
-        aiShots: storeState.aiShots,
-        roles: storeState.roles,
-        mediaItems: storeState.mediaItems,
+        shots: projectState.shots,
+        aiShots: projectState.aiShots,
+        roles: projectState.roles,
+        mediaItems: projectState.mediaItems,
         asrLines: step1State.asrLines,
         frameCount: step1State.frameCount,
         audioSeparated: step1State.audioSeparated,
@@ -148,7 +149,7 @@ export const useEditorAutoSave = (id: string | undefined) => {
         subStepProgresses: pipelineState.subStepProgresses,
         stepStatuses: pipelineState.stepStatuses,
         stepCompleted: pipelineState.stepCompleted,
-        storyboardMode: storeState.storyboardMode
+        storyboardMode: projectState.storyboardMode
       };
       DraftService.saveDraft(id, JSON.stringify(snapshot)).catch(() => {});
     };

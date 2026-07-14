@@ -2,7 +2,7 @@
 // 原 editor/hooks/usePipelineExecutor.ts — 已迁移
 
 import { useEffect, useCallback, useRef } from 'react';
-import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { useProjectStore } from '../../../../editor/stores/useProjectStore';
 import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
 import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
 import { API } from '../../../../../renderer/src/api';
@@ -10,7 +10,7 @@ import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
 import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
 
 export const usePipelineExecutor = () => {
-  const store = useEditorStore();
+  const store = useProjectStore();
   const pipelineStore = usePipelineStore();
   const asrBufferRef = useRef<any[]>([]);
   const renderTimerRef = useRef<any>(null);
@@ -22,7 +22,7 @@ export const usePipelineExecutor = () => {
     console.log('====== [RENDERER RECEIVE 核心大包] ======', JSON.stringify(payload));
 
     const { progress, status, results, error, nodeName } = payload;
-    const storeState = useEditorStore.getState();
+    const storeState = useProjectStore.getState();
     const pipelineState = usePipelineStore.getState();
 
     console.log(`[工作台大总线] 捕获长连接信号 -> 进度: ${progress}% | 状态: ${status}`);
@@ -107,7 +107,7 @@ export const usePipelineExecutor = () => {
   }, [handlePipelineProgress]);
 
   const triggerLinearPipeline = useCallback(async () => {
-    const storeState = useEditorStore.getState();
+    const storeState = useProjectStore.getState();
     const pipelineState = usePipelineStore.getState();
     if (!storeState.projectId) return AppNotifier.error('项目上下文丢失，无法运行');
 

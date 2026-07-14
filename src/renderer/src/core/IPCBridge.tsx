@@ -2,12 +2,12 @@
 // Layer 2: 前端 IPC 桥接层 — 统一侦听管线状态变更、I18N 错误契约载荷、流式安全数据、故事板卡片流式注入
 import React, { useEffect } from 'react';
 import { IPC_CHANNELS } from '../../../modules/infra/ipc/IpcConstants';
-import { useStore } from '../store/useStore';
+import { useProjectStore } from '../../../modules/editor/stores/useProjectStore';
 import { useI18n } from '../store/useI18n';
 import { AppNotifier } from './AppNotifier';
 
 export const IPCBridge: React.FC = () => {
-  const updateShot = useStore((state) => state.updateShot);
+  const updateShot = useProjectStore((state) => state.updateShot);
   const { t } = useI18n();
 
   useEffect(() => {
@@ -46,7 +46,7 @@ export const IPCBridge: React.FC = () => {
     /** 💥 收听主进程的全局异步事件大闸，触发全量数据水合 */
     const handleGlobalPipelineNotify = (_event: any, payload: any) => {
       if (!payload) return;
-      const storeState = useStore.getState();
+      const storeState = useProjectStore.getState();
 
       console.log('[IPCBridge 核心总线] 捕获主进程算力波段信号:', payload.type || payload);
 

@@ -8,6 +8,7 @@ import { useParams } from 'react-router-dom';
 import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
 import { Music, Image, Check } from 'lucide-react';
 import { useStore } from '@renderer/store/useStore';
+import { useProjectStore } from './stores/useProjectStore';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
 import { TopBar } from '@modules/editor/shell';
@@ -55,11 +56,11 @@ export default function Editor() {
   /** 播放器状态 */
   const activePlaySource = useStore((s) => s.activePlaySource);
   const currentTime = useStore((s) => s.currentTime);
-  const mediaItems = useStore((s) => s.mediaItems);
+  const mediaItems = useProjectStore((s) => s.mediaItems);
   const videoChunks = useStep5Store((s) => s.videoChunks);
   const setCurrentTime = useStore((s) => s.setCurrentTime);
   const setActivePlaySource = useStore((s) => s.setActivePlaySource);
-  const extractedData = useStore((s) => s.extractedData);
+  const extractedData = useProjectStore((s) => s.extractedData);
   const extractionConfig = useStep1Store((s) => s.extractionConfig);
   const fps = extractionConfig?.frames?.fps || 2;
 
@@ -130,7 +131,7 @@ export default function Editor() {
           }}
         >
           {/* 视频播放器 */}
-          <div className="glass-card overflow-hidden flex flex-col shrink-0">
+          <div className="glass-card overflow-hidden flex flex-col shrink-0 aspect-video">
             <PreviewMonitor
               mediaPath={activePlaySource?.filePath ?? null}
               startMs={(activePlaySource as any)?.startMs || 0}

@@ -5,6 +5,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Settings as SettingsIcon, Loader2 } from 'lucide-react';
 import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { useProjectStore } from '../../../../editor/stores/useProjectStore';
 import { useI18n } from '../../../../../renderer/src/store/useI18n';
 import { WindowControls } from '../../../../../renderer/src/components/window-controls';
 import { ExportModal } from './ExportModal';
@@ -31,7 +32,7 @@ const SaveStatus: React.FC = () => {
 export const TopBar: React.FC = React.memo(() => {
   const navigate = useNavigate();
   const { t } = useI18n();
-  const projectName = useEditorStore((s) => s.projectName) || t.editor?.unnamed_project || '未命名项目';
+  const projectName = useProjectStore((s) => s.projectName) || t.editor?.unnamed_project || '未命名项目';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(projectName);
 
@@ -43,11 +44,11 @@ export const TopBar: React.FC = React.memo(() => {
   const confirmEdit = async () => {
     const trimmed = editValue.trim();
     if (trimmed && trimmed !== projectName) {
-      const projectId = useEditorStore.getState().projectId;
+      const projectId = useProjectStore.getState().projectId;
       if (projectId) {
         try {
           await API.project.rename(projectId, trimmed);
-          useEditorStore.getState().setProjectMeta(projectId, trimmed);
+          useProjectStore.getState().setProjectMeta(projectId, trimmed);
         } catch (err: any) {
           AppNotifier.error(`项目名更新失败: ${err.message || '未知错误'}`);
         }
@@ -58,7 +59,7 @@ export const TopBar: React.FC = React.memo(() => {
 
   return (
     <>
-      <header className="h-[52px] w-full bg-bg-primary border-b border-border/50 flex items-center justify-between px-3 shrink-0 select-none relative z-40 [-webkit-app-region:drag]">
+      <header className="h-[40px] w-full bg-bg-primary border-b border-border/50 flex items-center justify-between pl-3 pr-1 shrink-0 select-none relative z-40 [-webkit-app-region:drag]">
         <div className="flex items-center gap-3 [-webkit-app-region:no-drag]">
           <button
             onClick={() => navigate('/')}
@@ -89,21 +90,20 @@ export const TopBar: React.FC = React.memo(() => {
           <SaveStatus />
         </div>
 
-        <div className="flex items-center gap-2 [-webkit-app-region:no-drag]">
+        <div className="flex items-center gap-0.5 [-webkit-app-region:no-drag]">
           <ExportModal />
 
           <button
             onClick={() => navigate('/settings')}
-            className="h-8 w-8 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors cursor-pointer outline-none"
+            className="w-[30px] h-[30px] flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors cursor-pointer outline-none"
             title={t.nav?.settings || '设置'}
           >
             <SettingsIcon size={16} />
           </button>
 
-          <div className="w-px h-4 bg-border/50 mx-0.5" />
+          <div className="w-[1px] h-3 bg-border mx-1" />
 
           <WindowControls
-            btnClassName="h-[30px] w-[46px] flex items-center justify-center bg-transparent border-none rounded-md transition-colors cursor-pointer outline-none text-muted-foreground"
             hoverBgClassName="hover:bg-muted hover:text-foreground"
             closeHoverBgClassName="hover:bg-accent-rose hover:text-white"
             onClose={() => navigate('/')}

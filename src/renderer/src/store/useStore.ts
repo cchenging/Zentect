@@ -3,7 +3,6 @@ import { subscribeWithSelector, devtools } from 'zustand/middleware';
 import type { EditorState } from './storeTypes';
 import { createUISlice } from './slices/uiSlice';
 import { createPlayerSlice } from './slices/playerSlice';
-import { createDataSlice } from './slices/dataSlice';
 import { createEditorSlice } from './slices/editorSlice';
 
 export * from './storeTypes';
@@ -14,7 +13,6 @@ export const useStore = create<EditorState>()(
     subscribeWithSelector((...a) => ({
       ...createUISlice(...a),
       ...createPlayerSlice(...a),
-      ...createDataSlice(...a),
       ...createEditorSlice(...a),
     })),
     { name: 'Zentect-Store' }
