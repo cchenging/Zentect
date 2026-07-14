@@ -1,22 +1,44 @@
 // Module: editor/preview/frontend/components/VideoCanvas
 // 原 editor/components/player/VideoCanvas.tsx — 已迁移
 
-import { useRef } from 'react';
-import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { useRef, useEffect } from 'react';
+import { Video } from 'lucide-react';
 import { getSafeMediaUrl } from '../../../../../renderer/src/utils/formatUrl';
-import { usePlaybackEngine } from '../../../../../renderer/src/pages/editor/components/player/hooks/usePlaybackEngine';
+import { usePlayerStore } from '../../../stores/usePlayerStore';
 
 export const VideoCanvas = () => {
-  const activePlaySource = useEditorStore((s) => s.activePlaySource);
-  const activeScript = useEditorStore((s) => s.activeScript);
-  const activeShots = useEditorStore((s) => s.activeShots);
-  const setCurrentTime = useEditorStore((s) => s.setCurrentTime);
-  const setVideoDuration = useEditorStore((s) => s.setVideoDuration);
+  const activePlaySource = usePlayerStore((s) => s.activePlaySource);
+  const activeScript = usePlayerStore((s) => s.activeScript);
+  const activeShots = usePlayerStore((s) => s.activeShots);
+  const setCurrentTime = usePlayerStore((s) => s.setCurrentTime);
+  const setVideoDuration = usePlayerStore((s) => s.setVideoDuration);
   const videoRef = useRef<HTMLVideoElement>(null);
-  usePlaybackEngine(videoRef);
+  
+  useEffect(() => {
+    const unsub = usePlayerStore.subscribe(
+      (state) => state.isPlaying,
+      (isPlaying) => {
+        const video = videoRef.current;
+        if (!video) return;
+        if (isPlaying) {
+          video.play().catch(() => {});
+        } else {
+          video.pause();
+        }
+      }
+    );
+    return unsub;
+  }, []);
 
   return (
-    <div className="relative w-full h-full bg-[var(--bg-deepest)] flex items-center justify-center overflow-hidden">
+    <div className="relative w-full flex-1 min-h-0 bg-[var(--bg-deepest)] flex items-center justify-center overflow-hidden">
+      {/* 📐 空状态：根据容器尺寸自适应缩放 */}
+      {!activePlaySource && !activeScript && (
+        <div className="flex flex-col items-center justify-center gap-[clamp(6px,2%,16px)] text-[var(--muted-foreground)] p-4 animate-in fade-in duration-300">
+          <Video className="w-[clamp(28px,8%,56px)] h-[clamp(28px,8%,56px)] opacity-20" strokeWidth={1.2} />
+          <span className="text-[clamp(11px,2.5vw,14px)] opacity-40 font-medium tracking-wider select-none">NO SIGNAL</span>
+        </div>
+      )}
       {activePlaySource?.type === 'video' && (
         <video 
           ref={videoRef} 
@@ -55,7 +77,6 @@ export const VideoCanvas = () => {
         </div>
       )}
 
-      {!activePlaySource && <div className="text-[var(--text-tertiary)] font-mono tracking-widest text-[11px]">NO SIGNAL</div>}
     </div>
   );
 };
