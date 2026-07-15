@@ -34,6 +34,9 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
             导入视频素材
           </button>
         )}
+        <p className="text-[var(--text-disabled)] text-[clamp(9px,1.8vw,11px)] text-center leading-tight mt-1">
+          或拖拽视频文件到页面任意位置
+        </p>
       </div>
     );
   }

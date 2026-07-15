@@ -40,7 +40,7 @@ export const PlayerControls: React.FC = () => {
   } = useEditorStore();
 
   const {
-    setCurrentTime, videoDuration,
+    videoDuration,
     activePlaySource,
     isPlaying, currentTime, seek, setDuration
   } = usePlayerStore();
@@ -73,10 +73,6 @@ export const PlayerControls: React.FC = () => {
   }, [displayDuration, setDuration]);
 
   useEffect(() => {
-    setCurrentTime(currentTime);
-  }, [currentTime, setCurrentTime]);
-
-  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' && e.target === document.body) {
         e.preventDefault();
@@ -90,8 +86,7 @@ export const PlayerControls: React.FC = () => {
 
   const handlePlayToggle = () => {
     if (!isPlaying && currentTime >= displayDuration && displayDuration > 0) {
-      usePlayerStore.setState({ currentTime: 0 });
-      setCurrentTime(0);
+      usePlayerStore.getState().seek(0);
     }
     const { isPlaying: playing, play, pause } = usePlayerStore.getState();
     playing ? pause() : play();
@@ -99,7 +94,6 @@ export const PlayerControls: React.FC = () => {
 
   const handleSeek = (value: number[]) => {
     if (!value || value.length === 0) return;
-    setCurrentTime(value[0]);
     seek(value[0]);
   };
 
@@ -116,15 +110,11 @@ export const PlayerControls: React.FC = () => {
   };
 
   const handleSkipBack = () => {
-    const newTime = Math.max(0, currentTime - 3);
-    setCurrentTime(newTime);
-    seek(newTime);
+    seek(Math.max(0, currentTime - 3));
   };
 
   const handleSkipForward = () => {
-    const newTime = Math.min(displayDuration, currentTime + 3);
-    setCurrentTime(newTime);
-    seek(newTime);
+    seek(Math.min(displayDuration, currentTime + 3));
   };
 
   return (

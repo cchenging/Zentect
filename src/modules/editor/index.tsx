@@ -3,11 +3,11 @@
  * 原路径: src/renderer/src/pages/editor/index.tsx（已删除）
  * 子组件已迁移至 @modules/editor/{shell,preview,storyboard}
  */
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
 import { Music, Image, Check } from 'lucide-react';
-import { useStore } from '@renderer/store/useStore';
+import { usePlayerStore } from './stores/usePlayerStore';
 import { useProjectStore } from './stores/useProjectStore';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
@@ -54,12 +54,12 @@ export default function Editor() {
   });
 
   /** 播放器状态 */
-  const activePlaySource = useStore((s) => s.activePlaySource);
-  const currentTime = useStore((s) => s.currentTime);
+  const activePlaySource = usePlayerStore((s) => s.activePlaySource);
+  const currentTime = usePlayerStore((s) => s.currentTime);
   const mediaItems = useProjectStore((s) => s.mediaItems);
+  const addMediaItems = useProjectStore((s) => s.addMediaItems);
   const videoChunks = useStep5Store((s) => s.videoChunks);
-  const setCurrentTime = useStore((s) => s.setCurrentTime);
-  const setActivePlaySource = useStore((s) => s.setActivePlaySource);
+  const setActivePlaySource = usePlayerStore((s) => s.setActivePlaySource);
   const extractedData = useProjectStore((s) => s.extractedData);
   const extractionConfig = useStep1Store((s) => s.extractionConfig);
   const fps = extractionConfig?.frames?.fps || 2;
@@ -72,6 +72,67 @@ export default function Editor() {
     const ff = Math.round((totalSeconds % 1) * fps);
     return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(ff).padStart(2, '0')}`;
   };
+
+  /** 拖拽导入视频 */
+  const [isDragOver, setIsDragOver] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer.types.includes('Files')) {
+      setIsDragOver(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounterRef.current--;
+    if (dragCounterRef.current <= 0) {
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    dragCounterRef.current = 0;
+
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+
+    const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv', '.m4v'];
+    const filePaths: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const fp = (f as any).path || f.name;
+      const ext = '.' + fp.split('.').pop()?.toLowerCase();
+      if (videoExts.includes(ext)) {
+        filePaths.push(fp);
+      }
+    }
+    if (filePaths.length === 0 || !id) return;
+
+    try {
+      usePlayerStore.setState({ currentTime: 0, isPlaying: false });
+      const newItems = await API.media.import(id, filePaths);
+      if (Array.isArray(newItems) && newItems.length > 0) {
+        addMediaItems(newItems);
+        setActivePlaySource(newItems[0]);
+      }
+    } catch (err: any) {
+      console.error('[Editor] 拖拽导入失败:', err);
+    }
+  }, [id, setActivePlaySource, addMediaItems]);
 
   const [activeMediaTab, setActiveMediaTab] = useState('video');
 
@@ -114,7 +175,25 @@ export default function Editor() {
   }, [id]);
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-bg-deep text-foreground overflow-hidden">
+    <div
+      className={`flex flex-col h-screen w-screen bg-bg-deep text-foreground overflow-hidden relative ${isDragOver ? 'ring-2 ring-accent ring-inset' : ''}`}
+      onDragOver={handleDragOver}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* 拖拽导入视觉覆盖层 */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-50 bg-accent/10 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="glass-card px-8 py-6 rounded-2xl border-2 border-accent border-dashed flex flex-col items-center gap-3 animate-in zoom-in-95 duration-200">
+            <svg className="w-12 h-12 text-accent" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
+            </svg>
+            <span className="text-accent font-semibold text-sm">释放以导入视频素材</span>
+            <span className="text-muted-foreground text-xs">支持 MP4 / MOV / AVI / MKV / WebM</span>
+          </div>
+        </div>
+      )}
       <TopBar />
 
       <div className="flex-1 flex overflow-hidden p-2 gap-0 editor-body" style={{ cursor: isDragging ? 'col-resize' : undefined, userSelect: isDragging ? 'none' : undefined }}>
@@ -133,10 +212,6 @@ export default function Editor() {
           {/* 视频播放器 */}
           <div className="glass-card overflow-hidden flex flex-col shrink-0 aspect-video">
             <PreviewMonitor
-              mediaPath={activePlaySource?.filePath ?? null}
-              startMs={(activePlaySource as any)?.startMs || 0}
-              endMs={(activePlaySource as any)?.endMs || 0}
-              onTimeUpdate={(t) => setCurrentTime(t)}
               onImportClick={handleVideoImport}
             />
           </div>
@@ -225,15 +300,15 @@ export default function Editor() {
                       className={`min-w-[120px] glass-card-sm overflow-hidden cursor-pointer hover:border-accent/30 transition-all ${activePlaySource?.id === item.id ? 'border-accent' : ''}`}
                       onClick={() => setActivePlaySource(item)}>
                       <div className="w-full h-[68px] bg-bg-secondary flex items-center justify-center relative">
-                        {item.coverPath || item.thumbnail ? (
-                          <img src={getSafeMediaUrl(item.coverPath || item.thumbnail)} className="w-full h-full object-cover" />
+                        {item.coverPath || item.thumbnail || (item.type === 'video' && item.filePath) ? (
+                          <img src={getSafeMediaUrl(item.coverPath || item.thumbnail || item.filePath)} className="w-full h-full object-cover" />
                         ) : item.type === 'audio' ? (
                           <Music size={20} className="text-muted-foreground/30" />
                         ) : (
                           <Image size={20} className="text-muted-foreground/30" />
                         )}
                         <span className="absolute top-1.5 right-1.5 text-[8px] px-1 py-0.5 rounded bg-black/50 text-white/70">
-                          {item.type === 'audio' ? '音频' : '帧'}
+                          {item.type === 'audio' ? '音频' : item.type === 'video' ? '视频' : '帧'}
                         </span>
                         {item.duration && (
                           <span className="absolute bottom-1.5 right-1.5 text-[8px] px-1 py-0.5 rounded bg-black/50 text-white/70">

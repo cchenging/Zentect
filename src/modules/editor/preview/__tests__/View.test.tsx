@@ -10,6 +10,16 @@ import React from 'react';
 
 // === Mocks ===
 
+/** 动态控制 activePlaySource 的 mock 值 */
+let mockActivePlaySource: any = null;
+
+vi.mock('../../stores/usePlayerStore', () => ({
+  usePlayerStore: (selector?: (state: any) => any) => {
+    const state = { activePlaySource: mockActivePlaySource };
+    return selector ? selector(state) : state;
+  },
+}));
+
 vi.mock('../frontend/components/Player', () => ({
   Player: () => React.createElement('div', { 'data-testid': 'player' }, 'Player'),
 }));
@@ -25,15 +35,13 @@ vi.mock('lucide-react', () => ({}));
 import PreviewMonitor from '../frontend/View';
 
 function renderView(props: Record<string, unknown> = {}) {
-  return render(React.createElement(PreviewMonitor, {
-    mediaPath: null,
-    ...props,
-  }));
+  return render(React.createElement(PreviewMonitor, props));
 }
 
 describe('PreviewMonitor', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockActivePlaySource = null;
   });
 
   afterEach(() => {
@@ -42,14 +50,14 @@ describe('PreviewMonitor', () => {
 
   // === 无素材状态 ===
 
-  describe('无素材（mediaPath=null）', () => {
+  describe('无素材（activePlaySource=null）', () => {
     it('应显示导入引导文案', () => {
-      renderView({ mediaPath: null });
+      renderView();
       expect(screen.getByText('导入视频素材开始创作')).toBeDefined();
     });
 
     it('应显示 SVG 占位图标', () => {
-      const { container } = renderView({ mediaPath: null });
+      const { container } = renderView();
       const svg = container.querySelector('svg');
       expect(svg).toBeTruthy();
       expect(svg!.getAttribute('viewBox')).toBe('0 0 24 24');
@@ -59,35 +67,37 @@ describe('PreviewMonitor', () => {
   // === 有 onImportClick 回调 ===
 
   describe('导入按钮（onImportClick）', () => {
-    it('mediaPath=null 且传入 onImportClick 时应显示"导入视频素材"按钮', () => {
+    it('activePlaySource=null 且传入 onImportClick 时应显示"导入视频素材"按钮', () => {
       const onImportClick = vi.fn();
-      renderView({ mediaPath: null, onImportClick });
+      renderView({ onImportClick });
       expect(screen.getByText('导入视频素材')).toBeDefined();
     });
 
     it('点击"导入视频素材"应调用 onImportClick', () => {
       const onImportClick = vi.fn();
-      renderView({ mediaPath: null, onImportClick });
+      renderView({ onImportClick });
       fireEvent.click(screen.getByText('导入视频素材'));
       expect(onImportClick).toHaveBeenCalledTimes(1);
     });
 
     it('不传 onImportClick 时应不显示按钮', () => {
-      renderView({ mediaPath: null });
+      renderView();
       expect(screen.queryByText('导入视频素材')).toBeNull();
     });
   });
 
   // === 有素材状态 ===
 
-  describe('有素材（mediaPath 非 null）', () => {
+  describe('有素材（activePlaySource 非 null）', () => {
     it('应渲染 Player 组件', () => {
-      renderView({ mediaPath: '/videos/demo.mp4' });
+      mockActivePlaySource = { type: 'video', filePath: '/videos/demo.mp4' };
+      renderView();
       expect(screen.getByTestId('player')).toBeDefined();
     });
 
-    it('mediaPath 有值时不显示导入引导文案', () => {
-      renderView({ mediaPath: '/videos/demo.mp4' });
+    it('activePlaySource 有值时不应显示导入引导文案', () => {
+      mockActivePlaySource = { type: 'video', filePath: '/videos/demo.mp4' };
+      renderView();
       expect(screen.queryByText('导入视频素材开始创作')).toBeNull();
     });
   });

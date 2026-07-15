@@ -10,10 +10,21 @@ export const VideoCanvas = () => {
   const activePlaySource = usePlayerStore((s) => s.activePlaySource);
   const activeScript = usePlayerStore((s) => s.activeScript);
   const activeShots = usePlayerStore((s) => s.activeShots);
+  const manualSeekTime = usePlayerStore((s) => s.manualSeekTime);
   const setCurrentTime = usePlayerStore((s) => s.setCurrentTime);
   const setVideoDuration = usePlayerStore((s) => s.setVideoDuration);
+  const setManualSeekTime = usePlayerStore((s) => s.setManualSeekTime);
   const videoRef = useRef<HTMLVideoElement>(null);
-  
+
+  /** 进度条拖拽 → 实际跳转视频位置 */
+  useEffect(() => {
+    if (manualSeekTime === null) return;
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = manualSeekTime;
+    setManualSeekTime(null);
+  }, [manualSeekTime, setManualSeekTime]);
+
   useEffect(() => {
     const unsub = usePlayerStore.subscribe(
       (state) => state.isPlaying,
@@ -41,7 +52,8 @@ export const VideoCanvas = () => {
       )}
       {activePlaySource?.type === 'video' && (
         <video 
-          ref={videoRef} 
+          ref={videoRef}
+          preload="auto"
           src={getSafeMediaUrl(activePlaySource.path || activePlaySource.filePath)} 
           className="w-full h-full object-contain" 
           controls={false}
@@ -65,7 +77,7 @@ export const VideoCanvas = () => {
            {activeShots.map((shot: any, idx: number) => (
              <div 
                key={idx} 
-               onClick={() => videoRef.current && (videoRef.current.currentTime = shot.start)}
+               onClick={() => usePlayerStore.getState().seek(shot.start)}
                className="h-14 aspect-video bg-[var(--bg-secondary)] rounded border border-[var(--border-default)] hover:border-accent cursor-pointer transition-all flex-shrink-0 overflow-hidden relative group"
              >
                 <img src={getSafeMediaUrl(shot.coverPath || shot.imagePath)} className="w-full h-full object-cover opacity-60 group-hover:opacity-100" />
