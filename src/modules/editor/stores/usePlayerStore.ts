@@ -41,6 +41,7 @@ export interface PlayerStore {
   setScale: (scale: number) => void;
   setGpuAcceleration: (enable: boolean) => void;
   setScrollX: (scrollX: number) => void;
+  resetState: () => void;
 }
 
 export const usePlayerStore = create<PlayerStore>()((set, get) => ({
@@ -66,9 +67,22 @@ export const usePlayerStore = create<PlayerStore>()((set, get) => ({
 
   play: () => set({ isPlaying: true }),
   pause: () => set({ isPlaying: false }),
-  seek: (time) => set({ currentTime: Math.max(0, Math.min(time, get().duration)) }),
+  seek: (time) => {
+    const clamped = Math.max(0, Math.min(time, get().duration));
+    set({ currentTime: clamped, manualSeekTime: clamped });
+  },
   setDuration: (duration) => set({ duration }),
   setScale: (scale) => set({ scale }),
   setGpuAcceleration: (enable) => set({ gpuAcceleration: enable }),
   setScrollX: (scrollX) => set({ scrollX: Math.max(0, scrollX) }),
+  resetState: () => set({
+    activePlaySource: null,
+    isPlaying: false,
+    currentTime: 0,
+    videoDuration: 0,
+    duration: 0,
+    manualSeekTime: null,
+    activeScript: null,
+    activeShots: null,
+  }),
 }));

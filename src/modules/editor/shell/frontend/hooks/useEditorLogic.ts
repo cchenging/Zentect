@@ -4,6 +4,7 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore, useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { usePlayerStore } from '../../../../editor/stores/usePlayerStore';
 import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
 import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
 import { useProjectStore } from '../../../../editor/stores/useProjectStore';
@@ -32,6 +33,7 @@ export const useEditorHydration = (id: string | undefined) => {
 
     projectStore.resetProjectState();
     // 逐个重置局部 Store
+    usePlayerStore.getState().resetState();
     useProjectStore.getState().resetProjectState?.();
     usePipelineStore.getState().resetAllStepStatuses?.();
     usePipelineStore.setState({ stepCompleted: [false, false, false, false, false] });
@@ -85,11 +87,11 @@ export const useEditorHydration = (id: string | undefined) => {
           const mediaItems = projectSnapshot.mediaItems || [];
           const videoMedia = mediaItems.find((m: any) => m.type === 'video' || m.filePath);
           if (videoMedia) {
-            store.setActivePlaySource?.(videoMedia);
+            usePlayerStore.getState().setActivePlaySource(videoMedia);
           } else {
             const restoredVideoPath = projectSnapshot.videoPath || projectSnapshot.video_path || '';
             if (restoredVideoPath) {
-              store.setActivePlaySource?.({
+              usePlayerStore.getState().setActivePlaySource({
                 id: 'main-video-source',
                 name: '原始导入多媒体文件',
                 filePath: restoredVideoPath,
