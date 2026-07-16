@@ -54,38 +54,6 @@ export interface UISlice {
   setScale: (scale: string) => void;
 }
 
-// --- 切片定义: Player Slice (高频状态区) ---
-export interface PlayerSlice {
-  activePlaySource: MediaItem | null;
-  isPlaying: boolean;
-  currentTime: number;
-  videoDuration: number;
-  duration: number;
-  manualSeekTime: number | null;
-  activeScript: string | null;
-  activeShots: any[] | null;
-
-  scale: number;
-  scrollX: number;
-  gpuAcceleration: boolean;
-
-  setActivePlaySource: (item: MediaItem | null) => void;
-  setIsPlaying: (playing: boolean) => void;
-  setCurrentTime: (time: number) => void;
-  setVideoDuration: (duration: number) => void;
-  setManualSeekTime: (time: number | null) => void;
-  setActiveScript: (content: string | null) => void;
-  setActiveShots: (shots: any[] | null) => void;
-
-  play: () => void;
-  pause: () => void;
-  seek: (time: number) => void;
-  setDuration: (duration: number) => void;
-  setScale: (scale: number) => void;
-  setGpuAcceleration: (enable: boolean) => void;
-  setScrollX: (scrollX: number) => void;
-}
-
 export interface HistorySnapshot {
   shots: Shot[];
   aiShots: Shot[];
@@ -106,7 +74,7 @@ export interface ExtractedData {
  * @deprecated DataSlice 已迁移至 useProjectStore。
  * 保留 ExtractedData / HistorySnapshot / CharacterRelation 作为独立类型供引用。
  */
-export type EditorState = UISlice & PlayerSlice & EditorSlice;
+export type EditorState = UISlice & EditorSlice;
 
 // --- 步骤状态类型 ---
 export type StepStatus = 'idle' | 'running' | 'completed' | 'failed';

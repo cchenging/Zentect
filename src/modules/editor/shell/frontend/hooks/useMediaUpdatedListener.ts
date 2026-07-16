@@ -6,7 +6,7 @@
  *   { projectId: string, mediaId: string, coverPath?: string, duration?: string, status?: string, filePath?: string }
  */
 import { useEffect } from 'react';
-import { useEditorStore } from '../../../../../renderer/src/store/useStore';
+import { usePlayerStore } from '../../../../editor/stores/usePlayerStore';
 import { useProjectStore } from '../../../../editor/stores/useProjectStore';
 
 interface MediaUpdatedPayload {
@@ -38,9 +38,9 @@ export function useMediaUpdatedListener() {
         projectStore.updateMediaItem(mediaId, filtered);
 
         // 如果更新的 mediaId 恰好等于 activePlaySource.id，同步更新 activePlaySource
-        const currentSource = useEditorStore.getState().activePlaySource;
+        const currentSource = usePlayerStore.getState().activePlaySource;
         if (currentSource && (currentSource as any).id === mediaId) {
-          useEditorStore.getState().setActivePlaySource({ ...currentSource, ...filtered } as any);
+          usePlayerStore.getState().setActivePlaySource({ ...currentSource, ...filtered } as any);
         }
       }
     };
