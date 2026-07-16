@@ -16,8 +16,8 @@ import fs from 'fs';
 import { app } from 'electron';
 import { spawn, exec } from 'child_process';
 import { PathManager } from '../utils/pathManager';
-import { AppLogger } from '../../../infra/logger/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { AppLogger } from '../core/AppLogger';
+import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
 // ─── 常量 ────────────────────────────────────────────────
 
