@@ -198,6 +198,7 @@ export class ImportService {
         width: metadata.width || 0,
         height: metadata.height || 0,
         fps: metadata.fps || 0,
+        filePath: playableFilePath,
       });
 
       this.notifyFrontend(projectId, mediaId, {

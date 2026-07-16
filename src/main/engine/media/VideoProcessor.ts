@@ -51,7 +51,7 @@ export class VideoProcessor {
              const [num, den] = videoStream.r_frame_rate.split('/');
              if (num && den && parseInt(den) !== 0) fps = parseInt(num) / parseInt(den);
           }
-          resolve({ formattedTime: `${h}:${m}:${s}`, width: videoStream?.width || 0, height: videoStream?.height || 0, fps: fps });
+          resolve({ formattedTime: `${h}:${m}:${s}`, duration, width: videoStream?.width || 0, height: videoStream?.height || 0, fps: fps });
         } catch (e) { resolve({ formattedTime: '00:00:00', width: 0, height: 0, fps: 0 }); }
       });
       child.on('error', () => resolve({ formattedTime: '00:00:00', width: 0, height: 0, fps: 0 }));
