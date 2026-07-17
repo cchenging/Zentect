@@ -738,6 +738,25 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       stepCompleted[0] = true;
     }
 
+    /** 💥 自动修正状态不一致：如果 stepStatuses[0] 不是 running，将所有 running 的子步骤状态重置为 idle
+     *  场景：管线执行中被中断（崩溃/刷新），DB 残留了 running 子步骤状态，但步骤并未运行 */
+    if (
+      subStepStatuses &&
+      typeof subStepStatuses === 'object' &&
+      Array.isArray(stepStatuses) &&
+      stepStatuses[0] !== 'running'
+    ) {
+      const normalized: Record<string, string> = { ...subStepStatuses };
+      let changed = false;
+      for (const key of Object.keys(normalized)) {
+        if (normalized[key] === 'running') {
+          normalized[key] = 'idle';
+          changed = true;
+        }
+      }
+      if (changed) subStepStatuses = normalized;
+    }
+
     /** 推算当前步骤 */
     const calculatedCurrentStep = (() => {
       const saved = raw.currentStep || parsed.currentStep;
