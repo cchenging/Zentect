@@ -4,6 +4,7 @@ import { API } from '../../api';
 import { AppNotifier } from '../../core/AppNotifier';
 import type { EditorState, UISlice } from '../storeTypes';
 import { useProjectStore } from '../../../../modules/editor/stores/useProjectStore';
+import { usePlayerStore } from '../../../../modules/editor/stores/usePlayerStore';
 
 // 💥 我们为 UISlice 补充缺失的 saveStatus 方法，补齐类型拼图。
 declare module '../storeTypes' {
@@ -175,10 +176,10 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
     globalFocusMode: type === 'media' ? 'media' : (type === 'shot' ? 'timeline' : state.globalFocusMode)
   })),
 
-  clearSelection: () => set({
-    selectedItemId: null, selectedItemType: null, activePlaySource: null,
-    isPlaying: false, currentTime: 0, videoDuration: 0
-  }),
+  clearSelection: () => {
+    set({ selectedItemId: null, selectedItemType: null });
+    usePlayerStore.getState().resetState();
+  },
 
   setProjectRatio: (ratio) => set({ projectRatio: ratio }),
   setVideoFps: (fps) => set({ videoFps: fps }),
@@ -228,7 +229,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
       
       if (newItems.length > 0) {
          get().selectItem(newItems[0].id, 'media');
-         get().setActivePlaySource(newItems[0]);
+         usePlayerStore.getState().setActivePlaySource(newItems[0]);
       }
 
       set({ workflowState: 'finetuning', pipelineMessage: '导入完成' });

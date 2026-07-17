@@ -1,5 +1,6 @@
 // 📁 路径：src/renderer/src/core/ContextCompressor.ts
 import { useEditorStore } from '../store/useStore';
+import { usePlayerStore } from '../../../modules/editor/stores/usePlayerStore';
 
 export class ContextCompressor {
   /**
@@ -8,6 +9,7 @@ export class ContextCompressor {
    */
   static getCompressedSnapshot() {
     const state = useEditorStore.getState();
+    const playerState = usePlayerStore.getState();
 
     const activeShots = state.storyboardMode === 'ai' ? state.aiShots : state.shots;
 
@@ -36,7 +38,7 @@ export class ContextCompressor {
       environment: {
         mode: state.storyboardMode,
         projectRatio: state.projectRatio,
-        currentTime: Math.floor(state.currentTime)
+        currentTime: Math.floor(playerState.currentTime)
       },
       timeline: compressedTimeline,
       mediaPool: mediaSummary

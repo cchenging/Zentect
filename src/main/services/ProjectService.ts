@@ -68,14 +68,19 @@ export class ProjectService {
         // 如果是绝对路径，转换成相对于项目目录的路径
         if (path.isAbsolute(val)) {
           const relative = path.relative(projectDir, val).replace(/\\/g, '/');
-          // 跨盘符路径：path.relative 仍返回绝对路径，使用 magic://local/ 格式
-          if (path.isAbsolute(relative)) {
-            return `magic://local/${relative.replace(/\\/g, '/')}`;
+          // 跨盘符 或 项目目录外部同盘符路径：使用 magic://local/ 保留完整绝对路径
+          if (path.isAbsolute(relative) || relative.startsWith('..')) {
+            return `magic://local/${val.replace(/\\/g, '/')}`;
           }
           return `${prefix}${relative}`;
         }
         // 如果是相对路径，直接加上 magic:// 前缀
         if (val.includes('/') || val.includes('\\')) {
+          // 相对路径以 ../ 开头说明指向项目目录外部，解析为绝对路径后用 magic://local/
+          if (val.startsWith('..')) {
+            const resolved = path.resolve(path.join(projectDir, val));
+            return `magic://local/${resolved.replace(/\\/g, '/')}`;
+          }
           return `${prefix}${val.replace(/\\/g, '/')}`;
         }
       }
@@ -121,9 +126,9 @@ export class ProjectService {
         } else if (path.isAbsolute(val)) {
           // 把绝对路径转成相对路径
           const relative = path.relative(projectDir, val).replace(/\\/g, '/');
-          /** 💥 关键修复：跨盘符时 path.relative 返回绝对路径，
+          /** 💥 关键修复：跨盘符 或 项目目录外部同盘符路径（path.relative 返回必须以 ../ 开头的相对路径），
            *  需转为 magic://local/ 格式保证可移植性 */
-          if (path.isAbsolute(relative)) {
+          if (path.isAbsolute(relative) || relative.startsWith('..')) {
             return `magic://local/${val.replace(/\\/g, '/')}`;
           }
           return relative;

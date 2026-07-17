@@ -25,21 +25,19 @@ export const VideoCanvas = () => {
     setManualSeekTime(null);
   }, [manualSeekTime, setManualSeekTime]);
 
+  const isPlaying = usePlayerStore((s) => s.isPlaying);
+  const prevIsPlayingRef = useRef(isPlaying);
+
   useEffect(() => {
-    const unsub = usePlayerStore.subscribe(
-      (state) => state.isPlaying,
-      (isPlaying) => {
-        const video = videoRef.current;
-        if (!video) return;
-        if (isPlaying) {
-          video.play().catch(() => {});
-        } else {
-          video.pause();
-        }
-      }
-    );
-    return unsub;
-  }, []);
+    const video = videoRef.current;
+    if (!video) return;
+    if (isPlaying && !prevIsPlayingRef.current) {
+      video.play().catch(() => {});
+    } else if (!isPlaying && prevIsPlayingRef.current) {
+      video.pause();
+    }
+    prevIsPlayingRef.current = isPlaying;
+  }, [isPlaying]);
 
   return (
     <div className="relative w-full flex-1 min-h-0 bg-[var(--bg-deepest)] flex items-center justify-center overflow-hidden">
