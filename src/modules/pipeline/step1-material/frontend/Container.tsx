@@ -1,10 +1,11 @@
 // Module: pipeline/step1-material - Container
 // @migrated 阶段三：从 useStore → useStep1Store + useProjectStore + usePlayerStore
 
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import { useStep1Store } from "../../stores/useStep1Store";
 import { useProjectStore } from "../../../editor/stores/useProjectStore";
 import { usePlayerStore } from "../../../editor/stores/usePlayerStore";
+import { usePipelineStore } from "../../../../renderer/src/store/usePipelineStore";
 import type { MediaItem, Role } from "../../../../shared/types";
 import type { AsrLine, StepStatus } from "../../../../shared/types/entities/editor";
 import type { Step1Config } from "../types";
@@ -14,9 +15,33 @@ export const StepMaterialAnalysis: React.FC = () => {
   const asrLines = useStep1Store((s) => s.asrLines);
   const frameCount = useStep1Store((s) => s.frameCount);
   const audioSeparated = useStep1Store((s) => s.audioSeparated);
-  const subStepStatuses = useStep1Store((s) => s.subStepStatuses);
-  const subStepProgresses = useStep1Store((s) => s.subStepProgresses);
+  const step1SubStepStatuses = useStep1Store((s) => s.subStepStatuses);
+  const step1SubStepProgresses = useStep1Store((s) => s.subStepProgresses);
   const extractionConfig = useStep1Store((s) => s.extractionConfig);
+  const pipelineSubStepStatuses = usePipelineStore((s) => s.subStepStatuses);
+  const pipelineSubStepProgresses = usePipelineStore((s) => s.subStepProgresses);
+
+  // 双 Store 合并：管线执行期间 pipelineStore 有最新状态，优先使用；
+  // 管线空闲时回退到 step1Store（用于持久化/重试后的状态）
+  const subStepStatuses = useMemo(() => {
+    const merged = { ...step1SubStepStatuses };
+    for (const key of Object.keys(pipelineSubStepStatuses)) {
+      if (pipelineSubStepStatuses[key] !== 'idle') {
+        merged[key] = pipelineSubStepStatuses[key];
+      }
+    }
+    return merged;
+  }, [step1SubStepStatuses, pipelineSubStepStatuses]);
+
+  const subStepProgresses = useMemo(() => {
+    const merged = { ...step1SubStepProgresses };
+    for (const key of Object.keys(pipelineSubStepProgresses)) {
+      if (pipelineSubStepProgresses[key] > 0) {
+        merged[key] = pipelineSubStepProgresses[key];
+      }
+    }
+    return merged;
+  }, [step1SubStepProgresses, pipelineSubStepProgresses]);
   const setAsrLines = useStep1Store((s) => s.setAsrLines);
   const updateAsrLine = useStep1Store((s) => s.updateAsrLine);
   const setSubStepStatus = useStep1Store((s) => s.setSubStepStatus);
