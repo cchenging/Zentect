@@ -48,7 +48,13 @@ export const useEditorHydration = (id: string | undefined) => {
     useStep1Store.getState().setSubStepStatus?.('audio', 'idle');
     useStep1Store.getState().setSubStepStatus?.('whisper', 'idle');
     useStep1Store.getState().setSubStepStatus?.('faces', 'idle');
-    useStep1Store.setState({ subStepProgresses: {} as Record<string, number>, extractionConfig: null as any });
+    useStep1Store.setState({ subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 }, extractionConfig: {
+      targetLanguage: 'zh-CN',
+      frames: { enabled: true, mode: 'VLM_OPTIMIZED' as const, sceneThreshold: 0.28, quality: 3, fps: 2, scale: 1024, minFrameInterval: 4 },
+      audio: { enabled: true, engine: 'mdx-net' as const },
+      whisper: { enabled: true, engine: 'sensevoice' as const },
+      faces: { enabled: true, engine: 'insightface' as const },
+    } as any });
     useStep2Store.getState().setVlmFrames?.([]);
     useStep3Store.getState().setScriptParagraphs?.([]);
     useStep3Store.getState().setScriptStyle?.('赛博现实主义');

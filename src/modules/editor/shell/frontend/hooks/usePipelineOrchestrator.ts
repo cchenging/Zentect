@@ -257,6 +257,11 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
 
     if (currentStep === 1) {
       const config = step1State.extractionConfig;
+      if (!config) {
+        AppNotifier.error('素材分析配置数据异常，请重新创建项目');
+        ps.setPipelineRunning(false);
+        return;
+      }
       const enabledKeys = ['frames', 'audio', 'whisper', 'faces'] as const;
       enabledKeys.forEach(key => {
         if (config[key]?.enabled) ps.setSubStepStatus(key, 'running');
