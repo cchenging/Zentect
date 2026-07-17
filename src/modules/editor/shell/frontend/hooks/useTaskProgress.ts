@@ -3,6 +3,7 @@
 
 import { useEffect, useRef } from 'react';
 import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
+import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
 import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
 import { CODE_TO_NAME } from '../../utils/pipelineConstants';
 
@@ -62,12 +63,22 @@ export const useTaskProgress = () => {
       lastProgressRef.current[code] = percent;
 
       if (code === 'TASK_SUCCESS' || status === 'completed') {
+        const completedStatuses = { frames: 'completed' as const, audio: 'completed' as const, whisper: 'completed' as const, faces: 'completed' as const };
+        const completedProgresses = { frames: 100, audio: 100, whisper: 100, faces: 100 };
         usePipelineStore.setState({
           pipelineProgress: 100,
           pipelineNode: CODE_TO_NAME[code] || code || '',
-          subStepStatuses: { frames: 'completed', audio: 'completed', whisper: 'completed', faces: 'completed' },
-          subStepProgresses: { frames: 100, audio: 100, whisper: 100, faces: 100 },
+          subStepStatuses: completedStatuses,
+          subStepProgresses: completedProgresses,
         });
+        // 💥 修复：同步写入 useStep1Store，确保右侧面板子步骤状态与 PipelineStore 一致
+        const s1 = useStep1Store.getState();
+        for (const [key, status] of Object.entries(completedStatuses)) {
+          s1.setSubStepStatus(key, status);
+        }
+        for (const [key, progress] of Object.entries(completedProgresses)) {
+          s1.setSubStepProgress(key, progress);
+        }
         return;
       }
 
@@ -82,6 +93,11 @@ export const useTaskProgress = () => {
         });
         if (hasChanges) {
           usePipelineStore.setState({ subStepStatuses: newSubStepStatuses });
+          // 💥 修复：同步写入 useStep1Store
+          const s1 = useStep1Store.getState();
+          for (const [key, status] of Object.entries(newSubStepStatuses)) {
+            if (status === 'failed') s1.setSubStepStatus(key, status);
+          }
         }
         return;
       }
@@ -92,6 +108,9 @@ export const useTaskProgress = () => {
           subStepStatuses: { ...state.subStepStatuses, [completionKey]: 'completed' },
           subStepProgresses: { ...state.subStepProgresses, [completionKey]: 100 },
         });
+        // 💥 修复：同步写入 useStep1Store
+        useStep1Store.getState().setSubStepStatus(completionKey, 'completed');
+        useStep1Store.getState().setSubStepProgress(completionKey, 100);
         return;
       }
 
@@ -109,6 +128,14 @@ export const useTaskProgress = () => {
           };
         }
         usePipelineStore.setState(updates);
+        // 💥 修复：同步写入 useStep1Store
+        const s1Store = useStep1Store.getState();
+        if (updates.subStepStatuses?.[subStepKey]) {
+          s1Store.setSubStepStatus(subStepKey, updates.subStepStatuses[subStepKey]);
+        }
+        if (updates.subStepProgresses?.[subStepKey] !== undefined) {
+          s1Store.setSubStepProgress(subStepKey, updates.subStepProgresses[subStepKey]);
+        }
       } else if (typeof percent === 'number') {
         usePipelineStore.setState({
           pipelineProgress: percent,
