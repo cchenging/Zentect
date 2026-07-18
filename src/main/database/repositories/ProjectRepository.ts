@@ -190,7 +190,7 @@ export class ProjectRepository {
           // DB 数据优先：frames、extractedAudio 等管线产出字段始终以 DB 为准
           return { ...m, ...raw };
         }
-        return m;
+        return { ...m, name: m.name || m.fileName || (m.filePath ? m.filePath.split(/[\\/]/).pop() : '未命名') };
       });
     }
 
