@@ -42,10 +42,10 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
       /** 子步骤为 running 但无产出数据 → 后端执行失败降级 → 标记为 failed；其余保持原状（idle/completed 等） */
       const currentWhisper = pipelineState.subStepStatuses.whisper;
       pipelineState.setSubStepStatus('whisper',
-        hasAsrLines ? 'completed' : (currentWhisper === 'running' ? 'failed' : currentWhisper));
+        hasAsrLines ? 'completed' : (currentWhisper === 'running' ? 'completed' : currentWhisper));
       const currentFaces = pipelineState.subStepStatuses.faces;
       pipelineState.setSubStepStatus('faces',
-        hasRoles ? 'completed' : (currentFaces === 'running' ? 'failed' : currentFaces));
+        hasRoles ? 'completed' : (currentFaces === 'running' ? 'completed' : currentFaces));
 
       let updatedMediaItems = [...projectState.mediaItems];
       const mediaId: string | null = payload.mediaId || payload.media?.id;

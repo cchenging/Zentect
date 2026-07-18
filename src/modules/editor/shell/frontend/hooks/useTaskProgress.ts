@@ -65,8 +65,6 @@ export const useTaskProgress = () => {
         usePipelineStore.setState({
           pipelineProgress: 100,
           pipelineNode: CODE_TO_NAME[code] || code || '',
-          subStepStatuses: { frames: 'completed', audio: 'completed', whisper: 'completed', faces: 'completed' },
-          subStepProgresses: { frames: 100, audio: 100, whisper: 100, faces: 100 },
         });
         return;
       }
