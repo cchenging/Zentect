@@ -738,13 +738,12 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       stepCompleted[0] = true;
     }
 
-    /** 💥 自动修正状态不一致：如果 stepStatuses[0] 不是 running，将所有 running 的子步骤状态重置为 idle
-     *  场景：管线执行中被中断（崩溃/刷新），DB 残留了 running 子步骤状态，但步骤并未运行 */
+    /** 💥 自动修正：将 DB 中所有残留的 'running' 子步骤重置为 idle
+     *  场景：管线执行中被中断（崩溃/刷新），DB 残留了瞬态 running 状态。
+     *  管线上一次已结束则 stepStatuses 为 completed/idle/failed，本次加载无活跃管线，残留 running 一律视为过期 */
     if (
       subStepStatuses &&
-      typeof subStepStatuses === 'object' &&
-      Array.isArray(stepStatuses) &&
-      stepStatuses[0] !== 'running'
+      typeof subStepStatuses === 'object'
     ) {
       const normalized: Record<string, string> = { ...subStepStatuses };
       let changed = false;
@@ -755,6 +754,25 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
         }
       }
       if (changed) subStepStatuses = normalized;
+    }
+
+    /** 💥 自动修正：stepStatuses[0] === 'running' 但子步骤并非全部 completed
+     *  覆盖上述归一化后仍有 stepStatuses 残留 running 的场景
+     *  （Block1 处理了全 completed → completed 的升级，此处处理未正常完工的"卡住"状态 → idle） */
+    if (
+      Array.isArray(stepStatuses) &&
+      stepStatuses[0] === 'running' &&
+      !(
+        subStepStatuses &&
+        typeof subStepStatuses === 'object' &&
+        subStepStatuses.frames === 'completed' &&
+        subStepStatuses.audio === 'completed' &&
+        subStepStatuses.whisper === 'completed' &&
+        subStepStatuses.faces === 'completed'
+      )
+    ) {
+      stepStatuses = [...stepStatuses];
+      stepStatuses[0] = 'idle';
     }
 
     /** 推算当前步骤 */
