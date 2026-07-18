@@ -83,6 +83,8 @@ export class ProjectService {
           }
           return `${prefix}${val.replace(/\\/g, '/')}`;
         }
+        // 裸文件名（无目录分隔符）落在项目根目录，补全 magic:// 前缀
+        return `${prefix}${val}`;
       }
       return val;
     };

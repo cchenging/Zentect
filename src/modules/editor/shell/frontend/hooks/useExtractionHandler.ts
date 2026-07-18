@@ -39,8 +39,13 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
 
       pipelineState.setSubStepStatus('frames', hasFrames ? 'completed' : (pipelineState.subStepStatuses.frames || 'idle'));
       pipelineState.setSubStepStatus('audio', hasAudio ? 'completed' : (pipelineState.subStepStatuses.audio || 'idle'));
-      pipelineState.setSubStepStatus('whisper', hasAsrLines ? 'completed' : (pipelineState.subStepStatuses.whisper || 'idle'));
-      pipelineState.setSubStepStatus('faces', hasRoles ? 'completed' : (pipelineState.subStepStatuses.faces || 'idle'));
+      /** 子步骤为 running 但无产出数据 → 后端执行失败降级 → 标记为 failed；其余保持原状（idle/completed 等） */
+      const currentWhisper = pipelineState.subStepStatuses.whisper;
+      pipelineState.setSubStepStatus('whisper',
+        hasAsrLines ? 'completed' : (currentWhisper === 'running' ? 'failed' : currentWhisper));
+      const currentFaces = pipelineState.subStepStatuses.faces;
+      pipelineState.setSubStepStatus('faces',
+        hasRoles ? 'completed' : (currentFaces === 'running' ? 'failed' : currentFaces));
 
       let updatedMediaItems = [...projectState.mediaItems];
       const mediaId: string | null = payload.mediaId || payload.media?.id;

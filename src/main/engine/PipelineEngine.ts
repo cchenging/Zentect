@@ -335,7 +335,7 @@ export class PipelineEngine {
         nodeId: task.nodeId,
         progress,
         status,
-        message: `节点运行中...`,
+        message: status || `节点运行中...`,
         results
       });
 

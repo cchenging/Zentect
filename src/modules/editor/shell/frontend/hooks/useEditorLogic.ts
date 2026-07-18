@@ -1,7 +1,7 @@
 // Module: editor/shell/hooks/useEditorLogic
 // 原 editor/hooks/useEditorLogic.ts — 已迁移
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore, useEditorStore } from '../../../../../renderer/src/store/useStore';
 import { usePlayerStore } from '../../../../editor/stores/usePlayerStore';
@@ -138,13 +138,44 @@ export const useEditorHydration = (id: string | undefined) => {
 };
 
 export const useEditorAutoSave = (id: string | undefined) => {
+  const dirtyRef = useRef(false);
+
+  // 延迟订阅 Store 变更，避开 hydration 阶段的初始化写入
+  useEffect(() => {
+    if (!id) return;
+
+    let unsubStep1: (() => void) | undefined;
+    let unsubProject: (() => void) | undefined;
+
+    const timer = setTimeout(() => {
+      unsubStep1 = useStep1Store.subscribe(() => {
+        dirtyRef.current = true;
+      });
+      unsubProject = useProjectStore.subscribe(() => {
+        dirtyRef.current = true;
+      });
+    }, 2000);
+
+    return () => {
+      clearTimeout(timer);
+      unsubStep1?.();
+      unsubProject?.();
+    };
+  }, [id]);
+
   useEffect(() => {
     if (!id) return;
 
     const handleBeforeUnload = () => {
+      // 无变更，跳过保存
+      if (!dirtyRef.current) return;
+
+      const pipelineState = usePipelineStore.getState();
+      // 管线运行中，不保存瞬态执行状态
+      if (pipelineState.pipelineRunning) return;
+
       const projectState = useProjectStore.getState();
       const step1State = useStep1Store.getState();
-      const pipelineState = usePipelineStore.getState();
       const snapshot = {
         shots: projectState.shots,
         aiShots: projectState.aiShots,
@@ -154,10 +185,9 @@ export const useEditorAutoSave = (id: string | undefined) => {
         frameCount: step1State.frameCount,
         audioSeparated: step1State.audioSeparated,
         subStepStatuses: pipelineState.subStepStatuses,
-        subStepProgresses: pipelineState.subStepProgresses,
         stepStatuses: pipelineState.stepStatuses,
         stepCompleted: pipelineState.stepCompleted,
-        storyboardMode: projectState.storyboardMode
+        storyboardMode: projectState.storyboardMode,
       };
       DraftService.saveDraft(id, JSON.stringify(snapshot)).catch(() => {});
     };
@@ -177,6 +207,10 @@ export const useSyncDaemon = () => {
       isSyncing = true;
       try {
         const pending = await DraftService.getPendingDrafts();
+        if (!pending || pending.length === 0) {
+          isSyncing = false;
+          return;
+        }
         for (const draft of pending) {
           await window.api.ipc.invoke(
             IPC_CHANNELS.PROJECT_SAVE_CANVAS,
