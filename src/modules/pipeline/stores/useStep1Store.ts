@@ -26,7 +26,7 @@ export interface ExtractionConfig {
     minFrameInterval?: number;
     timePoint?: number;
   };
-  audio: { enabled: boolean; engine: 'mdx-net' | 'spleeter' };
+  audio: { enabled: boolean };
   whisper: { enabled: boolean; engine: 'sensevoice' | 'whisper-v3' };
   faces: { enabled: boolean; engine: 'insightface' | 'mediapipe' };
 }
@@ -70,7 +70,7 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
     scale: 1024,
     minFrameInterval: 4,
   },
-  audio: { enabled: true, engine: 'mdx-net' },
+  audio: { enabled: true },
   whisper: { enabled: true, engine: 'sensevoice' },
   faces: { enabled: true, engine: 'insightface' },
 };

@@ -153,7 +153,17 @@ export class JobScheduler {
           audioPath: step1Data.audio?.audioPath || null,
           vocalsPath: step1Data.audio?.vocalsPath || null,
           bgmPath: step1Data.audio?.bgmPath || null,
-          shots: [],
+          shots: (step1Data.asr?.lines || []).map((line: any) => ({
+            originalText: line.text || line.originalText || '',
+            start: (() => {
+              const parts = (line.start || '00:00').split(':');
+              return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+            })(),
+            end: (() => {
+              const parts = (line.end || '00:00').split(':');
+              return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+            })(),
+          })),
           roles: step1Data.faces?.roles || [],
         };
 

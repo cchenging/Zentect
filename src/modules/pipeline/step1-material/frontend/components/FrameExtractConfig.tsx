@@ -6,6 +6,10 @@ import { Slider } from '../../../../../renderer/src/components/ui/slider';
 import { Input } from '../../../../../renderer/src/components/ui/input';
 import { useStep1Store } from '../../../stores/useStep1Store';
 
+interface FrameExtractConfigProps {
+  isRunning?: boolean;
+}
+
 const STRATEGY_OPTIONS = [
   { value: 'VLM_OPTIMIZED', label: 'VLM 最优化', desc: '转场+兜底', Icon: Sparkles },
   { value: 'UNIFORM_FPS', label: '均匀抽帧', desc: '固定帧率', Icon: Clock },
@@ -19,7 +23,7 @@ const SCALE_OPTIONS = [
   { value: 0, label: '原始' },
 ];
 
-export const FrameExtractConfig: React.FC = () => {
+export const FrameExtractConfig: React.FC<FrameExtractConfigProps> = ({ isRunning }) => {
   const extractionConfig = useStep1Store((s) => s.extractionConfig);
   const updateExtractionConfig = useStep1Store((s) => s.updateExtractionConfig);
 
@@ -38,6 +42,7 @@ export const FrameExtractConfig: React.FC = () => {
   const minInterval = frames.minFrameInterval ?? 4;
 
   const updateFrames = (patch: Record<string, any>) => {
+    if (isRunning) return;
     const nextThreshold = patch.sceneThreshold ?? sceneThreshold;
     updateExtractionConfig({
       frames: {
@@ -50,7 +55,7 @@ export const FrameExtractConfig: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className={`flex flex-col gap-3 ${isRunning ? 'opacity-60 pointer-events-none' : ''}`}>
       <div className="grid grid-cols-2 gap-1.5">
         {STRATEGY_OPTIONS.map((opt) => {
           const isSelected = strategy === opt.value;
@@ -58,11 +63,13 @@ export const FrameExtractConfig: React.FC = () => {
             <button
               key={opt.value}
               onClick={() => updateFrames({ mode: opt.value })}
+              disabled={isRunning}
               className={`
                 flex flex-col items-center gap-1 py-2 px-1.5 rounded-lg border text-center transition-all cursor-pointer outline-none select-none
                 ${isSelected
                   ? 'bg-primary/10 border-primary/30 text-primary shadow-sm shadow-primary/5'
                   : 'bg-muted/30 border-border/50 text-muted-foreground hover:bg-muted/50 hover:border-border'}
+                ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}
               `}
             >
               <opt.Icon size={14} strokeWidth={isSelected ? 2.2 : 1.8} />
@@ -84,14 +91,14 @@ export const FrameExtractConfig: React.FC = () => {
                   </span>
                   <span className="text-[10px] font-mono text-accent-green font-semibold bg-accent-green/10 px-1.5 rounded">{sceneThreshold}</span>
                 </div>
-                <Slider min={0.1} max={0.5} step={0.01} value={[sceneThreshold]} onValueChange={([v]) => updateFrames({ sceneThreshold: v })} />
+                <Slider min={0.1} max={0.5} step={0.01} value={[sceneThreshold]} onValueChange={([v]) => updateFrames({ sceneThreshold: v })} disabled={isRunning} />
               </div>
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] text-muted-foreground">最小间隔</span>
                   <span className="text-[10px] font-mono text-accent-cyan font-semibold bg-accent-cyan/10 px-1.5 rounded">{minInterval}s</span>
                 </div>
-                <Slider min={1} max={10} step={1} value={[minInterval]} onValueChange={([v]) => updateFrames({ minFrameInterval: v })} />
+                <Slider min={1} max={10} step={1} value={[minInterval]} onValueChange={([v]) => updateFrames({ minFrameInterval: v })} disabled={isRunning} />
               </div>
             </div>
             <p className="text-[9px] text-muted-foreground/60 leading-relaxed bg-muted/30 p-2 rounded border border-border/30">
@@ -106,7 +113,7 @@ export const FrameExtractConfig: React.FC = () => {
               <span className="text-[10px] text-muted-foreground">抽取频率</span>
               <span className="text-[10px] font-mono text-accent-cyan font-semibold bg-accent-cyan/10 px-1.5 rounded">{fps} 帧/秒</span>
             </div>
-            <Slider min={0.1} max={5} step={0.1} value={[fps]} onValueChange={([v]) => { updateFrames({ fps: v }); }} />
+            <Slider min={0.1} max={5} step={0.1} value={[fps]} onValueChange={([v]) => { updateFrames({ fps: v }); }} disabled={isRunning} />
             <div className="flex justify-between text-[8px] text-muted-foreground/40 px-0.5">
               <span>稀疏</span><span>密集</span>
             </div>
@@ -131,6 +138,7 @@ export const FrameExtractConfig: React.FC = () => {
               onChange={(e) => updateFrames({ timePoint: parseFloat(e.target.value) || 0 })}
               placeholder="秒，如 12.5"
               className="h-7 text-[11px] font-mono"
+              disabled={isRunning}
             />
           </div>
         )}
@@ -147,11 +155,12 @@ export const FrameExtractConfig: React.FC = () => {
                 <button
                   key={opt.value}
                   onClick={() => updateFrames({ scale: opt.value })}
+                  disabled={isRunning}
                   className={`flex-1 text-[9px] py-0.5 rounded transition-all cursor-pointer border ${
                     scale === opt.value
                       ? 'bg-primary/10 text-primary font-semibold border-primary/20'
                       : 'bg-muted/40 text-muted-foreground border-transparent hover:bg-muted/60 hover:text-foreground'
-                  }`}
+                  } ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
                 >
                   {opt.label}
                 </button>
@@ -163,7 +172,7 @@ export const FrameExtractConfig: React.FC = () => {
               <span className="text-[10px] text-muted-foreground">画质</span>
               <span className="text-[10px] font-mono text-accent-warm font-semibold">{quality}/5</span>
             </div>
-            <Slider min={1} max={5} step={1} value={[quality]} onValueChange={([v]) => updateFrames({ quality: v })} />
+            <Slider min={1} max={5} step={1} value={[quality]} onValueChange={([v]) => updateFrames({ quality: v })} disabled={isRunning} />
           </div>
         </div>
       )}

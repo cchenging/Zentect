@@ -43,7 +43,6 @@ export interface FramesConfig {
 /** 音频分离配置 */
 export interface AudioConfig {
   enabled: boolean;
-  engine: 'mdx-net' | 'spleeter';
 }
 
 /** ASR 引擎配置 */

@@ -168,11 +168,17 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
         useStep1Store.getState().setAsrLines(asrLines);
       }
 
+      // 写入 roles（独立于 shots，避免因 shots 为空导致角色数据丢失）
+      if (payload.roles && payload.roles.length > 0) {
+        projectState.hydrateProjectData({
+          roles: payload.roles,
+        });
+      }
+
       if (shots.length > 0) {
         projectState.hydrateProjectData({
           shots,
           aiShots: payload.aiShots || projectState.aiShots,
-          roles: payload.roles || projectState.roles,
         });
       }
 

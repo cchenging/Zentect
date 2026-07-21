@@ -7,6 +7,7 @@ import { VisionProcessor } from '../../../../main/engine/media/VisionProcessor';
 import { LocalWhisperStrategy } from '../../../../main/engine/strategies/LocalWhisperStrategy';
 import { AppLogger } from '../../../../main/core/AppLogger';
 import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { AppError, ErrorCode } from '../../../infra/error/AppError';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -33,7 +34,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
 
     if (!mediaPath) {
       AppLogger.warn(LOG_TAGS.SCHEDULER, '[Step1] 未提供媒体文件路径');
-      return { _failed: true, _error: '未找到媒体文件路径' };
+      throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, '未找到媒体文件路径');
     }
 
     // 子步骤开关：兼容布尔值和 { enabled: true/false } 两种配置格式
@@ -61,6 +62,12 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     let vocalsPath: string | undefined;
     let bgmPath: string | undefined;
     const rawAudioPath = path.join(audioDir, `audio_${mediaId}_16k.wav`);
+
+    // 子步骤失败标记（Repair 2）
+    let framesFailed = false;
+    let audioFailed = false;
+    let asrFailed = false;
+    let facesFailed = false;
 
     // === 双子星并行：抽帧 ∥ 音频分离 ===
     try {
@@ -104,6 +111,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             return telemetryResult;
           } catch (e: any) {
             AppLogger.error(LOG_TAGS.MEDIA_ENGINE, '[Step1] 抽帧失败', { mediaId, error: e });
+            framesFailed = true;
             return { files: [] };
           }
         })(),
@@ -119,6 +127,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
               '[Step1] 无有效音轨，静默运行', { mediaId });
             hasAudio = false;
+            audioFailed = true;
           }
 
           if (hasAudio && fs.existsSync(rawAudioPath)) {
@@ -134,6 +143,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             } catch (e: any) {
               AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
                 '[Step1] Demucs 不可用，降级到原始音轨', { mediaId });
+              audioFailed = true;
             }
           }
           return null;
@@ -161,6 +171,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
           '[Step1] ASR 失败，降级跳过', { mediaId, error: e.message });
+        asrFailed = true;
       }
     }
 
@@ -178,33 +189,80 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         } catch (e: any) {
           AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
             '[Step1] 人脸检测失败，降级跳过', { mediaId, error: e.message });
+          facesFailed = true;
         }
       }
     }
 
+    // === 解析 Whisper JSON 生成 AsrLine[] ===
+    let asrLines: any[] = [];
+    if (whisperResult?.whisperJsonPath) {
+      try {
+        const jsonPath = whisperResult.whisperJsonPath;
+        if (fs.existsSync(jsonPath)) {
+          const whisperJson = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
+          const transcription = whisperJson.transcription || [];
+
+          const toMmSs = (srt: string): string => {
+            const match = srt.match(/(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/);
+            if (!match) return '00:00';
+            const m = parseInt(match[2], 10);
+            const s = parseInt(match[3], 10);
+            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+          };
+
+          asrLines = transcription.map((t: any) => {
+            const text = (t.text || '').replace(/<\|.*?\|>/g, '').trim();
+            return {
+              start: toMmSs(t.timestamps?.from || '00:00:00,000'),
+              end: toMmSs(t.timestamps?.to || '00:00:00,000'),
+              text,
+              originalText: text,
+              editing: false,
+            };
+          });
+
+          AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+            `[Step1] Whisper JSON 解析完成，${asrLines.length} 段台词`);
+        }
+      } catch (e: any) {
+        AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+          '[Step1] 解析 Whisper JSON 失败', { error: e.message });
+      }
+    }
+    const framePaths = validFrames;
+    const frameCount = validFrames.length;
+    const audioSeparated = !!vocalsPath;
+
     const results: Record<string, any> = {
-      frames: { count: validFrames.length, paths: validFrames },
+      frames: { count: frameCount, paths: framePaths, _failed: framesFailed },
       audio: {
-        separated: !!vocalsPath,
+        separated: audioSeparated,
         audioPath: hasAudio ? rawAudioPath : undefined,
         vocalsPath,
         bgmPath,
+        _failed: audioFailed,
       },
-      asr: whisperResult
-        ? { lines: whisperResult.asrLines || [], whisperJsonPath: whisperResult.whisperJsonPath || '' }
-        : { lines: [] },
-      faces: { roles, count: roles.length },
+      asr: {
+        lines: asrLines,
+        whisperJsonPath: whisperResult?.whisperJsonPath || '',
+        _failed: asrFailed,
+      },
+      faces: { roles, count: roles.length, _failed: facesFailed },
     };
 
     // 写入 context.bus 供下游策略消费
     context.bus.set('step1-result', results);
     if (validFrames.length > 0) context.bus.set('step1-frames', validFrames);
-    if (whisperResult) context.bus.set('asr-result', whisperResult);
+    if (whisperResult) context.bus.set('asr-result', { ...whisperResult, asrLines });
+
+    // 返回扁平 ExtractionOutput 形状
+    const output = { asrLines, framePaths, frameCount, audioSeparated, roles };
 
     onProgress(100, '素材分析完成');
     AppLogger.info(LOG_TAGS.SCHEDULER,
-      `[Step1] 素材分析策略执行完成 (帧:${validFrames.length}, 音频:${hasAudio ? '是' : '否'}, 人脸:${roles.length})`);
+      `[Step1] 素材分析策略执行完成 (帧:${frameCount}, 音频:${hasAudio ? '是' : '否'}, 人脸:${roles.length})`);
 
-    return results;
+    return output;
   }
 }

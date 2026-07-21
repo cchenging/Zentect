@@ -22,7 +22,7 @@ describe('Step1 Types', () => {
         config: {
           targetLanguage: 'zh-CN',
           frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, scale: 1024, fps: 2 },
-          audio: { enabled: true, engine: 'mdx-net' },
+          audio: { enabled: true },
           whisper: { enabled: true, engine: 'sensevoice' },
           faces: { enabled: true, engine: 'insightface' },
         },
@@ -36,12 +36,12 @@ describe('Step1 Types', () => {
       const config: Step1Config = {
         targetLanguage: 'en-US',
         frames: { enabled: false, mode: 'UNIFORM_FPS', sceneThreshold: 0.3, quality: 5, scale: 720, fps: 1 },
-        audio: { enabled: false, engine: 'spleeter' },
+        audio: { enabled: false },
         whisper: { enabled: false, engine: 'whisper-v3', language: 'en' },
         faces: { enabled: false, engine: 'mediapipe' },
       };
       expect(config.frames.enabled).toBe(false);
-      expect(config.audio.engine).toBe('spleeter');
+      expect(config.audio.enabled).toBe(false);
       expect(config.whisper.engine).toBe('whisper-v3');
       expect(config.faces.engine).toBe('mediapipe');
     });
@@ -110,9 +110,14 @@ describe('Step1 Types', () => {
   });
 
   describe('AudioConfig', () => {
-    it('应支持 mdx-net 和 spleeter 引擎', () => {
-      const engines: AudioConfig['engine'][] = ['mdx-net', 'spleeter'];
-      expect(engines).toHaveLength(2);
+    it('应包含 enabled 字段', () => {
+      const config: AudioConfig = { enabled: true };
+      expect(config.enabled).toBe(true);
+    });
+
+    it('disabled 应为合法状态', () => {
+      const config: AudioConfig = { enabled: false };
+      expect(config.enabled).toBe(false);
     });
   });
 
@@ -147,7 +152,7 @@ describe('Step1 Types', () => {
         extractionConfig: {
           targetLanguage: 'zh-CN',
           frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, scale: 1024, fps: 2 },
-          audio: { enabled: true, engine: 'mdx-net' },
+          audio: { enabled: true },
           whisper: { enabled: true, engine: 'sensevoice' },
           faces: { enabled: true, engine: 'insightface' },
         },
@@ -168,7 +173,7 @@ describe('Step1 Types', () => {
         extractionConfig: {
           targetLanguage: 'zh-CN',
           frames: { enabled: true, mode: 'UNIFORM_FPS', sceneThreshold: 0.3, quality: 3, scale: 1024, fps: 2 },
-          audio: { enabled: true, engine: 'mdx-net' },
+          audio: { enabled: true },
           whisper: { enabled: true, engine: 'whisper-v3' },
           faces: { enabled: true, engine: 'insightface' },
         },
@@ -216,7 +221,7 @@ describe('Step1 Types', () => {
         extractionConfig: {
           targetLanguage: 'zh-CN',
           frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, scale: 1024, fps: 2 },
-          audio: { enabled: true, engine: 'mdx-net' },
+          audio: { enabled: true },
           whisper: { enabled: true, engine: 'sensevoice' },
           faces: { enabled: true, engine: 'insightface' },
         },
