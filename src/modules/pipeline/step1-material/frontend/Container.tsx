@@ -6,6 +6,7 @@ import { useStep1Store } from "../../stores/useStep1Store";
 import { useProjectStore } from "../../../editor/stores/useProjectStore";
 import { usePlayerStore } from "../../../editor/stores/usePlayerStore";
 import { usePipelineStore } from "../../../../renderer/src/store/usePipelineStore";
+import { IPC_CHANNELS } from "../../../infra/ipc/IpcConstants";
 import type { MediaItem, Role } from "../../../../shared/types";
 import type { AsrLine, StepStatus } from "../../../../shared/types/entities/editor";
 import type { Step1Config } from "../types";
@@ -26,12 +27,16 @@ export const StepMaterialAnalysis: React.FC = () => {
   const subStepStatuses = useMemo(() => {
     const merged = { ...step1SubStepStatuses };
     for (const key of Object.keys(pipelineSubStepStatuses)) {
-      if (pipelineSubStepStatuses[key] !== 'idle') {
-        merged[key] = pipelineSubStepStatuses[key];
+      const status = pipelineSubStepStatuses[key];
+      if (status === 'running' && pipelineSubStepProgresses[key] === 0) {
+        continue;
+      }
+      if (status !== 'idle') {
+        merged[key] = status;
       }
     }
     return merged;
-  }, [step1SubStepStatuses, pipelineSubStepStatuses]);
+  }, [step1SubStepStatuses, pipelineSubStepStatuses, pipelineSubStepProgresses]);
 
   const subStepProgresses = useMemo(() => {
     const merged = { ...step1SubStepProgresses };
@@ -60,19 +65,47 @@ export const StepMaterialAnalysis: React.FC = () => {
   const setActivePlaySource = usePlayerStore((s) => s.setActivePlaySource);
 
   const handleRetrySubStep = useCallback(
-    (stepKey: string) => {
-      if (stepKey === "frames") {
-        setSubStepStatus("frames", "running");
-        setSubStepProgress("frames", 0);
-      } else if (stepKey === "audio") {
-        setSubStepStatus("audio", "running");
-        setSubStepProgress("audio", 0);
-      } else if (stepKey === "whisper") {
-        setSubStepStatus("whisper", "running");
-        setSubStepProgress("whisper", 0);
-      } else if (stepKey === "faces") {
-        setSubStepStatus("faces", "running");
-        setSubStepProgress("faces", 0);
+    async (stepKey: string) => {
+      setSubStepStatus(stepKey, "running");
+      setSubStepProgress(stepKey, 0);
+
+      const projectState = useProjectStore.getState();
+      const pipelineState = usePipelineStore.getState();
+      const step1State = useStep1Store.getState();
+      if (!projectState.projectId) return;
+
+      const mediaItem = projectState.mediaItems[0];
+      if (!mediaItem?.filePath) return;
+
+      const currentConfig = step1State.extractionConfig;
+      const retryConfig = {
+        ...currentConfig,
+        frames: stepKey === 'frames' ? { ...currentConfig.frames, enabled: true } : { ...currentConfig.frames, enabled: false },
+        audio: stepKey === 'audio' ? { ...currentConfig.audio, enabled: true } : { ...currentConfig.audio, enabled: false },
+        whisper: stepKey === 'whisper' ? { ...currentConfig.whisper, enabled: true } : { ...currentConfig.whisper, enabled: false },
+        faces: stepKey === 'faces' ? { ...currentConfig.faces, enabled: true } : { ...currentConfig.faces, enabled: false },
+      };
+
+      pipelineState.setPipelineRunning?.(true);
+
+      try {
+        await window.api.ipc.invoke(IPC_CHANNELS.ENGINE_RUN_PIPELINE, {
+          projectId: projectState.projectId,
+          sequence: [{
+            nodeId: `step1-retry-${stepKey}-${Date.now()}`,
+            actionType: 'step1-material',
+            label: `重试: ${stepKey}`,
+            dependsOn: [],
+            params: {
+              mediaPath: mediaItem.filePath,
+              mediaId: mediaItem.id,
+              config: retryConfig,
+            },
+          }],
+        });
+      } catch (err: any) {
+        setSubStepStatus(stepKey, "failed");
+        pipelineState.setPipelineRunning?.(false);
       }
     },
     [setSubStepStatus, setSubStepProgress]

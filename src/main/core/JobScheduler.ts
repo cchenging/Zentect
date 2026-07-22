@@ -12,6 +12,8 @@ import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { TaskProgressPayload } from '../../shared/types';
 import * as path from 'path';
+import { SQLiteConnection } from '../../modules/infra/database/core/SQLiteConnection';
+import { PROJECT_SQL } from '../database/queries/ProjectQueries';
 
 export class JobScheduler {
   private static instance: JobScheduler;
@@ -252,18 +254,31 @@ export class JobScheduler {
     }
   }
 
-  /** 💥【大减法重构】：建立去画布纯净执行流，直连本地 Python 后台 */
   public async executeLinearQuickPipeline(projectId: string, videoPath: string, window: Electron.BrowserWindow) {
     try {
-      AppLogger.info(`[线性向导中枢] ⚙️ 开始激活极速提取分析流. 项目: ${projectId}`);
+      AppLogger.info(LOG_TAGS.SCHEDULER, `[线性向导中枢] 开始激活极速提取分析流. 项目: ${projectId}`);
       
-      // 1. 发送第一颗信号，点亮前台进度
       window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 5, status: 'processing' });
 
-      const pythonPort = require('./AIDaemon').AIDaemon.getInstance?.().getPort?.() || 9885;
+      const { AIDaemon } = require('./AIDaemon');
+      const pythonPort = AIDaemon.getInstance?.().getPort?.() || 34567;
 
-      // 2. 呼叫 Python 执行音轨提取与重度分离
-      window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 15, status: 'processing', nodeName: '正在分离视频音轨，提取人声中...' });
+      // 1. 抽帧（FFmpeg 本地执行，不依赖 Python）
+      window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 10, status: 'processing', nodeName: '正在提取关键帧...' });
+      let framePaths: string[] = [];
+      try {
+        const { VideoProcessor } = require('../engine/media/VideoProcessor');
+        const framesDir = path.join(PathManager.getProjectDir(projectId), 'cache', 'frames');
+        const frameResult = await VideoProcessor.extractFrames(videoPath, framesDir, projectId, {
+          strategy: 'VLM_OPTIMIZED', fps: 2, scale: 1024, quality: 3,
+        });
+        framePaths = frameResult.files || [];
+      } catch (frameErr: any) {
+        AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] 抽帧失败，降级跳过`, { error: frameErr.message });
+      }
+
+      // 2. 音频分离
+      window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 30, status: 'processing', nodeName: '正在分离视频音轨，提取人声中...' });
 
       const httpClient = require('./HttpClient').HttpClient;
       const separateRes = await httpClient.post(`http://127.0.0.1:${pythonPort}/audio/separate`, {
@@ -277,17 +292,129 @@ export class JobScheduler {
 
       const { vocalPath, backgroundPath } = separateRes.data;
 
-      // 3. 呼叫 SenseVoice 模型提取语音识别 (ASR)
-      window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 55, status: 'processing', nodeName: '音轨分离成功！正在呼叫本地 SenseVoice 大模型转录文字...' });
+      // 3. ASR（走 LocalWhisperStrategy 双引擎降级，而非直接 HTTP）
+      window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 55, status: 'processing', nodeName: '音轨分离成功！正在呼叫本地语音识别引擎...' });
 
-      const asrRes = await httpClient.post(`http://127.0.0.1:${pythonPort}/audio/asr`, {
-        audioPath: vocalPath,
-        projectId
-      });
+      let asrLines: any[] = [];
+      try {
+        const { LocalWhisperStrategy } = require('../engine/strategies/LocalWhisperStrategy');
+        const audioDir = path.dirname(vocalPath);
+        const whisperStrategy = new LocalWhisperStrategy();
+        const whisperResult = await whisperStrategy.transcribe(vocalPath, audioDir, projectId, 'zh');
 
-      const asrLines = asrRes?.data?.asrLines || [];
+        if (whisperResult?.whisperJsonPath) {
+          const fs = require('fs');
+          const whisperJson = JSON.parse(fs.readFileSync(whisperResult.whisperJsonPath, 'utf-8'));
+          asrLines = (whisperJson.transcription || []).map((t: any) => ({
+            start: t.timestamps?.from || '00:00',
+            end: t.timestamps?.to || '00:00',
+            text: t.text || '',
+            originalText: t.text || '',
+          }));
+        }
+      } catch (asrErr: any) {
+        AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] ASR 失败，降级跳过`, { error: asrErr.message });
+      }
 
-      // 4. 💥【并线合并】：向前端派发 100% 极速向导标准的纯净成果包
+      // 4. 人脸检测
+      let roles: any[] = [];
+      if (framePaths.length > 0) {
+        window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 80, status: 'processing', nodeName: '正在检测人脸...' });
+        try {
+          const { VisionProcessor } = require('../engine/media/VisionProcessor');
+          const facesDir = path.join(PathManager.getProjectDir(projectId), 'cache', 'faces');
+          roles = await VisionProcessor.scanFaces(framePaths, facesDir);
+        } catch (faceErr: any) {
+          AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] 人脸检测失败，降级跳过`, { error: faceErr.message });
+        }
+      }
+
+      // 5. 持久化到 DB（media_assets + roles + EVENT_EXTRACTION_SUCCESS）
+      try {
+        const projectDir = PathManager.getProjectDir(projectId);
+        const mediaRepo = new MediaRepository();
+        const projectMedias = mediaRepo.getByProject(projectId);
+        const targetMedia = projectMedias.find((m: any) => m.type === 'video');
+
+        if (targetMedia) {
+          // 更新 media_assets：frames / extractedVocals / extractedBgm
+          if (framePaths.length > 0) {
+            targetMedia.frames = framePaths.map((fp: string) =>
+              path.isAbsolute(fp) ? path.relative(projectDir, fp).replace(/\\/g, '/') : fp
+            );
+          }
+          if (vocalPath) {
+            targetMedia.extractedVocals = path.isAbsolute(vocalPath)
+              ? path.relative(projectDir, vocalPath).replace(/\\/g, '/') : vocalPath;
+          }
+          if (backgroundPath) {
+            targetMedia.extractedBgm = path.isAbsolute(backgroundPath)
+              ? path.relative(projectDir, backgroundPath).replace(/\\/g, '/') : backgroundPath;
+          }
+          targetMedia.status = 'parsed';
+          mediaRepo.updateMedia(targetMedia.id, targetMedia);
+        }
+
+        // 保存 roles 到 roles 表
+        if (roles.length > 0) {
+          const db = SQLiteConnection.getInstance().getDB();
+          db.prepare(PROJECT_SQL.HARD_DELETE_ROLES).run({ projectId });
+          const insertRole = db.prepare(PROJECT_SQL.INSERT_ROLE_FULL);
+          for (const role of roles) {
+            insertRole.run({
+              id: `role_qp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+              projectId,
+              systemId: role.systemId || null,
+              name: role.name || role.label || '',
+              pronoun: role.pronoun || '',
+              avatar: role.avatar || '',
+              description: role.description || role.label || '',
+              voiceId: role.voiceId || null,
+              mergedRoles: JSON.stringify(role.mergedRoles || []),
+            });
+          }
+        }
+
+        // 发送 EVENT_EXTRACTION_SUCCESS 通知前端数据已持久化
+        if (targetMedia) {
+          MainNotifier.notify(IPC_CHANNELS.EVENT_EXTRACTION_SUCCESS, {
+            mediaId: targetMedia.id,
+            projectId,
+            media: {
+              id: targetMedia.id,
+              name: targetMedia.name,
+              type: targetMedia.type,
+              filePath: targetMedia.filePath,
+              frames: framePaths.length > 0
+                ? framePaths.map((fp: string) =>
+                    path.isAbsolute(fp) ? path.relative(projectDir, fp).replace(/\\/g, '/') : fp
+                  )
+                : [],
+              extractedVocals: targetMedia.extractedVocals || null,
+              extractedBgm: targetMedia.extractedBgm || null,
+              status: 'parsed',
+            },
+            shots: asrLines.map((line: any) => ({
+              originalText: line.text || line.originalText || '',
+              start: (() => {
+                const parts = (line.start || '00:00').split(':');
+                return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+              })(),
+              end: (() => {
+                const parts = (line.end || '00:00').split(':');
+                return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+              })(),
+            })),
+            roles,
+          });
+        }
+
+        AppLogger.info(LOG_TAGS.SCHEDULER, `[线性向导] 数据库持久化完成: media_assets + roles`);
+      } catch (dbErr: any) {
+        AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] 数据库持久化失败`, { error: dbErr.message });
+      }
+
+      // 6. 派发结果到前端
       const finalCleanPayload = {
         progress: 100,
         status: 'success',
@@ -295,16 +422,17 @@ export class JobScheduler {
           vocalPath,
           backgroundPath,
           asrLines,
-          frameCount: asrRes?.data?.frameCount || 0
+          framePaths,
+          frameCount: framePaths.length,
+          roles,
         }
       };
 
-      console.log('====== [MAIN PROCESS SEND 核心大包] ======', JSON.stringify(finalCleanPayload));
       window.webContents.send('QUICK_PIPELINE_PROGRESS', finalCleanPayload);
-      AppLogger.info(`[线性向导中枢] 🎉 全业务数据链全线胜利通车！`);
+      AppLogger.info(LOG_TAGS.SCHEDULER, `[线性向导中枢] 全业务数据链全线胜利通车！`);
 
     } catch (err: any) {
-      AppLogger.error(`[线性向导中枢致命崩溃]: ${err.message}`);
+      AppLogger.error(LOG_TAGS.SCHEDULER, `[线性向导中枢致命崩溃]: ${err.message}`);
       window.webContents.send('QUICK_PIPELINE_PROGRESS', {
         progress: 0,
         status: 'error',

@@ -813,9 +813,9 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
 
     // ── Step1Store ──
     const s1 = useStep1Store.getState();
-    if (typeof s1.setAsrLines === 'function') s1.setAsrLines(asr || []);
-    if (typeof s1.setFrameCount === 'function') s1.setFrameCount(Number(raw.frameCount || parsed.frameCount || 0));
-    if (typeof s1.setAudioSeparated === 'function') s1.setAudioSeparated(!!raw.audioSeparated);
+    if (typeof s1.setAsrLines === 'function' && Array.isArray(asr) && asr.length > 0) s1.setAsrLines(asr);
+    if (typeof s1.setFrameCount === 'function' && (raw.frameCount || parsed.frameCount)) s1.setFrameCount(Number(raw.frameCount || parsed.frameCount));
+    if (typeof s1.setAudioSeparated === 'function' && raw.audioSeparated !== undefined) s1.setAudioSeparated(!!raw.audioSeparated);
     if (typeof s1.setSubStepStatus === 'function') {
       for (const [key, status] of Object.entries(subStepStatuses)) {
         s1.setSubStepStatus(key, (status as string) || 'idle');

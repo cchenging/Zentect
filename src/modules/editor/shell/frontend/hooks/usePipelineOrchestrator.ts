@@ -155,6 +155,9 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
                   .filter(Boolean)
                   .join('\n') || '',
               },
+              audioResult: {
+                lines: useStep1Store.getState().asrLines || [],
+              },
             } : {}),
             ...(step === 4 ? {
               ttsEngine: step4State.ttsEngine || 'edge',

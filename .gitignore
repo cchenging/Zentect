@@ -17,6 +17,9 @@ output/
 docs/
 doc/
 
+# 项目交付文档集（封版快照，不上传 git）
+delivery/
+
 # ── 2. 构建产物 / 编译缓存 ──────────────────────────────────
 # electron-vite / tsc / vitest 输出
 out/

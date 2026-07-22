@@ -81,7 +81,7 @@ export class VisionProcessor {
     }
 
     try {
-      const pythonPort = AIDaemon.getInstance?.().getPort?.() || 9885;
+      const pythonPort = AIDaemon.getInstance?.().getPort?.() || 34567;
       const BATCH_SIZE = 100; // 每批最多 100 帧，避免 HTTP 请求过大
       const allFaces: any[] = [];
 
@@ -124,12 +124,11 @@ export class VisionProcessor {
       return {};
     }
 
-    // 尝试调用 AIDaemon 人脸聚类服务
     try {
-      const { AIDaemon } = await import('../../core/AIDaemon');
-      const result = await AIDaemon.instance.request('/api/cluster_faces', {
-        method: 'POST',
-        body: JSON.stringify({ mediaId, faces })
+      const daemon = AIDaemon.getInstance();
+      const result = await daemon.post('/api/cluster_faces', {
+        mediaId,
+        faces
       });
       if (result && result.clustersMap) {
         return result.clustersMap;
@@ -157,7 +156,7 @@ export class VisionProcessor {
 
     // 💥【核心修复】：修正 RPC 通信函数签名，将真实数据喂给 Python 侧的 Faiss 和 CLIP
     try {
-      const pythonPort = AIDaemon.getInstance?.().getPort?.() || 9885;
+      const pythonPort = AIDaemon.getInstance?.().getPort?.() || 34567;
 
       const response = await HttpClient.post(`http://127.0.0.1:${pythonPort}/semantic/extract`, {
         mediaId,

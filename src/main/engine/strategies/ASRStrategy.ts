@@ -42,13 +42,14 @@ export class ASRStrategy extends BaseNodeStrategy {
 
     /** 从 params 中提取语言参数 */
     const language = (task.params as any)?.language || 'zh';
+    const engine = (task.params as any)?.engine || 'sensevoice';
 
-    AppLogger.info(LOG_TAGS.SCHEDULER, `[ASR] 启动真实语音识别，音频: ${targetAudioPath}`);
+    AppLogger.info(LOG_TAGS.SCHEDULER, `[ASR] 启动真实语音识别，音频: ${targetAudioPath}, 引擎: ${engine}`);
 
     onProgress(10, '正在启动语音识别引擎...');
 
     try {
-      const result = await this.whisperStrategy.transcribe(targetAudioPath, outDir, mediaId, language);
+      const result = await this.whisperStrategy.transcribe(targetAudioPath, outDir, mediaId, language, engine);
       onProgress(100, 'success');
       return result;
     } catch (error: any) {

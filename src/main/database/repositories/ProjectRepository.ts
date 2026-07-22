@@ -163,6 +163,27 @@ export class ProjectRepository {
       }
     }
 
+    // 💥 关键修复：canvas_data 中保存的管线运行时状态（frameCount/audioSeparated/subStepStatuses 等）
+    // 优先于 metadata 中的旧值。SyncDaemon 每 5 秒将最新状态写入 canvas_data，
+    // 而 metadata 仅在管线步骤完成时通过 saveFullProjectData 更新。
+    // 若管线中断，metadata 中可能残留旧值或 running 状态，canvas_data 中的值更准确。
+    let canvasObj: any = {};
+    if (project.canvasData) {
+      try {
+        canvasObj = typeof project.canvasData === 'string' ? JSON.parse(project.canvasData) : project.canvasData;
+      } catch (e) {
+        console.error('[Repo] 解析 canvas_data 失败:', e);
+      }
+    }
+    // canvas_data 中的值覆盖 metadata（排除画布结构专用字段和独立表已有字段）
+    const CANVAS_SKIP_KEYS = new Set(['nodes', 'edges', 'mediaItems', 'viewport', 'shots', 'aiShots', 'roles']);
+    for (const [key, val] of Object.entries(canvasObj)) {
+      if (CANVAS_SKIP_KEYS.has(key)) continue;
+      if (val !== undefined && val !== null) {
+        (metadata as any)[key] = val;
+      }
+    }
+
     const rawMediaRows = this.db.prepare(PROJECT_SQL.GET_ALL_MEDIA).all({ projectId });
     console.log(`[DEBUG][Repo] projectId=${projectId}, rawMediaRows count=${rawMediaRows.length}`);
     if (rawMediaRows.length > 0) {

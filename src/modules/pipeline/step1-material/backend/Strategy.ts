@@ -1,7 +1,8 @@
 // Module: pipeline/step1-material - Pipeline Strategy
 
 import { BaseNodeStrategy, ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
-import { VideoProcessor } from '../../../../main/engine/media/VideoProcessor';
+import { FrameExtractionService } from '../../../media/frames';
+import { PathManager } from '../../../../main/utils/pathManager';
 import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
 import { VisionProcessor } from '../../../../main/engine/media/VisionProcessor';
 import { LocalWhisperStrategy } from '../../../../main/engine/strategies/LocalWhisperStrategy';
@@ -61,6 +62,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     let hasAudio: boolean | string = true;
     let vocalsPath: string | undefined;
     let bgmPath: string | undefined;
+    let vocalsIsFallback = false;
     const rawAudioPath = path.join(audioDir, `audio_${mediaId}_16k.wav`);
 
     // 子步骤失败标记（Repair 2）
@@ -80,7 +82,11 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           try {
             const framesConfig = typeof config.frames === 'object' ? config.frames : {};
             const strategy = framesConfig.mode || config.frameStrategy || 'VLM_OPTIMIZED';
-            let telemetryResult = await VideoProcessor.extractFrames(mediaPath, framesDir, mediaId, {
+            const frameService = new FrameExtractionService({
+              getFfmpegPath: () => PathManager.getBinPath('ffmpeg.exe'),
+              getFfprobePath: () => PathManager.getBinPath('ffprobe.exe'),
+            });
+            let telemetryResult = await frameService.extractFrames(mediaPath, framesDir, mediaId, {
               strategy,
               fps: framesConfig.fps || config.frameFps || 2,
               sceneThreshold: framesConfig.sceneThreshold || 0.28,
@@ -98,7 +104,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
                 '[Step1] VLM/Scene 帧数过少，自动降级到 UNIFORM_FPS', {
                 mediaId, frameCount: telemetryResult.metrics.frameCount
               });
-              telemetryResult = await VideoProcessor.extractFrames(mediaPath, framesDir, mediaId, {
+              telemetryResult = await frameService.extractFrames(mediaPath, framesDir, mediaId, {
                 strategy: 'UNIFORM_FPS',
                 fps: framesConfig.fps || config.frameFps || 2,
                 scale: framesConfig.scale || 1024,
@@ -137,6 +143,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               if (separated && separated.vocals) {
                 vocalsPath = separated.vocals;
                 bgmPath = separated.bgm;
+                vocalsIsFallback = !!separated._isFallback;
                 onProgress(30, '人声分离完成');
                 return separated;
               }
@@ -158,14 +165,18 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     const targetAudio = vocalsPath || rawAudioPath;
     if (hasAudio && runWhisper && fs.existsSync(targetAudio)) {
       onProgress(50, '正在进行 ASR 识别...');
+      if (vocalsIsFallback) {
+        AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[Step1] 人声分离降级模式，ASR 使用含 BGM 的原始音轨，识别质量可能下降', { mediaId });
+      }
       try {
         const whisperStrategy = new LocalWhisperStrategy();
         const langMap: Record<string, string> = {
           'zh-CN': 'zh', 'en-US': 'en', 'ja-JP': 'ja', 'ko-KR': 'ko'
         };
         const targetLang = langMap[config.targetLanguage] || 'auto';
+        const asrEngine = (typeof config.whisper === 'object' ? config.whisper.engine : 'sensevoice') || 'sensevoice';
         whisperResult = await whisperStrategy.transcribe(
-          targetAudio, audioDir, mediaId, targetLang
+          targetAudio, audioDir, mediaId, targetLang, asrEngine
         );
         onProgress(65, 'ASR 识别完成');
       } catch (e: any) {

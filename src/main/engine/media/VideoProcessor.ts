@@ -11,6 +11,7 @@ import { PathManager } from '../../utils/pathManager';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
+import sharp from 'sharp';
 import {
   buildCoverCommand,
   buildProbeCommand,
@@ -119,39 +120,82 @@ export class VideoProcessor {
   }
 
   /**
-   * 生成视频封面图
-   * 使用 buildCoverCommand 结构化生成 FFmpeg 参数
+   * 执行一次 FFmpeg 封面截图，返回是否成功
+   */
+  private static captureFrameAt(ffmpegExe: string, videoPath: string, outputPath: string, seekTime: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const args = buildCoverCommand({ videoPath, outputPath, seekTime, scaleHeight: 360, jpgQuality: 2 });
+      const child = spawn(ffmpegExe, args);
+      let stderr = '';
+      child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+      child.on('close', (code) => {
+        if (code === 0 && fs.existsSync(outputPath)) resolve(true);
+        else {
+          if (stderr) AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面截图失败 seek=${seekTime}s (code=${code}): ${stderr.slice(0, 500)}`);
+          resolve(false);
+        }
+      });
+      child.on('error', () => resolve(false));
+      ProcessManager.register(child, 'FFmpeg-封面截图');
+    });
+  }
+
+  /**
+   * 使用 sharp 检测封面亮度（平均灰度值 0~255），失败返回 null
+   */
+  private static async measureBrightness(imagePath: string): Promise<number | null> {
+    try {
+      const { data } = await sharp(imagePath)
+        .raw()
+        .resize(50, 50, { fit: 'inside' })
+        .toBuffer({ resolveWithObject: true });
+      const avg = data.reduce((sum, v) => sum + v, 0) / data.length;
+      return avg;
+    } catch (e) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面亮度检测失败: ${e}`);
+      return null;
+    }
+  }
+
+  /**
+   * 生成视频封面图（自动跳过黑帧）
+   * 从 1s 开始尝试，逐步后移至 3s / 5s / 10s，取第一个亮度合格的帧
+   * 亮度阈值 40/255（低于此值视为黑帧），全部失败则返回最后一次结果
    */
   static async generateCover(videoPath: string, outputDir: string, mediaId: string): Promise<string> {
-    return new Promise((resolve) => {
-       const safeMediaId = mediaId.replace(/[^\w\-\u4e00-\u9fff]/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
-       const coverFileName = `${safeMediaId}.jpg`;
-       const coverFullPath = path.join(outputDir, coverFileName);
-       const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
+    const safeMediaId = mediaId.replace(/[^\w\-\u4e00-\u9fff]/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
+    const coverFileName = `${safeMediaId}.jpg`;
+    const coverFullPath = path.join(outputDir, coverFileName);
+    const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
 
-       if (!fs.existsSync(ffmpegExe)) return resolve('');
+    if (!ffmpegExe || !fs.existsSync(ffmpegExe)) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[VideoProcessor] FFmpeg 未找到，无法生成封面');
+      return '';
+    }
 
-       const args = buildCoverCommand({
-         videoPath,
-         outputPath: coverFullPath,
-         seekTime: 0.1,
-         scaleHeight: 360,
-         jpgQuality: 2,
-       });
+    const SEEK_TIMES = [1, 3, 5, 10];
+    const BRIGHTNESS_THRESHOLD = 40;
 
-       const child = spawn(ffmpegExe, args);
-       let stderr = '';
-       child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-       child.on('close', (code) => {
-         if (code === 0 && fs.existsSync(coverFullPath)) resolve(coverFileName);
-         else {
-           if (stderr) AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面生成失败 (code=${code}): ${stderr.slice(0, 500)}`);
-           resolve('');
-         }
-       });
-       child.on('error', () => resolve(''));
-       ProcessManager.register(child, 'FFmpeg-生成封面');
-    });
+    for (const seekTime of SEEK_TIMES) {
+      if (fs.existsSync(coverFullPath)) fs.unlinkSync(coverFullPath);
+
+      const ok = await this.captureFrameAt(ffmpegExe, videoPath, coverFullPath, seekTime);
+      if (!ok) continue;
+
+      const brightness = await this.measureBrightness(coverFullPath);
+      if (brightness !== null && brightness >= BRIGHTNESS_THRESHOLD) {
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面合格 seek=${seekTime}s 亮度=${brightness.toFixed(1)}`);
+        return coverFileName;
+      }
+      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面过暗 seek=${seekTime}s 亮度=${brightness?.toFixed(1) ?? 'N/A'}，尝试后移`);
+    }
+
+    // 所有尝试结束，取最后一次结果
+    if (fs.existsSync(coverFullPath)) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[VideoProcessor] 封面亮度始终不合格，返回末次结果');
+      return coverFileName;
+    }
+    return '';
   }
 
   /**

@@ -51,6 +51,23 @@ const STYLE_PROMPTS: Record<string, string> = {
   '轻松幽默': '用轻松诙谐的语气吐槽画面内容，善用网络流行语和反转梗，让观众会心一笑，但不要过度玩梗。',
 };
 
+/** 将 ASR 台词行的时间戳格式化为 MM:SS 字符串（兼容 Fix 1 毫秒格式与旧 MM:SS 格式） */
+function formatAsrTime(l: any): string {
+  if (l.startMs !== undefined) {
+    const totalSec = Math.floor(l.startMs / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  if (typeof l.start === 'number') {
+    const totalSec = Math.floor(l.start / 1000);
+    const m = Math.floor(totalSec / 60);
+    const s = totalSec % 60;
+    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return l.start || l.begin || '00:00';
+}
+
 export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, GeneratedShot[]> {
   readonly nodeType = 'script-gen';
 
@@ -102,9 +119,13 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     let subtitleContext = '';
     for (const nodeId of upstreamNodeIds) {
       const busData = context.bus.get(nodeId);
-      if (busData?.lines && Array.isArray(busData.lines)) {
-        subtitleContext = busData.lines
-          .map((l: any) => `[${l.start || l.begin || '00:00'}] ${l.text || l.content || ''}`)
+      const rawLines = busData?.asrLines || busData?.lines || [];
+      if (rawLines.length > 0) {
+        subtitleContext = rawLines
+          .map((l: any) => {
+            const timeStr = formatAsrTime(l);
+            return `[${timeStr}] ${l.text || l.content || ''}`;
+          })
           .join('\n');
         break;
       }
@@ -116,7 +137,10 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     // 兼容 input 直接传入的 ASR 数据
     if (input.audioResult?.lines && Array.isArray(input.audioResult.lines)) {
       subtitleContext = input.audioResult.lines
-        .map((l: any) => `[${l.start || l.begin || '00:00'}] ${l.text || l.content || ''}`)
+        .map((l: any) => {
+          const timeStr = formatAsrTime(l);
+          return `[${timeStr}] ${l.text || l.content || ''}`;
+        })
         .join('\n');
     }
 

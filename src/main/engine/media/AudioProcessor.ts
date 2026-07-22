@@ -77,25 +77,25 @@ export class AudioProcessor {
   public static async separateVocalsBgm(
     inputAudioPath: string,
     outputDir: string
-  ): Promise<{ vocals: string; bgm: string } | null> {
+  ): Promise<{ vocals: string; bgm: string; _isFallback?: boolean } | null> {
     if (!fs.existsSync(inputAudioPath)) return null;
 
     const outBaseDir = path.join(outputDir, 'separated');
     if (!fs.existsSync(outBaseDir)) fs.mkdirSync(outBaseDir, { recursive: true });
 
-    /** 尝试调用 AI Daemon 的人声分离接口 */
     try {
+      const { AIDaemon } = await import('../../core/AIDaemon');
       const { HttpClient } = await import('../../core/HttpClient');
-      const result = await HttpClient.post('http://127.0.0.1:34567/api/separate', {
+      const pythonPort = AIDaemon.getInstance().getPort();
+      const result = await HttpClient.post(`http://127.0.0.1:${pythonPort}/api/separate`, {
         audioPath: inputAudioPath,
         outputDir: outBaseDir,
       });
-      if (result?.vocals && result?.bgm) return result;
+      if (result?.vocals && result?.bgm) return { vocals: result.vocals, bgm: result.bgm };
     } catch {
       AppLogger.info('AudioProcessor', 'AI Daemon 人声分离不可用，使用 FFmpeg 降级方案');
     }
 
-    /** 降级方案：用 FFmpeg 提取原始音轨作为人声（无分离） */
     const vocalsPath = path.join(outBaseDir, 'vocals.wav');
     const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
     if (!fs.existsSync(ffmpegExe)) return null;
@@ -105,7 +105,7 @@ export class AudioProcessor {
       const child = spawn(ffmpegExe, args, { windowsHide: true });
       child.on('close', (code) => {
         if (code === 0 && fs.existsSync(vocalsPath)) {
-          resolve({ vocals: vocalsPath, bgm: '' });
+          resolve({ vocals: vocalsPath, bgm: '', _isFallback: true });
         } else {
           resolve(null);
         }

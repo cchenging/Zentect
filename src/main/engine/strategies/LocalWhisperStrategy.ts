@@ -1,4 +1,3 @@
-// 📁 路径: src/main/engine/strategies/LocalWhisperStrategy.ts
 import { ITextExtractor, TextExtractResult } from './IExtractor';
 import { AIDaemon } from '../../core/AIDaemon';
 import { AppLogger } from '../../core/AppLogger';
@@ -11,16 +10,16 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
 
-export class LocalWhisperStrategy {
+const WHISPER_CLI_TIMEOUT_MS = 600000;
 
-  /**
-   * 语音识别主入口：优先使用 Python AIDaemon（SenseVoice），
-   * 不可用时自动降级到本地 whisper-cli.exe 推理
-   */
-  public async transcribe(audioPath: string, outDir: string, mediaId: string, language: string = 'zh'): Promise<TextExtractResult> {
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 启动听写协议，目标语言: ${language}`, { mediaId });
+export class LocalWhisperStrategy implements ITextExtractor {
 
-    /** 检查音频文件是否存在 */
+  public async transcribe(
+    audioPath: string, outDir: string, mediaId: string,
+    language: string = 'zh', engine: 'sensevoice' | 'whisper-v3' = 'sensevoice'
+  ): Promise<TextExtractResult> {
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 启动听写协议，目标语言: ${language}, 引擎: ${engine}`, { mediaId });
+
     if (!fs.existsSync(audioPath)) {
       throw new AppError(ErrorCode.FS_PATH_INVALID, `ASR 音频文件不存在: ${audioPath}`);
     }
@@ -33,7 +32,11 @@ export class LocalWhisperStrategy {
     await fs.promises.mkdir(outDir, { recursive: true });
     const whisperOutPath = path.join(outDir, `transcript_${mediaId}.json`);
 
-    /** 优先尝试 Python AIDaemon（SenseVoice ONNX） */
+    if (engine === 'whisper-v3') {
+      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 用户指定 whisper-v3，跳过 SenseVoice`);
+      return await this.transcribeViaLocalWhisper(audioPath, whisperOutPath, language);
+    }
+
     try {
       const daemon = AIDaemon.getInstance();
       if (daemon.isOnline()) {
@@ -44,19 +47,13 @@ export class LocalWhisperStrategy {
       AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 调用失败，准备降级`, { error: daemonErr.message });
     }
 
-    /** 降级：使用本地 whisper-cli.exe 推理 */
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 降级到本地 whisper-cli.exe 推理`);
     return await this.transcribeViaLocalWhisper(audioPath, whisperOutPath, language);
   }
 
-  /**
-   * 通过 Python AIDaemon（SenseVoice）执行语音识别
-   * 支持长音频分片处理，避免超时降级
-   */
   private async transcribeViaDaemon(daemon: AIDaemon, audioPath: string, whisperOutPath: string, language: string): Promise<TextExtractResult> {
-    /** 根据音频时长动态计算超时：每分钟音频给 60 秒超时，最低 120 秒，最高 7200 秒 */
     const audioSizeBytes = fs.statSync(audioPath).size;
-    const estimatedDurationSec = (audioSizeBytes / (16000 * 2)) || 120; // 16kHz 16bit 单声道估算
+    const estimatedDurationSec = (audioSizeBytes / (16000 * 2)) || 120;
     const timeoutMs = Math.max(120000, Math.min(7200000, Math.round(estimatedDurationSec * 1000)));
 
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] SenseVoice 超时设置: ${Math.round(timeoutMs / 1000)}s (音频估算 ${Math.round(estimatedDurationSec)}s)`);
@@ -77,11 +74,7 @@ export class LocalWhisperStrategy {
     }
   }
 
-  /**
-   * 使用本地 whisper-cli.exe 执行语音识别（无需 Python）
-   */
   private async transcribeViaLocalWhisper(audioPath: string, whisperOutPath: string, language: string): Promise<TextExtractResult> {
-    /** whisper-cli.exe 位于 resources/models/whisper/ 目录下 */
     const whisperDir = PathManager.getModelPath('whisper', '');
     const whisperExe = path.join(whisperDir, 'whisper-cli.exe');
     const modelPath = PathManager.getModelPath('whisper', 'ggml-base.bin');
@@ -93,7 +86,6 @@ export class LocalWhisperStrategy {
       throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, `Whisper 模型不存在: ${modelPath}`);
     }
 
-    /** whisper-cli 输出 SRT 格式到文件 */
     const outputSrtPath = whisperOutPath.replace('.json', '.srt');
     const langCode = language === 'zh-CN' ? 'zh' : (language === 'en-US' ? 'en' : 'auto');
 
@@ -107,16 +99,21 @@ export class LocalWhisperStrategy {
 
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Local] whisper-cli 启动`, { exe: whisperExe, model: modelPath, lang: langCode });
 
-    /** 执行 whisper-cli 推理 */
     await new Promise<void>((resolve, reject) => {
       const proc = spawn(whisperExe, args, { stdio: ['pipe', 'pipe', 'pipe'] });
       ProcessManager.register(proc, 'asr-whisper-local');
 
+      const timer = setTimeout(() => {
+        if (proc.pid) ProcessManager.killTree(proc.pid);
+        reject(new AppError(ErrorCode.AI_PROCESS_FAILED, `whisper-cli 执行超时 (${WHISPER_CLI_TIMEOUT_MS / 1000}s)`));
+      }, WHISPER_CLI_TIMEOUT_MS);
+
       let stderr = '';
       proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-      proc.stdout.on('data', () => {}); // 消费 stdout 防止阻塞
+      proc.stdout.on('data', () => {});
 
       proc.on('close', (code: number) => {
+        clearTimeout(timer);
         if (code !== 0) {
           AppLogger.error(LOG_TAGS.MEDIA_ENGINE, `[ASR Local] whisper-cli 异常退出 (code: ${code})`, { stderr: stderr.slice(-500) });
           reject(new Error(`whisper-cli 退出码: ${code}`));
@@ -124,10 +121,9 @@ export class LocalWhisperStrategy {
           resolve();
         }
       });
-      proc.on('error', (err) => reject(err));
+      proc.on('error', (err) => { clearTimeout(timer); reject(err); });
     });
 
-    /** 解析 SRT 输出并转为项目内部 JSON 格式 */
     const srtPath = fs.existsSync(outputSrtPath) ? outputSrtPath : whisperOutPath.replace('.json', '.srt');
     if (!fs.existsSync(srtPath)) {
       throw new AppError(ErrorCode.AI_PROCESS_FAILED, `whisper-cli 未生成 SRT 文件: ${srtPath}`);
@@ -144,21 +140,16 @@ export class LocalWhisperStrategy {
     fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Local] whisper-cli 识别完成，${transcription.length} 段台词`);
 
-    /** 语言检测 */
     const langCheck = detectFromASRJson(finalJson);
     if (langCheck.status !== 'zh') {
       AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR 语言检测] ${langCheck.message}`, { status: langCheck.status });
     }
 
-    /** 清理 SRT 临时文件 */
     try { fs.unlinkSync(srtPath); } catch {}
 
     return { whisperJsonPath: whisperOutPath };
   }
 
-  /**
-   * 解析 SRT 格式字幕为项目内部 transcription 格式
-   */
   private parseSrt(srtContent: string): Array<{ timestamps: { from: string; to: string }; text: string; emotion: string }> {
     const result: Array<{ timestamps: { from: string; to: string }; text: string; emotion: string }> = [];
     const blocks = srtContent.trim().split(/\n\s*\n/);
@@ -167,7 +158,6 @@ export class LocalWhisperStrategy {
       const lines = block.trim().split('\n');
       if (lines.length < 3) continue;
 
-      /** SRT 时间行格式：00:00:01,234 --> 00:00:05,678 */
       const timeMatch = lines[1]?.match(/(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})/);
       if (!timeMatch) continue;
 
@@ -176,7 +166,6 @@ export class LocalWhisperStrategy {
       const text = lines.slice(2).join(' ').trim();
 
       if (text) {
-        /** 清洗尖括号控制符 */
         const cleaned = text.replace(/<\|.*?\|>/g, '').replace(/</g, '＜').replace(/>/g, '＞').trim();
         if (cleaned) {
           result.push({ timestamps: { from, to }, text: cleaned, emotion: 'NEUTRAL' });
@@ -187,9 +176,22 @@ export class LocalWhisperStrategy {
     return result;
   }
 
-  /**
-   * 解析 Python Daemon 返回的 JSON 并写入最终格式
-   */
+  private static formatSrtTimeFromSeconds(sec: number): string {
+    const clamped = Math.max(0, sec);
+    const h = Math.floor(clamped / 3600);
+    const m = Math.floor((clamped % 3600) / 60);
+    const s = Math.floor(clamped % 60);
+    const ms = Math.round((clamped - Math.floor(clamped)) * 1000);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+  }
+
+  private static cleanText(raw: any): string {
+    if (typeof raw !== 'string' || !raw) return '';
+    let text = raw.replace(/<\|.*?\|>/g, '');
+    text = text.replace(/^[<|]+|[>|]+$/g, '');
+    return text.replace(/</g, '＜').replace(/>/g, '＞').trim();
+  }
+
   private parseAndWriteResult(whisperOutPath: string, language: string): TextExtractResult {
     const pythonOut = JSON.parse(fs.readFileSync(whisperOutPath, 'utf-8'));
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR] Python 输出探测 (前200字): ${JSON.stringify(pythonOut).substring(0, 200)}`);
@@ -197,62 +199,117 @@ export class LocalWhisperStrategy {
     let rawData = Array.isArray(pythonOut) ? pythonOut[0] : pythonOut;
     if (rawData.data) rawData = rawData.data;
 
-    const formatSrtTime = (sec: number) => {
-      const d = new Date(Math.max(0, sec) * 1000);
-      return `${String(Math.floor(sec / 3600)).padStart(2, '0')}:${String(d.getUTCMinutes()).padStart(2, '0')}:${String(d.getUTCSeconds()).padStart(2, '0')},${String(d.getUTCMilliseconds()).padStart(3, '0')}`;
-    };
+    if (rawData.transcription && Array.isArray(rawData.transcription) && rawData.transcription.length > 0) {
+      const hasRealTimestamps = rawData.transcription.some((t: any) =>
+        t.timestamps && (typeof t.timestamps.from === 'number' || typeof t.timestamps.to === 'number')
+      );
 
-    const cleanText = (raw: any) => {
-      if (typeof raw !== 'string' || !raw) return '';
-      let text = raw.replace(/<\|.*?\|>/g, '');
-      text = text.replace(/^[<|]+|[>|]+$/g, '');
-      return text.replace(/</g, '＜').replace(/>/g, '＞').trim();
-    };
+      if (hasRealTimestamps) {
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR] 检测到 Python 返回真实时间戳，直接使用`);
+        const transcription = rawData.transcription.map((t: any) => {
+          const fromSec = typeof t.timestamps?.from === 'number' ? t.timestamps.from
+            : (typeof t.start === 'number' ? t.start : 0);
+          const toSec = typeof t.timestamps?.to === 'number' ? t.timestamps.to
+            : (typeof t.end === 'number' ? t.end : fromSec + 2);
+          return {
+            timestamps: {
+              from: LocalWhisperStrategy.formatSrtTimeFromSeconds(fromSec),
+              to: LocalWhisperStrategy.formatSrtTimeFromSeconds(toSec),
+            },
+            text: LocalWhisperStrategy.cleanText(t.text || ''),
+            emotion: t.emotion || 'NEUTRAL',
+          };
+        });
 
+        const finalJson = { language: rawData.language || language, transcription };
+        fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Success] 使用真实时间戳解析 ${transcription.length} 段台词`);
+        this.runLanguageCheck(finalJson, whisperOutPath);
+        return { whisperJsonPath: whisperOutPath };
+      }
+    }
+
+    AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR] Python 未返回时间戳，降级为估算分句`);
+    return this.parseAndWriteResultWithEstimatedTimestamps(rawData, whisperOutPath, language);
+  }
+
+  private parseAndWriteResultWithEstimatedTimestamps(rawData: any, whisperOutPath: string, language: string): TextExtractResult {
     const rawText = rawData.text || rawData.content || '';
-    const cleanedFullText = cleanText(rawText);
+    const cleanedFullText = LocalWhisperStrategy.cleanText(rawText);
 
     if (!cleanedFullText || cleanedFullText.length < 1) {
       AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR 异常] 清洗后文本为空`);
     }
 
+    const totalDuration = rawData.duration || rawData.audio_duration || 0;
     const finalTranscription: Array<{ timestamps: { from: string; to: string }; text: string; emotion: any }> = [];
-    const sentences = cleanedFullText.split(/([。！？；.!?;\n]+)/).filter(Boolean);
-    let currentStart = 0;
-    let accumulated = "";
 
-    for (let i = 0; i < sentences.length; i++) {
-      accumulated += sentences[i];
-      if (/^[。！？；.!?;\n]+$/.test(sentences[i]) || i === sentences.length - 1) {
-        const t = accumulated.trim();
-        if (t) {
-          const dur = Math.max(2, t.length / 4);
+    if (totalDuration > 0 && cleanedFullText.length > 0) {
+      const sentences = cleanedFullText.split(/([。！？；.!?;\n]+)/).filter(Boolean);
+      const charCount = sentences.filter(s => !/^[。！？；.!?;\n]+$/.test(s)).reduce((sum, s) => sum + s.length, 0);
+      const secPerChar = charCount > 0 ? totalDuration / charCount : 0.25;
+      let currentStart = 0;
+
+      for (let i = 0; i < sentences.length; i++) {
+        const isPunctuation = /^[。！？；.!?;\n]+$/.test(sentences[i]);
+        if (isPunctuation && finalTranscription.length > 0) {
+          finalTranscription[finalTranscription.length - 1].text += sentences[i];
+          continue;
+        }
+
+        const text = sentences[i].trim();
+        if (text) {
+          const dur = Math.max(1, text.length * secPerChar);
           finalTranscription.push({
-            timestamps: { from: formatSrtTime(currentStart), to: formatSrtTime(currentStart + dur) },
-            text: t,
-            emotion: rawData.emotion || 'NEUTRAL'
+            timestamps: {
+              from: LocalWhisperStrategy.formatSrtTimeFromSeconds(currentStart),
+              to: LocalWhisperStrategy.formatSrtTimeFromSeconds(Math.min(currentStart + dur, totalDuration)),
+            },
+            text,
+            emotion: rawData.emotion || 'NEUTRAL',
           });
           currentStart += dur;
         }
-        accumulated = "";
+      }
+    } else {
+      const sentences = cleanedFullText.split(/([。！？；.!?;\n]+)/).filter(Boolean);
+      let currentStart = 0;
+      let accumulated = '';
+
+      for (let i = 0; i < sentences.length; i++) {
+        accumulated += sentences[i];
+        if (/^[。！？；.!?;\n]+$/.test(sentences[i]) || i === sentences.length - 1) {
+          const t = accumulated.trim();
+          if (t) {
+            const dur = Math.max(2, t.length / 4);
+            finalTranscription.push({
+              timestamps: {
+                from: LocalWhisperStrategy.formatSrtTimeFromSeconds(currentStart),
+                to: LocalWhisperStrategy.formatSrtTimeFromSeconds(currentStart + dur),
+              },
+              text: t,
+              emotion: rawData.emotion || 'NEUTRAL',
+            });
+            currentStart += dur;
+          }
+          accumulated = '';
+        }
       }
     }
 
-    const finalJson = {
-      language: rawData.language || language,
-      transcription: finalTranscription
-    };
-
+    const finalJson = { language: rawData.language || language, transcription: finalTranscription };
     fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Success] 成功解析 ${finalTranscription.length} 段台词`);
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Success] 估算时间戳解析 ${finalTranscription.length} 段台词 (估算模式)`);
+    this.runLanguageCheck(finalJson, whisperOutPath);
+    return { whisperJsonPath: whisperOutPath };
+  }
 
+  private runLanguageCheck(finalJson: any, whisperOutPath: string): void {
     const langCheck = detectFromASRJson(finalJson);
     if (langCheck.status !== 'zh') {
       AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR 语言检测] ${langCheck.message}`, { status: langCheck.status });
       finalJson['_languageCheck'] = { status: langCheck.status, message: langCheck.message };
       fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
     }
-
-    return { whisperJsonPath: whisperOutPath };
   }
 }
