@@ -27,6 +27,8 @@ export interface ExecutionContext {
   pipelineParams?: PipelineParams;
   /** V1.2: 节点模型配置，由 BaseNodeStrategy 自动注入 */
   modelConfig?: NodeModelConfig;
+  /** Fix 10: 用户取消管线时的 AbortSignal，所有异步子操作必须监听并中止 */
+  signal?: AbortSignal;
 }
 
 /** 管线模型配置仓库（懒加载单例） */

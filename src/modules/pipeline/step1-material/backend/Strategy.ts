@@ -32,6 +32,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     const mediaPath = input.mediaPath;
     const config = input.config || {};
     const mediaId = input.mediaId || `media_${Date.now()}`;
+    const signal = context.signal; // Fix 10: 取消信号，透传给所有异步子操作
 
     if (!mediaPath) {
       AppLogger.warn(LOG_TAGS.SCHEDULER, '[Step1] 未提供媒体文件路径');
@@ -94,6 +95,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               scale: framesConfig.scale || 1024,
               quality: framesConfig.quality || 3,
               timePoint: framesConfig.timePoint,
+              abortSignal: signal,
             });
 
             // 抽帧降级回退：VLM/scene 模式帧数 <3 时自动切到 UNIFORM_FPS
@@ -109,6 +111,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
                 fps: framesConfig.fps || config.frameFps || 2,
                 scale: framesConfig.scale || 1024,
                 quality: framesConfig.quality || 3,
+                abortSignal: signal,
               });
             }
 
@@ -128,7 +131,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
 
           onProgress(15, '正在分离音频...');
           try {
-            hasAudio = await AudioProcessor.separateAudio(mediaPath, rawAudioPath, mediaId);
+            hasAudio = await AudioProcessor.separateAudio(mediaPath, rawAudioPath, mediaId, undefined, undefined, signal);
           } catch (e) {
             AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
               '[Step1] 无有效音轨，静默运行', { mediaId });
@@ -139,7 +142,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           if (hasAudio && fs.existsSync(rawAudioPath)) {
             onProgress(25, '正在分离人声...');
             try {
-              const separated = await AudioProcessor.separateVocalsBgm(rawAudioPath, audioDir);
+              const separated = await AudioProcessor.separateVocalsBgm(rawAudioPath, audioDir, signal);
               if (separated && separated.vocals) {
                 vocalsPath = separated.vocals;
                 bgmPath = separated.bgm;
@@ -176,7 +179,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         const targetLang = langMap[config.targetLanguage] || 'auto';
         const asrEngine = (typeof config.whisper === 'object' ? config.whisper.engine : 'sensevoice') || 'sensevoice';
         whisperResult = await whisperStrategy.transcribe(
-          targetAudio, audioDir, mediaId, targetLang, asrEngine
+          targetAudio, audioDir, mediaId, targetLang, asrEngine, signal
         );
         onProgress(65, 'ASR 识别完成');
       } catch (e: any) {
@@ -195,7 +198,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       } else {
         onProgress(75, '正在检测人脸...');
         try {
-          roles = await VisionProcessor.scanFaces(validFrames, facesDir);
+          roles = await VisionProcessor.scanFaces(validFrames, facesDir, signal);
           onProgress(85, `人脸检测完成 (${roles.length}个角色)`);
         } catch (e: any) {
           AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
@@ -214,19 +217,28 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           const whisperJson = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
           const transcription = whisperJson.transcription || [];
 
-          const toMmSs = (srt: string): string => {
+          const parseSrt = (srt: string): { ms: number; mmss: string } => {
             const match = srt.match(/(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/);
-            if (!match) return '00:00';
+            if (!match) return { ms: 0, mmss: '00:00' };
+            const h = parseInt(match[1], 10);
             const m = parseInt(match[2], 10);
             const s = parseInt(match[3], 10);
-            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+            const ms = parseInt(match[4], 10);
+            return {
+              ms: h * 3600000 + m * 60000 + s * 1000 + ms,
+              mmss: `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`,
+            };
           };
 
           asrLines = transcription.map((t: any) => {
             const text = (t.text || '').replace(/<\|.*?\|>/g, '').trim();
+            const from = parseSrt(t.timestamps?.from || '00:00:00,000');
+            const to = parseSrt(t.timestamps?.to || '00:00:00,000');
             return {
-              start: toMmSs(t.timestamps?.from || '00:00:00,000'),
-              end: toMmSs(t.timestamps?.to || '00:00:00,000'),
+              start: from.mmss,
+              startMs: from.ms,
+              end: to.mmss,
+              endMs: to.ms,
               text,
               originalText: text,
               editing: false,

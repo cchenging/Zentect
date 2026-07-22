@@ -45,20 +45,34 @@ export class SrtExportService {
   static compile(asrLines: AsrLine[]): string {
     const blocks: string[] = [];
 
+    /** 毫秒 → MM:SS 字符串 */
+    const msToMmSs = (ms: number): string => {
+      const totalSec = Math.floor(ms / 1000);
+      const m = Math.floor(totalSec / 60);
+      const s = totalSec % 60;
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
+
     for (let i = 0; i < asrLines.length; i++) {
       const line = asrLines[i];
-      const start = SrtExportService.normalizeTimestamp(line.start);
+      // 优先使用 startMs，兜底 start 字符串
+      const startStr = line.startMs !== undefined ? msToMmSs(line.startMs) : line.start;
+      const start = SrtExportService.normalizeTimestamp(startStr);
 
       // end 为空时，使用下一行的 start，最后一行默认 +3 秒
       let end: string;
-      if (line.end) {
-        end = SrtExportService.normalizeTimestamp(line.end);
+      const endStr = line.endMs !== undefined ? msToMmSs(line.endMs) : (line.end || '');
+      if (endStr) {
+        end = SrtExportService.normalizeTimestamp(endStr);
       } else if (i + 1 < asrLines.length) {
-        end = SrtExportService.normalizeTimestamp(asrLines[i + 1].start);
+        const nextStartStr = asrLines[i + 1].startMs !== undefined
+          ? msToMmSs(asrLines[i + 1].startMs)
+          : asrLines[i + 1].start;
+        end = SrtExportService.normalizeTimestamp(nextStartStr);
       } else {
         // 最后一行：start + 3 秒
         end = SrtExportService.normalizeTimestamp(
-          this.addSeconds(line.start, 3),
+          this.addSeconds(startStr, 3),
         );
       }
 

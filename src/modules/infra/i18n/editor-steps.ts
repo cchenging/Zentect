@@ -29,6 +29,8 @@ export const EDITOR_STEP_I18N: Record<string, string> = {
   'editor.step1.faces.statusRunning': '执行中 {progress}%',
   'editor.step1.faces.statusFailed': '执行失败',
   'editor.step1.faces.statusIdle': '等待执行',
+  'editor.step1.faces.emptyTitle': '未检测到人脸角色',
+  'editor.step1.faces.emptyDesc': '视频中可能未出现清晰人脸，或检测服务暂不可用',
   // 步骤2 - 画面描述
   'pipeline.step2.title': 'VLM 画面描述',
   'pipeline.step2.storyLine': '故事脉络',

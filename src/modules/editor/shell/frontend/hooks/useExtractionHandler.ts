@@ -54,11 +54,16 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
         .filter((s: any) => s.originalText && s.originalText.trim())
         .map((s: any) => {
           const original = s.originalText || s.aiText || '';
+          const startMs = s.startMs !== undefined ? s.startMs : Math.round((s.start || 0) * 1000);
+          const endMs = s.endMs !== undefined ? s.endMs : Math.round((s.end || 0) * 1000);
           return {
             start: formatSeconds(s.start),
+            startMs,
             end: formatSeconds(s.end),
+            endMs,
             text: original,
             originalText: original,
+            editing: false,
           };
         });
 

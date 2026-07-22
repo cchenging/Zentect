@@ -10,7 +10,17 @@ export type HydrationStatus = 'IDLE' | 'LOADING' | 'READY' | 'ERROR';
 
 /** ASR 台词行 */
 export interface AsrLine {
-  start: string; text: string; originalText?: string; end?: string; editing: boolean;
+  /** @deprecated 请使用 startMs */
+  start: string;
+  /** 起始时间（毫秒），唯一真实源 */
+  startMs: number;
+  text: string;
+  originalText?: string;
+  /** @deprecated 请使用 endMs */
+  end?: string;
+  /** 结束时间（毫秒），唯一真实源 */
+  endMs: number;
+  editing: boolean;
 }
 
 /** VLM 帧描述 */

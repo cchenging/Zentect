@@ -37,11 +37,35 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
 
       case PipelineNodeType.ASR:
         if (nodeResult.lines) {
-          mappers.setAsrLines(nodeResult.lines.map((l: any) => ({
-            start: l.start || l.begin || '00:00',
-            text: l.text || l.content || '',
-            editing: false
-          })));
+          mappers.setAsrLines(nodeResult.lines.map((l: any) => {
+            // 从原始数据计算毫秒时间戳
+            let startMs = l.startMs;
+            if (startMs === undefined && l.start != null) {
+              if (typeof l.start === 'number') {
+                startMs = Math.round(l.start * 1000);
+              } else {
+                // 尝试解析 MM:SS 字符串
+                const parts = String(l.start).split(':').map(Number);
+                if (parts.length >= 2) startMs = (parts[0] * 60 + parts[1]) * 1000;
+              }
+            }
+            let endMs = l.endMs;
+            if (endMs === undefined && l.end != null) {
+              if (typeof l.end === 'number') {
+                endMs = Math.round(l.end * 1000);
+              } else {
+                const parts = String(l.end).split(':').map(Number);
+                if (parts.length >= 2) endMs = (parts[0] * 60 + parts[1]) * 1000;
+              }
+            }
+            return {
+              start: l.start || l.begin || '00:00',
+              startMs: startMs || 0,
+              text: l.text || l.content || '',
+              editing: false,
+              endMs: endMs || 0,
+            };
+          }));
         }
         break;
 

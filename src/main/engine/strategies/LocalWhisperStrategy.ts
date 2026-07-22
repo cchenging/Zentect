@@ -16,7 +16,8 @@ export class LocalWhisperStrategy implements ITextExtractor {
 
   public async transcribe(
     audioPath: string, outDir: string, mediaId: string,
-    language: string = 'zh', engine: 'sensevoice' | 'whisper-v3' = 'sensevoice'
+    language: string = 'zh', engine: 'sensevoice' | 'whisper-v3' = 'sensevoice',
+    signal?: AbortSignal
   ): Promise<TextExtractResult> {
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 启动听写协议，目标语言: ${language}, 引擎: ${engine}`, { mediaId });
 
@@ -34,24 +35,24 @@ export class LocalWhisperStrategy implements ITextExtractor {
 
     if (engine === 'whisper-v3') {
       AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 用户指定 whisper-v3，跳过 SenseVoice`);
-      return await this.transcribeViaLocalWhisper(audioPath, whisperOutPath, language);
+      return await this.transcribeViaLocalWhisper(audioPath, whisperOutPath, language, signal);
     }
 
     try {
       const daemon = AIDaemon.getInstance();
       if (daemon.isOnline()) {
         AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，使用 SenseVoice 推理`);
-        return await this.transcribeViaDaemon(daemon, audioPath, whisperOutPath, language);
+        return await this.transcribeViaDaemon(daemon, audioPath, whisperOutPath, language, signal);
       }
     } catch (daemonErr: any) {
       AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 调用失败，准备降级`, { error: daemonErr.message });
     }
 
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 降级到本地 whisper-cli.exe 推理`);
-    return await this.transcribeViaLocalWhisper(audioPath, whisperOutPath, language);
+    return await this.transcribeViaLocalWhisper(audioPath, whisperOutPath, language, signal);
   }
 
-  private async transcribeViaDaemon(daemon: AIDaemon, audioPath: string, whisperOutPath: string, language: string): Promise<TextExtractResult> {
+  private async transcribeViaDaemon(daemon: AIDaemon, audioPath: string, whisperOutPath: string, language: string, signal?: AbortSignal): Promise<TextExtractResult> {
     const audioSizeBytes = fs.statSync(audioPath).size;
     const estimatedDurationSec = (audioSizeBytes / (16000 * 2)) || 120;
     const timeoutMs = Math.max(120000, Math.min(7200000, Math.round(estimatedDurationSec * 1000)));
@@ -65,6 +66,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
     }, {
       timeout: timeoutMs,
       retries: 2,
+      signal, // Fix 10: 透传 AbortSignal
     });
 
     if (response && response.success) {
@@ -74,7 +76,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
     }
   }
 
-  private async transcribeViaLocalWhisper(audioPath: string, whisperOutPath: string, language: string): Promise<TextExtractResult> {
+  private async transcribeViaLocalWhisper(audioPath: string, whisperOutPath: string, language: string, signal?: AbortSignal): Promise<TextExtractResult> {
     const whisperDir = PathManager.getModelPath('whisper', '');
     const whisperExe = path.join(whisperDir, 'whisper-cli.exe');
     const modelPath = PathManager.getModelPath('whisper', 'ggml-base.bin');
@@ -103,8 +105,14 @@ export class LocalWhisperStrategy implements ITextExtractor {
       const proc = spawn(whisperExe, args, { stdio: ['pipe', 'pipe', 'pipe'] });
       ProcessManager.register(proc, 'asr-whisper-local');
 
+      // Fix 10: 用户取消管线时强杀 whisper-cli 子进程
+      const onAbort = () => { if (proc.pid) ProcessManager.killTree(proc.pid); reject(new AppError(ErrorCode.AI_PROCESS_FAILED, 'TASK_ABORTED')); };
+      signal?.addEventListener('abort', onAbort);
+      const cleanupSignal = () => signal?.removeEventListener('abort', onAbort);
+
       const timer = setTimeout(() => {
         if (proc.pid) ProcessManager.killTree(proc.pid);
+        cleanupSignal();
         reject(new AppError(ErrorCode.AI_PROCESS_FAILED, `whisper-cli 执行超时 (${WHISPER_CLI_TIMEOUT_MS / 1000}s)`));
       }, WHISPER_CLI_TIMEOUT_MS);
 
@@ -114,6 +122,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
 
       proc.on('close', (code: number) => {
         clearTimeout(timer);
+        cleanupSignal();
         if (code !== 0) {
           AppLogger.error(LOG_TAGS.MEDIA_ENGINE, `[ASR Local] whisper-cli 异常退出 (code: ${code})`, { stderr: stderr.slice(-500) });
           reject(new Error(`whisper-cli 退出码: ${code}`));
@@ -121,7 +130,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
           resolve();
         }
       });
-      proc.on('error', (err) => { clearTimeout(timer); reject(err); });
+      proc.on('error', (err) => { clearTimeout(timer); cleanupSignal(); reject(err); });
     });
 
     const srtPath = fs.existsSync(outputSrtPath) ? outputSrtPath : whisperOutPath.replace('.json', '.srt');

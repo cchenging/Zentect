@@ -76,7 +76,8 @@ export class AudioProcessor {
   /** 调用 Demucs/Spleeter 分离人声和背景音 */
   public static async separateVocalsBgm(
     inputAudioPath: string,
-    outputDir: string
+    outputDir: string,
+    signal?: AbortSignal
   ): Promise<{ vocals: string; bgm: string; _isFallback?: boolean } | null> {
     if (!fs.existsSync(inputAudioPath)) return null;
 
@@ -87,6 +88,8 @@ export class AudioProcessor {
       const { AIDaemon } = await import('../../core/AIDaemon');
       const { HttpClient } = await import('../../core/HttpClient');
       const pythonPort = AIDaemon.getInstance().getPort();
+      // Fix 10: 先检查信号是否已中止，避免无用调用
+      if (signal?.aborted) return null;
       const result = await HttpClient.post(`http://127.0.0.1:${pythonPort}/api/separate`, {
         audioPath: inputAudioPath,
         outputDir: outBaseDir,
@@ -100,9 +103,21 @@ export class AudioProcessor {
     const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
     if (!fs.existsSync(ffmpegExe)) return null;
 
+    // Fix 10: 先检查信号是否已中止
+    if (signal?.aborted) return null;
+
     return new Promise((resolve) => {
       const args = ['-y', '-i', inputAudioPath, '-vn', '-acodec', 'pcm_s16le', '-ar', '16000', '-ac', '1', vocalsPath];
       const child = spawn(ffmpegExe, args, { windowsHide: true });
+
+      // Fix 10: 用户取消时强杀降级 FFmpeg 进程
+      if (signal) {
+        const onAbort = () => { child.kill('SIGKILL'); resolve(null); };
+        signal.addEventListener('abort', onAbort);
+        child.on('close', () => signal.removeEventListener('abort', onAbort));
+        child.on('error', () => signal.removeEventListener('abort', onAbort));
+      }
+
       child.on('close', (code) => {
         if (code === 0 && fs.existsSync(vocalsPath)) {
           resolve({ vocals: vocalsPath, bgm: '', _isFallback: true });

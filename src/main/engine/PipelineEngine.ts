@@ -30,6 +30,8 @@ import * as fs from 'fs';
 export class PipelineEngine {
   private strategyRegistry: Map<string, INodeStrategy> = new Map();
   private isAborted = false;
+  /** Fix 10: 当前管线的 AbortController，用于向子进程/HTTP 请求传播取消信号 */
+  private abortController: AbortController | null = null;
 
   constructor() {
     // 💥 注册点：符合 OCP 原则，未来新增节点仅需在此添加一行
@@ -54,6 +56,9 @@ export class PipelineEngine {
 
   public abort() {
     this.isAborted = true;
+    // Fix 10: 触发 AbortController，让所有正在运行的子进程/HTTP 请求立即中止
+    this.abortController?.abort();
+    this.abortController = null;
     EngineStateGuard.forceReset(); // 💥 全局熔断时清空所有算力锁
     AppLogger.warn(LOG_TAGS.SCHEDULER, '🛑 收到全局熔断指令，算力锁已全部清空');
   }
@@ -75,6 +80,7 @@ export class PipelineEngine {
     onProgressUpdate: (progressData: TaskProgressPayload) => void
   ): Promise<any> {
     this.isAborted = false;
+    this.abortController = new AbortController();
 
     const workflowService = new WorkflowService();
     const snapshot = workflowService.load(projectId);
@@ -98,6 +104,7 @@ export class PipelineEngine {
       projectId,
       bus: new Map<string, any>(),
       pipelineParams: this.loadPipelineParams(),
+      signal: this.abortController.signal,
     };
 
     const ready: string[] = [];
@@ -213,12 +220,14 @@ export class PipelineEngine {
     onProgressUpdate: (progressData: TaskProgressPayload) => void
   ): Promise<any> {
     this.isAborted = false;
+    this.abortController = new AbortController();
     
     // 💥 核心：建立贯穿整个管线的总线，节点连线的数据传递全靠它
     const context: ExecutionContext = {
       projectId: payload.projectId,
       bus: new Map<string, any>(),
       pipelineParams: this.loadPipelineParams(),
+      signal: this.abortController.signal,
     };
 
     // 如果前端传了 sourceMedia，直接将其注入总线作为起始点

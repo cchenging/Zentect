@@ -10,6 +10,9 @@ import { HttpClient } from '../../core/HttpClient';
 export class VisionProcessor {
   /**
    * 极速抽取关键帧，供视觉大模型 (VLM) 分析
+   * @deprecated 仅在步骤2（VisionExtractStrategy / 画面描述）中使用。
+   *   步骤1（素材分析）的帧提取在 JobScheduler / QuickPipeline 中直接实现，
+   *   不再通过 VisionProcessor 调用此方法。
    * @param mode 'fps' 按秒抽帧 | 'scene' 按转场镜头抽帧
    */
   public static async extractKeyframes(
@@ -66,9 +69,10 @@ export class VisionProcessor {
    * 支持分批送入，避免超长帧列表导致 HTTP 超时
    * @param frames 帧图片路径列表
    * @param facesDir 人脸输出目录
+   * @param signal 取消信号（Fix 10）
    * @returns 检测到的人脸角色列表
    */
-  public static async scanFaces(frames: string[], facesDir: string): Promise<any[]> {
+  public static async scanFaces(frames: string[], facesDir: string, signal?: AbortSignal): Promise<any[]> {
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: scanning ${frames.length} frames`);
 
     if (!frames || frames.length === 0) {
@@ -87,6 +91,8 @@ export class VisionProcessor {
 
       /** 分批送入人脸检测 */
       for (let i = 0; i < frames.length; i += BATCH_SIZE) {
+        // Fix 10: 用户取消后跳过剩余批次
+        if (signal?.aborted) break;
         const batch = frames.slice(i, i + BATCH_SIZE);
         const batchNum = Math.floor(i / BATCH_SIZE) + 1;
         const totalBatches = Math.ceil(frames.length / BATCH_SIZE);
@@ -142,6 +148,8 @@ export class VisionProcessor {
 
   /**
    * CLIP 语义提取：为镜头构建高维语义索引
+   * @deprecated 仅在步骤2（ClipSemanticStrategy / ExtractionPipeline）中使用。
+   *   步骤1（素材分析）不涉及 CLIP 语义索引。
    * @param mediaId 媒体ID
    * @param shots 已组装的镜头列表
    * @returns 语义提取结果
@@ -172,6 +180,8 @@ export class VisionProcessor {
 
   /**
    * 语义流生成：通过 Vision LLM 生成时序语义描述
+   * @deprecated 仅在步骤2（SemanticFlowStrategy / ExtractionPipeline）中使用。
+   *   步骤1（素材分析）不涉及语义流生成。
    * @param shots 已组装的镜头列表
    * @returns 注入了 semanticDescription 的镜头列表
    */

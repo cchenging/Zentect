@@ -3,10 +3,14 @@
 
 /** ASR 台词行 */
 export interface AsrLine {
-  /** 起始时间，格式 "MM:SS" 或 "HH:MM:SS" */
+  /** @deprecated 请使用 startMs */
   start: string;
-  /** 结束时间，格式 "MM:SS" 或 "HH:MM:SS"（可选） */
+  /** 起始时间（毫秒），唯一真实源 */
+  startMs?: number;
+  /** @deprecated 请使用 endMs */
   end?: string;
+  /** 结束时间（毫秒），唯一真实源 */
+  endMs?: number;
   /** 台词文本 */
   text: string;
   /** AI 原始识别文本（可选） */

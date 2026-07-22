@@ -30,6 +30,16 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
     return parts.length >= 2 ? parseInt(parts[0], 10) * 60 + parseFloat(parts[1]) : parseFloat(timeStr) || 0;
   };
 
+  const formatAsrTime = (line: AsrLine): string => {
+    if (line.startMs !== undefined) {
+      const totalSec = Math.floor(line.startMs / 1000);
+      const m = Math.floor(totalSec / 60);
+      const s = totalSec % 60;
+      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+    return line.start || "00:00";
+  };
+
   const toggleEditing = (idx: number, editing: boolean) => {
     const lines = asrLines.map((l, i) => (i === idx ? { ...l, editing } : l));
     onSetAsrLines(lines);
@@ -98,7 +108,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
               const isModified = line.originalText !== undefined && line.text !== line.originalText;
               return (
                 <div key={idx} className={`flex items-center gap-2 px-3 py-2 border-b border-border/10 last:border-0 group ${isModified ? "bg-accent/5 border-l-2 border-l-accent-rose" : ""}`}>
-                  <span className="text-[13px] font-mono text-accent shrink-0 w-12">{line.start || "00:00"}</span>
+                  <span className="text-[13px] font-mono text-accent shrink-0 w-12">{formatAsrTime(line)}</span>
                   {line.editing ? (
                     <input value={line.text} onChange={(e) => onUpdateAsrLine(idx, e.target.value)} onBlur={() => toggleEditing(idx, false)} onKeyDown={(e) => { if (e.key === "Enter") toggleEditing(idx, false); }} className="flex-1 text-[13px] bg-bg-secondary px-2 py-1 rounded border border-accent/30 outline-none" autoFocus />
                   ) : (
@@ -106,7 +116,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                   )}
                   <Badge variant={isModified ? "danger" : "success"}>{isModified ? t["editor.step1.asr.modified"] : t["editor.step1.asr.confirmed"]}</Badge>
                   <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => onSetCurrentTime(parseTime(line.start))} className="text-muted-foreground hover:text-accent-green transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="跳转"><Play size={12} /></button>
+                    <button onClick={() => onSetCurrentTime(line.startMs !== undefined ? line.startMs / 1000 : parseTime(line.start))} className="text-muted-foreground hover:text-accent-green transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="跳转"><Play size={12} /></button>
                     {isModified && <button onClick={() => onUpdateAsrLine(idx, line.originalText || "")} className="text-muted-foreground hover:text-accent transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="还原"><UndoDot size={12} /></button>}
                     <button onClick={() => toggleEditing(idx, true)} className="text-muted-foreground hover:text-accent transition-colors cursor-pointer opacity-0 group-hover:opacity-100"><Edit3 size={12} /></button>
                   </div>
@@ -134,6 +144,9 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
               </div>
             ))}
           </div>
+        )}
+        {facesStatus === "completed" && roles.length === 0 && (
+          <EmptyState title={t["editor.step1.faces.emptyTitle"]} description={t["editor.step1.faces.emptyDesc"]} iconType="user" size="sm" />
         )}
       </CollapsibleCard>
     </div>

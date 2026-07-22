@@ -113,11 +113,31 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       const asrResult = context.bus.get('asr-result');
       if (asrResult) {
         const rawLines = asrResult.lines || asrResult.asrLines || [];
-        asrLines = rawLines.filter((l: any) => l.originalText || l.text).map((l: any) => ({
-          startTime: l.startTime || l.start || 0,
-          endTime: l.endTime || l.end || ((l.startTime || l.start || 0) + 3),
-          text: l.originalText || l.text || '',
-        }));
+        asrLines = rawLines.filter((l: any) => l.originalText || l.text).map((l: any) => {
+          // 优先使用毫秒字段，转换为秒；兜底解析字符串
+          let startTime: number, endTime: number;
+          if (l.startMs !== undefined) {
+            startTime = l.startMs / 1000;
+          } else if (typeof l.start === 'number') {
+            startTime = l.start;
+          } else if (typeof l.startTime === 'number') {
+            startTime = l.startTime;
+          } else {
+            const parts = String(l.start || '0').split(':').map(Number);
+            startTime = parts.length >= 2 ? parts[0] * 60 + parts[1] : 0;
+          }
+          if (l.endMs !== undefined) {
+            endTime = l.endMs / 1000;
+          } else if (typeof l.end === 'number') {
+            endTime = l.end;
+          } else if (typeof l.endTime === 'number') {
+            endTime = l.endTime;
+          } else {
+            const parts = String(l.end || '0').split(':').map(Number);
+            endTime = parts.length >= 2 ? parts[0] * 60 + parts[1] : startTime + 3;
+          }
+          return { startTime, endTime, text: l.originalText || l.text || '' };
+        });
       }
     } catch (e: any) {
       AppLogger.warn(LOG_TAGS.AI_AGENT, `[画面描述] 从 context.bus 读取 ASR 失败: ${e.message}`);
