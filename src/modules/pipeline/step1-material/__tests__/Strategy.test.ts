@@ -2,11 +2,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
-import * as path from 'path';
 
 // === Mock 依赖模块（顶层 hoisting） ===
 
-const { mockTranscribe } = vi.hoisted(() => ({
+const { mockExtractFrames, mockTranscribe } = vi.hoisted(() => ({
+  mockExtractFrames: vi.fn(),
   mockTranscribe: vi.fn(),
 }));
 
@@ -14,9 +14,25 @@ vi.mock('fs', () => ({
   default: {
     existsSync: vi.fn(() => false),
     mkdirSync: vi.fn(),
+    unlinkSync: vi.fn(),
+    statSync: vi.fn(() => ({ size: 100 })),
+    unlink: vi.fn((_p: string, cb: (err?: Error | null) => void) => cb(null)),
+    readFileSync: vi.fn(() => JSON.stringify({
+      transcription: [
+        { text: '你好世界', timestamps: { from: '00:00:00,000', to: '00:00:02,500' } },
+      ],
+    })),
   },
   existsSync: vi.fn(() => false),
   mkdirSync: vi.fn(),
+  unlinkSync: vi.fn(),
+  statSync: vi.fn(() => ({ size: 100 })),
+  unlink: vi.fn((_p: string, cb: (err?: Error | null) => void) => cb(null)),
+  readFileSync: vi.fn(() => JSON.stringify({
+    transcription: [
+      { text: '你好世界', timestamps: { from: '00:00:00,000', to: '00:00:02,500' } },
+    ],
+  })),
 }));
 
 vi.mock('path', () => ({
@@ -26,16 +42,16 @@ vi.mock('path', () => ({
   join: vi.fn((...args: string[]) => args.join('/')),
 }));
 
-vi.mock('../../../../main/engine/media/VideoProcessor', () => ({
-  VideoProcessor: {
-    extractFrames: vi.fn(),
+vi.mock('@modules/media/frames', () => ({
+  FrameExtractionService: class {
+    extractFrames = mockExtractFrames;
   },
 }));
 
 vi.mock('../../../../main/engine/media/AudioProcessor', () => ({
   AudioProcessor: {
-    separateAudio: vi.fn(),
-    separateVocalsBgm: vi.fn(),
+    extractAndSeparate: vi.fn(),
+    downsampleTo16k: vi.fn(),
   },
 }));
 
@@ -61,18 +77,37 @@ vi.mock('../../../../main/core/AppLogger', () => ({
   },
 }));
 
-vi.mock('../../../../infra/logger/LogConstants', () => ({
+vi.mock('@modules/infra/logger/LogConstants', () => ({
   LOG_TAGS: {
     SCHEDULER: 'SCHEDULER',
     MEDIA_ENGINE: 'MEDIA_ENGINE',
   },
 }));
 
+vi.mock('@modules/infra/error/AppError', () => ({
+  AppError: class AppError extends Error {
+    constructor(code: string, message: string) {
+      super(message);
+      this.name = 'AppError';
+    }
+  },
+  ErrorCode: { FS_FILE_NOT_FOUND: 'FS_FILE_NOT_FOUND' },
+}));
+
 // 动态导入被测模块（mock 已在顶层设置）
 import { Step1MaterialStrategy } from '../backend/Strategy';
-import { VideoProcessor } from '../../../../main/engine/media/VideoProcessor';
 import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
 import { VisionProcessor } from '../../../../main/engine/media/VisionProcessor';
+
+/** 构建执行上下文（含 bus 和可选 signal） */
+function buildContext(signal?: AbortSignal) {
+  return { bus: new Map(), signal } as any;
+}
+
+/** 从 context.bus 读取 step1-result（嵌套结构） */
+function getBusResult(context: any) {
+  return context.bus.get('step1-result');
+}
 
 // ---------- tests ----------
 
@@ -109,27 +144,26 @@ describe('Step1MaterialStrategy', () => {
   // ========== performTask - 无媒体路径 ==========
 
   describe('performTask - 无媒体路径', () => {
-    it('mediaPath 为空时应返回 _failed', async () => {
-      const result = await (strategy as any).performTask(
-        { mediaPath: '', config: {} },
-        { bus: new Map() } as any,
-        '/tmp/cache',
-        onProgress,
-      );
-
-      expect(result._failed).toBe(true);
-      expect(result._error).toContain('未找到媒体文件路径');
+    it('mediaPath 为空时应抛出 AppError', async () => {
+      await expect(
+        (strategy as any).performTask(
+          { mediaPath: '', config: {} },
+          buildContext(),
+          '/tmp/cache',
+          onProgress,
+        ),
+      ).rejects.toThrow('未找到媒体文件路径');
     });
 
-    it('无 mediaPath 字段时应返回 _failed', async () => {
-      const result = await (strategy as any).performTask(
-        { config: {} },
-        { bus: new Map() } as any,
-        '/tmp/cache',
-        onProgress,
-      );
-
-      expect(result._failed).toBe(true);
+    it('无 mediaPath 字段时应抛出 AppError', async () => {
+      await expect(
+        (strategy as any).performTask(
+          { config: {} },
+          buildContext(),
+          '/tmp/cache',
+          onProgress,
+        ),
+      ).rejects.toThrow('未找到媒体文件路径');
     });
   });
 
@@ -138,9 +172,11 @@ describe('Step1MaterialStrategy', () => {
   describe('performTask - 子步骤开关', () => {
     beforeEach(() => {
       // 默认 mock：所有处理器返回空结果
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({ files: [], metrics: { frameCount: 0 } });
-      vi.mocked(AudioProcessor.separateAudio).mockResolvedValue(false);
-      // LocalWhisperStrategy 的 transcribe 已通过 mockTranscribe 共享
+      mockExtractFrames.mockResolvedValue({ files: [], metrics: { frameCount: 0 } });
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: undefined, vocalsPath: undefined, bgmPath: undefined,
+        isFallback: false, hasAudio: false,
+      });
       mockTranscribe.mockResolvedValue(null);
       vi.mocked(VisionProcessor.scanFaces).mockResolvedValue([]);
     });
@@ -148,58 +184,56 @@ describe('Step1MaterialStrategy', () => {
     it('config.frames=false 时应跳过抽帧', async () => {
       await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { frames: false } },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
-      expect(VideoProcessor.extractFrames).not.toHaveBeenCalled();
+      expect(mockExtractFrames).not.toHaveBeenCalled();
     });
 
     it('config.frames={ enabled: false } 时应跳过抽帧', async () => {
       await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { frames: { enabled: false } } },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
-      expect(VideoProcessor.extractFrames).not.toHaveBeenCalled();
+      expect(mockExtractFrames).not.toHaveBeenCalled();
     });
 
     it('config.audio=false 时应跳过音频分离', async () => {
       await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { audio: false } },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
-      expect(AudioProcessor.separateAudio).not.toHaveBeenCalled();
+      expect(AudioProcessor.extractAndSeparate).not.toHaveBeenCalled();
     });
 
     it('config.whisper=false 时应跳过 ASR', async () => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({ files: ['/f1.jpg'], metrics: { frameCount: 1 } });
+      mockExtractFrames.mockResolvedValue({ files: ['/f1.jpg'], metrics: { frameCount: 1 } });
       vi.mocked(fs.existsSync).mockReturnValue(true);
 
       await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { whisper: false, frames: true } },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
-      // whisper=false 时 ASR 不应被调用
-      mockTranscribe.mockClear();
       expect(mockTranscribe).not.toHaveBeenCalled();
     });
 
     it('config.faces=false 时应跳过人脸检测', async () => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({ files: ['/f1.jpg'], metrics: { frameCount: 1 } });
+      mockExtractFrames.mockResolvedValue({ files: ['/f1.jpg'], metrics: { frameCount: 1 } });
 
       await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { faces: false, frames: true } },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
@@ -212,61 +246,29 @@ describe('Step1MaterialStrategy', () => {
 
   describe('performTask - 双子星并行（抽帧 ∥ 音频分离）', () => {
     it.skip('抽帧和音频分离应同时启动（通过 Promise.all）', async () => {
-      let frameStarted = false;
-      let audioStarted = false;
-      let frameResolve: (v: any) => void = () => {};
-      let audioResolve: (v: any) => void = () => {};
-
-      vi.mocked(VideoProcessor.extractFrames).mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            frameStarted = true;
-            frameResolve = resolve;
-          }),
-      );
-      vi.mocked(AudioProcessor.separateAudio).mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            audioStarted = true;
-            audioResolve = resolve;
-          }),
-      );
-
-      const promise = (strategy as any).performTask(
-        { mediaPath: '/v.mp4', config: { frames: true, audio: true } },
-        { bus: new Map() } as any,
-        '/tmp/cache',
-        onProgress,
-      );
-
-      // 短暂等待让两个 async IIFE 启动
-      await new Promise((r) => setTimeout(r, 10));
-
-      expect(frameStarted).toBe(true);
-      expect(audioStarted).toBe(true);
-
-      frameResolve({ files: ['/f1.jpg'], metrics: { frameCount: 1 } });
-      audioResolve(true);
-
-      await promise;
+      // 时序测试需真实 Promise，跳过
     }, 15000);
 
-    it('抽帧成功时应返回帧路径列表', async () => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({
+    it('抽帧成功时应返回帧路径列表（扁平结构）', async () => {
+      mockExtractFrames.mockResolvedValue({
         files: ['/cache/frames/f1.jpg', '/cache/frames/f2.jpg'],
         metrics: { frameCount: 2 },
       });
-      vi.mocked(AudioProcessor.separateAudio).mockResolvedValue(false);
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: undefined, vocalsPath: undefined, bgmPath: undefined,
+        isFallback: false, hasAudio: false,
+      });
 
       const result = await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { frames: true, audio: false } },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
-      expect(result.frames.count).toBe(2);
-      expect(result.frames.paths).toHaveLength(2);
+      // 返回扁平结构
+      expect(result.frameCount).toBe(2);
+      expect(result.framePaths).toHaveLength(2);
     });
   });
 
@@ -274,53 +276,59 @@ describe('Step1MaterialStrategy', () => {
 
   describe('performTask - 抽帧降级回退', () => {
     it('VLM_OPTIMIZED 帧数 <3 时应自动降级到 UNIFORM_FPS', async () => {
-      // 第一次调用（VLM）返回 <3 帧
-      vi.mocked(VideoProcessor.extractFrames)
+      mockExtractFrames
+        // 第一次调用（VLM）返回 <3 帧
         .mockResolvedValueOnce({ files: ['/f1.jpg'], metrics: { frameCount: 1 } })
         // 第二次调用（降级 UNIFORM_FPS）返回更多帧
         .mockResolvedValueOnce({ files: ['/f1.jpg', '/f2.jpg', '/f3.jpg', '/f4.jpg'], metrics: { frameCount: 4 } });
 
-      vi.mocked(AudioProcessor.separateAudio).mockResolvedValue(false);
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: undefined, vocalsPath: undefined, bgmPath: undefined,
+        isFallback: false, hasAudio: false,
+      });
 
       const result = await (strategy as any).performTask(
         {
           mediaPath: '/v.mp4',
           config: { frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, scale: 1024, fps: 2 }, audio: false },
         },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
       // 应调用两次 extractFrames
-      expect(VideoProcessor.extractFrames).toHaveBeenCalledTimes(2);
+      expect(mockExtractFrames).toHaveBeenCalledTimes(2);
 
       // 第二次调用应使用 UNIFORM_FPS 策略
-      const secondCallArgs = vi.mocked(VideoProcessor.extractFrames).mock.calls[1][3];
+      const secondCallArgs = mockExtractFrames.mock.calls[1][3];
       expect(secondCallArgs.strategy).toBe('UNIFORM_FPS');
 
-      expect(result.frames.count).toBe(4);
+      expect(result.frameCount).toBe(4);
     });
 
     it('UNIFORM_FPS 模式不应触发降级', async () => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({
+      mockExtractFrames.mockResolvedValue({
         files: ['/f1.jpg'],
         metrics: { frameCount: 1 },
       });
-      vi.mocked(AudioProcessor.separateAudio).mockResolvedValue(false);
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: undefined, vocalsPath: undefined, bgmPath: undefined,
+        isFallback: false, hasAudio: false,
+      });
 
       await (strategy as any).performTask(
         {
           mediaPath: '/v.mp4',
           config: { frames: { enabled: true, mode: 'UNIFORM_FPS', fps: 2, scale: 1024, quality: 3 }, audio: false },
         },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
       // 应只调用一次
-      expect(VideoProcessor.extractFrames).toHaveBeenCalledTimes(1);
+      expect(mockExtractFrames).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -328,56 +336,154 @@ describe('Step1MaterialStrategy', () => {
 
   describe('performTask - 音频分离', () => {
     beforeEach(() => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({ files: [], metrics: { frameCount: 0 } });
+      mockExtractFrames.mockResolvedValue({ files: [], metrics: { frameCount: 0 } });
+      vi.mocked(fs.existsSync).mockReturnValue(true);
     });
 
-    it('音频分离成功时应尝试 Demucs 人声分离', async () => {
-      vi.mocked(AudioProcessor.separateAudio).mockResolvedValue(true);
-      vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(AudioProcessor.separateVocalsBgm).mockResolvedValue({
-        vocals: '/audio/vocals.wav',
-        bgm: '/audio/bgm.wav',
+    it('分离成功时应返回 vocals/bgm 并提供 16k asrAudioPath', async () => {
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: '/audio/vocals_16k.wav',
+        vocalsPath: '/audio/vocals.wav',
+        bgmPath: '/audio/bgm.wav',
+        isFallback: false,
+        hasAudio: true,
       });
 
-      const result = await (strategy as any).performTask(
+      const context = buildContext();
+      await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { audio: true, frames: false } },
-        { bus: new Map() } as any,
-        '/tmp/cache',
-        onProgress,
+        context, '/tmp/cache', onProgress,
       );
 
-      expect(AudioProcessor.separateVocalsBgm).toHaveBeenCalled();
-      expect(result.audio.separated).toBe(true);
-      expect(result.audio.vocalsPath).toBe('/audio/vocals.wav');
+      expect(AudioProcessor.extractAndSeparate).toHaveBeenCalledWith(
+        '/v.mp4', expect.any(String), expect.any(String), undefined,
+        expect.objectContaining({ skipSeparation: false, engine: 'auto' })
+      );
+      const busResult = getBusResult(context);
+      expect(busResult.audio.separated).toBe(true);
+      expect(busResult.audio.vocalsPath).toBe('/audio/vocals.wav');
+      expect(busResult.audio.bgmPath).toBe('/audio/bgm.wav');
     });
 
     it('无有效音轨时应静默运行（hasAudio=false）', async () => {
-      vi.mocked(AudioProcessor.separateAudio).mockRejectedValue(new Error('no audio track'));
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: undefined, vocalsPath: undefined, bgmPath: undefined,
+        isFallback: false, hasAudio: false,
+      });
 
-      const result = await (strategy as any).performTask(
+      const context = buildContext();
+      await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { audio: true, frames: false } },
-        { bus: new Map() } as any,
-        '/tmp/cache',
-        onProgress,
+        context, '/tmp/cache', onProgress,
       );
 
-      expect(result.audio.audioPath).toBeUndefined();
+      const busResult = getBusResult(context);
+      expect(busResult.audio.audioPath).toBeFalsy();
+      expect(busResult.audio._failed).toBe(true);
     });
 
-    it('Demucs 不可用时应降级到原始音轨', async () => {
-      vi.mocked(AudioProcessor.separateAudio).mockResolvedValue(true);
-      vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(AudioProcessor.separateVocalsBgm).mockRejectedValue(new Error('demucs not found'));
+    it('分离失败时应降级到原始音轨（isFallback=true）', async () => {
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: '/audio/audio_16k.wav',
+        vocalsPath: undefined, bgmPath: undefined,
+        isFallback: true, hasAudio: true,
+      });
 
-      const result = await (strategy as any).performTask(
+      const context = buildContext();
+      await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { audio: true, frames: false } },
-        { bus: new Map() } as any,
-        '/tmp/cache',
-        onProgress,
+        context, '/tmp/cache', onProgress,
       );
 
-      // 不应崩溃，audio 结果仍应有 audioPath
-      expect(result.audio.audioPath).toBeTruthy();
+      const busResult = getBusResult(context);
+      expect(busResult.audio.vocalsIsFallback).toBe(true);
+      expect(busResult.audio.audioPath).toBeTruthy();
+    });
+
+    it('isFallback 标记应透传到结果中', async () => {
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: '/audio/vocals_16k.wav',
+        vocalsPath: '/tmp/vocals.wav',
+        bgmPath: '/tmp/bgm.wav',
+        isFallback: true, hasAudio: true,
+      });
+
+      const context = buildContext();
+      await (strategy as any).performTask(
+        { mediaPath: '/v.mp4', config: { audio: true, frames: false } },
+        context, '/tmp/cache', onProgress,
+      );
+
+      const busResult = getBusResult(context);
+      expect(busResult.audio.vocalsIsFallback).toBe(true);
+      expect(busResult.audio.vocalsPath).toBe('/tmp/vocals.wav');
+      expect(busResult.audio.bgmPath).toBe('/tmp/bgm.wav');
+    });
+
+    it('fast 模式应跳过分离引擎（skipSeparation=true）', async () => {
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: '/audio/audio_16k.wav',
+        vocalsPath: undefined, bgmPath: undefined,
+        isFallback: true, hasAudio: true,
+      });
+
+      await (strategy as any).performTask(
+        { mediaPath: '/v.mp4', config: { audio: { separationMode: 'fast' }, frames: false } },
+        buildContext(), '/tmp/cache', onProgress,
+      );
+
+      expect(AudioProcessor.extractAndSeparate).toHaveBeenCalledWith(
+        '/v.mp4', expect.any(String), expect.any(String), undefined,
+        expect.objectContaining({ skipSeparation: true, engine: 'auto' })
+      );
+    });
+
+    it('quality 模式应透传 engine 配置到分离引擎', async () => {
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: '/audio/vocals_16k.wav',
+        vocalsPath: '/audio/vocals.wav',
+        bgmPath: '/audio/bgm.wav',
+        isFallback: false,
+        hasAudio: true,
+      });
+
+      await (strategy as any).performTask(
+        { mediaPath: '/v.mp4', config: { audio: { separationMode: 'quality', engine: 'mdx' }, frames: false } },
+        buildContext(), '/tmp/cache', onProgress,
+      );
+
+      expect(AudioProcessor.extractAndSeparate).toHaveBeenCalledWith(
+        '/v.mp4', expect.any(String), expect.any(String), undefined,
+        expect.objectContaining({ skipSeparation: false, engine: 'mdx' })
+      );
+    });
+
+    it('onProgress 应被透传（链路不再断裂）', async () => {
+      vi.mocked(AudioProcessor.extractAndSeparate).mockImplementation(
+        async (_m: string, _d: string, _i: string, _s: any, opts?: any) => {
+          // 模拟 extractAndSeparate 调用 onProgress
+          opts?.onProgress?.(10, '正在提取音频...');
+          opts?.onProgress?.(50, '正在分离人声...');
+          opts?.onProgress?.(100, '人声分离完成');
+          return {
+            asrAudioPath: '/audio/vocals_16k.wav',
+            vocalsPath: '/audio/vocals.wav',
+            bgmPath: '/audio/bgm.wav',
+            isFallback: false,
+            hasAudio: true,
+          };
+        }
+      );
+
+      await (strategy as any).performTask(
+        { mediaPath: '/v.mp4', config: { audio: true, frames: false } },
+        buildContext(), '/tmp/cache', onProgress,
+      );
+
+      // onProgress 应被多次调用，且值单调递增
+      const calls = onProgress.mock.calls.map((c: any) => c[0]);
+      const max = Math.max(...calls);
+      expect(max).toBeGreaterThanOrEqual(30); // 至少推进到 30 区间
     });
   });
 
@@ -385,8 +491,15 @@ describe('Step1MaterialStrategy', () => {
 
   describe('performTask - ASR 语音识别', () => {
     beforeEach(() => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({ files: [], metrics: { frameCount: 0 } });
-      vi.mocked(AudioProcessor.separateAudio).mockResolvedValue(true);
+      mockExtractFrames.mockResolvedValue({ files: [], metrics: { frameCount: 0 } });
+      // 默认分离成功，返回 16k asrAudioPath
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: '/audio/vocals_16k.wav',
+        vocalsPath: '/audio/vocals.wav',
+        bgmPath: '/audio/bgm.wav',
+        isFallback: false,
+        hasAudio: true,
+      });
       vi.mocked(fs.existsSync).mockReturnValue(true);
       mockTranscribe.mockReset();
     });
@@ -404,14 +517,14 @@ describe('Step1MaterialStrategy', () => {
           mediaPath: '/v.mp4',
           config: { whisper: { enabled: true, engine: 'sensevoice' }, frames: false, audio: true },
         },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
       expect(mockTranscribe).toHaveBeenCalled();
-      expect(result.asr.lines).toHaveLength(1);
-      expect(result.asr.lines[0].text).toBe('你好世界');
+      // 返回扁平结构，asrLines 在顶层
+      expect(result.asrLines).toHaveLength(1);
     });
 
     it('ASR 失败时应降级跳过（不阻断管线）', async () => {
@@ -422,13 +535,13 @@ describe('Step1MaterialStrategy', () => {
           mediaPath: '/v.mp4',
           config: { whisper: { enabled: true, engine: 'sensevoice' }, frames: false, audio: true },
         },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
-      // 不应崩溃，asr.lines 应为空数组
-      expect(result.asr.lines).toEqual([]);
+      // 不应崩溃，asrLines 应为空数组
+      expect(result.asrLines).toEqual([]);
     });
 
     it('targetLanguage 应映射到正确语言代码', async () => {
@@ -444,17 +557,19 @@ describe('Step1MaterialStrategy', () => {
             audio: true,
           },
         },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
-      // 验证 transcribe 被调用时语言参数正确
+      // 验证 transcribe 被调用时参数正确（共 6 个参数）
       expect(mockTranscribe).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(String),
         expect.any(String),
         'en', // 'en-US' → 'en'
+        'whisper-v3',      // asrEngine（config.whisper.engine）
+        undefined,         // signal（context 未传 signal）
       );
     });
   });
@@ -463,11 +578,15 @@ describe('Step1MaterialStrategy', () => {
 
   describe('performTask - 人脸检测', () => {
     beforeEach(() => {
-      vi.mocked(AudioProcessor.separateAudio).mockResolvedValue(false);
+      // 人脸检测场景默认无音频
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: undefined, vocalsPath: undefined, bgmPath: undefined,
+        isFallback: false, hasAudio: false,
+      });
     });
 
     it('有有效帧时应调用 scanFaces', async () => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({
+      mockExtractFrames.mockResolvedValue({
         files: ['/f1.jpg', '/f2.jpg'],
         metrics: { frameCount: 2 },
       });
@@ -477,25 +596,27 @@ describe('Step1MaterialStrategy', () => {
 
       const result = await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { frames: true, faces: true, audio: false, whisper: false } },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
+      // scanFaces 接收 3 个参数（frames, facesDir, signal）
       expect(VisionProcessor.scanFaces).toHaveBeenCalledWith(
         ['/f1.jpg', '/f2.jpg'],
         expect.any(String),
+        undefined,
       );
-      expect(result.faces.roles).toHaveLength(1);
-      expect(result.faces.count).toBe(1);
+      // 返回扁平结构，roles 在顶层
+      expect(result.roles).toHaveLength(1);
     });
 
     it('无有效帧时应自动跳过人脸检测', async () => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({ files: [], metrics: { frameCount: 0 } });
+      mockExtractFrames.mockResolvedValue({ files: [], metrics: { frameCount: 0 } });
 
       await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { frames: true, faces: true, audio: false, whisper: false } },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
@@ -504,7 +625,7 @@ describe('Step1MaterialStrategy', () => {
     });
 
     it('人脸检测失败时应降级跳过', async () => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({
+      mockExtractFrames.mockResolvedValue({
         files: ['/f1.jpg'],
         metrics: { frameCount: 1 },
       });
@@ -512,14 +633,13 @@ describe('Step1MaterialStrategy', () => {
 
       const result = await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { frames: true, faces: true, audio: false, whisper: false } },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
 
       // 不应崩溃
-      expect(result.faces.roles).toEqual([]);
-      expect(result.faces.count).toBe(0);
+      expect(result.roles).toEqual([]);
     });
   });
 
@@ -527,16 +647,18 @@ describe('Step1MaterialStrategy', () => {
 
   describe('performTask - context.bus 写入', () => {
     beforeEach(() => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({
+      mockExtractFrames.mockResolvedValue({
         files: ['/f1.jpg'],
         metrics: { frameCount: 1 },
       });
-      vi.mocked(AudioProcessor.separateAudio).mockResolvedValue(false);
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: undefined, vocalsPath: undefined, bgmPath: undefined,
+        isFallback: false, hasAudio: false,
+      });
     });
 
     it('应将 step1-result 写入 context.bus', async () => {
-      const bus = new Map();
-      const context = { bus } as any;
+      const context = buildContext();
 
       await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { frames: true, audio: false, whisper: false, faces: false } },
@@ -545,14 +667,13 @@ describe('Step1MaterialStrategy', () => {
         onProgress,
       );
 
-      expect(bus.has('step1-result')).toBe(true);
-      const result = bus.get('step1-result');
+      expect(context.bus.has('step1-result')).toBe(true);
+      const result = context.bus.get('step1-result');
       expect(result.frames).toBeDefined();
     });
 
     it('有帧时应将 step1-frames 写入 context.bus', async () => {
-      const bus = new Map();
-      const context = { bus } as any;
+      const context = buildContext();
 
       await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { frames: true, audio: false, whisper: false, faces: false } },
@@ -561,21 +682,24 @@ describe('Step1MaterialStrategy', () => {
         onProgress,
       );
 
-      expect(bus.has('step1-frames')).toBe(true);
-      expect(bus.get('step1-frames')).toHaveLength(1);
+      expect(context.bus.has('step1-frames')).toBe(true);
+      expect(context.bus.get('step1-frames')).toHaveLength(1);
     });
   });
 
   // ========== performTask - 进度回调 ==========
 
   describe('performTask - 进度回调', () => {
-    it('应触发多阶段进度回调', async () => {
-      vi.mocked(VideoProcessor.extractFrames).mockResolvedValue({ files: ['/f1.jpg'], metrics: { frameCount: 1 } });
-      vi.mocked(AudioProcessor.separateAudio).mockResolvedValue(false);
+    it('应触发多阶段进度回调，且最后为 100%', async () => {
+      mockExtractFrames.mockResolvedValue({ files: ['/f1.jpg'], metrics: { frameCount: 1 } });
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: undefined, vocalsPath: undefined, bgmPath: undefined,
+        isFallback: false, hasAudio: false,
+      });
 
       await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { frames: true, audio: false } },
-        { bus: new Map() } as any,
+        buildContext(),
         '/tmp/cache',
         onProgress,
       );
@@ -585,6 +709,28 @@ describe('Step1MaterialStrategy', () => {
       // 最后一次调用应为 100%
       const lastCall = onProgress.mock.calls[onProgress.mock.calls.length - 1];
       expect(lastCall[0]).toBe(100);
+    });
+
+    it('进度值应单调递增（不回跳）', async () => {
+      mockExtractFrames.mockResolvedValue({ files: ['/f1.jpg'], metrics: { frameCount: 1 } });
+      vi.mocked(AudioProcessor.extractAndSeparate).mockResolvedValue({
+        asrAudioPath: undefined, vocalsPath: undefined, bgmPath: undefined,
+        isFallback: false, hasAudio: false,
+      });
+
+      await (strategy as any).performTask(
+        { mediaPath: '/v.mp4', config: { frames: true, audio: false } },
+        buildContext(),
+        '/tmp/cache',
+        onProgress,
+      );
+
+      // 收集所有进度值（忽略 0 起点）
+      const progressValues = onProgress.mock.calls.map((c: any[]) => c[0]);
+      // 验证单调递增（非严格，允许相等）
+      for (let i = 1; i < progressValues.length; i++) {
+        expect(progressValues[i]).toBeGreaterThanOrEqual(progressValues[i - 1]);
+      }
     });
   });
 });

@@ -1,14 +1,14 @@
 // Module: pipeline/step1-material - Pipeline Strategy
 
 import { BaseNodeStrategy, ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
-import { FrameExtractionService } from '../../../media/frames';
+import { FrameExtractionService } from '@modules/media/frames';
 import { PathManager } from '../../../../main/utils/pathManager';
 import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
 import { VisionProcessor } from '../../../../main/engine/media/VisionProcessor';
 import { LocalWhisperStrategy } from '../../../../main/engine/strategies/LocalWhisperStrategy';
 import { AppLogger } from '../../../../main/core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
-import { AppError, ErrorCode } from '../../../infra/error/AppError';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
+import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -31,6 +31,9 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
   ): Promise<any> {
     const mediaPath = input.mediaPath;
     const config = input.config || {};
+    const separationMode = config.audio?.separationMode || 'quality';
+    // 引擎选择：quality 模式下可指定 'demucs' | 'mdx' | 'auto'，默认 'auto'（Python 端 Demucs→MDX 顺序）
+    const engine = config.audio?.engine || 'auto';
     const mediaId = input.mediaId || `media_${Date.now()}`;
     const signal = context.signal; // Fix 10: 取消信号，透传给所有异步子操作
 
@@ -60,11 +63,10 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     if (!fs.existsSync(facesDir)) fs.mkdirSync(facesDir, { recursive: true });
 
     let validFrames: string[] = [];
-    let hasAudio: boolean | string = true;
+    let audioPath: string | undefined;
     let vocalsPath: string | undefined;
     let bgmPath: string | undefined;
     let vocalsIsFallback = false;
-    const rawAudioPath = path.join(audioDir, `audio_${mediaId}_16k.wav`);
 
     // 子步骤失败标记（Repair 2）
     let framesFailed = false;
@@ -73,13 +75,14 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     let facesFailed = false;
 
     // === 双子星并行：抽帧 ∥ 音频分离 ===
+    let lastProgress = 0;
     try {
       const [_frameResult, _audioResult] = await Promise.all([
         // 轨道 A：视频抽帧
         (async () => {
           if (!runFrames) return { files: [] };
 
-          onProgress(5, '正在提取关键帧...');
+          lastProgress = Math.max(lastProgress, 5); onProgress(lastProgress, '正在提取关键帧...');
           try {
             const framesConfig = typeof config.frames === 'object' ? config.frames : {};
             const strategy = framesConfig.mode || config.frameStrategy || 'VLM_OPTIMIZED';
@@ -116,7 +119,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             }
 
             validFrames = telemetryResult.files;
-            onProgress(20, `关键帧提取完成 (${validFrames.length}帧)`);
+            lastProgress = Math.max(lastProgress, 20); onProgress(lastProgress, `关键帧提取完成 (${validFrames.length}帧)`);
             return telemetryResult;
           } catch (e: any) {
             AppLogger.error(LOG_TAGS.MEDIA_ENGINE, '[Step1] 抽帧失败', { mediaId, error: e });
@@ -125,38 +128,54 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           }
         })(),
 
-        // 轨道 B：音频分离 + Demucs 人声分离
+        // 轨道 B：单流音频提取 + 人声分离（44.1k stereo 提取 → 分离 → vocals 降采样 16k 供 ASR）
         (async () => {
           if (!runAudio) return null;
 
-          onProgress(15, '正在分离音频...');
-          try {
-            hasAudio = await AudioProcessor.separateAudio(mediaPath, rawAudioPath, mediaId, undefined, undefined, signal);
-          } catch (e) {
+          // fast 模式跳过分离引擎，只提 16k 供 ASR
+          const skipSeparation = separationMode === 'fast';
+          if (skipSeparation) {
+            AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+              '[Step1] 极速模式：跳过人声分离，使用原始音轨', { mediaId });
+          }
+
+          // 子进度回调：将分离引擎的 0-100 pct 映射到管线总进度的 15-30 区间
+          const onSubProgress = (pct: number, msg: string) => {
+            // pct 0-100 → 管线 15-30
+            const mapped = 15 + Math.floor(pct * 0.15);
+            lastProgress = Math.max(lastProgress, mapped);
+            onProgress(lastProgress, msg || '正在分离人声...');
+          };
+
+          const result = await AudioProcessor.extractAndSeparate(
+            mediaPath, audioDir, mediaId, signal,
+            { skipSeparation, engine, onProgress: onSubProgress }
+          );
+
+          if (!result.hasAudio) {
             AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
               '[Step1] 无有效音轨，静默运行', { mediaId });
-            hasAudio = false;
+            audioFailed = true;
+            return null;
+          }
+
+          audioPath = result.asrAudioPath;
+          vocalsPath = result.vocalsPath;
+          bgmPath = result.bgmPath;
+          vocalsIsFallback = result.isFallback;
+
+          if (result.isFallback && !skipSeparation) {
+            AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+              '[Step1] 人声分离失败，降级到原始音轨', { mediaId });
             audioFailed = true;
           }
 
-          if (hasAudio && fs.existsSync(rawAudioPath)) {
-            onProgress(25, '正在分离人声...');
-            try {
-              const separated = await AudioProcessor.separateVocalsBgm(rawAudioPath, audioDir, signal);
-              if (separated && separated.vocals) {
-                vocalsPath = separated.vocals;
-                bgmPath = separated.bgm;
-                vocalsIsFallback = !!separated._isFallback;
-                onProgress(30, '人声分离完成');
-                return separated;
-              }
-            } catch (e: any) {
-              AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
-                '[Step1] Demucs 不可用，降级到原始音轨', { mediaId });
-              audioFailed = true;
-            }
+          if (vocalsPath && !result.isFallback) {
+            lastProgress = Math.max(lastProgress, 30); onProgress(lastProgress, '人声分离完成');
+          } else if (skipSeparation) {
+            lastProgress = Math.max(lastProgress, 30); onProgress(lastProgress, '极速模式：跳过人声分离');
           }
-          return null;
+          return result;
         })(),
       ]);
     } catch (error: any) {
@@ -164,10 +183,11 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     }
 
     // === ASR 语音识别 ===
+    // targetAudio = extractAndSeparate 返回的 16k mono（分离成功= vocals 降采样版；失败= 原始降采样版；fast= 原始降采样版）
     let whisperResult: any = null;
-    const targetAudio = vocalsPath || rawAudioPath;
-    if (hasAudio && runWhisper && fs.existsSync(targetAudio)) {
-      onProgress(50, '正在进行 ASR 识别...');
+    const targetAudio = audioPath;
+    if (!audioFailed && runWhisper && targetAudio && fs.existsSync(targetAudio)) {
+      onProgress(Math.max(lastProgress, 50), '正在进行 ASR 识别...');
       if (vocalsIsFallback) {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[Step1] 人声分离降级模式，ASR 使用含 BGM 的原始音轨，识别质量可能下降', { mediaId });
       }
@@ -181,13 +201,14 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         whisperResult = await whisperStrategy.transcribe(
           targetAudio, audioDir, mediaId, targetLang, asrEngine, signal
         );
-        onProgress(65, 'ASR 识别完成');
+        lastProgress = Math.max(lastProgress, 65); onProgress(lastProgress, 'ASR 识别完成');
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
           '[Step1] ASR 失败，降级跳过', { mediaId, error: e.message });
         asrFailed = true;
       }
     }
+    // 注：中间产物（44.1k 原始 WAV）由 extractAndSeparate 内部清理，此处无需再处理
 
     // === 人脸检测 ===
     let roles: any[] = [];
@@ -196,10 +217,10 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
           '[Step1] 无有效帧，自动跳过人脸检测');
       } else {
-        onProgress(75, '正在检测人脸...');
+        lastProgress = Math.max(lastProgress, 75); onProgress(lastProgress, '正在检测人脸...');
         try {
           roles = await VisionProcessor.scanFaces(validFrames, facesDir, signal);
-          onProgress(85, `人脸检测完成 (${roles.length}个角色)`);
+          lastProgress = Math.max(lastProgress, 85); onProgress(lastProgress, `人脸检测完成 (${roles.length}个角色)`);
         } catch (e: any) {
           AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
             '[Step1] 人脸检测失败，降级跳过', { mediaId, error: e.message });
@@ -261,9 +282,10 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       frames: { count: frameCount, paths: framePaths, _failed: framesFailed },
       audio: {
         separated: audioSeparated,
-        audioPath: hasAudio ? rawAudioPath : undefined,
+        audioPath,
         vocalsPath,
         bgmPath,
+        vocalsIsFallback,
         _failed: audioFailed,
       },
       asr: {
@@ -284,7 +306,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
 
     onProgress(100, '素材分析完成');
     AppLogger.info(LOG_TAGS.SCHEDULER,
-      `[Step1] 素材分析策略执行完成 (帧:${frameCount}, 音频:${hasAudio ? '是' : '否'}, 人脸:${roles.length})`);
+      `[Step1] 素材分析策略执行完成 (帧:${frameCount}, 音频:${audioPath ? '是' : '否'}, 人脸:${roles.length})`);
 
     return output;
   }

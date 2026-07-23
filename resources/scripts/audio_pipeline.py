@@ -2,7 +2,7 @@
 audio_pipeline.py — 音频处理端点模块
   /api/emotion        — 情绪检测（librosa）
   /api/transcribe     — ASR 语音转写（SenseVoice）
-  /api/separate       — 人声分离（MDX-Net）
+  /api/separate       — 人声分离（Demucs → MDX-Net 双引擎，均失败时抛 500）
   /api/audio/detect_beats — 鼓点检测（librosa + soundfile）
 """
 import os
@@ -32,6 +32,8 @@ class TranscribeReq(BaseModel):
 class SeparateReq(BaseModel):
     audio_path: str
     output_dir: str
+    # 引擎选择：'demucs'(重型,高保真) | 'mdx'(轻量,极速) | 'auto'(默认 Demucs→MDX 降级链)
+    engine: str = "auto"
 
 class BeatDetectReq(BaseModel):
     file_path: str
@@ -559,177 +561,271 @@ def _transcribe_sync(req: TranscribeReq):
 # /api/separate — 人声伴奏分离（MDX-Net / HPSS 降级）
 # 💥 改为 async + run_in_executor，避免 CPU 密集型计算阻塞 uvicorn 事件循环
 # ==========================================
+
+# 分离进度状态（模块级，供 Node 端轮询）
+_separate_progress = {
+    "pct": 0,
+    "msg": "等待中",
+    "done": False,
+    "result": None,
+    "error": None,
+}
+
+
+@router.get("/api/separate/progress")
+async def api_separate_progress():
+    """轮询接口：Node 端通过此接口获取音频分离的实时进度"""
+    return _separate_progress
+
+
 @router.post("/api/separate")
 async def api_separate(req: SeparateReq):
     """异步人声分离：将 CPU 密集型的分离计算放入线程池，不阻塞事件循环"""
     import asyncio
+
+    # 重置进度状态
+    _separate_progress["pct"] = 0
+    _separate_progress["msg"] = "正在启动分离引擎..."
+    _separate_progress["done"] = False
+    _separate_progress["result"] = None
+    _separate_progress["error"] = None
+
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(None, _separate_sync, req)
+        _separate_progress["done"] = True
+        _separate_progress["pct"] = 100
+        _separate_progress["msg"] = "分离完成"
+        _separate_progress["result"] = result
         return result
     except Exception as e:
+        _separate_progress["done"] = True
+        _separate_progress["error"] = str(e)
+        _separate_progress["msg"] = f"分离失败: {e}"
         print(f"[AI Daemon] 分离崩溃: {e}", file=sys.stderr)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _finalize_output(output_dir, vocals_path, bgm_path):
+    """标准化输出文件名并删除中间产物，仅保留 vocals.wav 和 bgm.wav"""
+    import glob
+    import shutil
+
+    final_vocals = os.path.join(output_dir, "vocals.wav")
+    final_bgm = os.path.join(output_dir, "bgm.wav")
+
+    # 复制到标准化名称
+    if vocals_path:
+        shutil.copy2(vocals_path, final_vocals)
+    if bgm_path:
+        shutil.copy2(bgm_path, final_bgm)
+
+    # 删除所有中间 .wav 文件，仅保留标准化输出
+    keep = {final_vocals, final_bgm}
+    for wav_file in glob.glob(os.path.join(output_dir, "*.wav")):
+        if wav_file not in keep:
+            try:
+                os.remove(wav_file)
+            except OSError:
+                pass
+
+    return final_vocals, final_bgm
+
+
 def _separate_sync(req: SeparateReq):
-    """同步分离逻辑：在线程池中执行，不阻塞 uvicorn 事件循环"""
+    """同步分离逻辑：在线程池中执行，不阻塞 uvicorn 事件循环
+
+    engine 参数控制引擎选择：
+      - 'demucs': 仅使用 Demucs（重型，高保真），失败则抛 500
+      - 'mdx':    仅使用 MDX-Net（轻量，极速），失败则抛 500
+      - 'auto':  默认顺序 Demucs → MDX-Net 降级链
+    """
     try:
-        print("[AI Daemon] 🧠 启动音频分离...", file=sys.stderr)
+        print(f"[AI Daemon] 🧠 启动音频分离 (engine={req.engine})...", file=sys.stderr)
 
         if not os.path.exists(req.audio_path):
+            _separate_progress["error"] = "Audio file not found"
+            _separate_progress["done"] = True
             return {"success": False, "error": "Audio file not found"}
 
         if not os.path.exists(req.output_dir):
             os.makedirs(req.output_dir, exist_ok=True)
 
+        engine = (req.engine or "auto").lower()
+        run_demucs = engine in ("demucs", "auto")
+        run_mdx = engine in ("mdx", "auto")
+
         # --- Phase 0: Demucs (highest quality, 4-stem hybrid) ---
-        try:
-            import demucs
-            from demucs.api import Separator as DemucsSeparator
-            import subprocess
-            import numpy as np
+        if run_demucs:
+            try:
+                import demucs
+                from demucs.api import Separator as DemucsSeparator
+                import subprocess
+                import numpy as np
 
-            print("[AI Daemon] 🎵 [Demucs] 正在加载 htdemucs 模型...", file=sys.stderr)
-            demucs_sep = DemucsSeparator('htdemucs')
-            origin, separated = demucs_sep.separate_audio_file(req.audio_path)
+                print("[AI Daemon] 🎵 [Demucs] 正在加载 htdemucs 模型...", file=sys.stderr)
+                _separate_progress["pct"] = 5
+                _separate_progress["msg"] = "正在加载 Demucs htdemucs 模型..."
 
-            sr = demucs_sep.samplerate
-            stem_paths = {}
+                # P2: Demucs 真实进度回调
+                # callback 接收 info dict，包含 segment_offset 和 audio_length
+                # 将进度映射到 5-15 区间（15=Demucs 分离完成）
+                def _demucs_progress_callback(info):
+                    try:
+                        seg_offset = info.get('segment_offset', 0) or 0
+                        audio_len = info.get('audio_length', 0) or 0
+                        if audio_len > 0:
+                            ratio = min(1.0, seg_offset / audio_len)
+                            # Demucs 分离阶段占总进度 5-15，共 10 个百分点
+                            _separate_progress["pct"] = 5 + int(ratio * 10)
+                            _separate_progress["msg"] = f"Demucs 正在分离... {int(ratio * 100)}%"
+                    except Exception:
+                        pass  # 进度回调不应影响主流程
 
-            # Save each stem to output_dir
-            for stem_name, stem_tensor in separated.items():
-                audio_np = stem_tensor.cpu().numpy()
-                if audio_np.ndim == 2:
-                    audio_np = audio_np.T
-                stem_path = os.path.join(req.output_dir, f"{stem_name}_demucs.wav")
+                demucs_sep = DemucsSeparator('htdemucs', callback=_demucs_progress_callback)
+                origin, separated = demucs_sep.separate_audio_file(req.audio_path)
 
-                try:
-                    import soundfile as sf
-                    sf.write(stem_path, audio_np, sr)
-                except ImportError:
-                    from scipy.io import wavfile
-                    audio_int16 = (audio_np * 32767).astype(np.int16)
-                    wavfile.write(stem_path, sr, audio_int16)
+                _separate_progress["pct"] = 15
+                _separate_progress["msg"] = "Demucs 分离完成，正在保存音轨..."
 
-                stem_paths[stem_name.lower()] = stem_path
+                sr = demucs_sep.samplerate
+                stem_paths = {}
 
-            demucs_vocals = stem_paths.get("vocals", "")
-            demucs_drums = stem_paths.get("drums", "")
-            demucs_bass = stem_paths.get("bass", "")
-            demucs_other = stem_paths.get("other", "")
+                # Save each stem to output_dir
+                for stem_name, stem_tensor in separated.items():
+                    audio_np = stem_tensor.cpu().numpy()
+                    if audio_np.ndim == 2:
+                        audio_np = audio_np.T
+                    stem_path = os.path.join(req.output_dir, f"{stem_name}_demucs.wav")
 
-            if demucs_vocals:
-                bgm_stems = [s for s in [demucs_drums, demucs_bass, demucs_other] if s]
-                dest_bgm = os.path.join(req.output_dir, "bgm_demucs.wav")
+                    try:
+                        import soundfile as sf
+                        sf.write(stem_path, audio_np, sr)
+                    except ImportError:
+                        from scipy.io import wavfile
+                        audio_int16 = (audio_np * 32767).astype(np.int16)
+                        wavfile.write(stem_path, sr, audio_int16)
 
-                if len(bgm_stems) >= 2:
-                    ffmpeg_cmd = [FFMPEG_PATH, "-y"]
-                    for stem in bgm_stems:
-                        ffmpeg_cmd.extend(["-i", stem])
-                    filter_parts = [f"[{i}:0]" for i in range(len(bgm_stems))]
-                    filter_expr = "".join(filter_parts) + f"amix=inputs={len(bgm_stems)}:duration=longest"
-                    ffmpeg_cmd.extend(["-filter_complex", filter_expr, dest_bgm])
-                elif len(bgm_stems) == 1:
-                    import shutil
-                    shutil.copy2(bgm_stems[0], dest_bgm)
-                else:
-                    dest_bgm = ""
+                    stem_paths[stem_name.lower()] = stem_path
 
-                try:
+                demucs_vocals = stem_paths.get("vocals", "")
+                demucs_drums = stem_paths.get("drums", "")
+                demucs_bass = stem_paths.get("bass", "")
+                demucs_other = stem_paths.get("other", "")
+
+                if demucs_vocals:
+                    _separate_progress["pct"] = 30
+                    _separate_progress["msg"] = "正在合并背景音轨 (Demucs)..."
+
+                    bgm_stems = [s for s in [demucs_drums, demucs_bass, demucs_other] if s]
+                    dest_bgm = os.path.join(req.output_dir, "bgm_demucs.wav")
+
                     if len(bgm_stems) >= 2:
-                        subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
-                    print(f"[AI Daemon] ✅ [Demucs] 分离完成", file=sys.stderr)
-                    return {"success": True, "vocals": demucs_vocals, "bgm": dest_bgm}
-                except Exception as ffmpeg_err:
-                    print(f"[AI Daemon] [Demucs] FFmpeg 合并失败，使用 other 轨作为 BGM: {ffmpeg_err}", file=sys.stderr)
-                    if demucs_other:
+                        ffmpeg_cmd = [FFMPEG_PATH, "-y"]
+                        for stem in bgm_stems:
+                            ffmpeg_cmd.extend(["-i", stem])
+                        filter_parts = [f"[{i}:0]" for i in range(len(bgm_stems))]
+                        filter_expr = "".join(filter_parts) + f"amix=inputs={len(bgm_stems)}:duration=longest"
+                        ffmpeg_cmd.extend(["-filter_complex", filter_expr, dest_bgm])
+                    elif len(bgm_stems) == 1:
                         import shutil
-                        shutil.copy2(demucs_other, dest_bgm)
-                    elif demucs_drums:
-                        import shutil
-                        shutil.copy2(demucs_drums, dest_bgm)
-                    elif demucs_bass:
-                        import shutil
-                        shutil.copy2(demucs_bass, dest_bgm)
-                    print(f"[AI Daemon] ✅ [Demucs] 分离完成（FFmpeg 降级）", file=sys.stderr)
-                    return {"success": True, "vocals": demucs_vocals, "bgm": dest_bgm}
+                        shutil.copy2(bgm_stems[0], dest_bgm)
+                    else:
+                        dest_bgm = ""
 
-        except ImportError:
-            print("[AI Daemon] Demucs 未安装，降级到 MDX-Net", file=sys.stderr)
-        except Exception as demucs_err:
-            print(f"[AI Daemon] Demucs 分离失败，降级到 MDX-Net: {demucs_err}", file=sys.stderr)
+                    try:
+                        if len(bgm_stems) >= 2:
+                            subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
+                        print(f"[AI Daemon] ✅ [Demucs] 分离完成", file=sys.stderr)
+                        _separate_progress["pct"] = 70
+                        _separate_progress["msg"] = "正在清理中间文件..."
+                        final_vocals, final_bgm = _finalize_output(req.output_dir, demucs_vocals, dest_bgm)
+                        _separate_progress["pct"] = 95
+                        _separate_progress["msg"] = "分离完成，即将返回结果"
+                        return {"success": True, "vocals": final_vocals, "bgm": final_bgm}
+                    except Exception as ffmpeg_err:
+                        print(f"[AI Daemon] [Demucs] FFmpeg 合并失败，使用 other 轨作为 BGM: {ffmpeg_err}", file=sys.stderr)
+                        if demucs_other:
+                            import shutil
+                            shutil.copy2(demucs_other, dest_bgm)
+                        elif demucs_drums:
+                            import shutil
+                            shutil.copy2(demucs_drums, dest_bgm)
+                        elif demucs_bass:
+                            import shutil
+                            shutil.copy2(demucs_bass, dest_bgm)
+                        print(f"[AI Daemon] ✅ [Demucs] 分离完成（FFmpeg 降级）", file=sys.stderr)
+                        _separate_progress["pct"] = 80
+                        _separate_progress["msg"] = "正在清理中间文件..."
+                        final_vocals, final_bgm = _finalize_output(req.output_dir, demucs_vocals, dest_bgm)
+                        _separate_progress["pct"] = 95
+                        _separate_progress["msg"] = "分离完成，即将返回结果"
+                        return {"success": True, "vocals": final_vocals, "bgm": final_bgm}
+
+            except ImportError:
+                print("[AI Daemon] Demucs 未安装，降级到 MDX-Net", file=sys.stderr)
+                _separate_progress["pct"] = 5
+                _separate_progress["msg"] = "Demucs 未安装，降级到 MDX-Net..."
+            except Exception as demucs_err:
+                print(f"[AI Daemon] Demucs 分离失败，降级到 MDX-Net: {demucs_err}", file=sys.stderr)
+                _separate_progress["pct"] = 5
+                _separate_progress["msg"] = f"Demucs 失败，降级到 MDX-Net..."
+
+            # engine='demucs' 时不降级到 MDX-Net，直接抛失败
+            if engine == "demucs":
+                print("[AI Daemon] ❌ Demucs 不可用且 engine=demucs，不降级", file=sys.stderr)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Demucs 不可用且 engine=demucs，不降级到 MDX-Net"
+                )
 
         # --- Phase 1: MDX-Net (high quality) ---
-        try:
-            from audio_separator.separator import Separator
-            mdx_model_dir = os.path.join(AIModels.MODELS_DIR, "mdx_net")
-            separator = Separator(output_dir=req.output_dir, model_file_dir=mdx_model_dir)
-            separator.load_model('UVR-MDX-NET-Inst_HQ_4.onnx')
-            output_files = separator.separate(req.audio_path)
+        if run_mdx:
+            try:
+                from audio_separator.separator import Separator
+                mdx_model_dir = os.path.join(AIModels.MODELS_DIR, "mdx_net")
+                _separate_progress["pct"] = 10
+                _separate_progress["msg"] = "正在加载 MDX-Net 模型..."
+                separator = Separator(output_dir=req.output_dir, model_file_dir=mdx_model_dir)
+                separator.load_model('UVR-MDX-NET-Inst_HQ_4.onnx')
+                _separate_progress["pct"] = 30
+                _separate_progress["msg"] = "MDX-Net 正在分离音轨..."
+                output_files = separator.separate(req.audio_path)
 
-            target_bgm = ""
-            target_vocals = ""
-            for file_name in output_files:
-                if "(Instrumental)" in file_name:
-                    target_bgm = os.path.join(req.output_dir, file_name)
-                elif "(Vocals)" in file_name:
-                    target_vocals = os.path.join(req.output_dir, file_name)
+                target_bgm = ""
+                target_vocals = ""
+                for file_name in output_files:
+                    if "(Instrumental)" in file_name:
+                        target_bgm = os.path.join(req.output_dir, file_name)
+                    elif "(Vocals)" in file_name:
+                        target_vocals = os.path.join(req.output_dir, file_name)
 
-            if target_vocals and target_bgm:
-                print("[AI Daemon] ✅ [MDX-Net] 分离完成", file=sys.stderr)
-                return {"success": True, "vocals": target_vocals, "bgm": target_bgm}
-        except Exception as mdx_err:
-            print(f"[AI Daemon] MDX-Net 分离失败，降级到 HPSS: {mdx_err}", file=sys.stderr)
+                if target_vocals and target_bgm:
+                    print("[AI Daemon] ✅ [MDX-Net] 分离完成", file=sys.stderr)
+                    _separate_progress["pct"] = 70
+                    _separate_progress["msg"] = "正在清理中间文件..."
+                    final_vocals, final_bgm = _finalize_output(req.output_dir, target_vocals, target_bgm)
+                    _separate_progress["pct"] = 95
+                    _separate_progress["msg"] = "分离完成，即将返回结果"
+                    return {"success": True, "vocals": final_vocals, "bgm": final_bgm}
+            except Exception as mdx_err:
+                print(f"[AI Daemon] MDX-Net 分离失败: {mdx_err}", file=sys.stderr)
 
-        # --- Phase 2: HPSS harmonic-percussive fallback ---
-        vocals_path, bgm_path = _hpss_separate(req.audio_path, req.output_dir)
-        if vocals_path and bgm_path:
-            print("[AI Daemon] ✅ [HPSS] 分离完成", file=sys.stderr)
-            return {"success": True, "vocals": vocals_path, "bgm": bgm_path}
+        # Demucs + MDX-Net 均失败：抛出异常，由 Node 端 separateVocalsBgm 走 fallback
+        # （Node 端会标记 vocalsIsFallback=true，ASR 自动使用原始 16kHz 音轨）
+        print("[AI Daemon] ❌ 所选引擎均不可用，音频分离失败", file=sys.stderr)
+        raise HTTPException(
+            status_code=500,
+            detail=f"所选引擎 (engine={engine}) 均不可用，音频分离失败"
+        )
 
-        # --- Phase 3: degraded copy (vocals=original, bgm=empty) ---
-        import shutil
-        fallback_vocals = os.path.join(req.output_dir, "vocals_fallback.wav")
-        shutil.copy2(req.audio_path, fallback_vocals)
-        print(f"[AI Daemon] ⚠️ [Fallback] HPSS 也失败，降级为原始拷贝", file=sys.stderr)
-        return {"success": True, "vocals": fallback_vocals, "bgm": ""}
-
+    except HTTPException:
+        raise
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-
-def _hpss_separate(audio_path: str, output_dir: str):
-    """HPSS (Harmonic-Percussive Source Separation) via librosa"""
-    import numpy as np
-    import librosa
-    try:
-        import soundfile as sf
-    except ImportError:
-        from scipy.io import wavfile as _wav
-
-    try:
-        y, sr = librosa.load(audio_path, sr=22050, mono=True)
-        # Harmonic = vocals, Percussive = BGM
-        y_harmonic, y_percussive = librosa.effects.hpss(y, margin=(1.0, 3.0))
-
-        vocals_path = os.path.join(output_dir, "vocals_hpss.wav")
-        bgm_path = os.path.join(output_dir, "bgm_hpss.wav")
-
-        if 'sf' in dir():
-            sf.write(vocals_path, y_harmonic.astype(np.float32), sr)
-            sf.write(bgm_path, y_percussive.astype(np.float32), sr)
-        else:
-            _wav.write(vocals_path, sr, (y_harmonic * 32767).astype(np.int16))
-            _wav.write(bgm_path, sr, (y_percussive * 32767).astype(np.int16))
-
-        print(f"[AI Daemon] HPSS 分离完成: vocals={vocals_path}, bgm={bgm_path}", file=sys.stderr)
-        return vocals_path, bgm_path
-    except Exception as e:
-        print(f"[AI Daemon] HPSS 失败: {e}", file=sys.stderr)
-        return "", ""
 
 
 # ==========================================
