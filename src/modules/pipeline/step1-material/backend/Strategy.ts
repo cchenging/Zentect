@@ -202,8 +202,13 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         };
         const targetLang = langMap[config.targetLanguage] || 'auto';
         const asrEngine = (typeof config.whisper === 'object' ? config.whisper.engine : 'sensevoice') || 'sensevoice';
+        // ASR 进度映射到 45-65 区间（Python 端 pct 0-100 → Step1 45-65）
+        const asrOnProgress = (pct: number, msg: string) => {
+          const mapped = 45 + Math.round(pct * 0.2);
+          onProgress(Math.max(lastProgress, mapped), msg || 'ASR 识别中');
+        };
         whisperResult = await whisperStrategy.transcribe(
-          targetAudio, audioDir, mediaId, targetLang, asrEngine, signal
+          targetAudio, audioDir, mediaId, targetLang, asrEngine, signal, asrOnProgress
         );
         lastProgress = Math.max(lastProgress, 65); onProgress(lastProgress, 'ASR 识别完成');
       } catch (e: any) {
@@ -214,7 +219,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     }
     // 注：中间产物（44.1k 原始 WAV）由 extractAndSeparate 内部清理，此处无需再处理
 
-    // === 人脸检测 ===
+    // === 人脸检测 + 聚类 ===
     let roles: any[] = [];
     if (runFaces) {
       if (validFrames.length === 0) {
@@ -223,8 +228,35 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       } else {
         lastProgress = Math.max(lastProgress, 75); onProgress(lastProgress, '正在检测人脸...');
         try {
-          roles = await VisionProcessor.scanFaces(validFrames, facesDir, signal);
-          lastProgress = Math.max(lastProgress, 85); onProgress(lastProgress, `人脸检测完成 (${roles.length}个角色)`);
+          // 🔧 修复 P0-6：scanFaces 得到的是 face 列表（含 embedding），需再调用 clusterFaces 聚类为角色
+          //   旧版直接把 face 列表当 roles 返回，无聚类、无角色归纳
+          const detectedFaces = await VisionProcessor.scanFaces(validFrames, facesDir, signal);
+          if (detectedFaces.length > 0) {
+            lastProgress = Math.max(lastProgress, 80); onProgress(lastProgress, `人脸检测完成 (${detectedFaces.length}张)，正在聚类...`);
+            // 调用 Python 端 HDBSCAN 聚类，得到 { faceId: "role_X" } 映射
+            const clustersMap = await VisionProcessor.clusterFaces(mediaId, detectedFaces, facesDir);
+            // 按聚类 ID 分组，每组取首张人脸作为角色代表
+            const roleGroups: Record<string, any[]> = {};
+            for (const face of detectedFaces) {
+              const faceId = face.id || face.face_id || '';
+              const clusterId = clustersMap[faceId] || 'role_unknown';
+              if (!roleGroups[clusterId]) roleGroups[clusterId] = [];
+              roleGroups[clusterId].push(face);
+            }
+            // 构造 roles 数组：每个聚类一个角色，取首张人脸作为代表
+            roles = Object.entries(roleGroups).map(([clusterId, groupFaces]) => ({
+              id: clusterId,
+              name: `角色_${clusterId.replace('role_', '')}`,
+              faceCount: groupFaces.length,
+              representative: groupFaces[0],
+              faces: groupFaces,
+            }));
+            AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+              `[Step1] 人脸聚类完成: ${roles.length} 个角色 (${detectedFaces.length} 张人脸)`, { mediaId });
+          } else {
+            AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[Step1] 人脸检测未返回结果', { mediaId });
+          }
+          lastProgress = Math.max(lastProgress, 85); onProgress(lastProgress, `人脸识别完成 (${roles.length}个角色)`);
         } catch (e: any) {
           AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
             '[Step1] 人脸检测失败，降级跳过', { mediaId, error: e.message });

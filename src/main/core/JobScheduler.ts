@@ -453,14 +453,19 @@ export class JobScheduler {
           db.prepare(PROJECT_SQL.HARD_DELETE_ROLES).run({ projectId });
           const insertRole = db.prepare(PROJECT_SQL.INSERT_ROLE_FULL);
           for (const role of roles) {
+            // 🔧 修复 P1：为 role 补默认 name/avatar/description
+            //   Strategy 层已生成 name（角色_X），此处兜底防止 name 为空
+            //   avatar 取 representative.facePath 或空字符串（后续可由前端从人脸目录补全）
+            const roleName = role.name || role.label || `角色_${Date.now().toString(36).slice(-4)}`;
+            const roleAvatar = role.avatar || role.representative?.facePath || '';
             insertRole.run({
               id: `role_qp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
               projectId,
               systemId: role.systemId || null,
-              name: role.name || role.label || '',
+              name: roleName,
               pronoun: role.pronoun || '',
-              avatar: role.avatar || '',
-              description: role.description || role.label || '',
+              avatar: roleAvatar,
+              description: role.description || role.label || roleName,
               voiceId: role.voiceId || null,
               mergedRoles: JSON.stringify(role.mergedRoles || []),
             });

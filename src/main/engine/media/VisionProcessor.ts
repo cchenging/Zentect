@@ -100,10 +100,16 @@ export class VisionProcessor {
         AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: 批次 ${batchNum}/${totalBatches} (${batch.length} 帧)`);
 
         try {
-          const response = await HttpClient.post(`http://127.0.0.1:${pythonPort}/face/detect`, {
-            frames: batch
+          // 🔧 修复 P0-1+P0-2：路径 /face/detect → /api/vision，DTO {frames} → {image_paths, output_dir}
+          const response = await HttpClient.post(`http://127.0.0.1:${pythonPort}/api/vision`, {
+            image_paths: batch,
+            output_dir: facesDir
           });
-          const batchFaces = response?.data?.faces || [];
+          // 🔧 修复 P0-3：Python 返回 {success, data: [{frame, faces: [...]}, ...]}
+          //   data 是数组而非对象，需 flatMap 展平所有帧的人脸
+          const batchFaces = Array.isArray(response?.data)
+            ? response.data.flatMap((item: any) => item?.faces || [])
+            : [];
           allFaces.push(...batchFaces);
         } catch (batchErr: any) {
           AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces 批次 ${batchNum} 失败: ${batchErr.message}`);
@@ -120,10 +126,11 @@ export class VisionProcessor {
   /**
    * 人脸聚类：将检测到的人脸按特征聚类为角色
    * @param mediaId 媒体ID
-   * @param faces 检测到的人脸列表
-   * @returns 人脸到聚类ID的映射
+   * @param faces 检测到的人脸列表（元素含 {id, embedding, ...}）
+   * @param persistDir 可选，聚类持久化目录（Python 端写入 clusters_{media_id}.json）
+   * @returns 人脸到聚类ID的映射（{ faceId: "role_X" }）
    */
-  public static async clusterFaces(mediaId: string, faces: any[]): Promise<Record<string, string>> {
+  public static async clusterFaces(mediaId: string, faces: any[], persistDir?: string): Promise<Record<string, string>> {
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] clusterFaces: clustering ${faces.length} faces for ${mediaId}`);
 
     if (!faces || faces.length === 0) {
@@ -132,12 +139,20 @@ export class VisionProcessor {
 
     try {
       const daemon = AIDaemon.getInstance();
+      // 🔧 修复 P0-4：字段名对齐 Python ClusterRequest
+      //   Python 期望 { media_id, faces: [{face_id, embedding}], persist_dir }
+      //   旧版传 { mediaId, faces }（camelCase + 字段名不匹配）→ 422
       const result = await daemon.post('/api/cluster_faces', {
-        mediaId,
-        faces
+        media_id: mediaId,
+        faces: faces.map((f: any) => ({
+          face_id: f.id || f.face_id || '',
+          embedding: f.embedding || []
+        })),
+        persist_dir: persistDir || ''
       });
-      if (result && result.clustersMap) {
-        return result.clustersMap;
+      // 🔧 修复 P0-5：Python 返回 { success, clusters }，旧版读 clustersMap → 永远空
+      if (result && result.clusters) {
+        return result.clusters as Record<string, string>;
       }
       return {};
     } catch (e: any) {

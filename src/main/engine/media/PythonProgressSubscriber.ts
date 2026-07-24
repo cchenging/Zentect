@@ -31,16 +31,18 @@ export class PythonProgressSubscriber {
    * @param onProgress   Node 端的进度回调（接入 BaseNodeStrategy 的 onProgress 链）
    * @param timeoutMs    超时（默认 10 分钟，匹配 Demucs 重型模型的最长运行时间）
    * @param signal       取消信号（透传 BaseNodeStrategy 的 context.signal）
+   * @param streamPath   SSE 流路径前缀（默认 '/api/separate/stream/'，ASR 用 '/api/transcribe/stream/'）
    * @returns 订阅结果（done=true 表示流结束，error 有值表示异常）
    */
   static async subscribe(
     taskId: string,
     onProgress: (pct: number, msg: string) => void,
     timeoutMs = 600000,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    streamPath = '/api/separate/stream/'
   ): Promise<SubscribeResult> {
     const port = AIDaemon.getInstance?.()?.getPort?.() || 34567;
-    const url = `http://127.0.0.1:${port}/api/separate/stream/${taskId}`;
+    const url = `http://127.0.0.1:${port}${streamPath}${taskId}`;
 
     AppLogger.debug(LOG_TAGS.MEDIA_ENGINE,
       `[ProgressSubscriber] 订阅 SSE 流: ${url}`);

@@ -17,7 +17,8 @@ export class LocalWhisperStrategy implements ITextExtractor {
   public async transcribe(
     audioPath: string, outDir: string, mediaId: string,
     language: string = 'zh', engine: 'sensevoice' | 'whisper-v3' = 'sensevoice',
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onProgress?: (pct: number, msg: string) => void
   ): Promise<TextExtractResult> {
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 启动听写协议，目标语言: ${language}, 引擎: ${engine}`, { mediaId });
 
@@ -42,7 +43,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
       const daemon = AIDaemon.getInstance();
       if (daemon.isOnline()) {
         AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，使用 SenseVoice 推理`);
-        return await this.transcribeViaDaemon(daemon, audioPath, whisperOutPath, language, signal);
+        return await this.transcribeViaDaemon(daemon, audioPath, whisperOutPath, language, signal, onProgress);
       }
     } catch (daemonErr: any) {
       AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 调用失败，准备降级`, { error: daemonErr.message });
@@ -52,28 +53,53 @@ export class LocalWhisperStrategy implements ITextExtractor {
     return await this.transcribeViaLocalWhisper(audioPath, whisperOutPath, language, signal);
   }
 
-  private async transcribeViaDaemon(daemon: AIDaemon, audioPath: string, whisperOutPath: string, language: string, signal?: AbortSignal): Promise<TextExtractResult> {
+  private async transcribeViaDaemon(daemon: AIDaemon, audioPath: string, whisperOutPath: string, language: string, signal?: AbortSignal, onProgress?: (pct: number, msg: string) => void): Promise<TextExtractResult> {
     const audioSizeBytes = fs.statSync(audioPath).size;
     const estimatedDurationSec = (audioSizeBytes / (16000 * 2)) || 120;
+    // ASR 超时放宽到 2 小时（长视频推理耗时）
     const timeoutMs = Math.max(120000, Math.min(7200000, Math.round(estimatedDurationSec * 1000)));
 
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] SenseVoice 超时设置: ${Math.round(timeoutMs / 1000)}s (音频估算 ${Math.round(estimatedDurationSec)}s)`);
 
-    const response = await daemon.post('/api/transcribe', {
+    // 生成 task_id：Python 端按 task_id 隔离并发 ASR 任务的进度状态
+    const taskId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const langCode = language === 'zh-CN' ? 'zh' : (language === 'en-US' ? 'en' : 'auto');
+
+    // fire-and-forget POST：触发 Python ASR 任务，立即返回 task_id
+    // 结果通过 SSE 流回传（progress.result），彻底规避 HttpClient 超时问题
+    const { HttpClient } = await import('../../core/HttpClient');
+    const { PythonProgressSubscriber } = await import('../media/PythonProgressSubscriber');
+    const pythonPort = daemon.getPort();
+    const transcribeUrl = `http://127.0.0.1:${pythonPort}/api/transcribe`;
+
+    HttpClient.post(transcribeUrl, {
       audio_path: audioPath,
       output_json_path: whisperOutPath,
-      language: language === 'zh-CN' ? 'zh' : (language === 'en-US' ? 'en' : 'auto')
-    }, {
-      timeout: timeoutMs,
-      retries: 2,
-      signal, // Fix 10: 透传 AbortSignal
+      language: langCode,
+      task_id: taskId,
+    }, { signal }).catch((err) => {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] POST 触发转写失败 (task=${taskId}): ${err?.message || err}`);
     });
 
-    if (response && response.success) {
+    // SSE 订阅：实时推送 pct/msg，任务结束时携带 result 返回
+    const sseResult = await PythonProgressSubscriber.subscribe(
+      taskId,
+      (pct, msg) => { if (onProgress) onProgress(pct, msg); },
+      timeoutMs,
+      signal,
+      '/api/transcribe/stream/'  // ASR 专用 SSE 路径
+    );
+
+    // 从 SSE 携带的 result 取 ASR 产物
+    if (sseResult.result?.success) {
       return this.parseAndWriteResult(whisperOutPath, language);
-    } else {
-      throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'ASR 微服务处理失败');
     }
+
+    // SSE 流异常结束（超时/取消/Python 内部错误）
+    if (sseResult.error) {
+      throw new AppError(ErrorCode.AI_PROCESS_FAILED, `ASR SSE 订阅失败: ${sseResult.error}`);
+    }
+    throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'ASR 微服务处理失败');
   }
 
   private async transcribeViaLocalWhisper(audioPath: string, whisperOutPath: string, language: string, signal?: AbortSignal): Promise<TextExtractResult> {
@@ -208,13 +234,40 @@ export class LocalWhisperStrategy implements ITextExtractor {
     let rawData = Array.isArray(pythonOut) ? pythonOut[0] : pythonOut;
     if (rawData.data) rawData = rawData.data;
 
+    // 🔧 修复字段名不匹配：Python 写 segments（{start, end, text, originalText}，start/end 为数字秒）
+    // 旧版读 transcription → 永远 false → 走估算分支，丢弃 Python 精确时间戳
+    const segs = rawData.segments;
+    if (Array.isArray(segs) && segs.length > 0) {
+      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR] 检测到 Python segments (${segs.length} 段)，使用真实时间戳`);
+      const transcription = segs.map((t: any) => {
+        // Python start/end 为数字秒，转 SRT 字符串（HH:MM:SS,mmm）
+        const fromSec = typeof t.start === 'number' ? t.start : 0;
+        const toSec = typeof t.end === 'number' ? t.end : (fromSec + 2);
+        return {
+          timestamps: {
+            from: LocalWhisperStrategy.formatSrtTimeFromSeconds(fromSec),
+            to: LocalWhisperStrategy.formatSrtTimeFromSeconds(toSec),
+          },
+          text: LocalWhisperStrategy.cleanText(t.text || ''),
+          emotion: t.emotion || rawData.emotion || 'NEUTRAL',
+        };
+      });
+
+      const finalJson = { language: rawData.language || language, transcription };
+      fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
+      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Success] 使用真实时间戳解析 ${transcription.length} 段台词`);
+      this.runLanguageCheck(finalJson, whisperOutPath);
+      return { whisperJsonPath: whisperOutPath };
+    }
+
+    // 兜底：旧版 transcription 结构兼容（whisper-cli 路径或未来格式变更）
     if (rawData.transcription && Array.isArray(rawData.transcription) && rawData.transcription.length > 0) {
       const hasRealTimestamps = rawData.transcription.some((t: any) =>
         t.timestamps && (typeof t.timestamps.from === 'number' || typeof t.timestamps.to === 'number')
       );
 
       if (hasRealTimestamps) {
-        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR] 检测到 Python 返回真实时间戳，直接使用`);
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR] 检测到 transcription 真实时间戳，直接使用`);
         const transcription = rawData.transcription.map((t: any) => {
           const fromSec = typeof t.timestamps?.from === 'number' ? t.timestamps.from
             : (typeof t.start === 'number' ? t.start : 0);
@@ -238,7 +291,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
       }
     }
 
-    AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR] Python 未返回时间戳，降级为估算分句`);
+    AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR] Python 未返回 segments/transcription，降级为估算分句`);
     return this.parseAndWriteResultWithEstimatedTimestamps(rawData, whisperOutPath, language);
   }
 

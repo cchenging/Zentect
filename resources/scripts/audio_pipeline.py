@@ -29,6 +29,8 @@ class TranscribeReq(BaseModel):
     audio_path: str
     output_json_path: str
     language: str = "auto"
+    # 任务 ID：由 Node 端生成，用于隔离并发 ASR 任务的进度状态（SSE 推流时按 task_id 查询）
+    task_id: str | None = None
 
 class SeparateReq(BaseModel):
     audio_path: str
@@ -414,25 +416,64 @@ def api_emotion(req: EmotionReq):
 
 
 # ==========================================
-# /api/transcribe — ASR 语音转写
+# /api/transcribe — ASR 语音转写（fire-and-forget + SSE 流式进度）
 # SenseVoice funasr AutoModel（内置 fsmn-vad 深度学习 VAD）
-# 💥 改为 async + run_in_executor，避免 CPU 密集型推理阻塞 uvicorn 事件循环
+# 💥 改为 fire-and-forget：POST 立即返回 task_id，进度通过 SSE 推送
+#    与 /api/separate 模式对齐，支持流式进度和并发任务隔离
 # ==========================================
 @router.post("/api/transcribe")
 async def api_transcribe(req: TranscribeReq):
-    """异步 ASR 转写：将 CPU 密集型的推理计算放入线程池，不阻塞事件循环"""
+    """异步 ASR 转写：立即返回 task_id，后台线程池执行推理，进度通过 SSE 推送"""
     import asyncio
+    import uuid
+
+    # 生成或复用 task_id，按任务隔离进度状态
+    task_id = req.task_id or str(uuid.uuid4())
+    # 重置该任务的进度状态
+    _task_progress[task_id] = {
+        "pct": 0,
+        "msg": "正在启动 ASR 引擎...",
+        "done": False,
+        "result": None,
+        "error": None,
+    }
+
     loop = asyncio.get_event_loop()
+    # fire-and-forget：后台线程池执行，不等待结果
+    loop.run_in_executor(None, _transcribe_sync_safe, req, task_id)
+    # 立即返回 task_id，Node 端通过 SSE 订阅进度和最终结果
+    return {"success": True, "task_id": task_id}
+
+
+@router.get("/api/transcribe/stream/{task_id}")
+async def api_transcribe_stream(task_id: str):
+    """SSE 推流接口：ASR 进度变化时主动 push，Node 端无需轮询"""
+    import asyncio
+
+    async def event_generator():
+        while True:
+            progress = _get_progress(task_id)
+            yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+            if progress.get("done"):
+                break
+            await asyncio.sleep(0.1)  # 100ms 推送间隔
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+def _transcribe_sync_safe(req: TranscribeReq, task_id: str):
+    """_transcribe_sync 的安全包装：捕获异常并写入进度，确保 SSE 流一定能终止"""
     try:
-        result = await loop.run_in_executor(None, _transcribe_sync, req)
-        return result
+        result = _transcribe_sync(req, task_id)
+        _set_progress(task_id, done=True, pct=100, msg="ASR 完成", result=result)
+        if isinstance(result, dict):
+            result["task_id"] = task_id
     except Exception as e:
         print(f"[AI Daemon] ASR 崩溃: {e}", file=sys.stderr)
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        _set_progress(task_id, done=True, error=str(e), msg=f"ASR 失败: {e}")
 
 
-def _transcribe_sync(req: TranscribeReq):
+def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
     """同步 ASR 推理逻辑：在线程池中执行，不阻塞 uvicorn 事件循环"""
     try:
         if not os.path.exists(req.audio_path):
@@ -443,8 +484,13 @@ def _transcribe_sync(req: TranscribeReq):
             from funasr import AutoModel
             from funasr.utils.postprocess_utils import rich_transcription_postprocess
 
+            if task_id:
+                _set_progress(task_id, pct=5, msg="正在加载 SenseVoice 模型...")
             model = AIModels.get_funasr_sensevoice()
             print(f"[ASR] 使用 funasr AutoModel + fsmn-vad，language={req.language}", file=sys.stderr)
+
+            if task_id:
+                _set_progress(task_id, pct=15, msg="模型已就绪，开始语音推理...")
 
             # ✅ 关键修复：启用 funasr 内置 VAD，并做细粒度切分
             #   - vad_model="fsmn-vad"：让模型内部 VAD 负责切分（比外部的任何 VAD 都准）
@@ -516,6 +562,9 @@ def _transcribe_sync(req: TranscribeReq):
             # ✅ 后处理：相邻去重 + 重叠合并（彻底消除"台词重复"）
             all_segments = _asr_postprocess_segments(all_segments)
 
+            if task_id:
+                _set_progress(task_id, pct=80, msg=f"推理完成，{len(all_segments)} 段，正在格式化...")
+
             # ── funasr 返回空结果直接报错，不降级 ──
             if not all_segments:
                 print("[ASR] funasr AutoModel 返回空结果", file=sys.stderr)
@@ -545,6 +594,9 @@ def _transcribe_sync(req: TranscribeReq):
 
             with open(req.output_json_path, 'w', encoding='utf-8') as f:
                 json.dump(result_data, f, ensure_ascii=False, indent=2)
+
+            if task_id:
+                _set_progress(task_id, pct=95, msg=f"写入完成，{len(formatted_segments)} 段台词")
 
             print(f"[ASR SUCCESS] funasr AutoModel: {len(formatted_segments)} 句台词, lang={dominant_lang}", file=sys.stderr)
             return {"success": True, "data": result_data}
