@@ -11,8 +11,9 @@ import { JianyingCompiler } from './JianyingCompiler';
 export class LocalExporter {
   /**
    * @deprecated 请使用 JianyingExportService.export()
+   * @param bgmPath 分离后的 BGM 路径，传给 JianyingCompiler 用于 BGM 轨道铺底
    */
-  static async exportToJianying(projectId: string, shots: any[], customPath?: string, mediaPath?: string) {
+  static async exportToJianying(projectId: string, shots: any[], customPath?: string, mediaPath?: string, bgmPath?: string) {
     const jianyingRoot = customPath || path.join(
       app.getPath('home'),
       'AppData/Local/JianyingPro/User Data/Projects/com.lveditor.draft'
@@ -26,7 +27,7 @@ export class LocalExporter {
     const draftFolder = path.join(jianyingRoot, draftName);
     fs.mkdirSync(draftFolder, { recursive: true });
 
-    const draftContent = JianyingCompiler.compile(projectId, shots, mediaPath || '');
+    const draftContent = JianyingCompiler.compile(projectId, shots, mediaPath || '', bgmPath);
     fs.writeFileSync(
       path.join(draftFolder, 'draft_content.json'),
       JSON.stringify(draftContent, null, 2)

@@ -37,7 +37,7 @@ declare module '../storeTypes' {
         minFrameInterval?: number;
         timePoint?: number;
       };
-      audio: { enabled: boolean; engine: 'mdx-net' | 'spleeter'; };
+      audio: { enabled: boolean; engine: 'demucs' | 'mdx' | 'auto'; };
       whisper: { enabled: boolean; engine: 'sensevoice' | 'whisper-v3'; };
       faces: { enabled: boolean; engine: 'insightface' | 'mediapipe'; };
     };
@@ -102,7 +102,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
   extractionConfig: {
     targetLanguage: 'zh-CN',
     frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, fps: 2, scale: 1024, minFrameInterval: 4 },
-    audio: { enabled: true, engine: 'mdx-net' },
+    audio: { enabled: true, engine: 'auto' },
     whisper: { enabled: true, engine: 'sensevoice' },
     faces: { enabled: true, engine: 'insightface' }
   },

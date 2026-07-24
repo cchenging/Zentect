@@ -594,8 +594,9 @@ export const zhCN = {
     engine_fps: '固定频率抽帧 (FPS)',
     engine_insightface: 'InsightFace (高精度)',
     engine_mediapipe: 'MediaPipe (待接入)',
-    engine_mdx: 'UVR MDX-Net (HQ_4)',
-    engine_spleeter: 'Spleeter (待接入)',
+    engine_mdx: 'MDX-Net (轻量,极速)',
+    engine_demucs: 'Demucs (重型,高保真)',
+    engine_auto: '自动 (Demucs → MDX 降级)',
     engine_sensevoice: 'SenseVoice (极速版)',
     engine_whisper_v3: 'Whisper V3 (待接入)',
 

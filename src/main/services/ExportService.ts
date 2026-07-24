@@ -22,20 +22,33 @@ export class ExportService {
   }
 
   public async exportToJianYing(payload: any): Promise<any> {
-    const { projectId, shots: inputShots, customPath } = payload;
+    const { projectId, shots: inputShots, customPath, mediaItems } = payload;
 
     try {
       let shots = (inputShots && inputShots.length > 0) ? inputShots : null;
       let mediaPath = '';
+      // 从 mediaItems 提取分离后的 BGM 路径（sourceType==='bgm'），供剪映 BGM 轨道铺底
+      let bgmPath: string | undefined;
+      if (mediaItems && Array.isArray(mediaItems)) {
+        const bgmItem = mediaItems.find((m: any) => m.type === 'audio' && m.sourceType === 'bgm' && m.filePath);
+        if (bgmItem) {
+          bgmPath = bgmItem.filePath;
+          AppLogger.info(LOG_TAGS.EXPORT, `剪映导出: 检测到分离 BGM 轨道`, { bgmPath });
+        }
+      }
 
       if (!shots) {
         const projectData = this.projectRepo.loadFullProjectData(projectId);
         shots = projectData?.shots || [];
         mediaPath = projectData?.mediaItems?.[0]?.filePath || '';
+        // 降级：项目数据中若存在 extractedBgm 字段也尝试使用
+        if (!bgmPath && projectData?.mediaItems?.[0]?.extractedBgm) {
+          bgmPath = projectData.mediaItems[0].extractedBgm;
+        }
       }
 
       // 使用新模块 JianyingExportService
-      const result = await LocalExporter.exportToJianying(projectId, shots, customPath, mediaPath);
+      const result = await LocalExporter.exportToJianying(projectId, shots, customPath, mediaPath, bgmPath);
       return { success: true, data: result };
     } catch (error: any) {
       AppLogger.error(LOG_TAGS.EXPORT, '剪映草稿生成失败', error);

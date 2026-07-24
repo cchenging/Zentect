@@ -188,7 +188,6 @@ export class AudioProcessor {
               return {
                 vocals: progress.result.vocals,
                 bgm: progress.result.bgm || undefined,
-                _isFallback: progress.result._isFallback,
               };
             }
             break;
@@ -208,7 +207,6 @@ export class AudioProcessor {
           return {
             vocals: result.vocals,
             bgm: result.bgm || undefined,
-            _isFallback: result._isFallback,
           };
         }
       } catch {

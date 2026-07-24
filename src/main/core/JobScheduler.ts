@@ -290,40 +290,86 @@ export class JobScheduler {
       // 2. 音频分离
       window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 30, status: 'processing', nodeName: '正在分离视频音轨，提取人声中...' });
 
-      const httpClient = require('./HttpClient').HttpClient;
-      const separateRes = await httpClient.post(`http://127.0.0.1:${pythonPort}/audio/separate`, {
-        videoPath,
-        projectId
-      });
-
-      if (!separateRes?.data?.success) {
-        throw new Error(separateRes?.data?.error || 'Python 音频分离模块遭遇内核阻断');
+      // 从视频提取音频后调用 Python /api/separate（与主流水线共用同一 Python 契约）
+      const projectDir = PathManager.getProjectDir(projectId);
+      const audioDir = path.join(projectDir, 'cache', 'audio');
+      const fs = require('fs');
+      if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
+      // 先用 ffmpeg 抽出 44.1k stereo wav 给分离引擎
+      let extractedAudioPath = '';
+      try {
+        const { AudioProcessor } = require('../engine/media/AudioProcessor');
+        const hqPath = path.join(audioDir, `${projectId}_hq.wav`);
+        const ok = await AudioProcessor.extractHQAudio(videoPath, hqPath);
+        extractedAudioPath = ok ? (ok as string) : '';
+      } catch (extractErr: any) {
+        AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] 抽音失败，降级跳过分离`, { error: extractErr.message });
       }
 
-      const { vocalPath, backgroundPath } = separateRes.data;
+      let vocalPath: string | null = null;
+      let backgroundPath: string | null = null;
+      let vocalsIsFallback = false;
+
+      if (extractedAudioPath) {
+        const httpClient = require('./HttpClient').HttpClient;
+        // 轮询分离进度，映射到前端进度条 30-50 区间
+        let lastPct = 30;
+        const progressTimer = setInterval(async () => {
+          try {
+            const prog = await httpClient.get(`http://127.0.0.1:${pythonPort}/api/separate/progress`);
+            if (prog?.data?.pct != null) {
+              const mapped = 30 + Math.floor(prog.data.pct * 0.2);
+              if (mapped > lastPct) {
+                lastPct = mapped;
+                window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: lastPct, status: 'processing', nodeName: prog.data.msg || '正在分离人声...' });
+              }
+            }
+          } catch { /* 轮询失败静默 */ }
+        }, 500);
+
+        try {
+          const separateRes = await httpClient.post(`http://127.0.0.1:${pythonPort}/api/separate`, {
+            audio_path: extractedAudioPath,
+            output_dir: audioDir,
+            engine: 'auto',
+          });
+          if (!separateRes?.data?.success) {
+            throw new Error(separateRes?.data?.error || 'Python 音频分离模块遭遇内核阻断');
+          }
+          // Python 契约返回 { vocals, bgm }（非 vocalPath/backgroundPath）
+          vocalPath = separateRes.data.vocals || null;
+          backgroundPath = separateRes.data.bgm || null;
+        } catch (separateErr: any) {
+          AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] 分离失败，降级使用原始音轨`, { error: separateErr.message });
+          vocalPath = extractedAudioPath;
+          vocalsIsFallback = true;
+        } finally {
+          clearInterval(progressTimer);
+        }
+      }
 
       // 3. ASR（走 LocalWhisperStrategy 双引擎降级，而非直接 HTTP）
       window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 55, status: 'processing', nodeName: '音轨分离成功！正在呼叫本地语音识别引擎...' });
 
       let asrLines: any[] = [];
-      try {
-        const { LocalWhisperStrategy } = require('../engine/strategies/LocalWhisperStrategy');
-        const audioDir = path.dirname(vocalPath);
-        const whisperStrategy = new LocalWhisperStrategy();
-        const whisperResult = await whisperStrategy.transcribe(vocalPath, audioDir, projectId, 'zh');
+      if (vocalPath) {
+        try {
+          const { LocalWhisperStrategy } = require('../engine/strategies/LocalWhisperStrategy');
+          const whisperStrategy = new LocalWhisperStrategy();
+          const whisperResult = await whisperStrategy.transcribe(vocalPath, audioDir, projectId, 'zh');
 
-        if (whisperResult?.whisperJsonPath) {
-          const fs = require('fs');
-          const whisperJson = JSON.parse(fs.readFileSync(whisperResult.whisperJsonPath, 'utf-8'));
-          asrLines = (whisperJson.transcription || []).map((t: any) => ({
-            start: t.timestamps?.from || '00:00',
-            end: t.timestamps?.to || '00:00',
-            text: t.text || '',
-            originalText: t.text || '',
-          }));
+          if (whisperResult?.whisperJsonPath) {
+            const whisperJson = JSON.parse(fs.readFileSync(whisperResult.whisperJsonPath, 'utf-8'));
+            asrLines = (whisperJson.transcription || []).map((t: any) => ({
+              start: t.timestamps?.from || '00:00',
+              end: t.timestamps?.to || '00:00',
+              text: t.text || '',
+              originalText: t.text || '',
+            }));
+          }
+        } catch (asrErr: any) {
+          AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] ASR 失败，降级跳过`, { error: asrErr.message });
         }
-      } catch (asrErr: any) {
-        AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] ASR 失败，降级跳过`, { error: asrErr.message });
       }
 
       // 4. 人脸检测
@@ -332,7 +378,7 @@ export class JobScheduler {
         window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 80, status: 'processing', nodeName: '正在检测人脸...' });
         try {
           const { VisionProcessor } = require('../engine/media/VisionProcessor');
-          const facesDir = path.join(PathManager.getProjectDir(projectId), 'cache', 'faces');
+          const facesDir = path.join(projectDir, 'cache', 'faces');
           roles = await VisionProcessor.scanFaces(framePaths, facesDir);
         } catch (faceErr: any) {
           AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] 人脸检测失败，降级跳过`, { error: faceErr.message });
@@ -341,13 +387,12 @@ export class JobScheduler {
 
       // 5. 持久化到 DB（media_assets + roles + EVENT_EXTRACTION_SUCCESS）
       try {
-        const projectDir = PathManager.getProjectDir(projectId);
         const mediaRepo = new MediaRepository();
         const projectMedias = mediaRepo.getByProject(projectId);
         const targetMedia = projectMedias.find((m: any) => m.type === 'video');
 
         if (targetMedia) {
-          // 更新 media_assets：frames / extractedVocals / extractedBgm
+          // 更新 media_assets：frames / extractedVocals / extractedBgm + 分离配置
           if (framePaths.length > 0) {
             targetMedia.frames = framePaths.map((fp: string) =>
               path.isAbsolute(fp) ? path.relative(projectDir, fp).replace(/\\/g, '/') : fp
@@ -361,6 +406,10 @@ export class JobScheduler {
             targetMedia.extractedBgm = path.isAbsolute(backgroundPath)
               ? path.relative(projectDir, backgroundPath).replace(/\\/g, '/') : backgroundPath;
           }
+          // 落盘分离配置：模式、引擎、降级标记（线性向导固定 quality + auto）
+          targetMedia.separationMode = 'quality';
+          targetMedia.separationEngine = 'auto';
+          targetMedia.vocalsIsFallback = vocalsIsFallback;
           targetMedia.status = 'parsed';
           mediaRepo.updateMedia(targetMedia.id, targetMedia);
         }
@@ -402,6 +451,10 @@ export class JobScheduler {
                 : [],
               extractedVocals: targetMedia.extractedVocals || null,
               extractedBgm: targetMedia.extractedBgm || null,
+              // 透传分离配置与降级标记，供前端展示
+              separationMode: targetMedia.separationMode,
+              separationEngine: targetMedia.separationEngine,
+              vocalsIsFallback: targetMedia.vocalsIsFallback,
               status: 'parsed',
             },
             shots: asrLines.map((line: any) => ({

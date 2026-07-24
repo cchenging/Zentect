@@ -33,7 +33,7 @@ const PROVIDERS = [
  *  本地引擎类节点（音频分离/ASR/TTS）保留固定选项
  */
 const PIPELINE_NODES = [
-  { key: 'taskAudioSeparate', bindingKey: 'audio', label: '音频分离', icon: '🎵', localOptions: ['本地轻量模型', 'Spleeter', 'UVR5'] },
+  { key: 'taskAudioSeparate', bindingKey: 'audio', label: '音频分离', icon: '🎵', localOptions: ['本地轻量模型', 'Demucs', 'MDX-Net'] },
   { key: 'taskASR', bindingKey: 'asr', label: '台词识别 (ASR)', icon: '🎤', localOptions: ['Whisper 本地版', 'SenseVoiceSmall'] },
   { key: 'taskVisualModel', bindingKey: 'visual', label: 'VLM 图片分析', icon: '👁️', useModelPool: true },
   { key: 'taskSentiment', bindingKey: 'sentiment', label: '情绪识别', icon: '😊', useModelPool: true },
