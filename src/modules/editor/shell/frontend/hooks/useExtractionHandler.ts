@@ -37,13 +37,16 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
       console.log('[DEBUG ASR] shots count:', shots.length, 'hasAsrLines:', hasAsrLines,
         'sample originalTexts:', shots.slice(0, 3).map((s: any) => s.originalText?.substring(0, 20)));
 
-      pipelineState.setSubStepStatus('frames', hasFrames ? 'completed' : (pipelineState.subStepStatuses.frames || 'idle'));
-      pipelineState.setSubStepStatus('audio', hasAudio ? 'completed' : (pipelineState.subStepStatuses.audio || 'idle'));
+      // 重新取最新状态：setStepCompleted/setStepStatus 是异步生效，上方 pipelineState 是调用前快照
+      // 不重新取会导致下方降级判断用旧值，且 saveData 保存的是过期状态
+      const latestPipeline = usePipelineStore.getState();
+      pipelineState.setSubStepStatus('frames', hasFrames ? 'completed' : (latestPipeline.subStepStatuses.frames || 'idle'));
+      pipelineState.setSubStepStatus('audio', hasAudio ? 'completed' : (latestPipeline.subStepStatuses.audio || 'idle'));
       /** 子步骤为 running 但无产出数据 → 后端执行失败降级 → 标记为 failed；其余保持原状（idle/completed 等） */
-      const currentWhisper = pipelineState.subStepStatuses.whisper;
+      const currentWhisper = latestPipeline.subStepStatuses.whisper;
       pipelineState.setSubStepStatus('whisper',
         hasAsrLines ? 'completed' : (currentWhisper === 'running' ? 'failed' : currentWhisper));
-      const currentFaces = pipelineState.subStepStatuses.faces;
+      const currentFaces = latestPipeline.subStepStatuses.faces;
       pipelineState.setSubStepStatus('faces',
         hasRoles ? 'completed' : (currentFaces === 'running' ? 'failed' : currentFaces));
 
@@ -191,6 +194,9 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
 
       const latestProjectState = useProjectStore.getState();
       const latestNavState = useEditorNavStore.getState();
+      // 🔧 关键修复：重新取最新 pipeline 状态，避免保存注册时的 stale 快照（全 idle）到 metadata
+      // 旧版 bug：上方 pipelineState 是 useEffect 注册时抓的快照，重进后 hydrate 读到全 idle → "结果丢失"
+      const freshPipelineState = usePipelineStore.getState();
       if (latestProjectState.projectId) {
         try {
           await API.project.saveData(latestProjectState.projectId, {
@@ -199,16 +205,19 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             asrLines: useStep1Store.getState().asrLines, frameCount: useStep1Store.getState().frameCount,
             framePaths: latestProjectState.extractedData?.framePaths || [],
             audioSeparated: useStep1Store.getState().audioSeparated,
-            subStepStatuses: pipelineState.subStepStatuses,
-            subStepProgresses: pipelineState.subStepProgresses,
-            stepStatuses: pipelineState.stepStatuses,
-            stepCompleted: pipelineState.stepCompleted,
+            subStepStatuses: freshPipelineState.subStepStatuses,
+            subStepProgresses: freshPipelineState.subStepProgresses,
+            stepStatuses: freshPipelineState.stepStatuses,
+            stepCompleted: freshPipelineState.stepCompleted,
             currentStep: latestNavState.currentStep,
             storyboardMode: latestProjectState.storyboardMode,
             extractionConfig: useStep1Store.getState().extractionConfig,
             vlmFrames: useStep2Store.getState().vlmFrames,
           });
-        } catch { }
+        } catch (e) {
+          // 🔧 修复 R6：不再静默吞掉异常，便于排查 DB 写入失败
+          console.error('[useExtractionHandler] saveData 失败', e);
+        }
       }
 
       if (navState.isAutoMode && onAutoContinue) {

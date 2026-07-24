@@ -816,6 +816,14 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     if (typeof s1.setAsrLines === 'function' && Array.isArray(asr) && asr.length > 0) s1.setAsrLines(asr);
     if (typeof s1.setFrameCount === 'function' && (raw.frameCount || parsed.frameCount)) s1.setFrameCount(Number(raw.frameCount || parsed.frameCount));
     if (typeof s1.setAudioSeparated === 'function' && raw.audioSeparated !== undefined) s1.setAudioSeparated(!!raw.audioSeparated);
+    // 🔧 修复 R3：从 mediaItems 视频项的 vocalsIsFallback 字段恢复降级标记
+    // 旧版 bug：DB 中 vocals_is_fallback=1，但 hydrate 漏写 → UI 永远读 false，降级提示不显示
+    const videoMedia = Array.isArray(mediaItems)
+      ? mediaItems.find((m: any) => m.type === 'video')
+      : undefined;
+    if (typeof s1.setVocalsIsFallback === 'function' && videoMedia?.vocalsIsFallback !== undefined) {
+      s1.setVocalsIsFallback(!!videoMedia.vocalsIsFallback);
+    }
     if (typeof s1.setSubStepProgress === 'function') {
       for (const [key, progress] of Object.entries(subStepProgresses)) {
         s1.setSubStepProgress(key, typeof progress === 'number' ? progress : 0);

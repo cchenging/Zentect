@@ -208,8 +208,16 @@ export class ProjectRepository {
       mediaItems = metadata.mediaItems.map((m: any) => {
         const raw = rawMediaMap.get(m.id);
         if (raw) {
-          // DB 数据优先：frames、extractedAudio 等管线产出字段始终以 DB 为准
-          return { ...m, ...raw };
+          // 🔧 修复：DB 数据优先，但过滤掉 null/undefined 字段，避免覆盖 metadata 的好值
+          // 旧版 bug：{ ...m, ...raw } 会让 raw.name=null 覆盖 m.name=文件名 → "未命名"
+          // 新版：对 raw 的 null/undefined 字段不覆盖，只让真实值生效
+          const filteredRaw: Record<string, any> = {};
+          for (const [k, v] of Object.entries(raw)) {
+            if (v !== null && v !== undefined) {
+              filteredRaw[k] = v;
+            }
+          }
+          return { ...m, ...filteredRaw };
         }
         return { ...m, name: m.name || m.fileName || (m.filePath ? m.filePath.split(/[\\/]/).pop() : '未命名') };
       });
