@@ -11,6 +11,7 @@ import traceback
 import json
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ai_daemon import AIModels, FFMPEG_PATH
@@ -34,6 +35,8 @@ class SeparateReq(BaseModel):
     output_dir: str
     # 引擎选择：'demucs'(重型,高保真) | 'mdx'(轻量,极速) | 'auto'(默认 Demucs→MDX 降级链)
     engine: str = "auto"
+    # 任务 ID：由 Node 端生成，用于隔离并发任务的进度状态（SSE 推流时按 task_id 查询）
+    task_id: str | None = None
 
 class BeatDetectReq(BaseModel):
     file_path: str
@@ -562,46 +565,77 @@ def _transcribe_sync(req: TranscribeReq):
 # 💥 改为 async + run_in_executor，避免 CPU 密集型计算阻塞 uvicorn 事件循环
 # ==========================================
 
-# 分离进度状态（模块级，供 Node 端轮询）
-_separate_progress = {
-    "pct": 0,
-    "msg": "等待中",
-    "done": False,
-    "result": None,
-    "error": None,
-}
+# 分离进度状态：按 task_id 隔离（支持并发，替代旧的全局单例）
+_task_progress: dict[str, dict] = {}
 
 
-@router.get("/api/separate/progress")
-async def api_separate_progress():
-    """轮询接口：Node 端通过此接口获取音频分离的实时进度"""
-    return _separate_progress
+def _get_progress(task_id: str) -> dict:
+    """获取指定任务的进度状态，不存在则初始化"""
+    if task_id not in _task_progress:
+        _task_progress[task_id] = {
+            "pct": 0,
+            "msg": "等待中",
+            "done": False,
+            "result": None,
+            "error": None,
+        }
+    return _task_progress[task_id]
+
+
+def _set_progress(task_id: str, **kwargs) -> None:
+    """更新指定任务的进度字段（增量更新）"""
+    p = _get_progress(task_id)
+    p.update(kwargs)
+
+
+@router.get("/api/separate/progress/{task_id}")
+async def api_separate_progress(task_id: str):
+    """轮询接口（兼容旧版）：按 task_id 获取分离进度快照"""
+    return _get_progress(task_id)
+
+
+@router.get("/api/separate/stream/{task_id}")
+async def api_separate_stream(task_id: str):
+    """SSE 推流接口：进度变化时主动 push，Node 端无需轮询"""
+    import asyncio
+
+    async def event_generator():
+        while True:
+            progress = _get_progress(task_id)
+            yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+            if progress.get("done"):
+                break
+            await asyncio.sleep(0.1)  # 100ms 推送间隔
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @router.post("/api/separate")
 async def api_separate(req: SeparateReq):
     """异步人声分离：将 CPU 密集型的分离计算放入线程池，不阻塞事件循环"""
     import asyncio
+    import uuid
 
-    # 重置进度状态
-    _separate_progress["pct"] = 0
-    _separate_progress["msg"] = "正在启动分离引擎..."
-    _separate_progress["done"] = False
-    _separate_progress["result"] = None
-    _separate_progress["error"] = None
+    # 生成或复用 task_id，按任务隔离进度状态
+    task_id = req.task_id or str(uuid.uuid4())
+    # 重置该任务的进度状态
+    _task_progress[task_id] = {
+        "pct": 0,
+        "msg": "正在启动分离引擎...",
+        "done": False,
+        "result": None,
+        "error": None,
+    }
 
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, _separate_sync, req)
-        _separate_progress["done"] = True
-        _separate_progress["pct"] = 100
-        _separate_progress["msg"] = "分离完成"
-        _separate_progress["result"] = result
+        result = await loop.run_in_executor(None, _separate_sync, req, task_id)
+        _set_progress(task_id, done=True, pct=100, msg="分离完成", result=result)
+        # 补充 task_id 便于 Node 端关联
+        if isinstance(result, dict):
+            result["task_id"] = task_id
         return result
     except Exception as e:
-        _separate_progress["done"] = True
-        _separate_progress["error"] = str(e)
-        _separate_progress["msg"] = f"分离失败: {e}"
+        _set_progress(task_id, done=True, error=str(e), msg=f"分离失败: {e}")
         print(f"[AI Daemon] 分离崩溃: {e}", file=sys.stderr)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -633,20 +667,21 @@ def _finalize_output(output_dir, vocals_path, bgm_path):
     return final_vocals, final_bgm
 
 
-def _separate_sync(req: SeparateReq):
+def _separate_sync(req: SeparateReq, task_id: str):
     """同步分离逻辑：在线程池中执行，不阻塞 uvicorn 事件循环
 
     engine 参数控制引擎选择：
       - 'demucs': 仅使用 Demucs（重型，高保真），失败则抛 500
       - 'mdx':    仅使用 MDX-Net（轻量，极速），失败则抛 500
       - 'auto':  默认顺序 Demucs → MDX-Net 降级链
+
+    task_id 用于按任务隔离进度状态（支持并发分离多个媒体）
     """
     try:
-        print(f"[AI Daemon] 🧠 启动音频分离 (engine={req.engine})...", file=sys.stderr)
+        print(f"[AI Daemon] 🧠 启动音频分离 (engine={req.engine}, task={task_id})...", file=sys.stderr)
 
         if not os.path.exists(req.audio_path):
-            _separate_progress["error"] = "Audio file not found"
-            _separate_progress["done"] = True
+            _set_progress(task_id, error="Audio file not found", done=True)
             return {"success": False, "error": "Audio file not found"}
 
         if not os.path.exists(req.output_dir):
@@ -665,29 +700,27 @@ def _separate_sync(req: SeparateReq):
                 import numpy as np
 
                 print("[AI Daemon] 🎵 [Demucs] 正在加载 htdemucs 模型...", file=sys.stderr)
-                _separate_progress["pct"] = 5
-                _separate_progress["msg"] = "正在加载 Demucs htdemucs 模型..."
+                _set_progress(task_id, pct=5, msg="正在加载 Demucs htdemucs 模型...")
 
                 # P2: Demucs 真实进度回调
                 # callback 接收 info dict，包含 segment_offset 和 audio_length
-                # 将进度映射到 5-15 区间（15=Demucs 分离完成）
+                # 将进度映射到 5-85 区间（85=Demucs 分离完成），替代旧版 5-15 的极粗粒度
                 def _demucs_progress_callback(info):
                     try:
                         seg_offset = info.get('segment_offset', 0) or 0
                         audio_len = info.get('audio_length', 0) or 0
                         if audio_len > 0:
                             ratio = min(1.0, seg_offset / audio_len)
-                            # Demucs 分离阶段占总进度 5-15，共 10 个百分点
-                            _separate_progress["pct"] = 5 + int(ratio * 10)
-                            _separate_progress["msg"] = f"Demucs 正在分离... {int(ratio * 100)}%"
+                            # Demucs 分离阶段占总进度 5-85，共 80 个百分点（旧版仅 10）
+                            _set_progress(task_id, pct=5 + int(ratio * 80),
+                                          msg=f"Demucs 正在分离... {int(ratio * 100)}%")
                     except Exception:
                         pass  # 进度回调不应影响主流程
 
                 demucs_sep = DemucsSeparator('htdemucs', callback=_demucs_progress_callback)
                 origin, separated = demucs_sep.separate_audio_file(req.audio_path)
 
-                _separate_progress["pct"] = 15
-                _separate_progress["msg"] = "Demucs 分离完成，正在保存音轨..."
+                _set_progress(task_id, pct=85, msg="Demucs 分离完成，正在保存音轨...")
 
                 sr = demucs_sep.samplerate
                 stem_paths = {}
@@ -715,8 +748,7 @@ def _separate_sync(req: SeparateReq):
                 demucs_other = stem_paths.get("other", "")
 
                 if demucs_vocals:
-                    _separate_progress["pct"] = 30
-                    _separate_progress["msg"] = "正在合并背景音轨 (Demucs)..."
+                    _set_progress(task_id, pct=88, msg="正在合并背景音轨 (Demucs)...")
 
                     bgm_stems = [s for s in [demucs_drums, demucs_bass, demucs_other] if s]
                     dest_bgm = os.path.join(req.output_dir, "bgm_demucs.wav")
@@ -738,11 +770,9 @@ def _separate_sync(req: SeparateReq):
                         if len(bgm_stems) >= 2:
                             subprocess.run(ffmpeg_cmd, check=True, capture_output=True, text=True)
                         print(f"[AI Daemon] ✅ [Demucs] 分离完成", file=sys.stderr)
-                        _separate_progress["pct"] = 70
-                        _separate_progress["msg"] = "正在清理中间文件..."
+                        _set_progress(task_id, pct=92, msg="正在清理中间文件...")
                         final_vocals, final_bgm = _finalize_output(req.output_dir, demucs_vocals, dest_bgm)
-                        _separate_progress["pct"] = 95
-                        _separate_progress["msg"] = "分离完成，即将返回结果"
+                        _set_progress(task_id, pct=98, msg="分离完成，即将返回结果")
                         return {"success": True, "vocals": final_vocals, "bgm": final_bgm}
                     except Exception as ffmpeg_err:
                         print(f"[AI Daemon] [Demucs] FFmpeg 合并失败，使用 other 轨作为 BGM: {ffmpeg_err}", file=sys.stderr)
@@ -756,21 +786,17 @@ def _separate_sync(req: SeparateReq):
                             import shutil
                             shutil.copy2(demucs_bass, dest_bgm)
                         print(f"[AI Daemon] ✅ [Demucs] 分离完成（FFmpeg 降级）", file=sys.stderr)
-                        _separate_progress["pct"] = 80
-                        _separate_progress["msg"] = "正在清理中间文件..."
+                        _set_progress(task_id, pct=92, msg="正在清理中间文件...")
                         final_vocals, final_bgm = _finalize_output(req.output_dir, demucs_vocals, dest_bgm)
-                        _separate_progress["pct"] = 95
-                        _separate_progress["msg"] = "分离完成，即将返回结果"
+                        _set_progress(task_id, pct=98, msg="分离完成，即将返回结果")
                         return {"success": True, "vocals": final_vocals, "bgm": final_bgm}
 
             except ImportError:
                 print("[AI Daemon] Demucs 未安装，降级到 MDX-Net", file=sys.stderr)
-                _separate_progress["pct"] = 5
-                _separate_progress["msg"] = "Demucs 未安装，降级到 MDX-Net..."
+                _set_progress(task_id, pct=5, msg="Demucs 未安装，降级到 MDX-Net...")
             except Exception as demucs_err:
                 print(f"[AI Daemon] Demucs 分离失败，降级到 MDX-Net: {demucs_err}", file=sys.stderr)
-                _separate_progress["pct"] = 5
-                _separate_progress["msg"] = f"Demucs 失败，降级到 MDX-Net..."
+                _set_progress(task_id, pct=5, msg="Demucs 失败，降级到 MDX-Net...")
 
             # engine='demucs' 时不降级到 MDX-Net，直接抛失败
             if engine == "demucs":
@@ -785,12 +811,10 @@ def _separate_sync(req: SeparateReq):
             try:
                 from audio_separator.separator import Separator
                 mdx_model_dir = os.path.join(AIModels.MODELS_DIR, "mdx_net")
-                _separate_progress["pct"] = 10
-                _separate_progress["msg"] = "正在加载 MDX-Net 模型..."
+                _set_progress(task_id, pct=10, msg="正在加载 MDX-Net 模型...")
                 separator = Separator(output_dir=req.output_dir, model_file_dir=mdx_model_dir)
                 separator.load_model('UVR-MDX-NET-Inst_HQ_4.onnx')
-                _separate_progress["pct"] = 30
-                _separate_progress["msg"] = "MDX-Net 正在分离音轨..."
+                _set_progress(task_id, pct=30, msg="MDX-Net 正在分离音轨...")
                 output_files = separator.separate(req.audio_path)
 
                 target_bgm = ""
@@ -803,11 +827,9 @@ def _separate_sync(req: SeparateReq):
 
                 if target_vocals and target_bgm:
                     print("[AI Daemon] ✅ [MDX-Net] 分离完成", file=sys.stderr)
-                    _separate_progress["pct"] = 70
-                    _separate_progress["msg"] = "正在清理中间文件..."
+                    _set_progress(task_id, pct=92, msg="正在清理中间文件...")
                     final_vocals, final_bgm = _finalize_output(req.output_dir, target_vocals, target_bgm)
-                    _separate_progress["pct"] = 95
-                    _separate_progress["msg"] = "分离完成，即将返回结果"
+                    _set_progress(task_id, pct=98, msg="分离完成，即将返回结果")
                     return {"success": True, "vocals": final_vocals, "bgm": final_bgm}
             except Exception as mdx_err:
                 print(f"[AI Daemon] MDX-Net 分离失败: {mdx_err}", file=sys.stderr)

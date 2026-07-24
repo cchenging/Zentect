@@ -312,39 +312,46 @@ export class JobScheduler {
 
       if (extractedAudioPath) {
         const httpClient = require('./HttpClient').HttpClient;
-        // 轮询分离进度，映射到前端进度条 30-50 区间
+        const { PythonProgressSubscriber } = require('../engine/media/PythonProgressSubscriber');
+
+        // 生成 task_id：与 Python 端 _task_progress 字典 key 对齐，支持并发分离
+        const taskId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        // SSE 进度回调：把 Python 端 0-100 的 pct 映射到前端进度条 30-50 区间
         let lastPct = 30;
-        const progressTimer = setInterval(async () => {
-          try {
-            const prog = await httpClient.get(`http://127.0.0.1:${pythonPort}/api/separate/progress`);
-            if (prog?.data?.pct != null) {
-              const mapped = 30 + Math.floor(prog.data.pct * 0.2);
-              if (mapped > lastPct) {
-                lastPct = mapped;
-                window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: lastPct, status: 'processing', nodeName: prog.data.msg || '正在分离人声...' });
-              }
-            }
-          } catch { /* 轮询失败静默 */ }
-        }, 500);
+        const onSseProgress = (pct: number, msg: string) => {
+          const mapped = 30 + Math.floor(pct * 0.2);
+          if (mapped > lastPct) {
+            lastPct = mapped;
+            window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: lastPct, status: 'processing', nodeName: msg || '正在分离人声...' });
+          }
+        };
+
+        // 并发：发起 POST 分离（不 await）+ 启动 SSE 订阅推送进度
+        // SSE 流会在 Python 端 done=true 时自动断开，此时 POST 也即将返回
+        const separatePromise = httpClient.post(`http://127.0.0.1:${pythonPort}/api/separate`, {
+          audio_path: extractedAudioPath,
+          output_dir: audioDir,
+          engine: 'auto',
+          task_id: taskId,
+        });
+        const ssePromise = PythonProgressSubscriber.subscribe(taskId, onSseProgress, 600000);
 
         try {
-          const separateRes = await httpClient.post(`http://127.0.0.1:${pythonPort}/api/separate`, {
-            audio_path: extractedAudioPath,
-            output_dir: audioDir,
-            engine: 'auto',
-          });
-          if (!separateRes?.data?.success) {
-            throw new Error(separateRes?.data?.error || 'Python 音频分离模块遭遇内核阻断');
+          const separateRes = await separatePromise;
+          // 等 SSE 流彻底结束，避免残留连接
+          await ssePromise;
+          if (!separateRes?.success) {
+            throw new Error(separateRes?.error || 'Python 音频分离模块遭遇内核阻断');
           }
           // Python 契约返回 { vocals, bgm }（非 vocalPath/backgroundPath）
-          vocalPath = separateRes.data.vocals || null;
-          backgroundPath = separateRes.data.bgm || null;
+          vocalPath = separateRes.vocals || null;
+          backgroundPath = separateRes.bgm || null;
         } catch (separateErr: any) {
           AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] 分离失败，降级使用原始音轨`, { error: separateErr.message });
           vocalPath = extractedAudioPath;
           vocalsIsFallback = true;
-        } finally {
-          clearInterval(progressTimer);
+          // SSE 流可能未自动断开（如 Python 端抛错前未设置 done=true），手动等待以避免泄漏
+          await ssePromise.catch(() => {});
         }
       }
 

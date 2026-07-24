@@ -128,8 +128,8 @@ export class AudioProcessor {
 
   /**
    * 调用 Demucs/MDX-Net 分离人声和背景音，均失败时返回 null（由上层走 fallback）
-   * @param engine 指定引擎：'demucs' | 'mdx' | 'auto'（auto=Python 端默认顺序 Demucs→MDX）
-   * @param onProgress 实时进度回调（从 Python /api/separate/progress 轮询得到）
+   * @param engine     指定引擎：'demucs' | 'mdx' | 'auto'（auto=Python 端默认顺序 Demucs→MDX）
+   * @param onProgress 实时进度回调（通过 SSE 流式推送，替代旧版 500ms 轮询）
    */
   public static async separateVocalsBgm(
     inputAudioPath: string,
@@ -146,61 +146,32 @@ export class AudioProcessor {
     // 先检查信号是否已中止，避免无用调用
     if (signal?.aborted) return null;
 
+    // 生成 task_id：Python 端按 task_id 隔离并发任务的进度状态
+    const taskId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
     try {
       const { AIDaemon } = await import('../../core/AIDaemon');
       const { HttpClient } = await import('../../core/HttpClient');
+      const { PythonProgressSubscriber } = await import('./PythonProgressSubscriber');
       const pythonPort = AIDaemon.getInstance().getPort();
-      const progressUrl = `http://127.0.0.1:${pythonPort}/api/separate/progress`;
       const separateUrl = `http://127.0.0.1:${pythonPort}/api/separate`;
 
-      // 发起分离请求（不 await，后台运行），携带 engine 参数
+      // 并发：发起 POST 分离请求（不 await）+ 启动 SSE 订阅推送进度
+      // SSE 流在 Python 端任务 done=true 后自动结束，此时 POST 也即将返回
+      // 注意：字段名必须与 Python SeparateReq DTO 的 snake_case 一致，否则 Pydantic 报 422
       const postPromise = HttpClient.post(separateUrl, {
-        audioPath: inputAudioPath,
-        outputDir: outBaseDir,
+        audio_path: inputAudioPath,
+        output_dir: outBaseDir,
         engine,
+        task_id: taskId,
       }, { signal });
 
-      // 轮询进度，直到完成或超时
-      const POLL_INTERVAL_MS = 500;
-      const MAX_POLL_SECONDS = 600; // 10 分钟上限
-      let elapsedMs = 0;
-      let lastPct = -1;
+      // SSE 订阅：实时推送 pct/msg 到 onProgress 回调，任务结束后自动断开
+      await PythonProgressSubscriber.subscribe(taskId, (pct, msg) => {
+        if (onProgress) onProgress(pct, msg);
+      }, 600000, signal);
 
-      while (elapsedMs < MAX_POLL_SECONDS * 1000) {
-        if (signal?.aborted) return null;
-
-        try {
-          const progress = await HttpClient.get(progressUrl);
-          const pct = progress?.pct ?? 0;
-          const msg = progress?.msg ?? '';
-
-          if (pct !== lastPct && onProgress) {
-            onProgress(pct, msg);
-            lastPct = pct;
-          }
-
-          if (progress?.done) {
-            if (progress?.error) {
-              AppLogger.warn('AudioProcessor', `AI Daemon 分离内部失败: ${progress.error}`);
-              break;
-            }
-            if (progress?.result?.vocals) {
-              return {
-                vocals: progress.result.vocals,
-                bgm: progress.result.bgm || undefined,
-              };
-            }
-            break;
-          }
-        } catch {
-          // 轮询失败（如 Daemon 重启），静默继续
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-        elapsedMs += POLL_INTERVAL_MS;
-      }
-
-      // 轮询超时或进度报错时，等待 POST 结果兜底
+      // SSE 流结束（done=true）后，等待 POST 返回最终分离产物
       try {
         const result = await postPromise;
         if (result?.vocals) {
@@ -210,7 +181,7 @@ export class AudioProcessor {
           };
         }
       } catch {
-        // 已在下方统一 fallback
+        // POST 失败时进入下方统一 fallback
       }
     } catch (error) {
       AppLogger.error('AudioProcessor', 'AI Daemon 人声分离失败', { error });
