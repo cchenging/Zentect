@@ -13,4 +13,6 @@ export interface PreviewOutput {
 export interface PreviewCallbacks {
   onTimeUpdate?: (time: number) => void;
   onImportClick?: () => void;
+  /** 替换当前视频：删旧视频及衍生数据后导入新视频 */
+  onReplaceClick?: () => void;
 }

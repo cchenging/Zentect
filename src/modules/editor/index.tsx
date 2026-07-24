@@ -44,7 +44,7 @@ export default function Editor() {
   const { executeStep } = usePipelineOrchestrator();
   useExtractionHandler(async (nextStep: number) => { await executeStep(nextStep); });
 
-  const { handleStart, handleNextStep, handleVideoImport } = useStepRunner(id);
+  const { handleStart, handleNextStep, handleVideoImport, handleReplaceVideo } = useStepRunner(id);
 
   /** 可拖拽分隔条 */
   const { leftWidth, isDragging, leftPanelRef, handleDividerMouseDown } = useResizablePanel({
@@ -213,6 +213,7 @@ export default function Editor() {
           <div className="glass-card overflow-hidden flex flex-col shrink-0 aspect-video">
             <PreviewMonitor
               onImportClick={handleVideoImport}
+              onReplaceClick={handleReplaceVideo}
             />
           </div>
 

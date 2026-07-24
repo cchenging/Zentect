@@ -2,6 +2,7 @@
 // 架构规格 §3.4.2：视频预览播放器
 
 import React from 'react';
+import { RefreshCw } from 'lucide-react';
 import { Player } from './components/Player';
 import { usePlayerStore } from '../../stores/usePlayerStore';
 import type { PreviewInput, PreviewCallbacks } from '../types';
@@ -12,9 +13,11 @@ interface PreviewMonitorProps extends PreviewInput, PreviewCallbacks {}
  * 视频预览监视器
  * - 无素材时显示导入引导
  * - 有素材时渲染 Player（VideoCanvas + PlayerControls）
+ *   并提供常驻「替换视频」入口（修复用户找不到重新导入入口的问题）
  */
 export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
   onImportClick,
+  onReplaceClick,
 }) => {
   const activePlaySource = usePlayerStore((s) => s.activePlaySource);
 
@@ -41,7 +44,22 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
     );
   }
 
-  return <Player />;
+  // 有视频时，在 Player 右上角叠加「替换视频」按钮
+  return (
+    <div className="relative w-full h-full">
+      <Player />
+      {onReplaceClick && (
+        <button
+          onClick={onReplaceClick}
+          className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-1 bg-[var(--bg-main)]/80 border border-[var(--border)]/50 rounded text-[10px] text-[var(--text-secondary)] hover:bg-[var(--bg-main)]/60 hover:text-[var(--text-primary)] transition-colors cursor-pointer backdrop-blur-sm"
+          title="替换当前视频（删除旧视频及衍生数据后导入新视频）"
+        >
+          <RefreshCw size={10} />
+          替换视频
+        </button>
+      )}
+    </div>
+  );
 };
 
 PreviewMonitor.displayName = 'PreviewMonitor';
