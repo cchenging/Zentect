@@ -201,8 +201,17 @@ export class ImportService {
         filePath: playableFilePath,
       });
 
+      // 🔧 修复：推送给前端的 coverPath 必须是 magic URL，不能用裸相对路径
+      // 旧版 bug：推送 'thumbnails/xxx.jpg' → getSafeMediaUrl 转成 magic://local/... → 404
+      //          重进项目时 MediaController 才转 magic://{projectId}/... → 能显示
+      //          导致"导入后封面不显示，重进才显示"
+      // DB 仍存裸相对路径（hydrate 时由 MediaController 转 magic），保持兼容
+      const frontendCoverPath = relativeCoverPath
+        ? `magic://${projectId}/${relativeCoverPath}`
+        : '';
+
       this.notifyFrontend(projectId, mediaId, {
-        coverPath: relativeCoverPath,
+        coverPath: frontendCoverPath,
         duration: metadata.formattedTime,
         status: 'parsed',
       });
