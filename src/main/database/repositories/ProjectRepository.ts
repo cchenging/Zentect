@@ -423,11 +423,15 @@ export class ProjectRepository {
       });
 
       // 极致性能：直接强刷主表的元数据列，消灭 [JobScheduler] 状态回写失败
+      // 🔧 修复 P2-B：移除不存在的 video_path 列引用
+      // 旧版 bug：projects 表 DDL（001_initial_schema.sql）无 video_path 列，
+      //          该 SQL 执行时会抛 SQLITE_ERROR: no such column: video_path
+      //          videoPath 已写入 metadata JSON，读取端 findQuickProjectById 从 metadata 解析即可
       const result = this.db.prepare(`
-        UPDATE projects 
-        SET metadata = ?, video_path = ?, status = 'analyzed' 
+        UPDATE projects
+        SET metadata = ?, status = 'analyzed'
         WHERE id = ?
-      `).run(metadataString, extractedData.videoPath || '', projectId);
+      `).run(metadataString, projectId);
 
       AppLogger.info('ProjectRepository', `项目 [${projectId}] 核心影音资产在 100% 完工时安全写盘成功！`);
       return result.changes > 0;
@@ -452,10 +456,18 @@ export class ProjectRepository {
         shots = meta.shots || [];
       }
 
+      // 🔧 修复 P2-B：videoPath 从 metadata JSON 解析（projects 表无 video_path 列）
+      // 旧版 bug：SELECT * 不含 video_path 列，始终返回 undefined
+      const meta = (project as any).metadata
+        ? (typeof (project as any).metadata === 'string'
+            ? JSON.parse((project as any).metadata)
+            : (project as any).metadata)
+        : {};
+
       return {
         id: (project as any).id,
         name: (project as any).name,
-        videoPath: (project as any).video_path,
+        videoPath: meta.videoPath || '',
         metadata: (project as any).metadata,
         shots: shots
       };

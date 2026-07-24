@@ -253,8 +253,14 @@ export class ImportService {
         try {
           const { ProjectRepository } = require('../../../../main/database/repositories/ProjectRepository');
           new ProjectRepository().updateCover(projectId, relativeCoverPath);
-        } catch (e) {
-          AppLogger.warn(LOG_TAGS.MEDIA, `回写 projects.cover_path 失败: ${projectId}`);
+        } catch (e: any) {
+          // 🔧 修复 P2-A：补全错误堆栈，便于定位 db 单例/require 路径/SQL 异常
+          // 旧版 bug：仅打印 projectId，丢失堆栈，无法判断失败根因
+          AppLogger.warn(
+            LOG_TAGS.MEDIA,
+            `回写 projects.cover_path 失败: ${projectId} | ${e?.message || e}`,
+            e,
+          );
         }
       }
 

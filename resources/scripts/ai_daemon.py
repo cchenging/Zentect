@@ -66,7 +66,16 @@ app = FastAPI()
 # ============================================================
 # 业务路由动态注册
 # ============================================================
-_business_routers = []
+# (module_name, router_var_name) — 模块内必须暴露 APIRouter() 实例 `router`
+# 旧版 bug：列表为空 → 6 个业务模块的 17 条路由全是孤儿，运行时全部 404
+_business_routers = [
+    ('audio_pipeline', 'router'),     # /api/separate, /api/separate/stream/{task_id}, /api/transcribe, /api/emotion, /api/audio/detect_beats, /api/separate/progress/{task_id}
+    ('face_analysis', 'router'),      # /api/vision, /api/cluster_faces, /api/load_clusters
+    ('semantic_engine', 'router'),    # /api/match, /api/extract_semantics, /api/search_semantics
+    ('timeline_solver', 'router'),    # /api/solver/kuhn_munkres_match
+    ('video_analyzer', 'router'),     # /api/video/detect_scene_chunks
+    ('jianying_export', 'router'),    # /api/jianying/export
+]
 
 
 def _register_business_routers():
@@ -75,9 +84,11 @@ def _register_business_routers():
         try:
             mod = __import__(module_name, fromlist=['router'])
             app.include_router(mod.router)
+            print(f'[AI Daemon] ✅ 已注册路由模块: {module_name}', file=sys.stderr)
         except Exception as e:
             print(f'[AI Daemon] ⚠️ 模块 {module_name} 加载失败: {e}',
                   file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
 
 
 # ============================================================

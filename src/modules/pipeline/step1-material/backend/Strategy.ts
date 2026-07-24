@@ -164,10 +164,14 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           bgmPath = result.bgmPath;
           vocalsIsFallback = result.isFallback;
 
+          // 🔧 修复 P0-B：降级音轨仍可用于 ASR，不应阻断后续语音识别
+          // 旧版 bug：isFallback 时误设 audioFailed=true → 第 189 行 !audioFailed 条件跳过整个 ASR 块
+          //          → asrLines=[] → JobScheduler 组装 shots=[] → 前端 shots count: 0
+          // 设计意图（见第 192 行注释）：降级模式仍跑 ASR，只是质量可能下降
+          // 现在仅记录警告，audioFailed 保持 false，让降级音轨流入 ASR 块
           if (result.isFallback && !skipSeparation) {
             AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
-              '[Step1] 人声分离失败，降级到原始音轨', { mediaId });
-            audioFailed = true;
+              '[Step1] 人声分离失败，降级到原始音轨（ASR 仍将执行）', { mediaId });
           }
 
           if (vocalsPath && !result.isFallback) {
