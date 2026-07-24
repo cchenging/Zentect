@@ -108,7 +108,23 @@ export const useEditorHydration = (id: string | undefined) => {
               const meta = typeof projectSnapshot.metadata === 'string'
                 ? JSON.parse(projectSnapshot.metadata)
                 : projectSnapshot.metadata;
-              if (meta.asrLines) useStep1Store.getState().setAsrLines(meta.asrLines);
+              if (meta.asrLines) {
+                useStep1Store.getState().setAsrLines(meta.asrLines);
+              } else {
+                // 🔧 Fallback：meta.asrLines 为空时，从 media_assets.extracted_text 恢复
+                // 旧版 bug：前端崩溃/用户关窗导致 saveData 未执行 → meta.asrLines 丢失
+                //          后端 JobScheduler 已主动写入 extracted_text，可作为兜底恢复源
+                const m = (projectSnapshot.mediaItems || []).find((x: any) => x.extractedText);
+                if (m?.extractedText) {
+                  try {
+                    const lines = typeof m.extractedText === 'string'
+                      ? JSON.parse(m.extractedText) : m.extractedText;
+                    if (Array.isArray(lines) && lines.length > 0) {
+                      useStep1Store.getState().setAsrLines(lines);
+                    }
+                  } catch { /* extractedText 解析失败，静默跳过 */ }
+                }
+              }
             } catch {}
           }
 

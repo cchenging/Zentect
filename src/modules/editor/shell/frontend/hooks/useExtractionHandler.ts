@@ -171,6 +171,9 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
               extractedBgm: media.extractedBgm,
               frames: media.frames,
               frameCount,
+              // 🔧 修复：补传 extractedText，与内存 mediaItems 保持一致
+              // 旧版漏传 → DB 的 extracted_text 始终为 NULL（后端 JobScheduler 已兜底，这里作防御）
+              extractedText: asrLines.length > 0 ? asrLines : (media.asrLines || media.transcription),
             });
           } catch { }
         }

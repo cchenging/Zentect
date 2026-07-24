@@ -217,6 +217,20 @@ export class JobScheduler {
             updatedMedia.separationEngine = result.separationEngine;
             updatedMedia.vocalsIsFallback = result.vocalsIsFallback;
 
+            // 🔧 修复：把 ASR 台词序列化落盘到 media_assets.extracted_text
+            // 旧版 bug：ASR 文本只通过前端 IPC 写入 projects.metadata.asrLines，
+            //          后端不主动落库 → 前端崩溃/用户关窗时 asrLines 丢失
+            // 现在后端主动写入 extracted_text，前端重进时可作为 fallback 恢复
+            if (result.shots && result.shots.length > 0) {
+              updatedMedia.extractedText = JSON.stringify(
+                result.shots.map((s: any) => ({
+                  start: s.start,
+                  end: s.end,
+                  text: s.originalText || '',
+                }))
+              );
+            }
+
             mediaRepo.updateMedia(updatedMedia.id, updatedMedia);
 
             const hydratedPayload = this.projectService.hydratePaths({
@@ -417,6 +431,19 @@ export class JobScheduler {
           targetMedia.separationEngine = 'auto';
           targetMedia.vocalsIsFallback = vocalsIsFallback;
           targetMedia.status = 'parsed';
+
+          // 🔧 修复：把 ASR 台词序列化落盘到 media_assets.extracted_text
+          // 与主流水线保持一致，避免依赖前端 IPC 导致 asrLines 丢失
+          if (asrLines.length > 0) {
+            targetMedia.extractedText = JSON.stringify(
+              asrLines.map((l: any) => ({
+                start: l.start,
+                end: l.end,
+                text: l.text || '',
+              }))
+            );
+          }
+
           mediaRepo.updateMedia(targetMedia.id, targetMedia);
         }
 
