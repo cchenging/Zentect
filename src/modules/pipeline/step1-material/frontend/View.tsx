@@ -2,10 +2,11 @@
 
 import React, { useState } from "react";
 import { Edit3, User, Music, Play, UndoDot, RotateCcw } from "lucide-react";
-import { getSafeMediaUrl } from "../../../../renderer/src/utils/formatUrl";
-import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "../../../../renderer/src/components/shared";
+import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
+import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "@renderer/components/shared";
 import { FrameExtractConfig } from "./components/FrameExtractConfig";
-import { useI18n } from "../../../../renderer/src/store/useI18n";
+import { AudioSeparationConfig } from "./components/AudioSeparationConfig";
+import { useI18n } from "@renderer/store/useI18n";
 import type { AsrLine, Role, MediaItem } from "../../../../shared/types";
 import type { StepStatus } from "../../../../shared/types/entities/editor";
 import type { StepMaterialAnalysisViewProps } from "../types";
@@ -77,6 +78,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         title={<><StatusIcon status={audioStatus === "idle" ? "pending" : audioStatus} /><span className={`text-[13px] font-semibold ${audioStatus === "completed" ? "text-accent-green" : audioStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.audio.title"]}</span></>}
         extra={<span className="text-[13px] text-muted-foreground">{audioStatus === "completed" ? t["editor.step1.audio.separated"] : statusText(audioStatus, "editor.step1.audio.statusRunning", "audio", "editor.step1.audio.statusFailed", "editor.step1.audio.statusIdle")}</span>}
         borderColor={audioStatus === "failed" ? "var(--accent-rose)" : undefined}>
+        <AudioSeparationConfig isRunning={audioStatus === "running"} />
         {audioStatus === "completed" && (
           <div className="p-2 rounded-md bg-bg-secondary border border-border/20">
             {audioItems.length > 0 ? (

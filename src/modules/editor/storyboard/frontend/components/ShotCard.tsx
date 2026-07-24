@@ -3,7 +3,7 @@
 
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { Shot, Role } from '../../../../../shared/types';
-import { getSafeMediaUrl } from '../../../../../renderer/src/utils/formatUrl';
+import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {

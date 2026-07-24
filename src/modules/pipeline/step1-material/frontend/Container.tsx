@@ -3,10 +3,10 @@
 
 import React, { useCallback, useMemo } from "react";
 import { useStep1Store } from "../../stores/useStep1Store";
-import { useProjectStore } from "../../../editor/stores/useProjectStore";
-import { usePlayerStore } from "../../../editor/stores/usePlayerStore";
-import { usePipelineStore } from "../../../../renderer/src/store/usePipelineStore";
-import { IPC_CHANNELS } from "../../../infra/ipc/IpcConstants";
+import { useProjectStore } from "@modules/editor/stores/useProjectStore";
+import { usePlayerStore } from "@modules/editor/stores/usePlayerStore";
+import { usePipelineStore } from "@renderer/store/usePipelineStore";
+import { IPC_CHANNELS } from "@modules/infra/ipc/IpcConstants";
 import type { MediaItem, Role } from "../../../../shared/types";
 import type { AsrLine, StepStatus } from "../../../../shared/types/entities/editor";
 import type { Step1Config } from "../types";
@@ -16,27 +16,11 @@ export const StepMaterialAnalysis: React.FC = () => {
   const asrLines = useStep1Store((s) => s.asrLines);
   const frameCount = useStep1Store((s) => s.frameCount);
   const audioSeparated = useStep1Store((s) => s.audioSeparated);
-  const step1SubStepStatuses = useStep1Store((s) => s.subStepStatuses);
   const step1SubStepProgresses = useStep1Store((s) => s.subStepProgresses);
   const extractionConfig = useStep1Store((s) => s.extractionConfig);
-  const pipelineSubStepStatuses = usePipelineStore((s) => s.subStepStatuses);
+  /** subStepStatuses 已收敛为 PipelineStore 单一数据源 */
+  const subStepStatuses = usePipelineStore((s) => s.subStepStatuses);
   const pipelineSubStepProgresses = usePipelineStore((s) => s.subStepProgresses);
-
-  // 双 Store 合并：管线执行期间 pipelineStore 有最新状态，优先使用；
-  // 管线空闲时回退到 step1Store（用于持久化/重试后的状态）
-  const subStepStatuses = useMemo(() => {
-    const merged = { ...step1SubStepStatuses };
-    for (const key of Object.keys(pipelineSubStepStatuses)) {
-      const status = pipelineSubStepStatuses[key];
-      if (status === 'running' && pipelineSubStepProgresses[key] === 0) {
-        continue;
-      }
-      if (status !== 'idle') {
-        merged[key] = status;
-      }
-    }
-    return merged;
-  }, [step1SubStepStatuses, pipelineSubStepStatuses, pipelineSubStepProgresses]);
 
   const subStepProgresses = useMemo(() => {
     const merged = { ...step1SubStepProgresses };
@@ -49,11 +33,10 @@ export const StepMaterialAnalysis: React.FC = () => {
   }, [step1SubStepProgresses, pipelineSubStepProgresses]);
   const setAsrLines = useStep1Store((s) => s.setAsrLines);
   const updateAsrLine = useStep1Store((s) => s.updateAsrLine);
-  const setSubStepStatus = useStep1Store((s) => s.setSubStepStatus);
+  const setSubStepStatus = usePipelineStore((s) => s.setSubStepStatus);
   const setSubStepProgress = useStep1Store((s) => s.setSubStepProgress);
   const setFrameCount = useStep1Store((s) => s.setFrameCount);
   const setAudioSeparated = useStep1Store((s) => s.setAudioSeparated);
-  const setAllSubStepsCompleted = useStep1Store((s) => s.setAllSubStepsCompleted);
   const updateExtractionConfig = useStep1Store((s) => s.updateExtractionConfig);
 
   const mediaItems = useProjectStore((s) => s.mediaItems);

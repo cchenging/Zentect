@@ -26,7 +26,7 @@ export interface ExtractionConfig {
     minFrameInterval?: number;
     timePoint?: number;
   };
-  audio: { enabled: boolean };
+  audio: { enabled: boolean; separationMode?: 'fast' | 'quality' };
   whisper: { enabled: boolean; engine: 'sensevoice' | 'whisper-v3' };
   faces: { enabled: boolean; engine: 'insightface' | 'mediapipe' };
 }
@@ -40,8 +40,8 @@ export interface Step1Store {
   // 抽帧/分析配置（从 uiSlice 迁入）
   extractionConfig: ExtractionConfig;
 
-  // 子步骤状态（步骤1有4个子步骤：frames / audio / whisper / faces）
-  subStepStatuses: Record<string, string>;
+  // 子步骤进度（步骤1有4个子步骤：frames / audio / whisper / faces）
+  // subStepStatuses 已迁移至 usePipelineStore，单一数据源
   subStepProgresses: Record<string, number>;
 
   // ASR 操作
@@ -53,10 +53,9 @@ export interface Step1Store {
   // 配置操作
   updateExtractionConfig: (config: Partial<ExtractionConfig>) => void;
 
-  // 子步骤操作
-  setSubStepStatus: (key: string, status: string) => void;
+  // 子步骤进度操作
+  // setSubStepStatus / setAllSubStepsCompleted 已迁移至 usePipelineStore
   setSubStepProgress: (key: string, progress: number) => void;
-  setAllSubStepsCompleted: () => void;
 }
 
 const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
@@ -70,7 +69,7 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
     scale: 1024,
     minFrameInterval: 4,
   },
-  audio: { enabled: true },
+  audio: { enabled: true, separationMode: 'quality' },
   whisper: { enabled: true, engine: 'sensevoice' },
   faces: { enabled: true, engine: 'insightface' },
 };
@@ -82,7 +81,6 @@ export const useStep1Store = create<Step1Store>()((set) => ({
 
   extractionConfig: DEFAULT_EXTRACTION_CONFIG,
 
-  subStepStatuses: { frames: 'idle', audio: 'idle', whisper: 'idle', faces: 'idle' },
   subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 },
 
   setAsrLines: (lines) => set({ asrLines: lines }),
@@ -100,17 +98,8 @@ export const useStep1Store = create<Step1Store>()((set) => ({
       extractionConfig: { ...s.extractionConfig, ...config } as ExtractionConfig,
     })),
 
-  setSubStepStatus: (key, status) =>
-    set((s) => ({
-      subStepStatuses: { ...s.subStepStatuses, [key]: status },
-    })),
   setSubStepProgress: (key, progress) =>
     set((s) => ({
       subStepProgresses: { ...s.subStepProgresses, [key]: progress },
     })),
-  setAllSubStepsCompleted: () =>
-    set({
-      subStepStatuses: { frames: 'completed', audio: 'completed', whisper: 'completed', faces: 'completed' },
-      subStepProgresses: { frames: 100, audio: 100, whisper: 100, faces: 100 },
-    }),
 }));

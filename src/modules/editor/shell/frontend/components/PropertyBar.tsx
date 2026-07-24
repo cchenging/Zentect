@@ -3,9 +3,9 @@
 
 import React from 'react'
 import { Clock, Mic, User, Info } from 'lucide-react'
-import { useStore } from '../../../../../renderer/src/store/useStore'
-import { useProjectStore } from '../../../../editor/stores/useProjectStore'
-import { cn } from '../../../../../renderer/src/lib/utils'
+import { useStore } from '@renderer/store/useStore'
+import { useProjectStore } from '@modules/editor/stores/useProjectStore'
+import { cn } from '@renderer/lib/utils'
 
 interface PropertyBarProps {
   className?: string

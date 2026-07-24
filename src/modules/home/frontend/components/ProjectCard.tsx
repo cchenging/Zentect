@@ -1,10 +1,10 @@
 // 📁 路径：src/modules/home/frontend/components/ProjectCard.tsx
 import React from 'react';
 import type { ProjectRecord } from '../../types';
-import { AppIcon } from '../../../../renderer/src/components/app-icon';
-import { useI18n } from '../../../../renderer/src/store/useI18n';
-import { formatDurationStandard } from '../../../../renderer/src/utils/timeUtils';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../../../renderer/src/components/ui/dropdown-menu';
+import { AppIcon } from '@renderer/components/app-icon';
+import { useI18n } from '@renderer/store/useI18n';
+import { formatDurationStandard } from '@renderer/utils/timeUtils';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu';
 
 interface ProjectCardProps {
   project: ProjectRecord;

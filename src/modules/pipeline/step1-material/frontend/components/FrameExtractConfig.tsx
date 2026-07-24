@@ -2,9 +2,9 @@
 
 import React from 'react';
 import { Sparkles, Clock, Zap, Crosshair, Sliders, Image as ImageIcon } from 'lucide-react';
-import { Slider } from '../../../../../renderer/src/components/ui/slider';
-import { Input } from '../../../../../renderer/src/components/ui/input';
-import { useStep1Store } from '../../../stores/useStep1Store';
+import { Slider } from '@renderer/components/ui/slider';
+import { Input } from '@renderer/components/ui/input';
+import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 
 interface FrameExtractConfigProps {
   isRunning?: boolean;

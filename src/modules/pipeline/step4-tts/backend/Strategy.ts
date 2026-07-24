@@ -2,8 +2,8 @@
 
 import { BaseNodeStrategy, ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
 import { AppLogger } from '../../../../main/core/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
-import { AIEngine } from '../../../../main/engine/AIEngine';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
+import { ttsEngine } from '../../../../main/engine/TTSEngine';
 import { ProviderManager } from '../../../../main/engine/config/ProviderManager';
 
 /** TTS 引擎类型 */
@@ -125,7 +125,7 @@ export class TTSStrategy extends BaseNodeStrategy {
       concurrency,
       // 单段合成执行器
       async (shot, _idx) => {
-        const audioPath = await AIEngine.generateTTS(shot.text, provider, cacheDir, voiceId);
+        const audioPath = await ttsEngine.generateTTS(shot.text, provider, cacheDir, voiceId);
         return { shotId: shot.shotId, text: shot.text, audioPath, duration: shot.duration } as TTSItemResult;
       },
       // 进度回调：每完成一段更新进度

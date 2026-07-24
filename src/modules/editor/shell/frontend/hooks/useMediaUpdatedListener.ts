@@ -6,8 +6,8 @@
  *   { projectId: string, mediaId: string, coverPath?: string, duration?: string, status?: string, filePath?: string }
  */
 import { useEffect } from 'react';
-import { usePlayerStore } from '../../../../editor/stores/usePlayerStore';
-import { useProjectStore } from '../../../../editor/stores/useProjectStore';
+import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 
 interface MediaUpdatedPayload {
   projectId: string;

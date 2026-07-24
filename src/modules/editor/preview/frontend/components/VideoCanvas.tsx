@@ -3,8 +3,8 @@
 
 import { useRef, useEffect } from 'react';
 import { Video } from 'lucide-react';
-import { getSafeMediaUrl } from '../../../../../renderer/src/utils/formatUrl';
-import { usePlayerStore } from '../../../stores/usePlayerStore';
+import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
+import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
 
 export const VideoCanvas = () => {
   const activePlaySource = usePlayerStore((s) => s.activePlaySource);

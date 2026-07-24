@@ -1,7 +1,7 @@
 // 📁 路径: src/renderer/src/core/commands/SearchBrollCommand.ts
 import type { IAICommand } from './types';
 import type { AIAction } from '../../../../shared/types';
-import { useProjectStore } from '../../../../modules/editor/stores/useProjectStore';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 import { AppNotifier } from '../AppNotifier';
 import { API } from '../../api';
 

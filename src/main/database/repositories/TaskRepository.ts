@@ -1,7 +1,7 @@
 import { SQLiteConnection } from '../core/SQLiteConnection';
 import { TASK_SQL } from '../queries/TaskQueries';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 
 export class TaskRepository {
   private get db() { return SQLiteConnection.getInstance().getDB(); }

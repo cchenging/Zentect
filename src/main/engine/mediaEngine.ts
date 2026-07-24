@@ -3,7 +3,7 @@ import { join, basename } from 'path';
 import fs from 'fs/promises';
 import { PathManager } from '../utils/pathManager';
 import { VideoProcessor } from './media/VideoProcessor';
-import { AIEngine } from './AIEngine';
+import { mediaProcessingService } from './MediaProcessingService';
 import { MediaRepository } from '../database/repositories/MediaRepository';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
@@ -37,7 +37,7 @@ export class MediaEngine {
           metadata = await VideoProcessor.extractMetadata(filePath);
           pureCoverName = await VideoProcessor.generateCover(filePath, PathManager.getProjectThumbnailsDir(projectId), mediaId);
         } else if (type === 'audio') {
-          const durSec = await AIEngine.getMediaDuration(filePath);
+          const durSec = await mediaProcessingService.getMediaDuration(filePath);
           const h = Math.floor(durSec / 3600); const m = Math.floor((durSec % 3600) / 60); const s = Math.floor(durSec % 60);
           metadata.duration = durSec;
           metadata.formattedTime = `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}:${s.toString().padStart(2,'0')}`;

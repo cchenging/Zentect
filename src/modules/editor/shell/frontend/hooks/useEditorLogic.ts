@@ -3,20 +3,20 @@
 
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useStore, useEditorStore } from '../../../../../renderer/src/store/useStore';
-import { usePlayerStore } from '../../../../editor/stores/usePlayerStore';
-import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
-import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
-import { useProjectStore } from '../../../../editor/stores/useProjectStore';
-import { useStep2Store } from '../../../../pipeline/stores/useStep2Store';
-import { useStep3Store } from '../../../../pipeline/stores/useStep3Store';
-import { useStep4Store } from '../../../../pipeline/stores/useStep4Store';
-import { useStep5Store } from '../../../../pipeline/stores/useStep5Store';
-import { useEditorNavStore } from '../../../../editor/stores/useEditorNavStore';
-import { DraftService } from '../../../../../renderer/src/services/DraftService';
-import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
-import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
-import { AppError, ErrorCode } from '../../../../infra/error/AppError';
+import { useStore, useEditorStore } from '@renderer/store/useStore';
+import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
+import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
+import { usePipelineStore } from '@renderer/store/usePipelineStore';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { useStep2Store } from '@modules/pipeline/stores/useStep2Store';
+import { useStep3Store } from '@modules/pipeline/stores/useStep3Store';
+import { useStep4Store } from '@modules/pipeline/stores/useStep4Store';
+import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
+import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
+import { DraftService } from '@renderer/services/DraftService';
+import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
+import { AppNotifier } from '@renderer/core/AppNotifier';
+import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 
 export const useEditorHydration = (id: string | undefined) => {
   const navigate = useNavigate();
@@ -44,10 +44,6 @@ export const useEditorHydration = (id: string | undefined) => {
     useStep1Store.getState().setAsrLines?.([]);
     useStep1Store.getState().setFrameCount?.(0);
     useStep1Store.getState().setAudioSeparated?.(false);
-    useStep1Store.getState().setSubStepStatus?.('frames', 'idle');
-    useStep1Store.getState().setSubStepStatus?.('audio', 'idle');
-    useStep1Store.getState().setSubStepStatus?.('whisper', 'idle');
-    useStep1Store.getState().setSubStepStatus?.('faces', 'idle');
     useStep1Store.setState({ subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 }, extractionConfig: {
       targetLanguage: 'zh-CN',
       frames: { enabled: true, mode: 'VLM_OPTIMIZED' as const, sceneThreshold: 0.28, quality: 3, fps: 2, scale: 1024, minFrameInterval: 4 },
@@ -114,6 +110,45 @@ export const useEditorHydration = (id: string | undefined) => {
                 : projectSnapshot.metadata;
               if (meta.asrLines) useStep1Store.getState().setAsrLines(meta.asrLines);
             } catch {}
+          }
+
+          // 💥 崩溃恢复：检查 IndexedDB 中是否有未同步的 PENDING 草稿
+          // 正常关闭流程：SyncDaemon 已将草稿同步至 SQLite 并标记 SYNCED
+          // 若仍为 PENDING 说明上次会话异常退出，IndexedDB 中有比 SQLite 更新的数据
+          try {
+            const crashDraft = await DraftService.getDraft(id);
+            if (crashDraft && crashDraft.syncStatus === 'PENDING' && crashDraft.canvasSnapshot) {
+              const draftData = JSON.parse(crashDraft.canvasSnapshot);
+              console.log('[CrashRecovery] 发现未同步草稿，正在恢复...', Object.keys(draftData));
+
+              // 恢复管线运行时状态 — 仅覆盖 SQLite 中可能过时的字段
+              if (draftData.subStepStatuses && typeof draftData.subStepStatuses === 'object') {
+                for (const [key, status] of Object.entries(draftData.subStepStatuses)) {
+                  usePipelineStore.getState().setSubStepStatus?.(key, status as any);
+                }
+              }
+              if (draftData.stepStatuses) {
+                usePipelineStore.setState({ stepStatuses: draftData.stepStatuses });
+              }
+              if (draftData.stepCompleted) {
+                usePipelineStore.setState({ stepCompleted: draftData.stepCompleted });
+              }
+              if (draftData.frameCount != null) {
+                useStep1Store.getState().setFrameCount?.(draftData.frameCount);
+              }
+              if (draftData.audioSeparated != null) {
+                useStep1Store.getState().setAudioSeparated?.(draftData.audioSeparated);
+              }
+
+              // 立刻将草稿同步到 SQLite，使其不再是 PENDING 状态
+              window.api.ipc.invoke(
+                IPC_CHANNELS.PROJECT_SAVE_CANVAS,
+                id,
+                crashDraft.canvasSnapshot
+              ).then(() => DraftService.markAsSynced(id)).catch(() => {});
+            }
+          } catch (crashErr) {
+            console.warn('[CrashRecovery] 草稿恢复失败:', crashErr);
           }
 
           console.log(`[工作台自愈水合大胜利] 🛠️ 全量本地资产已完美水合归位！mediaItems=${mediaItems.length}`);
@@ -201,16 +236,21 @@ export const useSyncDaemon = () => {
   useEffect(() => {
     if (!window.api?.ipc?.invoke) return;
     let isSyncing = false;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const DEBOUNCE_MS = 1000;  // 1s 防抖，避免高频写入导致重复 IPC
 
-    const daemon = setInterval(async () => {
-      if (isSyncing) return;
+    const syncDraftsNow = async () => {
+      if (isSyncing) {
+        // 正在同步中，延迟重试一次
+        if (!debounceTimer) {
+          debounceTimer = setTimeout(syncDraftsNow, DEBOUNCE_MS);
+        }
+        return;
+      }
       isSyncing = true;
       try {
         const pending = await DraftService.getPendingDrafts();
-        if (!pending || pending.length === 0) {
-          isSyncing = false;
-          return;
-        }
+        if (!pending || pending.length === 0) { isSyncing = false; return; }
         for (const draft of pending) {
           await window.api.ipc.invoke(
             IPC_CHANNELS.PROJECT_SAVE_CANVAS,
@@ -224,8 +264,32 @@ export const useSyncDaemon = () => {
       } finally {
         isSyncing = false;
       }
-    }, 5000);
+    };
 
-    return () => clearInterval(daemon);
+    // 事件驱动：DraftService 写入后 debounce 触发同步
+    const unsubDraft = DraftService.onDraftWritten(() => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(syncDraftsNow, DEBOUNCE_MS);
+    });
+
+    // 兜底：30s 低频轮询（处理事件丢失等异常情况）
+    const fallbackInterval = setInterval(syncDraftsNow, 30000);
+
+    // 窗口聚焦时立即同步一次（处理从其他应用切回的场景）
+    const onFocus = () => {
+      if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
+      syncDraftsNow();
+    };
+    window.addEventListener('focus', onFocus);
+
+    // mount 后立即同步一次
+    syncDraftsNow();
+
+    return () => {
+      unsubDraft();
+      clearInterval(fallbackInterval);
+      window.removeEventListener('focus', onFocus);
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
   }, []);
 };

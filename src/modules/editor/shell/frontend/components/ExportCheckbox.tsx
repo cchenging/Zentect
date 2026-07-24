@@ -1,6 +1,6 @@
 import React from 'react';
 import * as CheckboxPrimitive from '@radix-ui/react-checkbox';
-import { AppIcon } from '../../../../../renderer/src/components/app-icon';
+import { AppIcon } from '@renderer/components/app-icon';
 
 interface ExportCheckboxProps {
   id: string;

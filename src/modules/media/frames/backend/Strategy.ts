@@ -8,7 +8,7 @@
 // - PRECISE_SINGLE：精准单帧时间戳截图
 
 import type { FrameStrategy } from '../types';
-import { AppError, ErrorCode } from '../../../infra/error/AppError';
+import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 
 // ──────────────────────────────────────────────
 // 1. 滤镜基类与滤镜链

@@ -5,13 +5,13 @@
 import React, { useCallback } from "react";
 import { useStep3Store } from "../../stores/useStep3Store";
 import { useStep2Store } from "../../stores/useStep2Store";
-import { usePipelineStore } from "../../../../renderer/src/store/usePipelineStore";
-import { useProjectStore } from "../../../editor/stores/useProjectStore";
-import { API } from "../../../../renderer/src/api";
-import { mapPipelineResultToState } from "../../../../modules/editor/shell/frontend/hooks/usePipelineResultMapper";
-import { buildMappers } from "../../../../modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
-import { STEP_SEQUENCES } from "../../../../modules/editor/shell/utils/pipelineConstants";
-import { diffParagraphs, applyDiffUpdate } from "../../../../modules/editor/shell/utils/scriptDiffTree";
+import { usePipelineStore } from "@renderer/store/usePipelineStore";
+import { useProjectStore } from "@modules/editor/stores/useProjectStore";
+import { API } from "@renderer/api";
+import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/usePipelineResultMapper";
+import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
+import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
+import { diffParagraphs, applyDiffUpdate } from "@modules/editor/shell/utils/scriptDiffTree";
 import { StepScriptGenerationView } from "./View";
 
 export const StepScriptGeneration: React.FC = () => {

@@ -2,7 +2,7 @@
 import { create } from 'zustand';
 import type { TaskProgressPayload } from '../../../shared/types';
 import { AppNotifier } from '../core/AppNotifier';
-import { IPC_CHANNELS } from '../../../modules/infra/ipc/IpcConstants';
+import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 import { EventBridge } from '../bridge/EventBridge';
 
 /**

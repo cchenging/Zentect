@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { AIDaemon } from '../../core/AIDaemon';
 import { HttpClient } from '../../core/HttpClient';
 

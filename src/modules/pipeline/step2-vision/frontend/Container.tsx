@@ -4,8 +4,8 @@
 
 import React from "react";
 import { useStep2Store } from "../../stores/useStep2Store";
-import { useEditorNavStore } from "../../../editor/stores/useEditorNavStore";
-import { useProjectStore } from "../../../editor/stores/useProjectStore";
+import { useEditorNavStore } from "@modules/editor/stores/useEditorNavStore";
+import { useProjectStore } from "@modules/editor/stores/useProjectStore";
 import { StepVisionDescriptionView } from "./View";
 
 export const StepVisionDescription: React.FC = () => {

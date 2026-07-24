@@ -4,7 +4,7 @@ import { AIService } from '../services/AIService';
 import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
-import { AIEngine } from '../engine/AIEngine';
+import { ttsEngine } from '../engine/TTSEngine';
 import { PathManager } from '../utils/pathManager';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -70,10 +70,6 @@ export class AIController {
 
     IpcRouter.handle(IPC_CHANNELS.AI_SEARCH_SEMANTICS, async (_, mediaId, query) => {
       return await this.aiService.searchSemantics(mediaId, query);
-    });
-
-    IpcRouter.handle(IPC_CHANNELS.AI_CHAT_REQUEST, async (_, payload) => {
-      return await this.aiService.chatRequest(payload.prompt, payload.context);
     });
 
     IpcRouter.handle(IPC_CHANNELS.AGENT_GET_HISTORY, async (_, projectId) => {
@@ -153,7 +149,7 @@ export class AIController {
     // 🔊 音色试听
     IpcRouter.handle(IPC_CHANNELS.VOICE_PREVIEW, async (_, payload: { provider: string; voiceId?: string; text?: string }) => {
       const previewText = payload.text || '欢迎使用 Zentect 智能剪辑';
-      const audioPath = await AIEngine.generateTTS(previewText,
+      const audioPath = await ttsEngine.generateTTS(previewText,
         payload.provider as any, undefined, payload.voiceId);
       return { audioPath };
     });

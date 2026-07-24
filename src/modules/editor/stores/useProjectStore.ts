@@ -10,9 +10,9 @@
 
 import { create } from 'zustand';
 import type { MediaItem, Shot, Role } from '../../../shared/types';
-import { AppNotifier } from '../../../renderer/src/core/AppNotifier';
-import { API } from '../../../renderer/src/api';
-import { usePipelineStore } from '../../../renderer/src/store/usePipelineStore';
+import { AppNotifier } from '@renderer/core/AppNotifier';
+import { API } from '@renderer/api';
+import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useStep1Store } from '../../pipeline/stores/useStep1Store';
 import { useStep2Store } from '../../pipeline/stores/useStep2Store';
 import { useStep3Store } from '../../pipeline/stores/useStep3Store';
@@ -816,11 +816,6 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     if (typeof s1.setAsrLines === 'function' && Array.isArray(asr) && asr.length > 0) s1.setAsrLines(asr);
     if (typeof s1.setFrameCount === 'function' && (raw.frameCount || parsed.frameCount)) s1.setFrameCount(Number(raw.frameCount || parsed.frameCount));
     if (typeof s1.setAudioSeparated === 'function' && raw.audioSeparated !== undefined) s1.setAudioSeparated(!!raw.audioSeparated);
-    if (typeof s1.setSubStepStatus === 'function') {
-      for (const [key, status] of Object.entries(subStepStatuses)) {
-        s1.setSubStepStatus(key, (status as string) || 'idle');
-      }
-    }
     if (typeof s1.setSubStepProgress === 'function') {
       for (const [key, progress] of Object.entries(subStepProgresses)) {
         s1.setSubStepProgress(key, typeof progress === 'number' ? progress : 0);

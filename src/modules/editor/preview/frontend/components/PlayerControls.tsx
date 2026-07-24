@@ -4,14 +4,14 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Pause, Volume, Volume1, Volume2, VolumeX, SkipBack, SkipForward, MonitorPlay, ZoomIn, Maximize, Check } from 'lucide-react';
 
-import { Slider } from '../../../../../renderer/src/components/ui/slider';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../../../renderer/src/components/ui/dropdown-menu';
-import { Popover, PopoverContent, PopoverTrigger } from '../../../../../renderer/src/components/ui/popover';
-import { Button } from '../../../../../renderer/src/components/ui/button';
+import { Slider } from '@renderer/components/ui/slider';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu';
+import { Popover, PopoverContent, PopoverTrigger } from '@renderer/components/ui/popover';
+import { Button } from '@renderer/components/ui/button';
 
-import { useEditorStore } from '../../../../../renderer/src/store/useStore';
-import { usePlayerStore } from '../../../stores/usePlayerStore';
-import { useI18n } from '../../../../../renderer/src/store/useI18n';
+import { useEditorStore } from '@renderer/store/useStore';
+import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
+import { useI18n } from '@renderer/store/useI18n';
 
 const formatTimecode = (seconds: number) => {
   if (isNaN(seconds) || seconds < 0) return '00:00:00:00';

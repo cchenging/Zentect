@@ -2,9 +2,9 @@
 
 import React, { useState, useMemo } from "react";
 import { Sliders, RefreshCw, Tag, Search } from "lucide-react";
-import { SCRIPT_STYLES } from "../../../../modules/editor/shell/utils/pipelineConstants";
-import { Badge, StatHeader, EmptyState } from "../../../../renderer/src/components/shared";
-import { ParameterSlider } from "../../../../renderer/src/components/shared/ParameterSlider";
+import { SCRIPT_STYLES } from "@modules/editor/shell/utils/pipelineConstants";
+import { Badge, StatHeader, EmptyState } from "@renderer/components/shared";
+import { ParameterSlider } from "@renderer/components/shared/ParameterSlider";
 import type { StepScriptGenerationProps } from "../types";
 
 const SPEECH_RATE_OPTIONS = [

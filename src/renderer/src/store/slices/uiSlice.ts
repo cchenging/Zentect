@@ -3,8 +3,8 @@ import type { StateCreator } from 'zustand';
 import { API } from '../../api';
 import { AppNotifier } from '../../core/AppNotifier';
 import type { EditorState, UISlice } from '../storeTypes';
-import { useProjectStore } from '../../../../modules/editor/stores/useProjectStore';
-import { usePlayerStore } from '../../../../modules/editor/stores/usePlayerStore';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
 
 // 💥 我们为 UISlice 补充缺失的 saveStatus 方法，补齐类型拼图。
 declare module '../storeTypes' {

@@ -1,7 +1,7 @@
 // Module: pipeline/step5-match - Match Service
 // 封装镜头匹配管线编排逻辑：构建序列 → 调用 AI 管线 → 结果映射
 
-import { AppError, ErrorCode } from '../../../infra/error/AppError';
+import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 import type { MatchResult, ScriptParagraph, VlmFrame, TtsResult, BgmInfo } from '../types';
 
 /** 匹配管线输入参数 */

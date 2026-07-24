@@ -1,8 +1,8 @@
 // 📁 路径：src/modules/settings/ai-config/backend/ApiProfileRepository.ts
 // API Profile 数据仓库：直接引用 infra 层，不依赖 @deprecated 旧模块
 
-import { SQLiteConnection } from '../../../infra/database/SQLiteConnection';
-import { CredentialManager } from '../../../infra/security/CredentialManager';
+import { SQLiteConnection } from '@modules/infra/database/SQLiteConnection';
+import { CredentialManager } from '@modules/infra/security/CredentialManager';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface ApiProfile {

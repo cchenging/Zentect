@@ -4,7 +4,7 @@
 import { SQLiteConnection } from '../core/SQLiteConnection';
 import { BATCH_JOB_SQL } from '../queries/SystemQueries';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { BatchJob, BatchJobInput } from '../../engine/BatchQueueEngine';
 
 export class BatchJobRepository {

@@ -175,6 +175,10 @@ export class AIDaemon {
     return this.isReady && status.online;
   }
 
+  public getPort(): number {
+    return this.port;
+  }
+
   /** 向 Python 运行时发 POST 请求 */
   public async post(endpoint: string, payload: any, options?: { timeout?: number; retries?: number; signal?: AbortSignal }): Promise<any> {
     await this.waitForReady();

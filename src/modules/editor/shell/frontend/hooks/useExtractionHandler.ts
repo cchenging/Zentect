@@ -2,12 +2,12 @@
 // 原 editor/hooks/useExtractionHandler.ts — 已迁移
 
 import { useEffect } from 'react';
-import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
-import { useStep2Store } from '../../../../pipeline/stores/useStep2Store';
-import { useProjectStore } from '../../../../editor/stores/useProjectStore';
-import { useEditorNavStore } from '../../../../editor/stores/useEditorNavStore';
-import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
-import { API } from '../../../../../renderer/src/api';
+import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
+import { useStep2Store } from '@modules/pipeline/stores/useStep2Store';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
+import { usePipelineStore } from '@renderer/store/usePipelineStore';
+import { API } from '@renderer/api';
 import { v4 as uuidv4 } from 'uuid';
 
 function formatSeconds(seconds: number): string {
@@ -42,10 +42,10 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
       /** 子步骤为 running 但无产出数据 → 后端执行失败降级 → 标记为 failed；其余保持原状（idle/completed 等） */
       const currentWhisper = pipelineState.subStepStatuses.whisper;
       pipelineState.setSubStepStatus('whisper',
-        hasAsrLines ? 'completed' : (currentWhisper === 'running' ? 'completed' : currentWhisper));
+        hasAsrLines ? 'completed' : (currentWhisper === 'running' ? 'failed' : currentWhisper));
       const currentFaces = pipelineState.subStepStatuses.faces;
       pipelineState.setSubStepStatus('faces',
-        hasRoles ? 'completed' : (currentFaces === 'running' ? 'completed' : currentFaces));
+        hasRoles ? 'completed' : (currentFaces === 'running' ? 'failed' : currentFaces));
 
       let updatedMediaItems = [...projectState.mediaItems];
       const mediaId: string | null = payload.mediaId || payload.media?.id;

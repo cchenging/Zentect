@@ -1,11 +1,11 @@
 // 📁 路径：src/modules/settings/general/backend/SettingsRepo.ts
 // 设置数据仓库：直接引用 infra 层，不依赖 @deprecated 旧模块
 
-import { SQLiteConnection } from '../../../infra/database/SQLiteConnection';
-import { CredentialManager } from '../../../infra/security/CredentialManager';
+import { SQLiteConnection } from '@modules/infra/database/SQLiteConnection';
+import { CredentialManager } from '@modules/infra/security/CredentialManager';
 import { isSensitiveConfig } from '../../../../shared/config/keys';
-import { AppLogger } from '../../../infra/logger/AppLogger';
-import { LOG_TAGS } from '../../../infra/logger/LogConstants';
+import { AppLogger } from '@modules/infra/logger/AppLogger';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 
 // SQL 模板 — 沿用旧模块中的查询语句
 const SETTINGS_SQL = {

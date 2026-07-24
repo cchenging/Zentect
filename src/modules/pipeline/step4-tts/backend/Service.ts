@@ -6,7 +6,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import crypto from 'crypto'
-import { AppError, ErrorCode } from '../../../infra/error/AppError'
+import { AppError, ErrorCode } from '@modules/infra/error/AppError'
 
 export type TTSVendor = 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss'
 

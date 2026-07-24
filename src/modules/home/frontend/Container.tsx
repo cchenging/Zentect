@@ -5,12 +5,12 @@ import { HomeView } from './View';
 import { useProjectManager } from './hooks/useProjectManager';
 import { useWorkflowImport } from './hooks/useWorkflowImport';
 import type { ProjectRecord } from '../types';
-import { API } from '../../../renderer/src/api';
-import { FrontendLogger } from '../../../renderer/src/utils/logger';
-import { AppNotifier } from '../../../renderer/src/core/AppNotifier';
-import { useEditorStore } from '../../../renderer/src/store/useStore';
-import { particlePresets, SKIN_DEFAULT_PARTICLE, resolveColors } from '../../../renderer/src/components/particles';
-import type { ParticlePreset } from '../../../renderer/src/components/particles/types';
+import { API } from '@renderer/api';
+import { FrontendLogger } from '@renderer/utils/logger';
+import { AppNotifier } from '@renderer/core/AppNotifier';
+import { useEditorStore } from '@renderer/store/useStore';
+import { particlePresets, SKIN_DEFAULT_PARTICLE, resolveColors } from '@renderer/components/particles';
+import type { ParticlePreset } from '@renderer/components/particles/types';
 
 export const HomeContainer: React.FC = () => {
   const navigate = useNavigate();

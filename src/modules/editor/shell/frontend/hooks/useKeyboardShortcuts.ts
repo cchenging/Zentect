@@ -2,9 +2,9 @@
 // 原 editor/hooks/useKeyboardShortcuts.ts — 已迁移
 
 import { useEffect } from 'react';
-import { useEditorStore } from '../../../../../renderer/src/store/useStore';
-import { useProjectStore } from '../../../../editor/stores/useProjectStore';
-import { DraftService } from '../../../../../renderer/src/services/DraftService';
+import { useEditorStore } from '@renderer/store/useStore';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { DraftService } from '@renderer/services/DraftService';
 
 export const useKeyboardShortcuts = () => {
   const nodes = useEditorStore(s => s.nodes);

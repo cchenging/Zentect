@@ -3,9 +3,9 @@
 
 import React, { useState, useMemo } from "react";
 import { Check, RefreshCw, Film, X } from "lucide-react";
-import { getSafeMediaUrl } from "../../../../renderer/src/utils/formatUrl";
-import { Badge, StatHeader, EmptyState } from "../../../../renderer/src/components/shared";
-import { DragReorderList } from "../../../../renderer/src/components/shared/DragReorderList";
+import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
+import { Badge, StatHeader, EmptyState } from "@renderer/components/shared";
+import { DragReorderList } from "@renderer/components/shared/DragReorderList";
 import type { StepShotMatchingProps } from "../types";
 
 export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({

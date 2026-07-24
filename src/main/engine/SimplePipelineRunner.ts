@@ -113,8 +113,8 @@ export class SimplePipelineRunner {
     try {
       // P0: 前置检查 — AI 服务配置是否完整（API Key、模型等）
       const stepIds = STEP_CONFIG.map(s => s.id);
-      const checks = AIEngine.preflightCheck(stepIds);
-      const { ok, message } = AIEngine.formatCheckResult(checks);
+      const checks = healthCheckService.preflightCheck(stepIds);
+      const { ok, message } = healthCheckService.formatCheckResult(checks);
       if (!ok) {
         AppLogger.warn(LOG_TAGS.ENGINE, TraceContext.enrichLog(`[preflightCheck] 配置不完整，拒绝启动\n${message}`));
         return {

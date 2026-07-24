@@ -2,10 +2,10 @@
 // 原 editor/components/PipelineStatusBar.tsx — 已迁移
 
 import React from 'react';
-import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
+import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { AlertTriangle } from 'lucide-react';
-import { Progress } from '../../../../../renderer/src/components/shared';
-import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
+import { Progress } from '@renderer/components/shared';
+import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 
 export const PipelineStatusBar: React.FC = () => {
   const pipelineRunning = usePipelineStore((s) => s.pipelineRunning);

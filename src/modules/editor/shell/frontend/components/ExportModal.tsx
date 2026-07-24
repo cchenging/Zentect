@@ -1,16 +1,16 @@
 import React, { useState, useMemo } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { useProjectStore } from '../../../../editor/stores/useProjectStore';
-import { useStep3Store } from '../../../../pipeline/stores/useStep3Store';
-import { getSafeMediaUrl } from '../../../../../renderer/src/utils/formatUrl';
-import { formatDurationStandard } from '../../../../../renderer/src/utils/timeUtils';
-import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
-import { Button } from '../../../../../renderer/src/components/ui/button';
-import { Input } from '../../../../../renderer/src/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../../../../renderer/src/components/ui/select';
-import { useI18n } from '../../../../../renderer/src/store/useI18n';
-import { API } from '../../../../../renderer/src/api';
-import { AppIcon } from '../../../../../renderer/src/components/app-icon';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { useStep3Store } from '@modules/pipeline/stores/useStep3Store';
+import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
+import { formatDurationStandard } from '@renderer/utils/timeUtils';
+import { AppNotifier } from '@renderer/core/AppNotifier';
+import { Button } from '@renderer/components/ui/button';
+import { Input } from '@renderer/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select';
+import { useI18n } from '@renderer/store/useI18n';
+import { API } from '@renderer/api';
+import { AppIcon } from '@renderer/components/app-icon';
 import { ExportCheckbox } from './ExportCheckbox';
 
 export const ExportModal: React.FC = () => {

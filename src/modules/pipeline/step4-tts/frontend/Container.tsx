@@ -5,13 +5,13 @@
 import React, { useState, useCallback, useRef, useEffect } from "react";
 import { useStep4Store } from "../../stores/useStep4Store";
 import { useStep3Store } from "../../stores/useStep3Store";
-import { usePipelineStore } from "../../../../renderer/src/store/usePipelineStore";
-import { useProjectStore } from "../../../editor/stores/useProjectStore";
-import { API } from "../../../../renderer/src/api";
-import { mapPipelineResultToState } from "../../../../modules/editor/shell/frontend/hooks/usePipelineResultMapper";
-import { buildMappers } from "../../../../modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
-import { STEP_SEQUENCES } from "../../../../modules/editor/shell/utils/pipelineConstants";
-import { AppNotifier } from "../../../../renderer/src/core/AppNotifier";
+import { usePipelineStore } from "@renderer/store/usePipelineStore";
+import { useProjectStore } from "@modules/editor/stores/useProjectStore";
+import { API } from "@renderer/api";
+import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/usePipelineResultMapper";
+import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
+import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
+import { AppNotifier } from "@renderer/core/AppNotifier";
 import { StepTTSSynthesisView } from "./View";
 import type { TtsVoiceOption } from "../types";
 

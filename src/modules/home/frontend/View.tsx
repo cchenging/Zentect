@@ -5,8 +5,8 @@ import type { ProjectRecord } from '../types';
 import { ProjectCard } from './components/ProjectCard';
 import { RenameModal } from './components/RenameModal';
 import { DeleteModal } from './components/DeleteModal';
-import { ParticleEngine } from '../../../renderer/src/components/ParticleEngine';
-import type { ParticlePreset } from '../../../renderer/src/components/particles/types';
+import { ParticleEngine } from '@renderer/components/ParticleEngine';
+import type { ParticlePreset } from '@renderer/components/particles/types';
 
 export interface HomeViewProps {
   filteredProjects: ProjectRecord[];

@@ -4,8 +4,6 @@ import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { PipelineTask, PipelinePayload, TaskProgressPayload } from '../../shared/types';
 import { INodeStrategy, ExecutionContext } from './strategies/BaseNodeStrategy';
 import { VisionExtractStrategy } from './strategies/VisionExtractStrategy';
-import { AudioSeparateStrategy } from './strategies/AudioSeparateStrategy';
-import { ASRStrategy } from './strategies/ASRStrategy';
 import { ScriptGenStrategy } from './strategies/ScriptGenStrategy';
 import { TTSStrategy } from '../../modules/pipeline/step4-tts/backend/Strategy';
 import { FaceDetectStrategy } from './strategies/FaceDetectStrategy';
@@ -36,8 +34,6 @@ export class PipelineEngine {
   constructor() {
     // 💥 注册点：符合 OCP 原则，未来新增节点仅需在此添加一行
     this.register(new VisionExtractStrategy());
-    this.register(new AudioSeparateStrategy());
-    this.register(new ASRStrategy());
     this.register(new ScriptGenStrategy());
     this.register(new TTSStrategy());
     this.register(new FaceDetectStrategy());

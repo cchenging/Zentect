@@ -5,7 +5,7 @@ import { IpcRouter } from '../core/IpcRouter';
 import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { PipelineEngine } from '../engine/PipelineEngine';
 import { SimplePipelineRunner } from '../engine/SimplePipelineRunner';
-import { AIEngine } from '../engine/AIEngine';
+import { healthCheckService } from '../engine/HealthCheckService';
 import { PipelineRecoveryService } from '../pipeline/PipelineRecoveryService';
 import { PipelineSuspendController } from '../pipeline/PipelineSuspendController';
 import { ProjectService } from '../services/ProjectService';

@@ -2,7 +2,7 @@
 // Layer 4 进阶: AI 通道熔断自动切换单元测试
 import { describe, it, expect, vi } from 'vitest';
 import { MultiChannelPipeline } from '../MultiChannelPipeline';
-import { AppError, ErrorCode } from '../../../modules/infra/error/AppError';
+import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 
 describe('MultiChannelPipeline', () => {
   it('主通道成功时应直接返回结果', async () => {

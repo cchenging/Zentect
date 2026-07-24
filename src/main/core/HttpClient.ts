@@ -15,8 +15,8 @@ export class HttpClient {
   private static defaultInstance: HttpClient = new HttpClient({ timeoutMs: 90000 });
 
   /** 💥 静态桥梁方法：治愈 VisionProcessor 等处的 HttpClient.post is not a function 崩溃 */
-  public static async post(url: string, data: any): Promise<any> {
-    return this.defaultInstance.post(url, data);
+  public static async post(url: string, data: any, options?: { signal?: AbortSignal }): Promise<any> {
+    return this.defaultInstance.post(url, data, options);
   }
 
   /** 💥 静态桥梁方法：治愈外部静态调用 HttpClient.get 的运行时阻断 */
@@ -34,13 +34,20 @@ export class HttpClient {
   }
 
   /** 带超时/重试/AbortController 的 POST 请求 */
-  async post<T = any>(path: string, body: unknown): Promise<T> {
+  async post<T = any>(path: string, body: unknown, options?: { signal?: AbortSignal }): Promise<T> {
     const url = this.buildUrl(path)
     let lastError: Error | undefined
+    const externalSignal = options?.signal
 
     for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+      if (externalSignal?.aborted) throw new Error('请求已取消')
+
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), this.config.timeoutMs)
+
+      // 将外部 AbortSignal 串联到内部 controller
+      const onExternalAbort = () => controller.abort()
+      externalSignal?.addEventListener('abort', onExternalAbort)
 
       try {
         const res = await fetch(url, {
@@ -51,6 +58,7 @@ export class HttpClient {
         })
 
         clearTimeout(timer)
+        externalSignal?.removeEventListener('abort', onExternalAbort)
         if (!res.ok) {
           const text = await res.text().catch(() => '')
           throw new Error(`HTTP ${res.status}: ${text}`)
@@ -58,6 +66,7 @@ export class HttpClient {
         return (await res.json()) as T
       } catch (err: any) {
         clearTimeout(timer)
+        externalSignal?.removeEventListener('abort', onExternalAbort)
         lastError = err
         if (err.name === 'AbortError') {
           lastError = new Error(`请求超时 (${this.config.timeoutMs}ms): ${path}`)

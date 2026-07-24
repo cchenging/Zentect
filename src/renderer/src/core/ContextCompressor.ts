@@ -1,6 +1,6 @@
 // 📁 路径：src/renderer/src/core/ContextCompressor.ts
 import { useEditorStore } from '../store/useStore';
-import { usePlayerStore } from '../../../modules/editor/stores/usePlayerStore';
+import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
 
 export class ContextCompressor {
   /**

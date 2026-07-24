@@ -1,5 +1,8 @@
 // &#x1F4C1; 新建文件: src/main/services/AIService.ts
 import { AIEngine } from '../engine/AIEngine';
+import { healthCheckService } from '../engine/HealthCheckService';
+import { ttsEngine } from '../engine/TTSEngine';
+import { mediaProcessingService } from '../engine/MediaProcessingService';
 import { AIDaemon } from '../core/AIDaemon';
 import { ChatHistoryRepository } from '../database/repositories/ChatHistoryRepository';
 import { AppLogger } from '../core/AppLogger';
@@ -143,7 +146,7 @@ export class AIService {
       return '连接成功，通道握手正常';
     }
 
-    return await AIEngine.testNetwork(type as 'doubao_tts' | 'openai_like', config);
+    return await healthCheckService.testNetwork(type as 'doubao_tts' | 'openai_like', config);
   }
 
   public async testTTS(provider: string) {
@@ -165,7 +168,7 @@ export class AIService {
     for (const shot of shots) {
       try {
         const provider = shot.provider || shot.voiceId || 'edge';
-        const result = await AIEngine.generateTTS(shot.text || '', provider as 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss');
+        const result = await ttsEngine.generateTTS(shot.text || '', provider as 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss');
         results.push({ shot, audioPath: result });
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.AI_AGENT, `TTS failed for shot ${shot.id}`, e);
@@ -202,11 +205,6 @@ export class AIService {
     const res = await AIDaemon.getInstance().post('/api/search_semantics', { media_id: mediaId, query: query, top_k: 20 });
     if (!res.success) throw new Error(res.error || '检索引擎返回异常状态');
     return res.results;
-  }
-
-  public async chatRequest(prompt: string, context: any) {
-    const response = await AIEngine.chatRequest(prompt, context);
-    return { success: true, text: response };
   }
 
   public async getHistory(projectId: string) {

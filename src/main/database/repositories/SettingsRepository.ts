@@ -1,10 +1,10 @@
 // 📁 路径：src/main/database/repositories/SettingsRepository.ts
 import { SQLiteConnection } from '../core/SQLiteConnection';
 import { SETTINGS_SQL } from '../queries/SystemQueries';
-import { CredentialManager } from '../../../modules/infra/security/CredentialManager';
+import { CredentialManager } from '@modules/infra/security/CredentialManager';
 import { isSensitiveConfig } from '../../../shared/config/keys';
-import { AppLogger } from '../../../modules/infra/logger/AppLogger';
-import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
+import { AppLogger } from '@modules/infra/logger/AppLogger';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 
 /** @deprecated 请使用 `src/modules/settings/general` 新模块入口，旧路径仅保留兼容性委托 */
 export class SettingsRepository {

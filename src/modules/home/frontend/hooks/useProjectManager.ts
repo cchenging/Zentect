@@ -1,10 +1,10 @@
 // 📁 路径：src/modules/home/frontend/hooks/useProjectManager.ts
 import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useI18n } from '../../../../renderer/src/store/useI18n';
-import { API } from '../../../../renderer/src/api';
-import { AppNotifier } from '../../../../renderer/src/core/AppNotifier';
+import { useI18n } from '@renderer/store/useI18n';
+import { API } from '@renderer/api';
+import { AppNotifier } from '@renderer/core/AppNotifier';
 import type { ProjectRecord } from '../../types';
-import { FrontendLogger } from '../../../../renderer/src/utils/logger';
+import { FrontendLogger } from '@renderer/utils/logger';
 
 /**
  * 项目管理 Hook

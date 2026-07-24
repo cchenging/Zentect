@@ -1,4 +1,4 @@
-import { IPC_CHANNELS } from '../../../modules/infra/ipc/IpcConstants';
+import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 
 type IpcHandler = (...args: any[]) => void;
 

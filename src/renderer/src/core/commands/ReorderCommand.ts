@@ -1,7 +1,7 @@
 // 📁 路径: src/renderer/src/core/commands/ReorderCommand.ts
 import type { IAICommand } from './types';
 import type { AIAction } from '../../../../shared/types';
-import { useProjectStore } from '../../../../modules/editor/stores/useProjectStore';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 
 export class ReorderCommand implements IAICommand {
   async execute(action: AIAction, _state: any): Promise<boolean> {

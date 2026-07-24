@@ -8,7 +8,7 @@ import { VisionProcessor } from '../media/VisionProcessor';
 import { LLMFactory } from '../adapters/LLMFactory';
 import { PromptBuilder } from '../prompts/PromptBuilder';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { dehydrateMagicPath } from '../utils/pathUtils';
 import { buildFrameWindow } from '../media/FrameWindowBuilder';
 

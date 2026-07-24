@@ -147,7 +147,6 @@ describe('Step1 Types', () => {
         frameCount: 0,
         audioSeparated: false,
         roles: [],
-        subStepStatuses: {},
         subStepProgresses: {},
         extractionConfig: {
           targetLanguage: 'zh-CN',
@@ -159,7 +158,7 @@ describe('Step1 Types', () => {
       };
       expect(state.asrLines).toHaveLength(0);
       expect(state.frameCount).toBe(0);
-      expect(state.subStepStatuses).toEqual({});
+      expect(state.subStepProgresses).toEqual({});
     });
 
     it('进度应反映子步骤完成状态', () => {
@@ -168,7 +167,6 @@ describe('Step1 Types', () => {
         frameCount: 10,
         audioSeparated: true,
         roles: [{ id: 'r1', name: '角色', facePath: '/f.jpg' }],
-        subStepStatuses: { frames: 'completed', asr: 'completed' },
         subStepProgresses: { frames: 100, asr: 100 },
         extractionConfig: {
           targetLanguage: 'zh-CN',
@@ -178,7 +176,6 @@ describe('Step1 Types', () => {
           faces: { enabled: true, engine: 'insightface' },
         },
       };
-      expect(state.subStepStatuses.frames).toBe('completed');
       expect(state.subStepProgresses.frames).toBe(100);
     });
   });

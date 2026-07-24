@@ -7,12 +7,12 @@ import { useStep5Store } from "../../stores/useStep5Store";
 import { useStep2Store } from "../../stores/useStep2Store";
 import { useStep3Store } from "../../stores/useStep3Store";
 import { useStep4Store } from "../../stores/useStep4Store";
-import { usePipelineStore } from "../../../../renderer/src/store/usePipelineStore";
-import { useProjectStore } from "../../../editor/stores/useProjectStore";
-import { API } from "../../../../renderer/src/api";
-import { mapPipelineResultToState } from "../../../../modules/editor/shell/frontend/hooks/usePipelineResultMapper";
-import { buildMappers } from "../../../../modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
-import { STEP_SEQUENCES } from "../../../../modules/editor/shell/utils/pipelineConstants";
+import { usePipelineStore } from "@renderer/store/usePipelineStore";
+import { useProjectStore } from "@modules/editor/stores/useProjectStore";
+import { API } from "@renderer/api";
+import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/usePipelineResultMapper";
+import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
+import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
 import { StepShotMatchingView } from "./View";
 
 export const StepShotMatching: React.FC = () => {

@@ -2,7 +2,7 @@
 
 import type { Step3Input, Step3Output } from '../types';
 import type { ScriptParagraph, VlmFrame } from '../../../../shared/types/entities/editor';
-import { AppError, ErrorCode } from '../../../infra/error/AppError';
+import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 
 /** 风格到 Prompt 指令的映射（从 ScriptGenStrategy 提取） */
 const STYLE_PROMPTS: Record<string, string> = {

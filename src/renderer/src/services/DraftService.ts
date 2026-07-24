@@ -10,6 +10,24 @@ export interface CanvasDraftPayload {
 }
 
 export class DraftService {
+  /** 草稿写入后的回调列表（供 SyncDaemon 等消费者注册） */
+  private static onDraftCallbacks: Array<() => void> = [];
+
+  /** 注册草稿写入回调（写入 IndexedDB 后触发，用于事件驱动同步） */
+  static onDraftWritten(cb: () => void): () => void {
+    DraftService.onDraftCallbacks.push(cb);
+    return () => {
+      DraftService.onDraftCallbacks = DraftService.onDraftCallbacks.filter(c => c !== cb);
+    };
+  }
+
+  /** 通知所有监听者：草稿已写入 IndexedDB */
+  private static notifyDraftWritten(): void {
+    for (const cb of DraftService.onDraftCallbacks) {
+      try { cb(); } catch { /* 回调异常不应影响其他监听者 */ }
+    }
+  }
+
   /**
    * 1. 瞬时保存/更新草稿 (耗时 < 5ms)
    * 彻底取代原本缓慢的 IPC 调用，用于高频状态机备份
@@ -25,6 +43,7 @@ export class DraftService {
         updatedAt: Date.now(),
         syncStatus: 'PENDING'
       });
+      DraftService.notifyDraftWritten();
     } catch (error) {
       console.error('[L2 Cache] 写入瞬时草稿失败:', error);
     }
@@ -60,6 +79,7 @@ export class DraftService {
         updatedAt: Date.now(),
         syncStatus: 'PENDING',
       });
+      DraftService.notifyDraftWritten();
     } catch (error) {
       console.warn('[DraftService] L2 缓存写入失败:', error);
     }
@@ -112,6 +132,7 @@ export class DraftService {
         updatedAt: Date.now(),
         syncStatus: 'PENDING' // 改名也需要同步给后端
       });
+      DraftService.notifyDraftWritten();
     } catch (e) {
       console.error('[L2 Cache] 更新名称失败', e);
     }

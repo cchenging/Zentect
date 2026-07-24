@@ -10,7 +10,7 @@ import * as path from 'path';
 import { PathManager } from '../../utils/pathManager';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import sharp from 'sharp';
 import {
   buildCoverCommand,

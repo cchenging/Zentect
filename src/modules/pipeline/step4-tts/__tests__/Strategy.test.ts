@@ -23,13 +23,13 @@ vi.mock('../../../../infra/logger/LogConstants', () => ({
   LOG_TAGS: { AI_AGENT: 'AI_AGENT' },
 }));
 
-vi.mock('../../../../main/engine/AIEngine', () => ({
-  AIEngine: {
+vi.mock('../../../../main/engine/TTSEngine', () => ({
+  ttsEngine: {
     generateTTS: vi.fn(),
   },
 }));
 
-import { AIEngine } from '../../../../main/engine/AIEngine';
+import { ttsEngine } from '../../../../main/engine/TTSEngine';
 
 // 动态导入被测模块（mock 已在顶层设置）
 // Strategy.ts 内部有 runConcurrent 私有函数和 TTSStrategy 类
@@ -64,7 +64,7 @@ describe('TTSStrategy', () => {
 
   describe('performTask - 无输入场景', () => {
     it('无 scriptShots 且 context.bus 为空时应返回失败', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
 
       const context = { bus: new Map() } as any;
       const onProgress = vi.fn();
@@ -82,7 +82,7 @@ describe('TTSStrategy', () => {
     });
 
     it('空 scriptShots 数组应返回失败', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
 
       const context = { bus: new Map() } as any;
       const onProgress = vi.fn();
@@ -99,7 +99,7 @@ describe('TTSStrategy', () => {
     });
 
     it('scriptShots 中所有 text 为空时应返回失败', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
 
       const context = { bus: new Map() } as any;
       const onProgress = vi.fn();
@@ -124,7 +124,7 @@ describe('TTSStrategy', () => {
 
   describe('performTask - scriptShots 合成', () => {
     it('单段文本应成功合成', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
       mockGenerateTTS.mockResolvedValue('/cache/tts_output/tts_edge_abc123.mp3');
 
       const onProgress = vi.fn();
@@ -154,7 +154,7 @@ describe('TTSStrategy', () => {
     });
 
     it('多段文本应全部成功合成', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
       mockGenerateTTS
         .mockResolvedValueOnce('/cache/s1.mp3')
         .mockResolvedValueOnce('/cache/s2.mp3')
@@ -185,7 +185,7 @@ describe('TTSStrategy', () => {
     });
 
     it('部分失败不应影响其他段的合成', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
       mockGenerateTTS
         .mockResolvedValueOnce('/cache/s1.mp3')
         .mockRejectedValueOnce(new Error('网络超时'))
@@ -223,7 +223,7 @@ describe('TTSStrategy', () => {
     });
 
     it('voiceId 应传递给合成引擎', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
       mockGenerateTTS.mockResolvedValue('/cache/voice_test.mp3');
 
       await strategy.performTask(
@@ -246,7 +246,7 @@ describe('TTSStrategy', () => {
     });
 
     it('voiceId 为空字符串时不应传递（undefined）', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
       mockGenerateTTS.mockResolvedValue('/cache/no_voice.mp3');
 
       await strategy.performTask(
@@ -268,7 +268,7 @@ describe('TTSStrategy', () => {
 
   describe('performTask - 并发控制', () => {
     it('engine=edge 时并发数应为 6', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
 
       // 延迟 resolve 以观察并发行为
       const delays = [30, 20, 10, 5, 15, 25, 35, 40, 45, 50, 55, 60];
@@ -301,7 +301,7 @@ describe('TTSStrategy', () => {
     });
 
     it('engine=sovits 时并发数应为 2', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
 
       mockGenerateTTS.mockImplementation(
         () => new Promise((resolve) => setTimeout(() => resolve('/r.mp3'), 20)),
@@ -329,7 +329,7 @@ describe('TTSStrategy', () => {
 
   describe('performTask - 引擎默认值', () => {
     it('不传 ttsEngine 时应回退到 ProviderManager 配置', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
       mockGenerateTTS.mockResolvedValue('/cache/default.mp3');
 
       await strategy.performTask(
@@ -353,7 +353,7 @@ describe('TTSStrategy', () => {
 
   describe('performTask - context.bus 回退路径', () => {
     it('应从 context.bus 中 script-gen 节点提取剧本文本', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
       mockGenerateTTS.mockResolvedValue('/cache/bus_test.mp3');
 
       const bus = new Map();
@@ -378,7 +378,7 @@ describe('TTSStrategy', () => {
     });
 
     it('scriptShots 优先于 context.bus', async () => {
-      const mockGenerateTTS = vi.mocked(AIEngine.generateTTS);
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
       mockGenerateTTS.mockResolvedValue('/cache/priority.mp3');
 
       const bus = new Map();

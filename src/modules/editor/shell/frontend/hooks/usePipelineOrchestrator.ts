@@ -3,21 +3,21 @@
 // S2: useEditorStore → 各本地 Store
 
 import { useCallback } from 'react';
-import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
-import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
-import { API } from '../../../../../renderer/src/api';
+import { AppNotifier } from '@renderer/core/AppNotifier';
+import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
+import { API } from '@renderer/api';
 import { STEP_SEQUENCES } from '../../utils/pipelineConstants';
 import { mapPipelineResultToState, type PipelineResultMappers } from './usePipelineResultMapper';
-import { editorLogger } from '../../../../../renderer/src/core/logger/EditorLogger';
-import { AppError, ErrorCode } from '../../../../infra/error/AppError';
-import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
-import { useStep2Store } from '../../../../pipeline/stores/useStep2Store';
-import { useStep3Store } from '../../../../pipeline/stores/useStep3Store';
-import { useStep4Store } from '../../../../pipeline/stores/useStep4Store';
-import { useStep5Store } from '../../../../pipeline/stores/useStep5Store';
-import { useProjectStore } from '../../../../editor/stores/useProjectStore';
-import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
-import { useEditorNavStore } from '../../../../editor/stores/useEditorNavStore';
+import { editorLogger } from '@renderer/core/logger/EditorLogger';
+import { AppError, ErrorCode } from '@modules/infra/error/AppError';
+import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
+import { useStep2Store } from '@modules/pipeline/stores/useStep2Store';
+import { useStep3Store } from '@modules/pipeline/stores/useStep3Store';
+import { useStep4Store } from '@modules/pipeline/stores/useStep4Store';
+import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { usePipelineStore } from '@renderer/store/usePipelineStore';
+import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
 
 const DENSITY_MAP: Record<string, { fps: number }> = {
   sparse: { fps: 1 },

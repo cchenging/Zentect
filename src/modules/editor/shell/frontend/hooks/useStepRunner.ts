@@ -2,11 +2,11 @@
 // 原 editor/hooks/useStepRunner.ts — 已迁移
 
 import { useCallback } from 'react';
-import { useStore } from '../../../../../renderer/src/store/useStore';
-import { usePlayerStore } from '../../../stores/usePlayerStore';
-import { useProjectStore } from '../../../../editor/stores/useProjectStore';
-import { useEditorNavStore } from '../../../stores/useEditorNavStore';
-import { API } from '../../../../../renderer/src/api';
+import { useStore } from '@renderer/store/useStore';
+import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
+import { API } from '@renderer/api';
 import { usePipelineOrchestrator } from './usePipelineOrchestrator';
 
 interface StepRunnerResult {

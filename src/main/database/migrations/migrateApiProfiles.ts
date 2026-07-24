@@ -6,7 +6,7 @@ import { ApiProfileRepository } from '../repositories/ApiProfileRepository';
 import { SettingsRepository } from '../repositories/SettingsRepository';
 import { decryptData } from '../../utils/crypto';
 import { AppLogger } from '../../core/AppLogger';
-import { LOG_TAGS } from '../../../modules/infra/logger/LogConstants';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 
 const PROVIDER_MIGRATION_MAP = [
   { provider: 'deepseek', keyField: 'deepseekKey', modelsField: 'deepseekModels', defaultBaseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat' },

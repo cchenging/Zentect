@@ -5,7 +5,7 @@
  */
 import * as crypto from 'crypto';
 import type { Shot } from '../../../shared/types';
-import { JianyingExportService } from '../../../modules/export/jianying';
+import { JianyingExportService } from '@modules/export/jianying';
 
 export class JianyingCompiler {
   /** @deprecated 请使用 JianyingExportService.compileDraft() */

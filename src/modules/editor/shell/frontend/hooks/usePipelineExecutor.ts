@@ -2,12 +2,12 @@
 // 原 editor/hooks/usePipelineExecutor.ts — 已迁移
 
 import { useEffect, useCallback, useRef } from 'react';
-import { useProjectStore } from '../../../../editor/stores/useProjectStore';
-import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
-import { useStep1Store } from '../../../../pipeline/stores/useStep1Store';
-import { API } from '../../../../../renderer/src/api';
-import { IPC_CHANNELS } from '../../../../infra/ipc/IpcConstants';
-import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { usePipelineStore } from '@renderer/store/usePipelineStore';
+import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
+import { API } from '@renderer/api';
+import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
+import { AppNotifier } from '@renderer/core/AppNotifier';
 
 export const usePipelineExecutor = () => {
   const store = useProjectStore();

@@ -6,8 +6,8 @@
 
 import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
 import { AppLogger } from '../../core/AppLogger';
-import { AudioSeparationService } from '../../../modules/media/audio/backend/Service';
-import type { AudioSeparateInput as NewAudioSeparateInput } from '../../../modules/media/audio/types';
+import { AudioSeparationService } from '@modules/media/audio/backend/Service';
+import type { AudioSeparateInput as NewAudioSeparateInput } from '@modules/media/audio/types';
 
 /** @deprecated 使用 src/modules/media/audio/types.ts 中的 AudioSeparateInput */
 export interface AudioSeparateInput {

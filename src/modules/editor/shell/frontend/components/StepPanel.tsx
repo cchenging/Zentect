@@ -3,21 +3,21 @@
 
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useStore } from '../../../../../renderer/src/store/useStore';
-import { usePipelineStore } from '../../../../../renderer/src/store/usePipelineStore';
-import { useEditorNavStore } from '../../../stores/useEditorNavStore';
+import { useStore } from '@renderer/store/useStore';
+import { usePipelineStore } from '@renderer/store/usePipelineStore';
+import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
 import { STEPS } from '../../utils/pipelineConstants';
 import { PipelineStatusBar } from './PipelineStatusBar';
 import { PropertyBar } from './PropertyBar';
-import { StepMaterialAnalysis } from '../../../../pipeline/step1-material/frontend/Container';
-import { StepVisionDescription } from '../../../../pipeline/step2-vision/frontend/Container';
-import { StepScriptGeneration } from '../../../../pipeline/step3-script/frontend/Container';
-import { StepTTSSynthesis } from '../../../../pipeline/step4-tts/frontend/Container';
-import { StepShotMatching } from '../../../../pipeline/step5-match/frontend/Container';
+import { StepMaterialAnalysis } from '@modules/pipeline/step1-material/frontend/Container';
+import { StepVisionDescription } from '@modules/pipeline/step2-vision/frontend/Container';
+import { StepScriptGeneration } from '@modules/pipeline/step3-script/frontend/Container';
+import { StepTTSSynthesis } from '@modules/pipeline/step4-tts/frontend/Container';
+import { StepShotMatching } from '@modules/pipeline/step5-match/frontend/Container';
 import { Play, ChevronRight, RefreshCcw } from 'lucide-react';
-import { Badge, StatusIcon } from '../../../../../renderer/src/components/shared';
-import { StepIndicator } from '../../../../../renderer/src/components/shared/StepIndicator';
-import { AppNotifier } from '../../../../../renderer/src/core/AppNotifier';
+import { Badge, StatusIcon } from '@renderer/components/shared';
+import { StepIndicator } from '@renderer/components/shared/StepIndicator';
+import { AppNotifier } from '@renderer/core/AppNotifier';
 
 interface StepPanelProps {
   onStart: () => void;

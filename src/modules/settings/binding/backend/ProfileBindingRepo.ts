@@ -1,7 +1,7 @@
 // 📁 路径：src/modules/settings/binding/backend/ProfileBindingRepo.ts
 // Profile 绑定数据仓库：直接引用 infra 层，不依赖 @deprecated 旧模块
 
-import { SQLiteConnection } from '../../../infra/database/SQLiteConnection';
+import { SQLiteConnection } from '@modules/infra/database/SQLiteConnection';
 
 export interface ProfileBinding {
   taskType: string;

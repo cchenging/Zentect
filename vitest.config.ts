@@ -8,6 +8,14 @@ export default defineConfig({
         find: /^(\.\.\/)*renderer\/src/,
         replacement: resolve('src/renderer/src'),
       },
+      {
+        find: /^@modules\/(.*)$/,
+        replacement: resolve('src/modules/$1'),
+      },
+      {
+        find: /^@renderer\/(.*)$/,
+        replacement: resolve('src/renderer/src/$1'),
+      },
     ],
   },
   test: {
