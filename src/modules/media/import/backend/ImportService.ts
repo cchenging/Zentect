@@ -210,6 +210,20 @@ export class ImportService {
         ? `magic://${projectId}/${relativeCoverPath}`
         : '';
 
+      // 🔧 修复：同步回写到 projects.cover_path，供首页项目卡片显示
+      // 旧版 bug：封面只写 media_assets.cover_path，projects.cover_path 永远 NULL
+      //          首页读 projects.cover_path → NULL → 显示兜底图标
+      // 复用已有的 ProjectRepository.updateCover() 孤儿方法，写入裸相对路径
+      // 首页读取时 ProjectService.getList() 会转成 magic://{projectId}/... URL
+      if (relativeCoverPath) {
+        try {
+          const { ProjectRepository } = require('../../../../main/database/repositories/ProjectRepository');
+          new ProjectRepository().updateCover(projectId, relativeCoverPath);
+        } catch (e) {
+          AppLogger.warn(LOG_TAGS.MEDIA, `回写 projects.cover_path 失败: ${projectId}`);
+        }
+      }
+
       this.notifyFrontend(projectId, mediaId, {
         coverPath: frontendCoverPath,
         duration: metadata.formattedTime,
