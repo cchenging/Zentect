@@ -19,6 +19,8 @@ export interface SubscribeResult {
   done: boolean;
   /** 错误信息（若有） */
   error?: string;
+  /** Python 端任务最终产物（done=true 时携带，如分离结果的 vocals/bgm 路径） */
+  result?: any;
 }
 
 export class PythonProgressSubscriber {
@@ -85,7 +87,8 @@ export class PythonProgressSubscriber {
             if (progress.done) {
               AppLogger.debug(LOG_TAGS.MEDIA_ENGINE,
                 `[ProgressSubscriber] 流结束 (task=${taskId})`);
-              return { done: true, error: progress.error };
+              // 携带 Python 端最终产物返回，调用方无需再等 POST
+              return { done: true, error: progress.error, result: progress.result };
             }
           } catch {
             // 单行 JSON 解析失败不应中断整体订阅

@@ -156,32 +156,36 @@ export class AudioProcessor {
       const pythonPort = AIDaemon.getInstance().getPort();
       const separateUrl = `http://127.0.0.1:${pythonPort}/api/separate`;
 
-      // 并发：发起 POST 分离请求（不 await）+ 启动 SSE 订阅推送进度
-      // SSE 流在 Python 端任务 done=true 后自动结束，此时 POST 也即将返回
-      // 注意：字段名必须与 Python SeparateReq DTO 的 snake_case 一致，否则 Pydantic 报 422
-      const postPromise = HttpClient.post(separateUrl, {
+      // POST fire-and-forget：只负责触发 Python 任务，不等待结果
+      // 结果通过 SSE 流回传（progress.result），彻底规避 HttpClient 90s 超时问题
+      HttpClient.post(separateUrl, {
         audio_path: inputAudioPath,
         output_dir: outBaseDir,
         engine,
         task_id: taskId,
-      }, { signal });
+      }, { signal }).catch((err) => {
+        // POST 触发失败（如 Python 端不可达）记录日志，下方 SSE 会超时返回
+        AppLogger.warn('AudioProcessor', `POST 触发分离失败 (task=${taskId}): ${err?.message || err}`);
+      });
 
-      // SSE 订阅：实时推送 pct/msg 到 onProgress 回调，任务结束后自动断开
-      await PythonProgressSubscriber.subscribe(taskId, (pct, msg) => {
-        if (onProgress) onProgress(pct, msg);
-      }, 600000, signal);
+      // SSE 订阅：实时推送 pct/msg，任务结束时携带 result 返回
+      const sseResult = await PythonProgressSubscriber.subscribe(
+        taskId,
+        (pct, msg) => { if (onProgress) onProgress(pct, msg); },
+        600000,
+        signal
+      );
 
-      // SSE 流结束（done=true）后，等待 POST 返回最终分离产物
-      try {
-        const result = await postPromise;
-        if (result?.vocals) {
-          return {
-            vocals: result.vocals,
-            bgm: result.bgm || undefined,
-          };
-        }
-      } catch {
-        // POST 失败时进入下方统一 fallback
+      // 从 SSE 携带的 result 取分离产物（Python 端 _set_progress(done=True, result=result) 已存入）
+      if (sseResult.result?.vocals) {
+        return {
+          vocals: sseResult.result.vocals,
+          bgm: sseResult.result.bgm || undefined,
+        };
+      }
+      // SSE 流异常结束（超时/取消/Python 内部错误）
+      if (sseResult.error) {
+        AppLogger.warn('AudioProcessor', `SSE 订阅异常结束: ${sseResult.error}`);
       }
     } catch (error) {
       AppLogger.error('AudioProcessor', 'AI Daemon 人声分离失败', { error });
