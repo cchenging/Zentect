@@ -72,6 +72,8 @@ export class MediaRepository {
   public updateMedia(id: string, media: any): void {
     this.db.prepare(MEDIA_SQL.UPDATE).run({
       id,
+      // 未传(undefined)的字段会被 better-sqlite3 绑定为 NULL，
+      // SQL 层用 COALESCE(@field, field) 保留原值，实现"部分更新"语义
       name: media.name,
       status: media.status,
       frames: media.frames ? JSON.stringify(media.frames) : null,
@@ -83,10 +85,16 @@ export class MediaRepository {
       narrationScript: media.narrationScript
         ? JSON.stringify(media.narrationScript)
         : null,
-      // 音频分离配置：未提供时回退到默认值，避免覆盖已有记录
-      separationMode: media.separationMode || 'quality',
-      separationEngine: media.separationEngine || 'auto',
-      vocalsIsFallback: media.vocalsIsFallback ? 1 : 0,
+      // 音频分离配置：未传时传 NULL，由 COALESCE 保留原值（修复旧版 || 默认值 强制覆盖的 bug）
+      separationMode: media.separationMode ?? null,
+      separationEngine: media.separationEngine ?? null,
+      // 三态：undefined→null(保留原值) | true→1 | false→0
+      vocalsIsFallback:
+        media.vocalsIsFallback === undefined
+          ? null
+          : media.vocalsIsFallback
+            ? 1
+            : 0,
     });
   }
 

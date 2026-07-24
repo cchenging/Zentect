@@ -31,12 +31,18 @@ export const MEDIA_SQL = {
 
   UPDATE: `
     UPDATE media_assets SET
-      name = @name, status = @status, frames = @frames,
-      extracted_audio = @extractedAudio, extracted_vocals = @extractedVocals,
-      extracted_bgm = @extractedBgm, extracted_text = @extractedText,
-      extract_duration = @extractDuration, narration_script = @narrationScript,
-      separation_mode = @separationMode, separation_engine = @separationEngine,
-      vocals_is_fallback = @vocalsIsFallback,
+      name = COALESCE(@name, name),
+      status = COALESCE(@status, status),
+      frames = COALESCE(@frames, frames),
+      extracted_audio = COALESCE(@extractedAudio, extracted_audio),
+      extracted_vocals = COALESCE(@extractedVocals, extracted_vocals),
+      extracted_bgm = COALESCE(@extractedBgm, extracted_bgm),
+      extracted_text = COALESCE(@extractedText, extracted_text),
+      extract_duration = COALESCE(@extractDuration, extract_duration),
+      narration_script = COALESCE(@narrationScript, narration_script),
+      separation_mode = COALESCE(@separationMode, separation_mode),
+      separation_engine = COALESCE(@separationEngine, separation_engine),
+      vocals_is_fallback = COALESCE(@vocalsIsFallback, vocals_is_fallback),
       update_time = datetime('now', 'localtime')
     WHERE id = @id AND is_deleted = 0
   `,
