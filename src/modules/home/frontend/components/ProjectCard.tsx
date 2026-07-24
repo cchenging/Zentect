@@ -1,5 +1,5 @@
 // 📁 路径：src/modules/home/frontend/components/ProjectCard.tsx
-import React from 'react';
+import React, { useState } from 'react';
 import type { ProjectRecord } from '../../types';
 import { AppIcon } from '@renderer/components/app-icon';
 import { useI18n } from '@renderer/store/useI18n';
@@ -62,6 +62,7 @@ const formatBytes = (bytes?: number) => {
 
 export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRename, onDuplicate, onDelete, onExport }) => {
   const { t } = useI18n();
+  const [imgError, setImgError] = useState(false);
 
   const coverUrl = project.coverPath || '';
   const displayName = truncateMiddleSmart(project.name);
@@ -75,9 +76,14 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRe
         className="w-full aspect-video shrink-0 bg-secondary/30 rounded-xl overflow-hidden border border-border/60 relative shadow-sm group-hover:shadow-md transition-all duration-300 group/cover"
         onClick={() => onClick(project.id)}
       >
-        {coverUrl ? (
+        {coverUrl && !imgError ? (
           // 图片增加了 duration-700 ease-out 打造极致丝滑的呼吸感放大
-          <img src={coverUrl} alt={project.name} className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover/cover:scale-110" />
+          <img
+            src={coverUrl}
+            alt={project.name}
+            className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover/cover:scale-110"
+            onError={() => setImgError(true)}
+          />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-muted/50 to-muted">
             <AppIcon name="Video" size={28} className="text-muted-foreground/30" />

@@ -73,18 +73,39 @@ export class ImportService {
 
         this.repo.insertMedia(mediaItem);
 
+        // 视频导入：同步快速截图（seek 1s，单帧），让前端瞬间拿到封面，避免闪烁
+        // 后台 processMediaInBackground 仍会跑完整 generateCover 优化为最亮帧
+        let fastCoverPath = '';
+        if (type === 'video') {
+          try {
+            const fastCoverName = await videoProcessor.generateCoverFast(
+              filePath,
+              pathManager.getProjectThumbnailsDir(projectId),
+              mediaId,
+            );
+            if (fastCoverName) {
+              fastCoverPath = `thumbnails/${fastCoverName}`;
+              // 同步写入 DB，避免后台未完成时关闭应用导致封面丢失
+              this.repo.updateMediaMeta(mediaId, { coverPath: fastCoverPath });
+            }
+          } catch (e) {
+            AppLogger.warn(LOG_TAGS.MEDIA, `generateCoverFast failed for ${mediaId}`);
+          }
+        }
+
+        // 推送给前端的 coverPath 必须是 magic URL，否则 getSafeMediaUrl 解析失败
         const frontendMediaItem: MediaItem = {
           id: mediaId,
           type,
           name: fileName,
           filePath,
-          coverPath: '',
+          coverPath: fastCoverPath ? `magic://${projectId}/${fastCoverPath}` : '',
           duration: '00:00:00',
           status: 'importing',
         };
         results.push(frontendMediaItem);
 
-        // 后台异步处理
+        // 后台异步处理（元数据提取 + 完整封面优化 + 可选转码）
         this.processMediaInBackground(
           projectId,
           mediaId,
@@ -184,6 +205,19 @@ export class ImportService {
             LOG_TAGS.MEDIA,
             `generateCover failed for ${mediaId}`,
           );
+        }
+        // 完整版失败兜底：重新调用快速截图，避免封面从有变无造成退化
+        // （generateCover 内部失败会删除同名文件，需重生成）
+        if (!pureCoverName) {
+          try {
+            pureCoverName = await videoProcessor.generateCoverFast(
+              playableFilePath,
+              pathManager.getProjectThumbnailsDir(projectId),
+              mediaId,
+            );
+          } catch (e) {
+            AppLogger.warn(LOG_TAGS.MEDIA, `generateCoverFast fallback failed for ${mediaId}`);
+          }
         }
       }
 

@@ -301,8 +301,8 @@ export default function Editor() {
                       className={`min-w-[120px] glass-card-sm overflow-hidden cursor-pointer hover:border-accent/30 transition-all ${activePlaySource?.id === item.id ? 'border-accent' : ''}`}
                       onClick={() => setActivePlaySource(item)}>
                       <div className="w-full h-[68px] bg-bg-secondary flex items-center justify-center relative">
-                        {item.coverPath || item.thumbnail || (item.type === 'video' && item.filePath) ? (
-                          <img src={getSafeMediaUrl(item.coverPath || item.thumbnail || item.filePath)} className="w-full h-full object-cover" />
+                        {item.coverPath || item.thumbnail ? (
+                          <img src={getSafeMediaUrl(item.coverPath || item.thumbnail)} className="w-full h-full object-cover" />
                         ) : item.type === 'audio' ? (
                           <Music size={20} className="text-muted-foreground/30" />
                         ) : (
