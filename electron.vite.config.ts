@@ -4,6 +4,11 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   main: {
+    resolve: {
+      alias: {
+        '@modules': resolve('src/modules')
+      }
+    },
     plugins: [externalizeDepsPlugin()],
     build: {
       rollupOptions: {
@@ -12,6 +17,11 @@ export default defineConfig({
     }
   },
   preload: {
+    resolve: {
+      alias: {
+        '@modules': resolve('src/modules')
+      }
+    },
     plugins: [externalizeDepsPlugin()]
   },
   renderer: {

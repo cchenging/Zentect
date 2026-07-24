@@ -1,4 +1,4 @@
-﻿// 📁 路径：src/shared/locales/zh-CN.ts
+// 📁 路径：src/shared/locales/zh-CN.ts
 import { ErrorCode } from '../error/AppError';
 import { DICT } from './dictionary';
 
@@ -751,6 +751,9 @@ export const zhCN = {
   'editor.step1.audio.emptyDesc': '执行管线后会自动提取音频',
   'editor.step1.audio.play': '播放',
   'editor.step1.audio.unnamed': '未命名音频',
+  'editor.step1.audio.fallbackTitle': '人声分离降级',
+  'editor.step1.audio.fallbackDesc': '人声分离失败，已降级使用原始音轨进行 ASR 识别。台词质量可能受背景音乐干扰，建议重试或切换引擎。',
+  'editor.step1.audio.fastMode': '极速模式：使用原始音轨（未分离）',
   'editor.step1.asr.title': 'ASR 台词识别',
   'editor.step1.asr.confirmed': '已确认',
   'editor.step1.asr.modified': '已修改',

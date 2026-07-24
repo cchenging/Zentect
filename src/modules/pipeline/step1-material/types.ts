@@ -78,6 +78,8 @@ export interface StepMaterialAnalysisViewProps {
   asrLines: AsrLine[];
   frameCount: number;
   audioSeparated: boolean;
+  /** 人声分离降级标记：true=分离失败降级到原始音轨，需展示降级提示 */
+  vocalsIsFallback: boolean;
   mediaItems: MediaItem[];
   roles: Role[];
   subStepStatuses: Record<string, StepStatus>;

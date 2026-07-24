@@ -16,6 +16,7 @@ export const StepMaterialAnalysis: React.FC = () => {
   const asrLines = useStep1Store((s) => s.asrLines);
   const frameCount = useStep1Store((s) => s.frameCount);
   const audioSeparated = useStep1Store((s) => s.audioSeparated);
+  const vocalsIsFallback = useStep1Store((s) => s.vocalsIsFallback);
   const step1SubStepProgresses = useStep1Store((s) => s.subStepProgresses);
   const extractionConfig = useStep1Store((s) => s.extractionConfig);
   /** subStepStatuses 已收敛为 PipelineStore 单一数据源 */
@@ -106,6 +107,7 @@ export const StepMaterialAnalysis: React.FC = () => {
       asrLines={asrLines}
       frameCount={frameCount}
       audioSeparated={audioSeparated}
+      vocalsIsFallback={vocalsIsFallback}
       mediaItems={mediaItems}
       roles={roles}
       subStepStatuses={subStepStatuses}

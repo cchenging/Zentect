@@ -1,7 +1,7 @@
 // Module: pipeline/step1-material - View
 
 import React, { useState } from "react";
-import { Edit3, User, Music, Play, UndoDot, RotateCcw } from "lucide-react";
+import { Edit3, User, Music, Play, UndoDot, RotateCcw, AlertTriangle } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "@renderer/components/shared";
 import { FrameExtractConfig } from "./components/FrameExtractConfig";
@@ -14,7 +14,7 @@ import type { StepMaterialAnalysisViewProps } from "../types";
 export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> = (props) => {
   const { t } = useI18n();
   const {
-    asrLines, frameCount, audioSeparated, mediaItems, roles,
+    asrLines, frameCount, audioSeparated, vocalsIsFallback, mediaItems, roles,
     subStepStatuses, subStepProgresses, extractionConfig, extractedData,
     onUpdateAsrLine, onSetAsrLines, onSetCurrentTime, onSetActivePlaySource,
     onUpdateRole, onSetSubStepStatus, onRetrySubStep,
@@ -79,6 +79,16 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         extra={<span className="text-[13px] text-muted-foreground">{audioStatus === "completed" ? t["editor.step1.audio.separated"] : statusText(audioStatus, "editor.step1.audio.statusRunning", "audio", "editor.step1.audio.statusFailed", "editor.step1.audio.statusIdle")}</span>}
         borderColor={audioStatus === "failed" ? "var(--accent-rose)" : undefined}>
         <AudioSeparationConfig isRunning={audioStatus === "running"} />
+        {/* 人声分离降级提示：分离失败时降级到原始音轨，提醒用户 ASR 质量可能下降 */}
+        {audioStatus === "completed" && vocalsIsFallback && (
+          <div className="flex items-start gap-2 p-2 rounded-md bg-accent-rose/10 border border-accent-rose/30">
+            <AlertTriangle size={14} className="text-accent-rose shrink-0 mt-0.5" />
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-medium text-accent-rose">{t["editor.step1.audio.fallbackTitle"]}</div>
+              <div className="text-[12px] text-muted-foreground mt-0.5">{t["editor.step1.audio.fallbackDesc"]}</div>
+            </div>
+          </div>
+        )}
         {audioStatus === "completed" && (
           <div className="p-2 rounded-md bg-bg-secondary border border-border/20">
             {audioItems.length > 0 ? (

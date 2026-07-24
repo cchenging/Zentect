@@ -69,6 +69,8 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
 
       if (media) {
         if (hasAudio) { useStep1Store.getState().setAudioSeparated(true); }
+        // 同步人声分离降级标记：供前端展示降级提示
+        useStep1Store.getState().setVocalsIsFallback(!!media.vocalsIsFallback);
 
         if (asrLines.length > 0) {
           useStep1Store.getState().setAsrLines(asrLines);

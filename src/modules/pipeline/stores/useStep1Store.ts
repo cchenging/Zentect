@@ -11,8 +11,18 @@
  */
 
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type { AsrLine } from '../../../shared/types/entities/editor';
 import type { VlmFrame } from '../../../shared/types/entities/editor';
+
+/** 音频分离配置（与 step1-material/types.ts 的 AudioConfig 保持一致） */
+export interface AudioConfig {
+  enabled: boolean;
+  /** 'fast': 跳过人声分离，ASR 使用原始音轨（含 BGM）；'quality': 使用 Demucs/MDX-Net 分离人声 */
+  separationMode?: 'fast' | 'quality';
+  /** quality 模式下可选引擎：'demucs'(重型,高保真) | 'mdx'(轻量,极速) | 'auto'(Python 默认顺序) */
+  engine?: 'demucs' | 'mdx' | 'auto';
+}
 
 export interface ExtractionConfig {
   targetLanguage: string;
@@ -26,7 +36,7 @@ export interface ExtractionConfig {
     minFrameInterval?: number;
     timePoint?: number;
   };
-  audio: { enabled: boolean; separationMode?: 'fast' | 'quality' };
+  audio: AudioConfig;
   whisper: { enabled: boolean; engine: 'sensevoice' | 'whisper-v3' };
   faces: { enabled: boolean; engine: 'insightface' | 'mediapipe' };
 }
@@ -36,6 +46,8 @@ export interface Step1Store {
   asrLines: AsrLine[];
   frameCount: number;
   audioSeparated: boolean;
+  /** 人声分离是否降级到原始音轨（true=分离失败，ASR 使用含 BGM 的原始音轨） */
+  vocalsIsFallback: boolean;
 
   // 抽帧/分析配置（从 uiSlice 迁入）
   extractionConfig: ExtractionConfig;
@@ -49,6 +61,7 @@ export interface Step1Store {
   updateAsrLine: (index: number, text: string) => void;
   setFrameCount: (count: number) => void;
   setAudioSeparated: (separated: boolean) => void;
+  setVocalsIsFallback: (fallback: boolean) => void;
 
   // 配置操作
   updateExtractionConfig: (config: Partial<ExtractionConfig>) => void;
@@ -69,37 +82,53 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
     scale: 1024,
     minFrameInterval: 4,
   },
-  audio: { enabled: true, separationMode: 'quality' },
+  audio: { enabled: true, separationMode: 'quality', engine: 'auto' },
   whisper: { enabled: true, engine: 'sensevoice' },
   faces: { enabled: true, engine: 'insightface' },
 };
 
-export const useStep1Store = create<Step1Store>()((set) => ({
-  asrLines: [],
-  frameCount: 0,
-  audioSeparated: false,
+/** persist 部分白名单：只持久化配置，不持久化运行时数据/进度 */
+const PERSIST_PARTIAL = (state: Step1Store) => ({
+  extractionConfig: state.extractionConfig,
+});
 
-  extractionConfig: DEFAULT_EXTRACTION_CONFIG,
+export const useStep1Store = create<Step1Store>()(
+  persist(
+    (set) => ({
+      asrLines: [],
+      frameCount: 0,
+      audioSeparated: false,
+      vocalsIsFallback: false,
 
-  subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 },
+      extractionConfig: DEFAULT_EXTRACTION_CONFIG,
 
-  setAsrLines: (lines) => set({ asrLines: lines }),
-  updateAsrLine: (index, text) =>
-    set((s) => {
-      const lines = [...s.asrLines];
-      if (lines[index]) lines[index] = { ...lines[index], text };
-      return { asrLines: lines };
+      subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 },
+
+      setAsrLines: (lines) => set({ asrLines: lines }),
+      updateAsrLine: (index, text) =>
+        set((s) => {
+          const lines = [...s.asrLines];
+          if (lines[index]) lines[index] = { ...lines[index], text };
+          return { asrLines: lines };
+        }),
+      setFrameCount: (count) => set({ frameCount: count }),
+      setAudioSeparated: (separated) => set({ audioSeparated: separated }),
+      setVocalsIsFallback: (fallback) => set({ vocalsIsFallback: fallback }),
+
+      updateExtractionConfig: (config) =>
+        set((s) => ({
+          extractionConfig: { ...s.extractionConfig, ...config } as ExtractionConfig,
+        })),
+
+      setSubStepProgress: (key, progress) =>
+        set((s) => ({
+          subStepProgresses: { ...s.subStepProgresses, [key]: progress },
+        })),
     }),
-  setFrameCount: (count) => set({ frameCount: count }),
-  setAudioSeparated: (separated) => set({ audioSeparated: separated }),
-
-  updateExtractionConfig: (config) =>
-    set((s) => ({
-      extractionConfig: { ...s.extractionConfig, ...config } as ExtractionConfig,
-    })),
-
-  setSubStepProgress: (key, progress) =>
-    set((s) => ({
-      subStepProgresses: { ...s.subStepProgresses, [key]: progress },
-    })),
-}));
+    {
+      name: 'zentect-step1-store',
+      // 只持久化配置部分，避免运行时数据污染
+      partialize: PERSIST_PARTIAL,
+    }
+  )
+);

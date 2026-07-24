@@ -155,6 +155,11 @@ export class JobScheduler {
           audioPath: step1Data.audio?.audioPath || null,
           vocalsPath: step1Data.audio?.vocalsPath || null,
           bgmPath: step1Data.audio?.bgmPath || null,
+          // 人声分离降级标记：true=分离失败降级到原始音轨，需提示用户
+          vocalsIsFallback: !!step1Data.audio?.vocalsIsFallback,
+          // 分离配置：从入参 config 透传，用于落盘与下游消费
+          separationMode: payload.config?.audio?.separationMode || 'quality',
+          separationEngine: payload.config?.audio?.engine || 'auto',
           shots: (step1Data.asr?.lines || []).map((line: any) => ({
             originalText: line.text || line.originalText || '',
             start: (() => {
@@ -206,7 +211,12 @@ export class JobScheduler {
                 ? path.relative(projectDir, result.bgmPath).replace(/\\/g, '/')
                 : result.bgmPath;
             }
-            
+
+            // 落盘音频分离配置：模式、引擎、降级标记（供前端展示与下游消费）
+            updatedMedia.separationMode = result.separationMode;
+            updatedMedia.separationEngine = result.separationEngine;
+            updatedMedia.vocalsIsFallback = result.vocalsIsFallback;
+
             mediaRepo.updateMedia(updatedMedia.id, updatedMedia);
 
             const hydratedPayload = this.projectService.hydratePaths({
