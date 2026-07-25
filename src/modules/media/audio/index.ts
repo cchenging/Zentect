@@ -1,14 +1,19 @@
 // 📁 路径：src/modules/media/audio/index.ts
-// 模块入口：只导出接口契约与公共服务（§3.5.3）
+// 模块入口：导出类型契约 + 公共服务
 
 export type {
-  AudioSeparateInput,
-  AudioSeparateOutput,
+  SeparationEngine,
+  SeparationMode,
+  AudioSeparationInput,
+  AudioSeparationResult,
 } from './types';
 
 export type {
-  SeparationOptions,
   SeparationProgressCallback,
+} from './backend/Service';
+
+export type {
+  SeparationOptions,
 } from './backend/Service';
 
 export {

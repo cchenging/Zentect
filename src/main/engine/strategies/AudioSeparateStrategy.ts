@@ -7,16 +7,15 @@
 import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
 import { AppLogger } from '../../core/AppLogger';
 import { AudioSeparationService } from '@modules/media/audio/backend/Service';
-import type { AudioSeparateInput as NewAudioSeparateInput } from '@modules/media/audio/types';
 
-/** @deprecated 使用 src/modules/media/audio/types.ts 中的 AudioSeparateInput */
+/** @deprecated 使用 src/modules/media/audio/types.ts 中的 AudioSeparationInput */
 export interface AudioSeparateInput {
   mediaPath?: string;
   mediaId: string;
   engine?: 'spleeter' | 'uvr5';
 }
 
-/** @deprecated 使用 src/modules/media/audio/types.ts 中的 AudioSeparateOutput */
+/** @deprecated 使用 src/modules/media/audio/types.ts 中的 AudioSeparationResult */
 export interface AudioSeparateOutput {
   vocalPath: string;
   bgmPath: string;
@@ -43,24 +42,24 @@ export class AudioSeparateStrategy extends BaseNodeStrategy<AudioSeparateInput, 
     cacheDir: string,
     onProgress: (p: number, s: string) => void
   ): Promise<AudioSeparateOutput> {
-    const engine = input.engine || 'spleeter';
+    // 旧 engine 映射到新 engine：spleeter(轻量)→mdx，uvr5(重型)→demucs
+    const engine = input.engine === 'uvr5' ? 'demucs' : 'mdx';
     const sourcePath = input.mediaPath!;
 
-    // 委托给新模块的 Service
-    const result = await AudioSeparationService.separate(
-      { videoPath: sourcePath, engine } as NewAudioSeparateInput,
-      {
-        outputDir: cacheDir,
-        filePrefix: input.mediaId,
-        onProgress: (p, msg) => onProgress(p, msg),
-      }
-    );
+    // 委托给新模块的 Service（新接口单参数）
+    const result = await AudioSeparationService.separate({
+      mediaPath: sourcePath,
+      outputDir: cacheDir,
+      mediaId: input.mediaId,
+      engine,
+      onProgress: (p, msg) => onProgress(p, msg),
+    });
 
     AppLogger.info('AudioSeparateStrategy', `Finished. Vocals: ${result.vocalsPath}`);
 
     return {
-      vocalPath: result.vocalsPath,
-      bgmPath: result.bgmPath,
+      vocalPath: result.vocalsPath || '',
+      bgmPath: result.bgmPath || '',
     };
   }
 
