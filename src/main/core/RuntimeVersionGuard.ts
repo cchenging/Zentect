@@ -39,6 +39,11 @@ interface ArtifactIntegrityResult {
  */
 export class RuntimeVersionGuard {
   private static instance: RuntimeVersionGuard
+  // 🔧 修复 F4：checkModelManifest 结果缓存，避免 AiRuntimeManager.getModelStatusSummary() 轮询重复扫描
+  //   30 秒内重复调用直接返回缓存结果
+  private modelManifestCache: { valid: boolean; missing: string[]; mismatched: string[] } | null = null
+  private modelManifestCacheAt = 0
+  private static readonly MANIFEST_CACHE_MS = 30000
 
   private constructor() {
     // singleton
@@ -105,8 +110,17 @@ export class RuntimeVersionGuard {
     return { compatible, runtimeVersion, clientVersion, issues }
   }
 
-  /** 检查模型清单完整性 */
-  checkModelManifest(): { valid: boolean; missing: string[]; mismatched: string[] } {
+  /** 检查模型清单完整性
+   *  🔧 修复 F4：加 30 秒缓存，避免 AiRuntimeManager.getModelStatusSummary() 轮询重复扫描
+   *  @param force 是否强制扫描（跳过缓存）
+   */
+  checkModelManifest(force: boolean = false): { valid: boolean; missing: string[]; mismatched: string[] } {
+    // 🔧 修复 F4：缓存命中检查
+    const now = Date.now()
+    if (!force && this.modelManifestCache && now - this.modelManifestCacheAt < RuntimeVersionGuard.MANIFEST_CACHE_MS) {
+      return this.modelManifestCache
+    }
+
     const missing: string[] = []
     const mismatched: string[] = []
 
@@ -136,9 +150,15 @@ export class RuntimeVersionGuard {
 
         if (model.expectedSize) {
           const stat = fs.statSync(modelPath)
-          if (stat.size !== model.expectedSize) {
+          // 🔧 修复 F2：大小校验加 1% 容差（与 ModelService.scanDiskModels 一致）
+          //   旧版 bug：严格 stat.size !== expectedSize，HuggingFace/git-lfs 下载常有微小差异
+          //   （如 ggml-base.bin 期望 147953664 实际 147951465，差 2199 字节 = 0.0015%），被判不匹配
+          //   修复后：偏差 < 1% 视为完整，偏差 ≥ 1% 才判不匹配
+          const diff = Math.abs(stat.size - model.expectedSize)
+          const tolerance = model.expectedSize * 0.01  // 1% 容差
+          if (diff > tolerance) {
             mismatched.push(
-              `${model.name}: 期望 ${model.expectedSize} bytes, 实际 ${stat.size} bytes`
+              `${model.name}: 期望 ${model.expectedSize} bytes, 实际 ${stat.size} bytes（差 ${diff} bytes，超 1% 容差）`
             )
           }
         }
@@ -153,7 +173,12 @@ export class RuntimeVersionGuard {
         )
       }
 
-      return { valid, missing, mismatched }
+      // 🔧 修复 F4：缓存结果（30 秒内重复调用直接返回）
+      const result = { valid, missing, mismatched }
+      this.modelManifestCache = result
+      this.modelManifestCacheAt = Date.now()
+
+      return result
     } catch (err: any) {
       AppLogger.error(LOG_TAGS.SYSTEM, `[RuntimeVersionGuard] 模型清单检查失败`, err)
       return { valid: false, missing: [err.message], mismatched: [] }

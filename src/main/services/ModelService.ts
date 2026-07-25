@@ -60,11 +60,14 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
   {
     id: 'whisper_base', name: 'Whisper Base', displayName: 'Whisper Base 基座模型', type: 'asr',
     description: 'Whisper.cpp 中文语音识别基座（含运行时 whisper-cli.exe）', version: '1.0',
-    // 🔧 修复：磁盘上实际存在 whisper-cli.exe + dll，ggml-base.bin 未下载（用户可用 huggingface-cli 补下）
-    manifestPaths: ['whisper/whisper-cli.exe'],
+    // 🔧 修复 F1：manifestPaths 指向模型文件 ggml-base.bin（而非 whisper-cli.exe）
+    //   旧版 bug：manifestPaths 指向 whisper-cli.exe（480KB 可执行文件），但 expectedSize 用 ggml-base.bin 的 147953664，
+    //   导致 whisper-cli.exe 大小校验必然失败，模型被误判为损坏
+    //   whisper-cli.exe 是运行时可执行文件，归运行时依赖管理（见 manifest.json runtimes），不应作为模型 manifest 路径
+    manifestPaths: ['whisper/ggml-base.bin'],
     // V7：扫描 ggml-base.bin 多路径（用户可能放在 whisper/ 或根目录）
     scanPaths: ['whisper/ggml-base.bin', 'ggml-base.bin'],
-    expectedSize: 147953664,  // manifest.json 中声明的期望大小
+    expectedSize: 147953664,  // ggml-base.bin 的期望大小（与 manifest.json 对齐）
   },
   {
     id: 'sensevoice_onnx', name: 'SenseVoice ONNX', displayName: 'SenseVoice 量化模型', type: 'asr',
@@ -325,6 +328,10 @@ const MODEL_CATEGORIES = [
 export class ModelService {
   private modelRepo = new ModelRepository();
   private pipelineConfigRepo = new PipelineModelConfigRepository();
+  // 🔧 修复 F3：扫描节流锁，避免 getModelList()/getModuleList() 每次调用都全量扫描+刷屏日志
+  //   5 秒内重复调用直接返回，强制刷新用 scanDiskModels(true)
+  private lastScanAt = 0;
+  private static readonly SCAN_THROTTLE_MS = 5000;
 
   /**
    * 获取所有本地模型列表（自动同步磁盘状态）
@@ -381,7 +388,8 @@ export class ModelService {
         }
       }
       AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] seed 完成，扫描磁盘更新状态');
-      this.scanDiskModels();
+      // 🔧 修复 F3：seed 后强制扫描（跳过节流），确保 DB 状态立即同步磁盘
+      this.scanDiskModels(true);
     } catch (e: any) {
       AppLogger.error(LOG_TAGS.SYSTEM, '[ModelService] ensureSeedData 失败', e);
     }
@@ -395,8 +403,18 @@ export class ModelService {
    *   2. 支持 expectedSize 大小校验（文件损坏/未下完可识别）
    *   3. 支持 md5 严格校验（关键模型）
    *   4. manifestPaths 为空但 scanPaths 非空的模型（如 htdemucs.pth）也能被识别
+   * 🔧 修复 F3：加 5 秒节流锁，避免 getModelList()/getModuleList() 每次调用都全量扫描+刷屏日志
+   *   强制刷新（导入/卸载后）传 force=true 跳过节流
+   * @param force 是否强制扫描（跳过节流锁）
    */
-  public scanDiskModels(): void {
+  public scanDiskModels(force: boolean = false): void {
+    // 🔧 修复 F3：节流锁——5 秒内重复调用直接返回
+    const now = Date.now();
+    if (!force && now - this.lastScanAt < ModelService.SCAN_THROTTLE_MS) {
+      return;
+    }
+    this.lastScanAt = now;
+
     try {
       const modelsPath = PathManager.getModelsPath();
 
@@ -418,12 +436,19 @@ export class ModelService {
         for (const relPath of candidatePaths) {
           const fullPath = path.join(modelsPath, relPath);
           if (fs.existsSync(fullPath)) {
-            // 🔧 V7：大小校验 — 若声明了 expectedSize 且不匹配，跳过此路径（文件可能损坏）
+            // 🔧 修复 F2：大小校验加 1% 容差
+            //   旧版 bug：严格 stat.size !== expectedSize，HuggingFace/git-lfs 下载常有微小差异
+            //   （如 ggml-base.bin 期望 147953664 实际 147951465，差 2199 字节 = 0.0015%），被判损坏
+            //   修复后：偏差 < 1% 视为完整，偏差 ≥ 1% 才判损坏（防止下载截断）
             const stat = fs.statSync(fullPath);
-            if (def.expectedSize && stat.size !== def.expectedSize) {
-              AppLogger.warn(LOG_TAGS.SYSTEM,
-                `[ModelService] ${def.id} 文件大小不匹配: ${relPath} 期望 ${def.expectedSize} 实际 ${stat.size}，可能损坏，跳过`);
-              continue;
+            if (def.expectedSize) {
+              const diff = Math.abs(stat.size - def.expectedSize);
+              const tolerance = def.expectedSize * 0.01;  // 1% 容差
+              if (diff > tolerance) {
+                AppLogger.warn(LOG_TAGS.SYSTEM,
+                  `[ModelService] ${def.id} 文件大小超出 1% 容差: ${relPath} 期望 ${def.expectedSize} 实际 ${stat.size}（差 ${diff} 字节），可能损坏，跳过`);
+                continue;
+              }
             }
             foundPath = fullPath;
             foundSize = stat.size;
@@ -577,12 +602,16 @@ export class ModelService {
     }
 
     const stat = fs.statSync(srcFilePath);
-    // 🔧 V7：大小校验（若声明了 expectedSize）
-    if (def.expectedSize && stat.size !== def.expectedSize) {
-      throw new AppError(
-        ErrorCode.FS_PATH_INVALID,
-        `文件大小不匹配: 期望 ${def.expectedSize} 字节，实际 ${stat.size} 字节，请确认文件来源`
-      );
+    // 🔧 修复 F2：大小校验加 1% 容差（与 scanDiskModels 一致，防止 HuggingFace 微小差异误判）
+    if (def.expectedSize) {
+      const diff = Math.abs(stat.size - def.expectedSize);
+      const tolerance = def.expectedSize * 0.01;  // 1% 容差
+      if (diff > tolerance) {
+        throw new AppError(
+          ErrorCode.FS_PATH_INVALID,
+          `文件大小超出 1% 容差: 期望 ${def.expectedSize} 字节，实际 ${stat.size} 字节（差 ${diff} 字节），请确认文件来源`
+        );
+      }
     }
 
     // 🔧 V7：MD5 校验（若声明了 md5）
