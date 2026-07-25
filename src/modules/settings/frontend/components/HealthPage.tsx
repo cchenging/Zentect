@@ -78,7 +78,11 @@ export const HealthPage: React.FC = () => {
       try {
         const modelList = await API.model.getList();
         if (Array.isArray(modelList)) {
-          const installed = modelList.filter((m: any) => m.is_installed || m.status === 'ready').length;
+          // 🔧 修复 P0：后端 scanDiskModels 写入 status='downloaded'，旧版只认 'ready' → 模型已下载但显示 0
+          //   修复后：同时接受 downloaded/ready/is_installed 三种已下载信号
+          const installed = modelList.filter((m: any) =>
+            m.is_installed || m.status === 'ready' || m.status === 'downloaded'
+          ).length;
           const total = modelList.length || 7;
           items[2] = {
             key: 'local_models',
@@ -88,6 +92,44 @@ export const HealthPage: React.FC = () => {
           };
         }
       } catch {}
+
+      /** 🔧 新增：Python 运行环境检查（从 ModelTab 迁入，简化为健康检查项）
+       *    调用 ai_daemon /api/check_deps，统计关键依赖安装比例
+       *    关键依赖：demucs / audio_separator / funasr / insightface / hdbscan
+       */
+      try {
+        const depsRes = await API.ai.checkDeps();
+        if (depsRes?.deps) {
+          const depEntries = Object.values(depsRes.deps) as Array<{ installed: boolean }>;
+          const installedCount = depEntries.filter(d => d.installed).length;
+          const totalCount = depEntries.length;
+          items.push({
+            key: 'python_deps',
+            label: 'Python 运行环境',
+            status: installedCount === 0
+              ? 'error'
+              : installedCount < totalCount
+                ? 'warn'
+                : 'ok',
+            detail: `${installedCount}/${totalCount} 关键依赖已安装`,
+          });
+        } else {
+          // Python 服务未启动
+          items.push({
+            key: 'python_deps',
+            label: 'Python 运行环境',
+            status: 'warn',
+            detail: 'Python 服务未启动',
+          });
+        }
+      } catch {
+        items.push({
+          key: 'python_deps',
+          label: 'Python 运行环境',
+          status: 'warn',
+          detail: 'Python 服务未启动',
+        });
+      }
 
       /** 尝试获取设置中的 API 配置 */
       try {

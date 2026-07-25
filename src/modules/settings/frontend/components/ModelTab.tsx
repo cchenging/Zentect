@@ -1,53 +1,79 @@
 // 📁 路径: src/modules/settings/frontend/components/ModelTab.tsx
-// 本地模型管理 Tab - V3 原型对齐（表格布局）
-import React, { useState, useEffect } from 'react';
-import { Download, Trash2, Loader2, RefreshCw, Pause, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
+// 本地模型管理 Tab - V4 分类菜单 + 卡片网格
+import React, { useState, useEffect, useMemo } from 'react';
+import { Download, Trash2, Loader2, Pause, CheckCircle2, XCircle } from 'lucide-react';
 import { Button } from '@renderer/components/ui/button';
 import { API } from '@renderer/api';
 
 /** 模型状态类型 */
 type ModelStatus = 'missing' | 'downloading' | 'ready' | 'updating' | 'error';
 
-/** 模型定义 - V3 原型7个模型，pythonPkg 映射到 Python 依赖包名（用于依赖检查） */
+/** 模型分类key（与后端 local_models.type 对齐） */
+type ModelCategory = 'asr' | 'tts' | 'vision' | 'audio' | 'emotion';
+
+/** 分类菜单项 */
+interface CategoryOption {
+  key: 'all' | ModelCategory;
+  label: string;
+  /** lucide 图标组件（用任意小写字母占位，实际渲染用 JSX） */
+  icon: React.ReactNode;
+}
+
+/** 模型条目 */
 interface ModelItem {
   id: string;
   /** 中文显示名 */
   label: string;
-  /** 英文技术名（对应后端 local_models.name，如 Whisper Base / SenseVoiceSmall） */
+  /** 英文技术名（对应后端 local_models.name） */
   englishName: string;
-  /** 估算大小（兼容旧版展示，磁盘未读到时兜底） */
+  /** 估算大小（磁盘未读到时兜底） */
   size: string;
-  /** 磁盘实际字节数（从后端 size_bytes 读取，0 表示未读取） */
+  /** 磁盘实际字节数（从后端 size_bytes 读取） */
   sizeBytes: number;
   /** 用途描述 */
   description: string;
+  /** 后端 type 字段：asr/tts/vision/audio/emotion */
+  category: ModelCategory;
   status: ModelStatus;
   progress: number;
   version: string;
-  /** 下载路径（磁盘绝对路径） */
+  /** 下载路径 */
   downloadPath: string;
-  /** 下载完成时间（ISO 字符串） */
+  /** 下载完成时间 */
   downloadedAt: string;
-  /** 对应的 Python 包名（用于 checkDeps 依赖检查，无则不检查） */
+  /** 对应的 Python 包名（用于依赖徽章，无则不显示） */
   pythonPkg?: string;
 }
 
 /**
- * V3 原型本地模型列表
- * englishName 与后端 ModelService.ts MODEL_DEFINITIONS.name 对齐，用于表格展示技术名
+ * V4 本地模型列表
+ * category 字段用于左侧分类筛选；pythonPkg 与 ai_daemon /api/check_deps 的导入名对齐
+ *   - mdx_net → 'audio_separator'（MDX-Net ONNX 模型由 audio_separator 包加载，旧版误标 demucs）
+ *   - sensevoice → 'funasr'（FunASR AutoModel）
+ *   - insightface → 'insightface'
  */
 const DEFAULT_MODELS: Omit<ModelItem, 'status' | 'progress'>[] = [
-  { id: 'moss_tts', label: 'moss-tts-nano', englishName: 'MOSS-TTS-Nano', size: '~50MB', sizeBytes: 0, description: 'TTS 语音合成', version: '1.0', downloadPath: '', downloadedAt: '' },
-  { id: 'whisper', label: 'Whisper.cpp', englishName: 'Whisper Base', size: '~150MB', sizeBytes: 0, description: '语音识别 ASR', version: '1.0', downloadPath: '', downloadedAt: '' },
-  { id: 'sensevoice', label: 'SenseVoiceSmall', englishName: 'SenseVoiceSmall', size: '~80MB', sizeBytes: 0, description: '语音识别增强', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'funasr' },
-  { id: 'mdx_net', label: '音频分离模型', englishName: 'UVR-MDX-NET', size: '~100MB', sizeBytes: 0, description: '人声与BGM分离', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'demucs' },
-  { id: 'insightface', label: '人脸识别模型', englishName: 'InsightFace Buffalo L', size: '~30MB', sizeBytes: 0, description: '人物面部检测', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
-  { id: 'emotion', label: '情绪分析模型', englishName: 'Emotion Model', size: '~20MB', sizeBytes: 0, description: '文本+音频情绪', version: '1.0', downloadPath: '', downloadedAt: '' },
-  { id: 'sovits', label: 'GPT-SoVITS', englishName: 'GPT-SoVITS', size: '~200MB', sizeBytes: 0, description: 'TTS 增强', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'whisper', label: 'Whisper.cpp', englishName: 'Whisper Base', size: '~150MB', sizeBytes: 0, description: '通用多语言语音识别', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'sensevoice', label: 'SenseVoiceSmall', englishName: 'SenseVoiceSmall', size: '~80MB', sizeBytes: 0, description: '中文/日/韩/粤 语音识别增强', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'funasr' },
+  { id: 'moss_tts', label: 'moss-tts-nano', englishName: 'MOSS-TTS-Nano', size: '~50MB', sizeBytes: 0, description: '本地 TTS 语音合成', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'sovits', label: 'GPT-SoVITS', englishName: 'GPT-SoVITS', size: '~200MB', sizeBytes: 0, description: 'TTS 增强（音色克隆）', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'insightface', label: '人脸识别模型', englishName: 'InsightFace Buffalo L', size: '~30MB', sizeBytes: 0, description: '人物面部检测与识别', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
+  { id: 'mdx_net', label: '音频分离模型', englishName: 'UVR-MDX-NET', size: '~100MB', sizeBytes: 0, description: '人声与 BGM 分离', category: 'audio', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'audio_separator' },
+  { id: 'emotion', label: '情绪分析模型', englishName: 'Emotion Model', size: '~20MB', sizeBytes: 0, description: '文本+音频情绪分析', category: 'emotion', version: '1.0', downloadPath: '', downloadedAt: '' },
 ];
 
-/** Python 依赖检查结果：{ 包名: { installed, version, display_name } } */
+/** Python 依赖检查结果 */
 type DepsInfo = Record<string, { installed: boolean; version: string | null; display_name: string }>;
+
+/** 分类菜单配置（顺序即 UI 顺序） */
+const CATEGORY_OPTIONS: CategoryOption[] = [
+  { key: 'all', label: '全部', icon: <span className="text-[11px]">≡</span> },
+  { key: 'asr', label: '语音识别', icon: <span className="text-[11px]">ASR</span> },
+  { key: 'tts', label: '语音合成', icon: <span className="text-[11px]">TTS</span> },
+  { key: 'vision', label: '视觉识别', icon: <span className="text-[11px]">👁</span> },
+  { key: 'audio', label: '音频分离', icon: <span className="text-[11px]">♪</span> },
+  { key: 'emotion', label: '情绪分析', icon: <span className="text-[11px]">♥</span> },
+];
 
 /**
  * 格式化字节数为人类可读字符串
@@ -64,7 +90,7 @@ const formatBytes = (bytes: number): string => {
 };
 
 /**
- * 格式化 ISO 时间字符串为本地短日期
+ * 格式化 ISO 时间为本地短日期
  * @param iso ISO 时间字符串
  * @returns 形如 "07-25 14:30" 或 "-"
  */
@@ -83,20 +109,24 @@ const formatDateTime = (iso: string): string => {
 
 /**
  * 本地模型管理 Tab
- * V3 原型对齐：表格布局 + 批量操作 + 下载/暂停/卸载 + Python 依赖检查
+ * V4：分类菜单（顶部 Chip 切换）+ 卡片网格；Python 依赖移至 HealthPage
  */
 export const ModelTab: React.FC = () => {
   const [models, setModels] = useState<ModelItem[]>(
     DEFAULT_MODELS.map(m => ({ ...m, status: 'missing' as ModelStatus, progress: 0 }))
   );
-  /** Python 依赖检查结果，null 表示服务离线或未检查 */
+  /** 当前选中分类，'all' 表示全部 */
+  const [activeCategory, setActiveCategory] = useState<'all' | ModelCategory>('all');
+  /** Python 依赖检查结果（仅用于卡片徽章，主面板已在 HealthPage） */
   const [deps, setDeps] = useState<DepsInfo | null>(null);
-  /** Python 解释器路径（用于提示用户安装命令） */
-  const [pythonExe, setPythonExe] = useState<string>('');
-  /** 依赖检查加载中 */
-  const [depsLoading, setDepsLoading] = useState(false);
 
-  /** 从后端加载模型状态 + Python 依赖检查 */
+  /** 按当前分类过滤模型 */
+  const filteredModels = useMemo(() => {
+    if (activeCategory === 'all') return models;
+    return models.filter(m => m.category === activeCategory);
+  }, [models, activeCategory]);
+
+  /** 从后端加载模型状态 + Python 依赖（用于卡片徽章） */
   useEffect(() => {
     loadModelStatus();
     loadDeps();
@@ -139,21 +169,13 @@ export const ModelTab: React.FC = () => {
     } catch {}
   };
 
-  /** 加载 Python 依赖状态（调用 ai_daemon /api/check_deps） */
+  /** 加载 Python 依赖（仅用于卡片徽章显示） */
   const loadDeps = async () => {
-    setDepsLoading(true);
     try {
       const res = await API.ai.checkDeps();
-      if (res) {
-        setDeps(res.deps);
-        setPythonExe(res.python_executable);
-      } else {
-        setDeps(null);
-      }
+      setDeps(res?.deps || null);
     } catch {
       setDeps(null);
-    } finally {
-      setDepsLoading(false);
     }
   };
 
@@ -177,15 +199,15 @@ export const ModelTab: React.FC = () => {
     } catch {}
   };
 
-  /** 全部下载 */
+  /** 全部下载（仅当前分类下的 missing） */
   const handleDownloadAll = async () => {
-    const missing = models.filter(m => m.status === 'missing');
+    const missing = filteredModels.filter(m => m.status === 'missing');
     for (const m of missing) { await handleDownload(m.id); }
   };
 
-  /** 全部更新 */
+  /** 全部更新（仅当前分类下的 ready） */
   const handleUpdateAll = async () => {
-    const ready = models.filter(m => m.status === 'ready');
+    const ready = filteredModels.filter(m => m.status === 'ready');
     const ids = ready.map(m => m.id);
     try { await API.model.batchUpdate(ids); } catch {}
   };
@@ -200,11 +222,10 @@ export const ModelTab: React.FC = () => {
     }
   };
 
-  /** 获取模型对应的 Python 依赖状态徽章 */
+  /** 获取 Python 依赖徽章 */
   const getDepBadge = (model: ModelItem) => {
     if (!model.pythonPkg) return null;
-    if (depsLoading) return <span className="text-[10px] text-muted-foreground/60">检查中…</span>;
-    if (!deps) return <span className="text-[10px] text-muted-foreground/60">Python 服务离线</span>;
+    if (!deps) return <span className="text-[10px] text-muted-foreground/60">Python 离线</span>;
     const dep = deps[model.pythonPkg];
     if (!dep) return null;
     return dep.installed
@@ -213,157 +234,161 @@ export const ModelTab: React.FC = () => {
   };
 
   const readyCount = models.filter(m => m.status === 'ready').length;
-  /** 统计已用磁盘空间（来自后端真实字节数） */
   const usedBytes = models.reduce((sum, m) => sum + (m.sizeBytes || 0), 0);
-  const totalSize = '~630MB';
-  /** 统计 Python 依赖安装情况 */
-  const depModels = models.filter(m => m.pythonPkg);
-  const depsInstalledCount = depModels.filter(m => deps?.[m.pythonPkg!]?.installed).length;
-  const depsAllInstalled = deps && depModels.length > 0 && depsInstalledCount === depModels.length;
 
   return (
     <div className="space-y-4 animate-fade-in" style={{ maxWidth: '1100px' }}>
-      {/* 标题与操作 */}
+      {/* 标题与全局操作 */}
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-semibold">本地模型</div>
-          <div className="text-[11px] text-muted-foreground">管理 AI 模型文件</div>
+          <div className="text-[11px] text-muted-foreground">管理 AI 模型文件 · 共 {models.length} 个</div>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={handleDownloadAll} className="h-8 px-3 text-xs gap-1.5 border-accent/30 text-accent hover:bg-accent/10">
-            <Download size={13} /> 全部下载
+            <Download size={13} /> 下载缺失
           </Button>
           <Button variant="outline" onClick={handleUpdateAll} className="h-8 px-3 text-xs gap-1.5 border-border/50 hover:border-accent-cyan/40 hover:text-accent-cyan">
-            <RefreshCw size={13} /> 全部更新
+            更新已装
           </Button>
         </div>
       </div>
 
-      {/* Python 依赖状态卡片 */}
-      <div className="glass-card-sm p-3.5">
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-2">
-            <AlertCircle size={14} className={depsAllInstalled ? 'text-accent-green' : 'text-accent-amber'} />
-            <span className="text-[12px] font-medium">Python 运行环境</span>
-          </div>
-          <Button variant="ghost" size="sm" onClick={loadDeps} className="h-6 text-[10px] gap-1 px-2 text-muted-foreground">
-            <RefreshCw size={11} className={depsLoading ? 'animate-spin' : ''} /> 刷新
-          </Button>
-        </div>
-        {pythonExe ? (
-          <div className="text-[10px] text-muted-foreground/80 mb-2 font-mono truncate" title={pythonExe}>
-            解释器：{pythonExe}
-          </div>
-        ) : null}
-        {deps ? (
-          <div className="space-y-1.5">
-            <div className="text-[11px] text-muted-foreground">
-              关键依赖：<span className={depsAllInstalled ? 'text-accent-green' : 'text-accent-amber'}>{depsInstalledCount}/{depModels.length}</span> 已安装
+      {/* 分类菜单 - 顶部 Chip 切换 */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {CATEGORY_OPTIONS.map(opt => {
+          const isActive = activeCategory === opt.key;
+          /** 该分类下模型数量（all 显示总数） */
+          const count = opt.key === 'all'
+            ? models.length
+            : models.filter(m => m.category === opt.key).length;
+          return (
+            <button
+              key={opt.key}
+              onClick={() => setActiveCategory(opt.key)}
+              className={`
+                inline-flex items-center gap-1.5 h-7 px-3 rounded-full border text-[11px] font-medium transition-all cursor-pointer outline-none select-none
+                ${isActive
+                  ? 'bg-accent/15 border-accent text-accent shadow-sm shadow-accent/10'
+                  : 'bg-muted/20 border-border/50 text-muted-foreground hover:bg-muted/40 hover:border-border'}
+              `}
+            >
+              <span className="opacity-80">{opt.icon}</span>
+              <span>{opt.label}</span>
+              <span className={`text-[10px] px-1 rounded-full ${isActive ? 'bg-accent/20 text-accent' : 'bg-muted/40 text-muted-foreground/70'}`}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 模型卡片网格 */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {filteredModels.map(model => (
+          <div
+            key={model.id}
+            className={`
+              glass-card-sm p-4 flex flex-col gap-2.5 transition-all
+              ${model.status === 'ready'
+                ? 'border-accent-green/20'
+                : model.status === 'downloading'
+                  ? 'border-accent/30'
+                  : 'border-border/40'}
+            `}
+          >
+            {/* 顶部：状态图标 + 名称 + 操作按钮 */}
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                {getStatusIcon(model.status)}
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-semibold text-foreground truncate">{model.label}</div>
+                  <div className="text-[10px] text-muted-foreground/70 font-mono truncate">{model.englishName}</div>
+                </div>
+              </div>
+              <div className="flex-shrink-0">
+                {model.status === 'missing' && (
+                  <Button variant="outline" size="sm" onClick={() => handleDownload(model.id)} className="h-7 text-[11px] gap-1 border-accent/30 text-accent hover:bg-accent/10 px-2.5">
+                    <Download size={12} /> 下载
+                  </Button>
+                )}
+                {model.status === 'downloading' && (
+                  <Button variant="ghost" size="sm" className="h-7 text-[11px] gap-1 text-muted-foreground px-2.5">
+                    <Pause size={12} /> 暂停
+                  </Button>
+                )}
+                {model.status === 'ready' && (
+                  <Button variant="ghost" size="sm" onClick={() => handleUninstall(model.id)} className="h-7 text-[11px] gap-1 text-muted-foreground hover:text-accent-rose px-2.5">
+                    <Trash2 size={12} /> 卸载
+                  </Button>
+                )}
+                {model.status === 'error' && (
+                  <Button variant="outline" size="sm" onClick={() => handleDownload(model.id)} className="h-7 text-[11px] gap-1 border-accent-rose/30 text-accent-rose hover:bg-accent-rose/10 px-2.5">
+                    <Download size={12} /> 重试
+                  </Button>
+                )}
+              </div>
             </div>
-            {!depsAllInstalled && (
-              <div className="text-[10px] text-muted-foreground/70 bg-muted/30 rounded px-2 py-1.5 font-mono break-all">
-                {pythonExe ? `"${pythonExe}" -m pip install -r requirements.txt` : 'pip install -r requirements.txt'}
+
+            {/* 用途描述 */}
+            <div className="text-[12px] text-muted-foreground">{model.description}</div>
+
+            {/* 下载进度条（仅 downloading 状态显示） */}
+            {model.status === 'downloading' && (
+              <div className="flex items-center gap-2">
+                <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden">
+                  <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${model.progress}%` }} />
+                </div>
+                <span className="text-[10px] text-accent">{model.progress}%</span>
               </div>
             )}
-          </div>
-        ) : (
-          <div className="text-[11px] text-muted-foreground/70">
-            {depsLoading ? '检查中…' : 'Python 服务未启动，无法检查依赖'}
-          </div>
-        )}
-      </div>
 
-      {/* 模型表格 */}
-      <div className="glass-card-sm overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-border/30">
-              <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">状态</th>
-              <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">模型</th>
-              <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">用途</th>
-              <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">版本</th>
-              <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">大小</th>
-              <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">下载信息</th>
-              <th className="text-right text-[11px] text-muted-foreground font-medium px-4 py-2.5">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {models.map(model => (
-              <tr key={model.id} className="border-b border-border/15 hover:bg-white/[0.02] transition-colors">
-                <td className="px-4 py-3 align-top">{getStatusIcon(model.status)}</td>
-                <td className="px-4 py-3 align-top">
-                  <div className="text-[13px] font-medium text-foreground">{model.label}</div>
-                  {/* 英文技术名：对应后端 local_models.name，便于排查模型来源 */}
-                  <div className="text-[10px] text-muted-foreground/70 font-mono mt-0.5">{model.englishName}</div>
-                  {model.status === 'downloading' && (
-                    <div className="mt-1.5 flex items-center gap-2">
-                      <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden max-w-[120px]">
-                        <div className="h-full bg-accent rounded-full transition-all" style={{ width: `${model.progress}%` }} />
-                      </div>
-                      <span className="text-[10px] text-accent">{model.progress}%</span>
-                    </div>
-                  )}
-                  {/* Python 依赖状态徽章 */}
-                  {getDepBadge(model) && (
-                    <div className="mt-1">{getDepBadge(model)}</div>
-                  )}
-                </td>
-                <td className="px-4 py-3 align-top text-[12px] text-muted-foreground">{model.description}</td>
-                <td className="px-4 py-3 align-top text-[12px] text-muted-foreground font-mono">v{model.version}</td>
-                <td className="px-4 py-3 align-top text-[12px] text-muted-foreground">
-                  {/* 优先显示磁盘真实大小，兜底显示估算值 */}
+            {/* 元信息网格：版本 / 大小 / Python 依赖 */}
+            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/20">
+              <div>
+                <div className="text-[9px] text-muted-foreground/60 uppercase tracking-wide">版本</div>
+                <div className="text-[11px] text-muted-foreground font-mono">v{model.version}</div>
+              </div>
+              <div>
+                <div className="text-[9px] text-muted-foreground/60 uppercase tracking-wide">大小</div>
+                <div className="text-[11px] text-muted-foreground">
                   {model.sizeBytes > 0 ? (
                     <span className="text-accent-green/90">{formatBytes(model.sizeBytes)}</span>
                   ) : (
                     <span className="text-muted-foreground/60">{model.size}</span>
                   )}
-                </td>
-                <td className="px-4 py-3 align-top text-[11px] text-muted-foreground/80">
-                  {model.status === 'ready' && model.downloadPath ? (
-                    <div className="space-y-0.5">
-                      <div className="font-mono text-[10px] truncate max-w-[200px]" title={model.downloadPath}>
-                        {model.downloadPath}
-                      </div>
-                      <div className="text-[10px] text-muted-foreground/60">{formatDateTime(model.downloadedAt)}</div>
-                    </div>
-                  ) : (
-                    <span className="text-muted-foreground/40">-</span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-right align-top">
-                  <div className="flex items-center justify-end gap-1.5">
-                    {model.status === 'missing' && (
-                      <Button variant="outline" size="sm" onClick={() => handleDownload(model.id)} className="h-7 text-[11px] gap-1 border-accent/30 text-accent hover:bg-accent/10 px-2.5">
-                        <Download size={12} /> 下载
-                      </Button>
-                    )}
-                    {model.status === 'downloading' && (
-                      <Button variant="ghost" size="sm" className="h-7 text-[11px] gap-1 text-muted-foreground px-2.5">
-                        <Pause size={12} /> 暂停
-                      </Button>
-                    )}
-                    {model.status === 'ready' && (
-                      <Button variant="ghost" size="sm" onClick={() => handleUninstall(model.id)} className="h-7 text-[11px] gap-1 text-muted-foreground hover:text-accent-rose px-2.5">
-                        <Trash2 size={12} /> 卸载
-                      </Button>
-                    )}
-                    {model.status === 'error' && (
-                      <Button variant="outline" size="sm" onClick={() => handleDownload(model.id)} className="h-7 text-[11px] gap-1 border-accent-rose/30 text-accent-rose hover:bg-accent-rose/10 px-2.5">
-                        <Download size={12} /> 重试
-                      </Button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                </div>
+              </div>
+              <div>
+                <div className="text-[9px] text-muted-foreground/60 uppercase tracking-wide">Python 依赖</div>
+                <div>{getDepBadge(model) || <span className="text-[10px] text-muted-foreground/40">-</span>}</div>
+              </div>
+            </div>
+
+            {/* 下载信息（仅 ready 状态显示） */}
+            {model.status === 'ready' && model.downloadPath && (
+              <div className="text-[10px] text-muted-foreground/70 bg-muted/20 rounded px-2 py-1.5 font-mono break-all" title={model.downloadPath}>
+                <span className="text-muted-foreground/50">路径：</span>{model.downloadPath}
+                {model.downloadedAt && (
+                  <span className="text-muted-foreground/50 ml-2">· {formatDateTime(model.downloadedAt)}</span>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
+
+      {/* 空状态（分类下无模型） */}
+      {filteredModels.length === 0 && (
+        <div className="text-center py-10 text-[12px] text-muted-foreground/60">
+          该分类下暂无模型
+        </div>
+      )}
 
       {/* 磁盘统计 */}
       <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-2 border-t border-border/30">
         <span>
-          已用空间：{usedBytes > 0 ? formatBytes(usedBytes) : (readyCount > 0 ? `~${readyCount * 80}MB` : '0MB')} / 总计 {totalSize}
+          已用空间：{usedBytes > 0 ? formatBytes(usedBytes) : (readyCount > 0 ? `~${readyCount * 80}MB` : '0MB')} / 共 {readyCount}/{models.length} 个已下载
         </span>
       </div>
     </div>

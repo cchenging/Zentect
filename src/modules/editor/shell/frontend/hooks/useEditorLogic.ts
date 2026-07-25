@@ -44,13 +44,15 @@ export const useEditorHydration = (id: string | undefined) => {
     useStep1Store.getState().setAsrLines?.([]);
     useStep1Store.getState().setFrameCount?.(0);
     useStep1Store.getState().setAudioSeparated?.(false);
-    useStep1Store.setState({ subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 }, extractionConfig: {
-      targetLanguage: 'zh-CN',
-      frames: { enabled: true, mode: 'VLM_OPTIMIZED' as const, sceneThreshold: 0.28, quality: 3, fps: 2, scale: 1024, minFrameInterval: 4 },
-      audio: { enabled: true, engine: 'mdx-net' as const },
-      whisper: { enabled: true, engine: 'sensevoice' as const },
-      faces: { enabled: true, engine: 'insightface' as const },
-    } as any });
+    // 🔧 修复 P0：删除 extractionConfig 硬编码覆盖
+    //   旧版 bug：每次进入项目都 setState 覆盖 extractionConfig，把 audio.engine 写成非法值 'mdx-net'
+    //   （合法值为 'demucs' | 'mdx' | 'auto'），导致 AudioSeparationConfig 的 deriveStrategy 返回
+    //   'mdx-net'，而 STRATEGY_OPTIONS 里没有此值 → 所有按钮都不被选中
+    //   修复后：useStep1Store 已有 persist 中间件，配置由用户首次选择后持久化，进场时自动恢复
+    //          仅重置运行时进度数据（subStepProgresses）
+    useStep1Store.setState({
+      subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 },
+    });
     useStep2Store.getState().setVlmFrames?.([]);
     useStep3Store.getState().setScriptParagraphs?.([]);
     useStep3Store.getState().setScriptStyle?.('赛博现实主义');

@@ -45,7 +45,7 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
   },
   {
     id: 'mdx_net', name: 'UVR-MDX-NET', displayName: '音频分离模型', type: 'audio',
-    description: '人声与BGM分离', version: '1.0', pythonPkg: 'demucs',
+    description: '人声与BGM分离', version: '1.0', pythonPkg: 'audio_separator',
     manifestPaths: ['mdx_net/UVR-MDX-NET-Inst_HQ_3.onnx'],
   },
   {
