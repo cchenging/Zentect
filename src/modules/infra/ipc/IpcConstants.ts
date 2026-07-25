@@ -142,6 +142,10 @@ export const IPC_CHANNELS = {
   SYSTEM_OPEN_FILE: 'dialog:openFile',
   SYSTEM_READ_FILE: 'system:readFile',
 
+  // 🔧 V8: 运行时依赖安装（pip install）
+  SYSTEM_INSTALL_DEP: 'system:install-dep',                     // 触发安装，返回 task_id
+  SYSTEM_INSTALL_DEP_PROGRESS: 'system:install-dep:progress',   // 主进程 → 渲染进程 推送进度
+
   // --- V1.1 工作流持久化 ---
   WORKFLOW_SAVE: 'workflow:save',
   WORKFLOW_LOAD: 'workflow:load',

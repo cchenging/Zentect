@@ -376,11 +376,20 @@ async def check_deps():
     }
     deps = {}
     for mod_name, display_name in targets.items():
+        # 🔧 修复 importlib.import_module 缓存 ImportError bug：
+        #   旧版用 import_module，进程启动时若某包未装，ImportError 会被缓存到 sys.modules，
+        #   后续即使 pip install 了，仍然抛 ImportError，导致 check_deps 永远显示未装。
+        #   改用 find_spec 仅做磁盘查找，不触发 import，无缓存副作用。
         try:
-            mod = importlib.import_module(mod_name)
-            version = getattr(mod, '__version__', None) or 'unknown'
-            deps[mod_name] = {'installed': True, 'version': version, 'display_name': display_name}
-        except ImportError:
+            spec = importlib.util.find_spec(mod_name)
+            if spec is not None:
+                # 找到 spec 后再 import 拿版本号（import 成功不会缓存失败）
+                mod = importlib.import_module(mod_name)
+                version = getattr(mod, '__version__', None) or 'unknown'
+                deps[mod_name] = {'installed': True, 'version': version, 'display_name': display_name}
+            else:
+                deps[mod_name] = {'installed': False, 'version': None, 'display_name': display_name}
+        except (ImportError, ModuleNotFoundError):
             deps[mod_name] = {'installed': False, 'version': None, 'display_name': display_name}
 
     # 🔧 V7 模块化分组：每个功能模块 = 一组依赖包，所有依赖都 installed 时 ready=true
@@ -434,6 +443,128 @@ async def release_models():
         return {'status': 'ok', 'message': '所有模型已释放'}
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
+
+
+# ============================================================
+# 🔧 V8 运行时依赖安装（pip install + SSE 进度推送）
+# ============================================================
+# 用户在 HealthPage 点"一键安装缺失依赖"时调用
+# 流程：POST /api/install_dep 触发后台 pip install → GET /api/install_dep/stream/{task_id} 订阅进度
+
+_install_progress: dict = {}  # task_id → 进度字典（与 audio_pipeline 的 _task_progress 同模式）
+
+
+def _get_install_progress(task_id: str) -> dict:
+    """获取安装任务进度，不存在则初始化"""
+    if task_id not in _install_progress:
+        _install_progress[task_id] = {
+            'status': 'pending',     # pending | downloading | installing | done | error
+            'total': 0,              # 待装包总数
+            'installed': [],         # 已装包名列表
+            'current': None,         # 当前正在装的包名
+            'percent': 0,            # 总进度百分比 0-100
+            'message': '',           # 人类可读消息
+            'error': None,           # 错误信息（status=error 时）
+        }
+    return _install_progress[task_id]
+
+
+def _set_install_progress(task_id: str, **kwargs) -> None:
+    """增量更新安装任务进度字段"""
+    p = _get_install_progress(task_id)
+    p.update(kwargs)
+
+
+@app.post('/api/install_dep')
+async def install_dep(payload: dict):
+    """触发 pip install 安装缺失依赖（fire-and-forget，立即返回 task_id）
+
+    请求体：
+        { "packages": ["demucs", "transformers", "insightface"] }
+
+    返回：
+        { "task_id": "xxx", "status": "started" }
+    进度通过 GET /api/install_dep/stream/{task_id} 订阅
+    """
+    import asyncio
+    import uuid
+
+    packages = payload.get('packages', [])
+    if not packages:
+        return {'success': False, 'message': 'packages 不能为空'}
+
+    task_id = str(uuid.uuid4())[:8]
+    _set_install_progress(task_id, total=len(packages), status='downloading',
+                         message=f'准备安装 {len(packages)} 个包: {", ".join(packages)}')
+
+    loop = asyncio.get_event_loop()
+    # fire-and-forget：后台线程池执行 pip install，不阻塞 HTTP 响应
+    loop.run_in_executor(None, _pip_install_sync, task_id, packages)
+
+    return {'task_id': task_id, 'status': 'started'}
+
+
+@app.get('/api/install_dep/stream/{task_id}')
+async def install_dep_stream(task_id: str):
+    """SSE 推流接口：pip install 进度变化时主动 push"""
+    import asyncio
+    from fastapi.responses import StreamingResponse
+
+    async def event_generator():
+        while True:
+            progress = _get_install_progress(task_id)
+            yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+            if progress.get('status') in ('done', 'error'):
+                break
+            await asyncio.sleep(0.3)  # 300ms 推送间隔
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+def _pip_install_sync(task_id: str, packages: list) -> None:
+    """同步执行 pip install（在线程池中跑），更新 _install_progress
+
+    🔧 关键：用 sys.executable -m pip 调用，确保装到 ai_daemon 当前 Python 环境
+       （ai-env 便携环境 或 系统 Python，取决于 AiRuntimeManager.resolvePythonPath）
+    """
+    import subprocess
+
+    total = len(packages)
+    for idx, pkg in enumerate(packages):
+        _set_install_progress(task_id, current=pkg, status='downloading',
+                             percent=int(idx / total * 100),
+                             message=f'[{idx + 1}/{total}] 正在下载安装 {pkg}...')
+        try:
+            # 用当前 Python 解释器调 pip，确保装对地方
+            # - --progress-bar off：禁用进度条（输出到 stderr 会污染日志）
+            # - --no-input：禁止交互式提示
+            result = subprocess.run(
+                [sys.executable, '-m', 'pip', 'install', pkg,
+                 '--progress-bar', 'off', '--no-input'],
+                capture_output=True, text=True, timeout=600  # 单包 10 分钟超时
+            )
+            if result.returncode != 0:
+                err_msg = result.stderr[-500:] if result.stderr else '未知错误'
+                _set_install_progress(task_id, status='error', error=f'{pkg} 安装失败: {err_msg}',
+                                     message=f'安装 {pkg} 失败')
+                return
+
+            # 标记当前包完成
+            installed_list = _get_install_progress(task_id)['installed']
+            installed_list.append(pkg)
+            _set_install_progress(task_id, installed=installed_list,
+                                 percent=int((idx + 1) / total * 100),
+                                 message=f'[{idx + 1}/{total}] {pkg} 安装完成')
+        except subprocess.TimeoutExpired:
+            _set_install_progress(task_id, status='error', error=f'{pkg} 安装超时（>10分钟）',
+                                 message=f'安装 {pkg} 超时')
+            return
+        except Exception as e:
+            _set_install_progress(task_id, status='error', error=f'{pkg} 安装异常: {str(e)}',
+                                 message=f'安装 {pkg} 异常')
+            return
+
+    _set_install_progress(task_id, status='done', percent=100, current=None,
+                         message=f'全部 {total} 个包安装完成')
 
 
 # ============================================================

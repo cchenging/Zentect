@@ -68,6 +68,18 @@ export const API = {
       sqliteVersion: string;
       tables: Array<{ name: string; rowCount: number }>;
     }>(IPC_CHANNELS.SYSTEM_GET_DB_DETAIL),
+    /** 🔧 V8 新增：触发 pip install 安装缺失依赖（返回 task_id，进度通过 onInstallDepProgress 监听） */
+    installDep: (packages: string[]) => invokeSafe<{ success: boolean; task_id?: string; message?: string }>(
+      IPC_CHANNELS.SYSTEM_INSTALL_DEP, packages
+    ),
+    /** 🔧 V8 新增：注册安装进度监听器（主进程通过 IPC event 推送进度） */
+    onInstallDepProgress: (callback: (progress: any) => void) => {
+      const { ipcRenderer } = window.electron as any;
+      if (!ipcRenderer) return () => {};
+      const handler = (_event: any, progress: any) => callback(progress);
+      ipcRenderer.on(IPC_CHANNELS.SYSTEM_INSTALL_DEP_PROGRESS, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.SYSTEM_INSTALL_DEP_PROGRESS, handler);
+    },
   },
 
   media: {

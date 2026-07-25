@@ -80,7 +80,7 @@ export class AIDaemon {
   public startTTS() {
     if (this.ttsReady || this.ttsProcess) return;
 
-    const pythonExe = this.settingsRepo.get<string>('pythonPath', 'python');
+    const pythonExe = this.resolvePythonPath();
     const scriptPath = PathManager.getScriptPath('tts_worker.py');
     const defaultModelsDir = PathManager.getModelsPath();
     // 读取用户在设置中配置的模型路径，优先使用
@@ -365,5 +365,23 @@ export class AIDaemon {
       .catch((err) => {
         AppLogger.error(LOG_TAGS.AI_DAEMON, 'RuntimeManager 重启失败', err);
       });
+  }
+
+  /**
+   * 解析 Python 解释器路径
+   * 优先级：用户 settings 自定义 → ai-env 便携环境 → 系统 Python
+   * 与 AiRuntimeManager.resolvePythonPath 保持一致，确保 TTS worker 与 ai_daemon 用同一解释器
+   */
+  private resolvePythonPath(): string {
+    // 1. 用户在设置中显式配置的 pythonPath
+    const userDefined = this.settingsRepo.get<string>('pythonPath', '');
+    if (userDefined) return userDefined;
+
+    // 2. ai-env 便携环境（发版内置）
+    const aiEnvPython = PathManager.getAiEnvPythonPath();
+    if (aiEnvPython) return aiEnvPython;
+
+    // 3. 降级到系统 Python
+    return 'python';
   }
 }

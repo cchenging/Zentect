@@ -473,4 +473,94 @@ export class HealthService {
       builtin: e.builtin,
     }))
   }
+
+  /**
+   * 🔧 V8 新增：触发 pip install 安装缺失依赖
+   * fire-and-forget：POST /api/install_dep 立即返回 task_id，进度通过订阅 SSE 流获取
+   * @param packages 待安装的 pip 包名列表（如 ['demucs', 'transformers']）
+   * @returns { task_id, status } 启动结果
+   */
+  async installDep(packages: string[]): Promise<{ task_id: string; status: string } | null> {
+    try {
+      const daemon = AIDaemon.getInstance()
+      if (!daemon.isOnline()) {
+        throw new Error('AI 运行时离线，无法安装依赖')
+      }
+      const port = daemon.getPort()
+      const { HttpClient } = await import('../core/HttpClient')
+      const res = await HttpClient.post(
+        `http://127.0.0.1:${port}/api/install_dep`,
+        { packages },
+        { timeout: 10000 }
+      )
+      return res
+    } catch (e: any) {
+      throw new Error(`触发安装失败: ${e.message}`)
+    }
+  }
+
+  /**
+   * 🔧 V8 新增：订阅安装进度 SSE 流
+   * 调用方传入 onProgress 回调，流结束或异常时回调 done=true
+   * @param taskId  install_dep 返回的 task_id
+   * @param onProgress 进度回调 (progress 对象)
+   * @param signal 取消信号
+   */
+  async subscribeInstallProgress(
+    taskId: string,
+    onProgress: (progress: InstallProgress) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const port = AIDaemon.getInstance()?.getPort() || 34567
+    const url = `http://127.0.0.1:${port}/api/install_dep/stream/${taskId}`
+
+    try {
+      const res = await fetch(url, { signal })
+      if (!res.ok || !res.body) {
+        onProgress({ status: 'error', error: `SSE 连接失败: HTTP ${res.status}`, percent: 0, message: '', total: 0, installed: [], current: null })
+        return
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        if (signal?.aborted) break
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const progress = JSON.parse(line.slice(6)) as InstallProgress
+            onProgress(progress)
+            if (progress.status === 'done' || progress.status === 'error') return
+          } catch {
+            // 单行解析失败跳过
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e.name === 'AbortError') return
+      onProgress({ status: 'error', error: e.message, percent: 0, message: '', total: 0, installed: [], current: null })
+    }
+  }
+}
+
+/**
+ * 🔧 V8 新增：pip install 进度 payload（与 ai_daemon _install_progress 对齐）
+ */
+export interface InstallProgress {
+  status: 'pending' | 'downloading' | 'installing' | 'done' | 'error'
+  total: number
+  installed: string[]
+  current: string | null
+  percent: number
+  message: string
+  error: string | null
 }

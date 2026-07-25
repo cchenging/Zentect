@@ -58,7 +58,7 @@ export class AiRuntimeManager {
       return { success: false, message: msg }
     }
 
-    const pythonPath = this.settings.get<string>('pythonPath', 'python')
+    const pythonPath = this.resolvePythonPath()
     const customPort = this.settings.get<number>('aiPort', 34567)
     this.runtimePort = Number(customPort) || 34567
     const gpuEnabled = this.settings.get<boolean>('enableGPU', true)
@@ -214,7 +214,7 @@ export class AiRuntimeManager {
 
   /** 构建自动重启回调：重 spawn + /health 就绪探测 */
   private createRestartCallback(): RestartCallback {
-    const pythonPath = this.settings.get<string>('pythonPath', 'python')
+    const pythonPath = this.resolvePythonPath()
     const port = this.runtimePort
     const gpuEnabled = this.settings.get<boolean>('enableGPU', true)
     const deviceType = gpuEnabled ? 'cuda' : 'cpu'
@@ -251,6 +251,28 @@ export class AiRuntimeManager {
       AppLogger.info(LOG_TAGS.SYSTEM, `[AiRuntimeManager] 重启就绪 (PID: ${proc.pid})`)
       return proc
     }
+  }
+
+  /**
+   * 解析 Python 解释器路径
+   * 优先级：用户 settings 自定义 → ai-env 便携环境 → 系统 Python
+   * 发版后用户机器无 Python 时，ai-env 兜底保证可运行
+   */
+  private resolvePythonPath(): string {
+    // 1. 用户在设置中显式配置的 pythonPath（最高优先级）
+    const userDefined = this.settings.get<string>('pythonPath', '')
+    if (userDefined) return userDefined
+
+    // 2. ai-env 便携环境（发版内置）
+    const aiEnvPython = PathManager.getAiEnvPythonPath()
+    if (aiEnvPython) {
+      AppLogger.info(LOG_TAGS.AI_DAEMON, `[AiRuntimeManager] 使用便携 ai-env: ${aiEnvPython}`)
+      return aiEnvPython
+    }
+
+    // 3. 降级到系统 Python（开发环境或 ai-env 缺失时）
+    AppLogger.warn(LOG_TAGS.AI_DAEMON, '[AiRuntimeManager] ai-env 不存在，降级到系统 python')
+    return 'python'
   }
 
   private getModelStatusSummary(): string {

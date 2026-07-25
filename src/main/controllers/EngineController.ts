@@ -356,6 +356,41 @@ export class EngineController {
       return healthService.smokeTest();
     });
 
+    // 🔧 V8: 触发 pip install 安装缺失依赖（fire-and-forget + SSE 进度推送）
+    //   流程：前端调 system:install-dep 传 packages → 主进程调 ai_daemon POST /api/install_dep 拿 task_id
+    //         → 主进程订阅 SSE 流 /api/install_dep/stream/{task_id} → 通过 system:install-dep:progress event 推送给前端
+    IpcRouter.handle(IPC_CHANNELS.SYSTEM_INSTALL_DEP, async (event, packages: string[]) => {
+      const healthService = new HealthService();
+      try {
+        const result = await healthService.installDep(packages);
+        if (!result?.task_id) {
+          return { success: false, message: '未获取到 task_id' };
+        }
+
+        // 后台订阅 SSE 进度流，通过 IPC event 转发给前端
+        const sender = event.sender;
+        const abortController = new AbortController();
+        healthService.subscribeInstallProgress(
+          result.task_id,
+          (progress) => {
+            try {
+              if (!sender.isDestroyed()) {
+                sender.send(IPC_CHANNELS.SYSTEM_INSTALL_DEP_PROGRESS, progress);
+              }
+            } catch { /* 推送失败忽略 */ }
+          },
+          abortController.signal
+        ).catch((err) => {
+          AppLogger.warn(LOG_TAGS.SYSTEM, `[install-dep] SSE 订阅异常: ${err.message}`);
+        });
+
+        return { success: true, task_id: result.task_id };
+      } catch (err: any) {
+        AppLogger.error(LOG_TAGS.SYSTEM, `[install-dep] 触发安装失败`, err);
+        return { success: false, message: err.message };
+      }
+    });
+
     // 🔧 V6 删除：SYSTEM_GET_DB_DETAIL handler（详情数据已合并到 system:health 响应，无需单独 IPC）
     //   旧版 V7 的 getDatabaseDetail 方法返回表列表/行数等开发信息，V6 已删除
 

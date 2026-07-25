@@ -87,6 +87,10 @@ resources/temp/
 resources/cache/
 resources/logs/
 
+# 🔧 V8: 便携 Python 环境（ai-env）不进 git，发版时由 electron-builder extraResources 打包
+#   体积约 2GB（含 torch 等），开发者本地用 `python -m venv resources/ai-env` 重建
+resources/ai-env/
+
 # 资源目录中不需要的媒体文件（保留 bin/ 和 models/）
 resources/*.png
 resources/*.jpg

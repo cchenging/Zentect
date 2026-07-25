@@ -8,9 +8,20 @@
 //   5. 字体规范 12px 起步：辅助 12px / 正文 13px / 标题 14-16px / 数值 18px
 import React, { useEffect, useState } from 'react';
 import {
-  CheckCircle2, XCircle, AlertTriangle, Loader2, RefreshCw, ChevronRight, X,
+  CheckCircle2, XCircle, AlertTriangle, Loader2, RefreshCw, ChevronRight, X, Download,
 } from 'lucide-react';
 import { API } from '@renderer/api';
+
+/** 🔧 V8 pip install 进度状态（与后端 InstallProgress 对齐） */
+interface InstallProgressState {
+  status: 'pending' | 'downloading' | 'installing' | 'done' | 'error' | null;
+  total: number;
+  installed: string[];
+  current: string | null;
+  percent: number;
+  message: string;
+  error: string | null;
+}
 
 /** 健康检查项状态 */
 type HealthStatus = 'ok' | 'warn' | 'error';
@@ -62,6 +73,9 @@ export const HealthPage: React.FC = () => {
   const [error, setError] = useState('');
   /** 当前展开的详情 Modal key */
   const [detailKey, setDetailKey] = useState<string | null>(null);
+  /** 🔧 V8 pip install 安装状态 */
+  const [installing, setInstalling] = useState(false);
+  const [installProgress, setInstallProgress] = useState<InstallProgressState | null>(null);
 
   /** 执行健康检查 */
   const fetchHealth = async () => {
@@ -74,6 +88,52 @@ export const HealthPage: React.FC = () => {
       setError(err.message || '获取系统健康信息失败');
     } finally {
       setLoading(false);
+    }
+  };
+
+  /** 🔧 V8 一键安装缺失的运行时依赖 */
+  const handleInstallMissingDeps = async () => {
+    if (!health?.runtimePkgs) return;
+    const missingPkgs = health.runtimePkgs.filter(p => !p.installed).map(p => p.name);
+    if (missingPkgs.length === 0) return;
+
+    setInstalling(true);
+    setInstallProgress({
+      status: 'pending', total: missingPkgs.length, installed: [],
+      current: null, percent: 0, message: '准备安装...', error: null,
+    });
+
+    // 注册 SSE 进度监听
+    const unsubscribe = API.system.onInstallDepProgress((progress: any) => {
+      setInstallProgress(progress);
+      if (progress.status === 'done' || progress.status === 'error') {
+        setInstalling(false);
+        // 安装完成后自动刷新健康检查
+        if (progress.status === 'done') {
+          setTimeout(() => fetchHealth(), 500);
+        }
+      }
+    });
+
+    try {
+      const result = await API.system.installDep(missingPkgs);
+      if (!result?.success) {
+        setInstalling(false);
+        setInstallProgress(prev => prev ? {
+          ...prev, status: 'error',
+          error: result?.message || '触发安装失败',
+          message: result?.message || '触发安装失败',
+        } : null);
+      }
+    } catch (err: any) {
+      setInstalling(false);
+      setInstallProgress(prev => prev ? {
+        ...prev, status: 'error',
+        error: err.message, message: err.message,
+      } : null);
+    } finally {
+      // 进度流结束后取消订阅（延迟，确保最后一条消息处理完）
+      setTimeout(() => unsubscribe(), 1000);
     }
   };
 
@@ -320,6 +380,18 @@ export const HealthPage: React.FC = () => {
               </div>
               <div className="flex items-center gap-3">
                 {getStatusLabel(item.status)}
+                {/* 🔧 V8: AI 运行时依赖项 - 缺失包时显示"一键安装"按钮 */}
+                {item.key === 'runtime' && health?.runtimePkgs &&
+                  health.runtimePkgs.some(p => !p.installed) && (
+                  <button
+                    onClick={handleInstallMissingDeps}
+                    disabled={installing}
+                    className="h-7 px-3 rounded-md bg-accent/10 border border-accent/30 text-xs font-medium text-accent hover:bg-accent/20 transition-all cursor-pointer outline-none flex items-center gap-1 disabled:opacity-50"
+                  >
+                    {installing ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+                    {installing ? '安装中...' : '一键安装'}
+                  </button>
+                )}
                 <button
                   onClick={() => setDetailKey(item.key)}
                   className="text-xs text-accent hover:text-accent-cyan flex items-center gap-0.5 transition-colors"
@@ -329,6 +401,31 @@ export const HealthPage: React.FC = () => {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* 🔧 V8: pip install 进度条 */}
+      {installing && installProgress && (
+        <div className="glass-card-sm p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium text-foreground">安装运行时依赖</div>
+            <div className="text-xs text-muted-foreground">{installProgress.percent}%</div>
+          </div>
+          <div className="h-2 bg-bg-tertiary rounded-full overflow-hidden">
+            <div
+              className="h-full bg-accent transition-all duration-300"
+              style={{ width: `${installProgress.percent}%` }}
+            />
+          </div>
+          <div className="text-xs text-muted-foreground">
+            {installProgress.message}
+            {installProgress.current && installProgress.status !== 'done' && (
+              <span className="text-accent ml-2">[{installProgress.current}]</span>
+            )}
+          </div>
+          {installProgress.status === 'error' && installProgress.error && (
+            <div className="text-xs text-accent-rose break-all">{installProgress.error}</div>
+          )}
         </div>
       )}
 

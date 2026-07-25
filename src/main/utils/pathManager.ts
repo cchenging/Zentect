@@ -64,6 +64,28 @@ export class PathManager {
     return app.isPackaged ? process.resourcesPath : path.join(process.cwd(), 'resources');
   }
 
+  /**
+   * 获取便携 Python 环境（ai-env）的根目录路径
+   * 发版内置，路径形态：resources/ai-env/
+   */
+  public static getAiEnvPath(): string {
+    return path.join(this.getResourcesPath(), 'ai-env');
+  }
+
+  /**
+   * 获取便携 Python 解释器路径
+   * - Windows: resources/ai-env/Scripts/python.exe
+   * - macOS/Linux: resources/ai-env/bin/python
+   * 若 ai-env 不存在则返回 null，调用方需降级到系统 Python
+   */
+  public static getAiEnvPythonPath(): string | null {
+    const aiEnvPath = this.getAiEnvPath();
+    const pythonExe = process.platform === 'win32'
+      ? path.join(aiEnvPath, 'Scripts', 'python.exe')
+      : path.join(aiEnvPath, 'bin', 'python');
+    return fs.existsSync(pythonExe) ? pythonExe : null;
+  }
+
   public static getPlatformDir(): string {
     return process.platform === 'win32' ? 'win' : (process.platform === 'darwin' ? 'mac' : 'linux');
   }
