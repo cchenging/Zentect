@@ -1,6 +1,7 @@
 # Zentect AI Daemon Python 依赖
 # 安装命令：<pythonPath> -m pip install -r requirements.txt
-# 注意：版本约束基于 Python 3.10 + torch 2.x 适配，避免 API 漂移
+# 注意：版本约束基于 Python 3.10 + torch 2.7.x 适配，避免 API 漂移
+#       该版本组合已在系统 Python 验证全功能跑通（demucs/funasr/transformers/insightface）
 
 # === Web 框架 ===
 fastapi>=0.100.0
@@ -9,31 +10,42 @@ pydantic>=2.0.0
 sse-starlette>=1.6.0
 
 # === ASR 语音识别 ===
-funasr>=1.1.2
+# funasr 锁定 1.3.9：更高版本在 torch 2.7 下 DLL 崩溃（Access Violation）
+funasr==1.3.9
 modelscope
 huggingface_hub
 numpy<=1.26.4
+# numba/llvmlite 锁定：0.66/0.48 在 numpy 1.26 下 ABI 不兼容，会触发 funasr import 崩溃
+numba==0.61.2
+llvmlite==0.44.0
+# sentencepiece 锁定：0.2.x 的 C 扩展在 Python 3.10 下加载崩溃
+sentencepiece==0.1.99
 
 # === 音频分离 ===
 # demucs 锁定 4.0.x，避免 4.1+ 进度回调节段名变更导致进度永远 0%
 demucs>=4.0.1,<4.1.0
 audio_separator
-onnxruntime
+# onnxruntime 锁定 1.20.1：更高版本在 torch 2.7 下 DLL 崩溃
+onnxruntime==1.20.1
 
 # === 人脸识别 ===
-insightface
+insightface==0.7.3
 opencv-python
+# opencv-python-headless 锁定 <5.0：5.x 要求 numpy>=2，与本项目 numpy 1.26 约束冲突
+opencv-python-headless<5.0
 
 # === 视觉/语义 ===
-transformers
+# transformers 锁定 4.57.1：5.x 要求 torch>=2.4 且 API 变更较大
+transformers==4.57.1
 # torch 与 torchaudio 版本必须配套，避免运行时不兼容
-torch>=2.0.0,<2.2.0
-torchaudio>=2.0.0,<2.2.0
+# 2.7.x 已验证全功能跑通（demucs/funasr/transformers/insightface）
+torch>=2.7.0,<2.8.0
+torchaudio>=2.7.0,<2.8.0
 
 # === 音频处理 ===
-librosa
-soundfile
-scipy
+librosa==0.10.1
+soundfile==0.13.1
+scipy==1.15.2
 
 # === 其他 ===
 hdbscan
