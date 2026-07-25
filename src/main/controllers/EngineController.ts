@@ -347,7 +347,8 @@ export class EngineController {
     // M4.0: 系统健康检查与冒烟测试
     IpcRouter.handle('system:health', async () => {
       const healthService = new HealthService();
-      return healthService.collect();
+      // 🔧 V6：collect() 改为 async（需调用 ai_daemon HTTP 接口）
+      return await healthService.collect();
     });
 
     IpcRouter.handle('system:smoke-test', async () => {
@@ -355,12 +356,8 @@ export class EngineController {
       return healthService.smokeTest();
     });
 
-    // 🔧 V7 新增：数据库详情查询（供健康检查页"详情"按钮调用）
-    //   返回 { path, sizeBytes, journalMode, sqliteVersion, tables: [{name, rowCount}] }
-    IpcRouter.handle(IPC_CHANNELS.SYSTEM_GET_DB_DETAIL, async () => {
-      const healthService = new HealthService();
-      return healthService.getDatabaseDetail();
-    });
+    // 🔧 V6 删除：SYSTEM_GET_DB_DETAIL handler（详情数据已合并到 system:health 响应，无需单独 IPC）
+    //   旧版 V7 的 getDatabaseDetail 方法返回表列表/行数等开发信息，V6 已删除
 
     // ========== V1.2: FFmpeg 独立 MP4 渲染 ==========
     IpcRouter.handle(IPC_CHANNELS.EXPORT_MP4_RENDER, async (_, payload) => {

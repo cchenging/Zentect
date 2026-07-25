@@ -366,6 +366,7 @@ async def check_deps():
         'torch': 'PyTorch',
         'torchaudio': 'Torchaudio',
         'transformers': 'Transformers',
+        'tokenizers': 'Tokenizers',  # 🔧 V6 补全：CLIP 依赖 tokenizers（transformers 子依赖，可能未装）
         'fastapi': 'FastAPI',
         'uvicorn': 'Uvicorn',
         'cv2': 'OpenCV',
