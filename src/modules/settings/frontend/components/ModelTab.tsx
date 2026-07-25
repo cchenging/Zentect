@@ -1,11 +1,11 @@
 // 📁 路径: src/modules/settings/frontend/components/ModelTab.tsx
 // 本地模型管理 Tab - V7 功能模块化重构
-// 旧版：23 个细碎模型卡片
-// V7：4 分类 Chip + 7 功能模块卡片（每张含模型文件详情 + 运行时状态 + 跳转健康检查）
+// 🔧 修复 M3：只管模型文件，运行时依赖去健康检查页查看
+// V7：4 分类 Chip + 7 功能模块卡片（每张含模型文件详情 + 操作）
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Download, Trash2, Loader2, CheckCircle2, XCircle, AlertTriangle,
-  Upload, ExternalLink, FileSearch, Package, HardDrive,
+  Upload, FileSearch, Package, HardDrive,
 } from 'lucide-react';
 import { Button } from '@renderer/components/ui/button';
 import { API } from '@renderer/api';
@@ -40,15 +40,9 @@ interface ModelFile {
   pythonPkg?: string;
 }
 
-/** 模块运行时依赖状态 */
-interface ModuleRuntime {
-  id: string;
-  ready: boolean;
-  missing: string[];
-  displayName: string;
-}
-
-/** 功能模块（对应一张卡片） */
+/** 功能模块（对应一张卡片）
+ * 🔧 修复 M3：删除 runtime 字段，模型管理只管模型文件
+ */
 interface ModuleCard {
   id: string;
   category: CategoryId;
@@ -58,7 +52,6 @@ interface ModuleCard {
   required: 'builtin' | 'optional';
   sizeNote: string;
   models: ModelFile[];
-  runtime: ModuleRuntime;
   status: ModuleStatus;
   canUse: boolean;
 }
@@ -91,8 +84,8 @@ function formatDate(dateStr: string): string {
 
 /**
  * 本地模型管理 Tab - V7 功能模块化版本
- * 4 分类 Chip + 7 功能模块卡片
- * 运行时依赖不在本页展示（去健康检查页查看），卡片只显示运行时状态 + 跳转链接
+ * 🔧 修复 M3：只管模型文件，运行时依赖去健康检查页查看
+ * 4 分类 Chip + 7 功能模块卡片（仅模型文件状态 + 操作）
  */
 export const ModelTab: React.FC = () => {
   const [modules, setModules] = useState<ModuleCard[]>([]);
@@ -109,7 +102,7 @@ export const ModelTab: React.FC = () => {
     setTimeout(() => setToast(null), 3000);
   };
 
-  /** 加载功能模块列表（含模型文件 + 运行时状态） */
+  /** 加载功能模块列表（仅含模型文件状态） */
   const loadModules = async () => {
     setLoading(true);
     try {
@@ -135,14 +128,10 @@ export const ModelTab: React.FC = () => {
     const missing = module.models.filter(m =>
       m.status === 'not_downloaded' || m.status === 'corrupted' || m.status === 'download_failed'
     );
-    if (missing.length === 0 && module.runtime.ready) {
-      // 模型文件齐全 + 运行时就绪，无需操作
-      showToast('info', `${module.displayName} 已就绪，无需安装`);
-      return;
-    }
-    if (missing.length === 0 && !module.runtime.ready) {
-      // 模型文件齐全但运行时缺失，提示去健康检查
-      showToast('info', `${module.displayName} 模型文件已就绪，运行时依赖未装，请去健康检查`);
+    // 🔧 修复 M3：canUse 现在仅基于模型文件，无需检查 runtime
+    if (missing.length === 0) {
+      // 模型文件齐全，无需操作
+      showToast('info', `${module.displayName} 模型文件已齐全`);
       return;
     }
     // 🔧 修复 P0-2：标记 busy 状态，给用户即时反馈
@@ -226,14 +215,6 @@ export const ModelTab: React.FC = () => {
     }
   };
 
-  /** 跳转到健康检查页（运行时依赖管理） */
-  const handleGoHealth = () => {
-    // 通过 settings store 切换到健康检查 Tab
-    window.api.ipc?.send?.('settings:switchTab', 'health');
-    // 备用：触发自定义事件
-    window.dispatchEvent(new CustomEvent('settings:switchTab', { detail: 'health' }));
-  };
-
   /** 按分类过滤模块 */
   const filteredModules = useMemo(() => {
     if (activeCategory === 'all') return modules;
@@ -308,7 +289,7 @@ export const ModelTab: React.FC = () => {
       {loading && (
         <div className="flex items-center justify-center py-20">
           <Loader2 size={24} className="animate-spin text-accent" />
-          <span className="ml-3 text-[12px] text-muted-foreground">扫描磁盘 + 检查运行时...</span>
+          <span className="ml-3 text-[12px] text-muted-foreground">扫描磁盘...</span>
         </div>
       )}
 
@@ -324,7 +305,6 @@ export const ModelTab: React.FC = () => {
               onInstall={() => handleInstall(module)}
               onUninstall={() => handleUninstall(module)}
               onImport={handleImport}
-              onGoHealth={handleGoHealth}
             />
           ))}
         </div>
@@ -343,9 +323,6 @@ export const ModelTab: React.FC = () => {
           <HardDrive size={11} />
           模型文件占用：{formatBytes(totalSizeBytes)} · {readyCount}/{modules.length} 个模块可用
         </span>
-        <span className="text-xs text-muted-foreground/60">
-          运行时依赖（torch/demucs 等）请前往健康检查
-        </span>
       </div>
     </div>
   );
@@ -353,7 +330,7 @@ export const ModelTab: React.FC = () => {
 
 /**
  * 功能模块卡片
- * 显示模块信息 + 模型文件列表 + 运行时状态 + 操作按钮
+ * 🔧 修复 M3：只显示模型文件状态，删除运行时相关 UI
  * 修复 P0-2：接受 busyModuleId/busyModelId，按钮在 busy 时显示 spinner 并 disabled
  */
 const ModuleCardView: React.FC<{
@@ -363,26 +340,18 @@ const ModuleCardView: React.FC<{
   onInstall: () => void;
   onUninstall: () => void;
   onImport: (modelId: string) => void;
-  onGoHealth: () => void;
-}> = ({ module, busyModuleId, busyModelId, onInstall, onUninstall, onImport, onGoHealth }) => {
+}> = ({ module, busyModuleId, busyModelId, onInstall, onUninstall, onImport }) => {
   const modelsReady = module.models.every(m => m.status === 'downloaded');
   const someReady = module.models.some(m => m.status === 'downloaded');
-  const runtimeReady = module.runtime.ready;
   const canUse = module.canUse;
   const isModuleBusy = busyModuleId === module.id;
 
-  /** 获取模块整体状态文案与图标 */
+  /** 获取模块整体状态文案与图标（M3：仅基于模型文件） */
   const getStatusDisplay = () => {
     if (canUse) {
-      return { icon: <CheckCircle2 size={12} />, text: '可用', color: 'text-accent-green' };
+      return { icon: <CheckCircle2 size={12} />, text: '已就绪', color: 'text-accent-green' };
     }
-    if (modelsReady && !runtimeReady) {
-      return { icon: <AlertTriangle size={12} />, text: '模型就绪，运行时缺失', color: 'text-yellow-500' };
-    }
-    if (!modelsReady && runtimeReady) {
-      return { icon: <AlertTriangle size={12} />, text: '运行时就绪，缺模型', color: 'text-yellow-500' };
-    }
-    if (someReady || runtimeReady) {
+    if (someReady) {
       return { icon: <AlertTriangle size={12} />, text: '部分就绪', color: 'text-yellow-500' };
     }
     return { icon: <XCircle size={12} />, text: '未安装', color: 'text-muted-foreground' };
@@ -393,7 +362,7 @@ const ModuleCardView: React.FC<{
     <div className={`
       glass-card-sm p-4 flex flex-col gap-3 transition-all
       ${canUse ? 'border-accent-green/20'
-        : (modelsReady || runtimeReady) ? 'border-yellow-500/20'
+        : someReady ? 'border-yellow-500/20'
         : 'border-border/40'}
     `}>
       {/* 顶部：图标 + 名称 + 必装/可选标签 + 状态 */}
@@ -475,36 +444,6 @@ const ModuleCardView: React.FC<{
           <span className="text-muted-foreground/50">路径：</span>{m.downloadPath}
         </div>
       ))}
-
-      {/* 运行时依赖状态（V4 P1-1：精简显示，避免与 HealthPage 重复）
-          - 已就绪：只显示绿勾 + "就绪"，无跳转链接
-          - 未就绪：显示黄叹号 + 缺失依赖数 + "去健康检查"链接
-          - 详情（缺失包列表、共用方等）请前往健康检查页查看 */}
-      <div className="flex items-center justify-between text-xs py-1.5 border-t border-border/20">
-        <div className="flex items-center gap-1.5">
-          <span className="text-muted-foreground">⚙️ 运行时:</span>
-          {runtimeReady ? (
-            <span className="text-accent-green flex items-center gap-1">
-              <CheckCircle2 size={11} /> 就绪
-            </span>
-          ) : (
-            <span className="text-yellow-500 flex items-center gap-1">
-              <AlertTriangle size={11} /> 未就绪
-              {module.runtime.missing.length > 0 && (
-                <span className="text-xs text-muted-foreground">（缺 {module.runtime.missing.length} 个包）</span>
-              )}
-            </span>
-          )}
-        </div>
-        {!runtimeReady && (
-          <button
-            onClick={onGoHealth}
-            className="text-xs text-accent hover:text-accent-cyan flex items-center gap-0.5 transition-colors"
-          >
-            去健康检查 <ExternalLink size={10} />
-          </button>
-        )}
-      </div>
 
       {/* 操作按钮 */}
       <div className="flex items-center gap-2 pt-1">

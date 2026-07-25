@@ -514,11 +514,12 @@ export class ModelService {
 
   /**
    * 🔧 V7 新增：获取功能模块列表（7 张卡片 + 4 分类）
-   * 供前端模型管理页按功能模块展示，每张卡片含模型文件 + 运行时依赖状态
-   * @param depsStatus ai_daemon /api/check_deps 返回的运行时依赖状态
-   * @returns 模块列表（含模型文件详情 + 运行时状态 + 整体可用性）
+   * 🔧 修复 M1：模型管理只管模型文件，删除 runtime 字段
+   *   - 旧版：canUse = 模型文件就绪 + 运行时就绪（混合职责，与 HealthPage 冲突）
+   *   - 新版：canUse = 模型文件就绪（纯模型文件管理，运行时去健康检查页看）
+   * @returns 模块列表（仅含模型文件详情 + 文件整体可用性）
    */
-  public getModuleList(depsStatus?: any) {
+  public getModuleList() {
     // 先扫描磁盘更新状态
     this.scanDiskModels();
     const allModels = this.modelRepo.findAll();
@@ -542,20 +543,12 @@ export class ModelService {
         };
       });
 
-      // 计算模型文件整体状态
+      // 计算模型文件整体状态（M1：仅基于模型文件，不再依赖运行时）
       const allModelsReady = models.every(m => m.status === 'downloaded');
       const someModelsReady = models.some(m => m.status === 'downloaded');
 
-      // 🔧 V7：从 ai_daemon.modules 读取运行时依赖状态
-      //   depsStatus 格式: { modules: { demucs: { ready, missing, display_name, size } } }
-      const runtimeInfo = depsStatus?.modules?.[module.runtimeId] || {
-        ready: false,
-        missing: [],
-        display_name: module.runtimeId,
-      };
-
-      // 整体可用 = 模型文件就绪 + 运行时就绪
-      const canUse = allModelsReady && runtimeInfo.ready;
+      // canUse = 模型文件全部就绪（运行时状态去健康检查页查看）
+      const canUse = allModelsReady;
 
       return {
         id: module.id,
@@ -566,13 +559,7 @@ export class ModelService {
         required: module.required,
         sizeNote: module.sizeNote,
         models,
-        runtime: {
-          id: module.runtimeId,
-          ready: runtimeInfo.ready,
-          missing: runtimeInfo.missing || [],
-          displayName: runtimeInfo.display_name || module.runtimeId,
-        },
-        status: canUse ? 'ready' : (someModelsReady || runtimeInfo.ready ? 'partial' : 'missing'),
+        status: canUse ? 'ready' : (someModelsReady ? 'partial' : 'missing'),
         canUse,
       };
     });

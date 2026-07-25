@@ -37,18 +37,11 @@ export class ModelController {
     });
 
     // 🔧 V7 新增：获取功能模块列表（7 张卡片 + 4 分类）
-    //   先调 ai_daemon /api/check_deps 拿运行时依赖状态，再聚合模型文件状态
+    // 🔧 修复 M2：删除 checkDeps 调用，模型管理只管模型文件
+    //   旧版：先调 ai_daemon /api/check_deps 拿运行时依赖状态再聚合（混合职责）
+    //   新版：只返回模型文件状态，运行时去健康检查页查看
     IpcRouter.handle(IPC_CHANNELS.MODEL_GET_MODULE_LIST, async () => {
-      try {
-        const { AIService } = await import('../services/AIService');
-        const aiService = new AIService();
-        const depsStatus = await aiService.checkDeps();
-        return this.modelService.getModuleList(depsStatus);
-      } catch (e: any) {
-        // ai_daemon 离线时仍返回模块列表（运行时状态全为 not_ready）
-        AppLogger.warn(LOG_TAGS.SYSTEM, `[ModelController] checkDeps 失败，仅返回模型文件状态: ${e.message}`);
-        return this.modelService.getModuleList();
-      }
+      return this.modelService.getModuleList();
     });
 
     // 🔧 V7 新增：获取 4 个分类定义（供前端 Chip 菜单）
