@@ -11,29 +11,75 @@ type ModelStatus = 'missing' | 'downloading' | 'ready' | 'updating' | 'error';
 /** 模型定义 - V3 原型7个模型，pythonPkg 映射到 Python 依赖包名（用于依赖检查） */
 interface ModelItem {
   id: string;
+  /** 中文显示名 */
   label: string;
+  /** 英文技术名（对应后端 local_models.name，如 Whisper Base / SenseVoiceSmall） */
+  englishName: string;
+  /** 估算大小（兼容旧版展示，磁盘未读到时兜底） */
   size: string;
+  /** 磁盘实际字节数（从后端 size_bytes 读取，0 表示未读取） */
+  sizeBytes: number;
+  /** 用途描述 */
   description: string;
   status: ModelStatus;
   progress: number;
   version: string;
+  /** 下载路径（磁盘绝对路径） */
+  downloadPath: string;
+  /** 下载完成时间（ISO 字符串） */
+  downloadedAt: string;
   /** 对应的 Python 包名（用于 checkDeps 依赖检查，无则不检查） */
   pythonPkg?: string;
 }
 
-/** V3 原型本地模型列表 */
+/**
+ * V3 原型本地模型列表
+ * englishName 与后端 ModelService.ts MODEL_DEFINITIONS.name 对齐，用于表格展示技术名
+ */
 const DEFAULT_MODELS: Omit<ModelItem, 'status' | 'progress'>[] = [
-  { id: 'moss_tts', label: 'moss-tts-nano', size: '~50MB', description: 'TTS 语音合成', version: '1.0' },
-  { id: 'whisper', label: 'Whisper.cpp', size: '~150MB', description: '语音识别 ASR', version: '1.0' },
-  { id: 'sensevoice', label: 'SenseVoiceSmall', size: '~80MB', description: '语音识别增强', version: '1.0', pythonPkg: 'funasr' },
-  { id: 'mdx_net', label: '音频分离模型', size: '~100MB', description: '人声与BGM分离', version: '1.0', pythonPkg: 'demucs' },
-  { id: 'insightface', label: '人脸识别模型', size: '~30MB', description: '人物面部检测', version: '1.0', pythonPkg: 'insightface' },
-  { id: 'emotion', label: '情绪分析模型', size: '~20MB', description: '文本+音频情绪', version: '1.0' },
-  { id: 'sovits', label: 'GPT-SoVITS', size: '~200MB', description: 'TTS 增强', version: '1.0' },
+  { id: 'moss_tts', label: 'moss-tts-nano', englishName: 'MOSS-TTS-Nano', size: '~50MB', sizeBytes: 0, description: 'TTS 语音合成', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'whisper', label: 'Whisper.cpp', englishName: 'Whisper Base', size: '~150MB', sizeBytes: 0, description: '语音识别 ASR', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'sensevoice', label: 'SenseVoiceSmall', englishName: 'SenseVoiceSmall', size: '~80MB', sizeBytes: 0, description: '语音识别增强', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'funasr' },
+  { id: 'mdx_net', label: '音频分离模型', englishName: 'UVR-MDX-NET', size: '~100MB', sizeBytes: 0, description: '人声与BGM分离', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'demucs' },
+  { id: 'insightface', label: '人脸识别模型', englishName: 'InsightFace Buffalo L', size: '~30MB', sizeBytes: 0, description: '人物面部检测', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
+  { id: 'emotion', label: '情绪分析模型', englishName: 'Emotion Model', size: '~20MB', sizeBytes: 0, description: '文本+音频情绪', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'sovits', label: 'GPT-SoVITS', englishName: 'GPT-SoVITS', size: '~200MB', sizeBytes: 0, description: 'TTS 增强', version: '1.0', downloadPath: '', downloadedAt: '' },
 ];
 
 /** Python 依赖检查结果：{ 包名: { installed, version, display_name } } */
 type DepsInfo = Record<string, { installed: boolean; version: string | null; display_name: string }>;
+
+/**
+ * 格式化字节数为人类可读字符串
+ * @param bytes 字节数
+ * @returns 形如 "147.9 MB" / "338.9 KB" / "-"
+ */
+const formatBytes = (bytes: number): string => {
+  if (!bytes || bytes === 0) return '-';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0;
+  let size = bytes;
+  while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
+  return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+};
+
+/**
+ * 格式化 ISO 时间字符串为本地短日期
+ * @param iso ISO 时间字符串
+ * @returns 形如 "07-25 14:30" 或 "-"
+ */
+const formatDateTime = (iso: string): string => {
+  if (!iso) return '-';
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '-';
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    return `${mm}-${dd} ${hh}:${mi}`;
+  } catch { return '-'; }
+};
 
 /**
  * 本地模型管理 Tab
@@ -72,7 +118,20 @@ export const ModelTab: React.FC = () => {
         setModels(prev => prev.map(m => {
           const serverModel = list.find((s: any) => s.model_id === m.id || s.id === m.id);
           if (serverModel) {
-            return { ...m, status: serverModel.status === 'ready' || serverModel.is_installed ? 'ready' : m.status, version: serverModel.version || m.version };
+            // 🔧 修复 P0：后端 scanDiskModels 写入 status='downloaded'，旧版只认 'ready' → 已下载模型识别不到
+            //   修复后：同时接受 'downloaded' / 'ready' / is_installed 三种已下载信号
+            const isReady = serverModel.status === 'downloaded'
+              || serverModel.status === 'ready'
+              || serverModel.is_installed === true;
+            return {
+              ...m,
+              status: isReady ? 'ready' : m.status,
+              version: serverModel.version || m.version,
+              englishName: serverModel.name || m.englishName,
+              sizeBytes: serverModel.size_bytes || 0,
+              downloadPath: serverModel.download_path || '',
+              downloadedAt: serverModel.downloaded_at || '',
+            };
           }
           return m;
         }));
@@ -104,13 +163,18 @@ export const ModelTab: React.FC = () => {
     try {
       await API.model.download(modelId);
       setModels(prev => prev.map(m => m.id === modelId ? { ...m, status: 'ready', progress: 100 } : m));
+      // 下载完成后重新拉取列表，刷新 sizeBytes/downloadPath/downloadedAt
+      loadModelStatus();
     } catch { setModels(prev => prev.map(m => m.id === modelId ? { ...m, status: 'error' } : m)); }
   };
 
   /** 卸载模型 */
   const handleUninstall = async (modelId: string) => {
     if (!window.confirm('确定要卸载此模型吗？')) return;
-    try { await API.model.uninstall(modelId); setModels(prev => prev.map(m => m.id === modelId ? { ...m, status: 'missing', progress: 0 } : m)); } catch {}
+    try {
+      await API.model.uninstall(modelId);
+      setModels(prev => prev.map(m => m.id === modelId ? { ...m, status: 'missing', progress: 0, sizeBytes: 0, downloadPath: '', downloadedAt: '' } : m));
+    } catch {}
   };
 
   /** 全部下载 */
@@ -149,6 +213,8 @@ export const ModelTab: React.FC = () => {
   };
 
   const readyCount = models.filter(m => m.status === 'ready').length;
+  /** 统计已用磁盘空间（来自后端真实字节数） */
+  const usedBytes = models.reduce((sum, m) => sum + (m.sizeBytes || 0), 0);
   const totalSize = '~630MB';
   /** 统计 Python 依赖安装情况 */
   const depModels = models.filter(m => m.pythonPkg);
@@ -156,7 +222,7 @@ export const ModelTab: React.FC = () => {
   const depsAllInstalled = deps && depModels.length > 0 && depsInstalledCount === depModels.length;
 
   return (
-    <div className="space-y-4 animate-fade-in" style={{ maxWidth: '996px' }}>
+    <div className="space-y-4 animate-fade-in" style={{ maxWidth: '1100px' }}>
       {/* 标题与操作 */}
       <div className="flex items-center justify-between">
         <div>
@@ -215,16 +281,20 @@ export const ModelTab: React.FC = () => {
               <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">状态</th>
               <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">模型</th>
               <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">用途</th>
+              <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">版本</th>
               <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">大小</th>
+              <th className="text-left text-[11px] text-muted-foreground font-medium px-4 py-2.5">下载信息</th>
               <th className="text-right text-[11px] text-muted-foreground font-medium px-4 py-2.5">操作</th>
             </tr>
           </thead>
           <tbody>
             {models.map(model => (
               <tr key={model.id} className="border-b border-border/15 hover:bg-white/[0.02] transition-colors">
-                <td className="px-4 py-3">{getStatusIcon(model.status)}</td>
-                <td className="px-4 py-3">
+                <td className="px-4 py-3 align-top">{getStatusIcon(model.status)}</td>
+                <td className="px-4 py-3 align-top">
                   <div className="text-[13px] font-medium text-foreground">{model.label}</div>
+                  {/* 英文技术名：对应后端 local_models.name，便于排查模型来源 */}
+                  <div className="text-[10px] text-muted-foreground/70 font-mono mt-0.5">{model.englishName}</div>
                   {model.status === 'downloading' && (
                     <div className="mt-1.5 flex items-center gap-2">
                       <div className="flex-1 h-1 bg-muted rounded-full overflow-hidden max-w-[120px]">
@@ -238,9 +308,29 @@ export const ModelTab: React.FC = () => {
                     <div className="mt-1">{getDepBadge(model)}</div>
                   )}
                 </td>
-                <td className="px-4 py-3 text-[12px] text-muted-foreground">{model.description}</td>
-                <td className="px-4 py-3 text-[12px] text-muted-foreground">{model.size}</td>
-                <td className="px-4 py-3 text-right">
+                <td className="px-4 py-3 align-top text-[12px] text-muted-foreground">{model.description}</td>
+                <td className="px-4 py-3 align-top text-[12px] text-muted-foreground font-mono">v{model.version}</td>
+                <td className="px-4 py-3 align-top text-[12px] text-muted-foreground">
+                  {/* 优先显示磁盘真实大小，兜底显示估算值 */}
+                  {model.sizeBytes > 0 ? (
+                    <span className="text-accent-green/90">{formatBytes(model.sizeBytes)}</span>
+                  ) : (
+                    <span className="text-muted-foreground/60">{model.size}</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 align-top text-[11px] text-muted-foreground/80">
+                  {model.status === 'ready' && model.downloadPath ? (
+                    <div className="space-y-0.5">
+                      <div className="font-mono text-[10px] truncate max-w-[200px]" title={model.downloadPath}>
+                        {model.downloadPath}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground/60">{formatDateTime(model.downloadedAt)}</div>
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground/40">-</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right align-top">
                   <div className="flex items-center justify-end gap-1.5">
                     {model.status === 'missing' && (
                       <Button variant="outline" size="sm" onClick={() => handleDownload(model.id)} className="h-7 text-[11px] gap-1 border-accent/30 text-accent hover:bg-accent/10 px-2.5">
@@ -272,7 +362,9 @@ export const ModelTab: React.FC = () => {
 
       {/* 磁盘统计 */}
       <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-2 border-t border-border/30">
-        <span>已用空间：{readyCount > 0 ? `~${readyCount * 80}MB` : '0MB'} / 总共 {totalSize}</span>
+        <span>
+          已用空间：{usedBytes > 0 ? formatBytes(usedBytes) : (readyCount > 0 ? `~${readyCount * 80}MB` : '0MB')} / 总计 {totalSize}
+        </span>
       </div>
     </div>
   );

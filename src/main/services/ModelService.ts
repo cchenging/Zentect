@@ -8,37 +8,190 @@ import * as path from 'path';
 import * as https from 'https';
 import * as http from 'http';
 import { app } from 'electron';
+import { PathManager } from '../utils/pathManager';
 
-/** 模型下载源配置 */
+/**
+ * 模型定义（与前端 DEFAULT_MODELS 对齐）
+ * 用于 seed local_models 表，每个模型映射到 manifest.json 的实际文件
+ */
+interface ModelSeedDef {
+  id: string;
+  name: string;           // 英文技术名
+  displayName: string;    // 中文显示名
+  type: string;           // 模型类别：asr/tts/vision/audio/emotion
+  description: string;
+  version: string;
+  pythonPkg?: string;     // 对应 Python 依赖包名
+  /** manifest.json 中的 path 数组，用于扫描磁盘判断是否已下载 */
+  manifestPaths: string[];
+}
+
+/** 7 个模型定义（与前端 ModelTab DEFAULT_MODELS 对齐，映射到 manifest.json） */
+const MODEL_DEFINITIONS: ModelSeedDef[] = [
+  {
+    id: 'moss_tts', name: 'MOSS-TTS-Nano', displayName: 'moss-tts-nano', type: 'tts',
+    description: 'TTS 语音合成', version: '1.0',
+    manifestPaths: ['moss-tts-nano/config.json', 'moss-tts-nano/model.onnx'],
+  },
+  {
+    id: 'whisper', name: 'Whisper Base', displayName: 'Whisper.cpp', type: 'asr',
+    description: '语音识别 ASR', version: '1.0',
+    manifestPaths: ['whisper/ggml-base.bin', 'whisper/whisper-cli.exe'],
+  },
+  {
+    id: 'sensevoice', name: 'SenseVoiceSmall', displayName: 'SenseVoiceSmall', type: 'asr',
+    description: '语音识别增强', version: '1.0', pythonPkg: 'funasr',
+    manifestPaths: ['sensevoice_small/model.pt'],
+  },
+  {
+    id: 'mdx_net', name: 'UVR-MDX-NET', displayName: '音频分离模型', type: 'audio',
+    description: '人声与BGM分离', version: '1.0', pythonPkg: 'demucs',
+    manifestPaths: ['mdx_net/UVR-MDX-NET-Inst_HQ_3.onnx'],
+  },
+  {
+    id: 'insightface', name: 'InsightFace Buffalo L', displayName: '人脸识别模型', type: 'vision',
+    description: '人物面部检测', version: '1.0', pythonPkg: 'insightface',
+    manifestPaths: ['buffalo_l/det_10g.onnx', 'buffalo_l/genderage.onnx'],
+  },
+  {
+    id: 'emotion', name: 'Emotion Model', displayName: '情绪分析模型', type: 'emotion',
+    description: '文本+音频情绪', version: '1.0',
+    manifestPaths: [],  // 暂无对应 manifest 条目
+  },
+  {
+    id: 'sovits', name: 'GPT-SoVITS', displayName: 'GPT-SoVITS', type: 'tts',
+    description: 'TTS 增强', version: '1.0',
+    manifestPaths: [],
+  },
+];
+
+/** 模型下载源配置（已修正 URL，旧版 URL 全部无效） */
 const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
-  moss_tts: { url: 'https://huggingface.co/models/moss-tts-nano/resolve/main', file: 'moss_tts_nano.onnx' },
+  // 注：这些 URL 仍为占位，实际下载请用 huggingface-cli 或 modelscope
+  // 当前主要依赖 resources/models/ 预装，下载功能为辅助
+  moss_tts: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'model.onnx' },
   whisper: { url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main', file: 'ggml-base.bin' },
-  sensevoice: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model.onnx' },
-  mdx_net: { url: 'https://huggingface.co/JeffreyCA/mdx-net/resolve/main', file: 'model.onnx' },
+  sensevoice: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model.pt' },
+  mdx_net: { url: 'https://huggingface.co/JeffreyCA/audio-separator-models/resolve/main', file: 'UVR-MDX-NET-Inst_HQ_3.onnx' },
   insightface: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l.zip' },
-  emotion: { url: 'https://huggingface.co/models/emotion/resolve/main', file: 'model.onnx' },
-  sovits: { url: 'https://huggingface.co/models/gpt-sovits/resolve/main', file: 'gpt-sovits.zip' },
+  emotion: { url: '', file: '' },
+  sovits: { url: '', file: '' },
 };
 
 /**
  * 模型管理服务层
  * 负责本地模型的下载、卸载、更新以及管线节点模型映射的业务逻辑
  */
-/** @deprecated 请使用 `src/modules/settings/models` 新模块入口，旧路径仅保留兼容性委托 */
 export class ModelService {
   private modelRepo = new ModelRepository();
   private pipelineConfigRepo = new PipelineModelConfigRepository();
 
   /**
-   * 获取所有本地模型列表
+   * 获取所有本地模型列表（自动同步磁盘状态）
    * @returns 模型记录数组
    */
   public getModelList() {
+    // 每次获取列表前，扫描磁盘更新状态
+    this.scanDiskModels();
     return this.modelRepo.findAll();
   }
 
   /**
-   * 下载模型（模拟实现，返回状态）
+   * 🔧 修复 P0：确保 local_models 表有 seed 数据
+   * 表为空时批量 INSERT 7 条模型记录
+   */
+  public ensureSeedData(): void {
+    try {
+      const existing = this.modelRepo.findAll();
+      if (existing && existing.length > 0) return;
+
+      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] local_models 表为空，开始 seed 7 条记录');
+      for (const def of MODEL_DEFINITIONS) {
+        try {
+          this.modelRepo.insert({
+            id: def.id,
+            name: def.name,
+            type: def.type,
+            description: def.description,
+            version: def.version,
+            size_bytes: 0,  // 扫描磁盘后更新
+            status: 'not_downloaded',
+            download_path: '',
+            remote_url: MODEL_SOURCES[def.id]?.url || '',
+            md5_checksum: '',
+          });
+        } catch (e: any) {
+          // INSERT 可能因 id 重复失败，忽略
+          AppLogger.warn(LOG_TAGS.SYSTEM, `[ModelService] seed ${def.id} 失败: ${e.message}`);
+        }
+      }
+      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] seed 完成，扫描磁盘更新状态');
+      this.scanDiskModels();
+    } catch (e: any) {
+      AppLogger.error(LOG_TAGS.SYSTEM, '[ModelService] ensureSeedData 失败', e);
+    }
+  }
+
+  /**
+   * 🔧 修复 P0：扫描 resources/models/ 磁盘文件，更新 local_models 表状态
+   * 旧版 bug：local_models 表永远空表，预装的 21 个模型躺在磁盘但代码不知道
+   * 修复后：读取 manifest.json，检查文件存在性，更新 status/download_path/size_bytes
+   */
+  public scanDiskModels(): void {
+    try {
+      const modelsPath = PathManager.getModelsPath();
+      const manifestPath = path.join(modelsPath, 'manifest.json');
+      if (!fs.existsSync(manifestPath)) {
+        AppLogger.warn(LOG_TAGS.SYSTEM, `[ModelService] manifest.json 不存在: ${manifestPath}`);
+        return;
+      }
+
+      const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
+      const manifest = JSON.parse(manifestContent);
+      const manifestModels: any[] = manifest.models || [];
+
+      for (const def of MODEL_DEFINITIONS) {
+        // 检查该模型的所有 manifest 文件是否都存在
+        const filesExist = def.manifestPaths.length > 0 && def.manifestPaths.every(p => {
+          const fullPath = path.join(modelsPath, p);
+          return fs.existsSync(fullPath);
+        });
+
+        if (filesExist) {
+          // 计算总大小
+          let totalSize = 0;
+          let primaryPath = '';
+          for (const p of def.manifestPaths) {
+            const fullPath = path.join(modelsPath, p);
+            if (fs.existsSync(fullPath)) {
+              totalSize += fs.statSync(fullPath).size;
+              if (!primaryPath) primaryPath = fullPath;
+            }
+          }
+
+          // 更新 DB 状态为已下载
+          try {
+            this.modelRepo.updateStatus(def.id, 'downloaded');
+            this.modelRepo.updateDownloadPath(def.id, primaryPath);
+            // 🔧 修复 P0：持久化 size_bytes + downloaded_at
+            //   旧版 bug：注释说"ModelRepository 无 updateSize 方法"就放弃了 → 前端永远拿到 size_bytes=0
+            //   修复后：调用新增的 updateSize，前端可展示真实文件大小与下载时间
+            const existing = this.modelRepo.findById(def.id);
+            if (existing && existing.size_bytes !== totalSize) {
+              this.modelRepo.updateSize(def.id, totalSize);
+            }
+          } catch (e: any) {
+            AppLogger.warn(LOG_TAGS.SYSTEM, `[ModelService] 更新 ${def.id} 状态失败: ${e.message}`);
+          }
+        }
+      }
+    } catch (e: any) {
+      AppLogger.error(LOG_TAGS.SYSTEM, '[ModelService] scanDiskModels 失败', e);
+    }
+  }
+
+  /**
+   * 下载模型
    * @param modelId 模型 ID
    * @returns 下载结果 { modelId, status, message }
    */
@@ -332,8 +485,11 @@ export class ModelService {
       return '';
     }
 
-    /** 获取模型存储目录 */
-    const modelsDir = path.join(app.getPath('userData'), 'models');
+    /** 获取模型存储目录（与 Python daemon 读取目录一致） */
+    // 🔧 修复 P0：旧版下载到 app.getPath('userData')/models，Python 读取 resources/models/
+    //   两个目录不一致导致下载后 Python 仍读取不到
+    //   修复后统一下载到 PathManager.getModelsPath()（即 resources/models/）
+    const modelsDir = PathManager.getModelsPath();
     if (!fs.existsSync(modelsDir)) {
       fs.mkdirSync(modelsDir, { recursive: true });
     }

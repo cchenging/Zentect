@@ -450,7 +450,10 @@ export class ProjectRepository {
       // 如果有历史遗留的独立轨道资产，做向前兼容，保底令前端接收到的 shots 绝非 undefined
       let shots = [];
       try {
-        shots = this.db.prepare('SELECT * FROM project_shots WHERE project_id = ?').all(id) || [];
+        // 🔧 修复 P2：表名应为 shots（见 migrations/001_initial_schema.sql），旧版误写 project_shots 导致查询抛错
+        //   抛错后走 catch 分支回退到 metadata.shots，但 metadata 是 JSON 字符串字段，shots 通常缺失 → 返回空数组
+        //   修复后：直接查 shots 表，命中索引 idx_shots_project_id
+        shots = this.db.prepare('SELECT * FROM shots WHERE project_id = ? AND is_deleted = 0 ORDER BY time_code ASC, start_time ASC').all(id) || [];
       } catch {
         const meta = (project as any).metadata ? JSON.parse((project as any).metadata) : {};
         shots = meta.shots || [];
@@ -468,10 +471,15 @@ export class ProjectRepository {
         id: (project as any).id,
         name: (project as any).name,
         videoPath: meta.videoPath || '',
-        // 🔧 修复 P1：补 coverPath 字段，修复 duplicateProject 复制项目时封面丢失
+        // 🔧 修复 P0：补 coverPath 字段，修复 duplicateProject 复制项目时封面丢失
         //   旧版 bug：返回对象不含 coverPath → duplicate 时 oldProject.coverPath 为 undefined
         coverPath: (project as any).cover_path || null,
         metadata: (project as any).metadata,
+        // 🔧 修复 P0：补 canvasData 字段，修复 loadFullProjectData canvas_data 恢复通道失效
+        //   旧版 bug：SELECT * 拿到 canvas_data 但返回时丢弃 → loadFullProjectData 中
+        //   `if (project.canvasData)` 永远 false → canvas_data 恢复逻辑完全失效（死代码）
+        //   导致：handleBeforeUnload 保存到 canvas_data 的字段（stepStatuses/asrLines/...）全部丢失
+        canvasData: (project as any).canvas_data || null,
         shots: shots
       };
     } catch (error) {

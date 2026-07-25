@@ -124,6 +124,22 @@ export class ModelRepository {
   }
 
   /**
+   * 更新模型文件大小与下载时间
+   * @param id 模型 ID
+   * @param sizeBytes 文件字节数
+   * @param downloadedAt 下载完成时间（ISO 字符串，默认当前时间）
+   */
+  public updateSize(id: string, sizeBytes: number, downloadedAt?: string) {
+    this.db.prepare(`
+      UPDATE local_models
+      SET size_bytes = @sizeBytes,
+          downloaded_at = COALESCE(@downloadedAt, datetime('now', 'localtime')),
+          updated_at = datetime('now', 'localtime')
+      WHERE id = @id
+    `).run({ id, sizeBytes, downloadedAt: downloadedAt || null });
+  }
+
+  /**
    * 更新模型全部字段
    * @param model 包含完整字段的模型对象
    */

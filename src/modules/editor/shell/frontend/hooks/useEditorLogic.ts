@@ -103,29 +103,25 @@ export const useEditorHydration = (id: string | undefined) => {
             }
           }
 
-          if (projectSnapshot.metadata) {
-            try {
-              const meta = typeof projectSnapshot.metadata === 'string'
-                ? JSON.parse(projectSnapshot.metadata)
-                : projectSnapshot.metadata;
-              if (meta.asrLines) {
-                useStep1Store.getState().setAsrLines(meta.asrLines);
-              } else {
-                // 🔧 Fallback：meta.asrLines 为空时，从 media_assets.extracted_text 恢复
-                // 旧版 bug：前端崩溃/用户关窗导致 saveData 未执行 → meta.asrLines 丢失
-                //          后端 JobScheduler 已主动写入 extracted_text，可作为兜底恢复源
-                const m = (projectSnapshot.mediaItems || []).find((x: any) => x.extractedText);
-                if (m?.extractedText) {
-                  try {
-                    const lines = typeof m.extractedText === 'string'
-                      ? JSON.parse(m.extractedText) : m.extractedText;
-                    if (Array.isArray(lines) && lines.length > 0) {
-                      useStep1Store.getState().setAsrLines(lines);
-                    }
-                  } catch { /* extractedText 解析失败，静默跳过 */ }
+          // 🔧 修复 P0：loadFullProjectData 已将 metadata 展开到顶层，不再有 metadata 字段
+          //   旧版 bug：`projectSnapshot.metadata` 永远 undefined → asrLines 恢复逻辑（含 extracted_text 兜底）永不执行
+          //   修复后：直接从顶层读 asrLines，仍保留 extracted_text 兜底
+          if (projectSnapshot.asrLines) {
+            useStep1Store.getState().setAsrLines(projectSnapshot.asrLines);
+          } else {
+            // 🔧 Fallback：asrLines 为空时，从 media_assets.extracted_text 恢复
+            // 旧版 bug：前端崩溃/用户关窗导致 saveData 未执行 → asrLines 丢失
+            //          后端 JobScheduler 已主动写入 extracted_text，可作为兜底恢复源
+            const m = (projectSnapshot.mediaItems || []).find((x: any) => x.extractedText);
+            if (m?.extractedText) {
+              try {
+                const lines = typeof m.extractedText === 'string'
+                  ? JSON.parse(m.extractedText) : m.extractedText;
+                if (Array.isArray(lines) && lines.length > 0) {
+                  useStep1Store.getState().setAsrLines(lines);
                 }
-              }
-            } catch {}
+              } catch { /* extractedText 解析失败，静默跳过 */ }
+            }
           }
 
           // 💥 崩溃恢复：检查 IndexedDB 中是否有未同步的 PENDING 草稿
@@ -244,7 +240,14 @@ export const useEditorAutoSave = (id: string | undefined) => {
     };
 
     window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    // 🔧 修复 P0：返回 cleanup 函数，在组件卸载时（含 React Router 导航离开）也触发保存
+    //   旧版 bug：仅监听 window.beforeunload（窗口关闭/刷新），不响应路由导航
+    //          → 用户从编辑器点击返回首页时，组件卸载但不触发保存 → 未 saveData 的状态全部丢失
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      // 组件卸载时（导航离开）也触发一次保存
+      handleBeforeUnload();
+    };
   }, [id]);
 };
 
