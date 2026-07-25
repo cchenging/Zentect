@@ -1,5 +1,5 @@
 // 📁 路径: src/modules/settings/frontend/components/ModelTab.tsx
-// 本地模型管理 Tab - V4 分类菜单 + 卡片网格
+// 本地模型管理 Tab - V5 细化分类菜单 + 卡片网格
 import React, { useState, useEffect, useMemo } from 'react';
 import { Download, Trash2, Loader2, Pause, CheckCircle2, XCircle } from 'lucide-react';
 import { Button } from '@renderer/components/ui/button';
@@ -46,20 +46,41 @@ interface ModelItem {
 }
 
 /**
- * V4 本地模型列表
- * category 字段用于左侧分类筛选；pythonPkg 与 ai_daemon /api/check_deps 的导入名对齐
- *   - mdx_net → 'audio_separator'（MDX-Net ONNX 模型由 audio_separator 包加载，旧版误标 demucs）
- *   - sensevoice → 'funasr'（FunASR AutoModel）
- *   - insightface → 'insightface'
+ * V5 细化版本地模型列表（21 条，与后端 ModelService MODEL_DEFINITIONS 对齐）
+ * 每个具体模型文件一条记录，按 category 分类展示
+ *   - asr(2): Whisper Base, SenseVoice ONNX
+ *   - tts(8): MOSS 7 个子模型 + GPT-SoVITS
+ *   - vision(7): Buffalo L 5 个子模型 + YunNet + SFace
+ *   - audio(3): MDX-Net HQ3, MDX-Net HQ4, Demucs htdemucs
+ *   - emotion(1): 情绪分析模型（暂未实现）
  */
 const DEFAULT_MODELS: Omit<ModelItem, 'status' | 'progress'>[] = [
-  { id: 'whisper', label: 'Whisper.cpp', englishName: 'Whisper Base', size: '~150MB', sizeBytes: 0, description: '通用多语言语音识别', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '' },
-  { id: 'sensevoice', label: 'SenseVoiceSmall', englishName: 'SenseVoiceSmall', size: '~80MB', sizeBytes: 0, description: '中文/日/韩/粤 语音识别增强', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'funasr' },
-  { id: 'moss_tts', label: 'moss-tts-nano', englishName: 'MOSS-TTS-Nano', size: '~50MB', sizeBytes: 0, description: '本地 TTS 语音合成', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
-  { id: 'sovits', label: 'GPT-SoVITS', englishName: 'GPT-SoVITS', size: '~200MB', sizeBytes: 0, description: 'TTS 增强（音色克隆）', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
-  { id: 'insightface', label: '人脸识别模型', englishName: 'InsightFace Buffalo L', size: '~30MB', sizeBytes: 0, description: '人物面部检测与识别', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
-  { id: 'mdx_net', label: '音频分离模型', englishName: 'UVR-MDX-NET', size: '~100MB', sizeBytes: 0, description: '人声与 BGM 分离', category: 'audio', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'audio_separator' },
-  { id: 'emotion', label: '情绪分析模型', englishName: 'Emotion Model', size: '~20MB', sizeBytes: 0, description: '文本+音频情绪分析', category: 'emotion', version: '1.0', downloadPath: '', downloadedAt: '' },
+  // === ASR 语音识别 ===
+  { id: 'whisper_base', label: 'Whisper Base 基座模型', englishName: 'Whisper Base', size: '~150MB', sizeBytes: 0, description: 'Whisper.cpp 中文语音识别基座（ggml 格式）', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'sensevoice_onnx', label: 'SenseVoice 量化模型', englishName: 'SenseVoice ONNX', size: '~80MB', sizeBytes: 0, description: '中/日/韩/粤 多语言语音识别', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'funasr' },
+  // === TTS 语音合成 ===
+  { id: 'moss_tokenizer_encode', label: 'MOSS 音频分词器编码端', englishName: 'MOSS Audio Tokenizer Encode', size: '~20MB', sizeBytes: 0, description: 'MOSS TTS 音频分词器编码端', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'moss_tokenizer_decode_full', label: 'MOSS 音频分词器完整解码端', englishName: 'MOSS Audio Tokenizer Decode Full', size: '~20MB', sizeBytes: 0, description: 'MOSS TTS 音频分词器完整解码端', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'moss_tokenizer_decode_step', label: 'MOSS 音频分词器逐步解码端', englishName: 'MOSS Audio Tokenizer Decode Step', size: '~20MB', sizeBytes: 0, description: 'MOSS TTS 音频分词器逐步解码端', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'moss_tts_prefill', label: 'MOSS TTS 100M 预填充', englishName: 'MOSS TTS 100M Prefill', size: '~40MB', sizeBytes: 0, description: 'MOSS TTS 100M 预填充模型', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'moss_tts_decode', label: 'MOSS TTS 100M 逐步解码', englishName: 'MOSS TTS 100M Decode', size: '~40MB', sizeBytes: 0, description: 'MOSS TTS 100M 逐步解码模型', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'moss_tts_local_decoder', label: 'MOSS TTS 100M 本地解码器', englishName: 'MOSS TTS 100M Local Decoder', size: '~10MB', sizeBytes: 0, description: 'MOSS TTS 100M 本地解码器', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'moss_tokenizer_model', label: 'MOSS TTS 分词器', englishName: 'MOSS TTS Tokenizer', size: '~1MB', sizeBytes: 0, description: 'MOSS TTS SentencePiece 分词器', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'sovits', label: 'GPT-SoVITS', englishName: 'GPT-SoVITS', size: '~200MB', sizeBytes: 0, description: 'TTS 增强（音色克隆，pip 包内置）', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'sovits' },
+  // === Vision 视觉识别 ===
+  { id: 'buffalo_l_det_10g', label: 'Buffalo L 人脸检测主干', englishName: 'Buffalo L det_10g', size: '~10MB', sizeBytes: 0, description: 'InsightFace Buffalo L 人脸检测主干网络', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
+  { id: 'buffalo_l_w600k_r50', label: 'Buffalo L 人脸特征嵌入', englishName: 'Buffalo L w600k_r50', size: '~5MB', sizeBytes: 0, description: 'InsightFace Buffalo L 人脸特征嵌入', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
+  { id: 'buffalo_l_1k3d68', label: 'Buffalo L 3D关键点', englishName: 'Buffalo L 1k3d68', size: '~3MB', sizeBytes: 0, description: 'InsightFace Buffalo L 3D 人脸关键点', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
+  { id: 'buffalo_l_2d106det', label: 'Buffalo L 2D 106点', englishName: 'Buffalo L 2d106det', size: '~2MB', sizeBytes: 0, description: 'InsightFace Buffalo L 2D 106点关键点', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
+  { id: 'buffalo_l_genderage', label: 'Buffalo L 性别年龄', englishName: 'Buffalo L genderage', size: '~1MB', sizeBytes: 0, description: 'InsightFace Buffalo L 性别年龄估计', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
+  { id: 'yunnet_detection', label: 'YunNet 人脸检测', englishName: 'YunNet Face Detection', size: '~340KB', sizeBytes: 0, description: 'YunNet 人脸检测模型 (2023年3月版)', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'sface_recognition', label: 'SFace 人脸识别', englishName: 'SFace Face Recognition', size: '~520KB', sizeBytes: 0, description: 'SFace 人脸识别特征提取', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '' },
+  // === Audio 音频分离 ===
+  { id: 'mdx_hq3', label: 'UVR MDX-Net HQ3', englishName: 'MDX-Net HQ 3', size: '~100MB', sizeBytes: 0, description: 'UVR MDX-Net 人声/伴奏分离模型 HQ3', category: 'audio', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'audio_separator' },
+  { id: 'mdx_hq4', label: 'UVR MDX-Net HQ4', englishName: 'MDX-Net HQ 4', size: '~100MB', sizeBytes: 0, description: 'UVR MDX-Net 人声/伴奏分离模型 HQ4', category: 'audio', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'audio_separator' },
+  { id: 'demucs_htdemucs', label: 'Demucs htdemucs', englishName: 'Demucs htdemucs', size: 'pip 包内置', sizeBytes: 0, description: 'Demucs htdemucs 4-stem 分离模型（随 demucs 安装）', category: 'audio', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'demucs' },
+  // === Emotion 情绪分析 ===
+  { id: 'emotion', label: '情绪分析模型', englishName: 'Emotion Model', size: '暂未实现', sizeBytes: 0, description: '文本+音频情绪分析（暂未实现）', category: 'emotion', version: '1.0', downloadPath: '', downloadedAt: '' },
 ];
 
 /** Python 依赖检查结果 */
@@ -109,7 +130,7 @@ const formatDateTime = (iso: string): string => {
 
 /**
  * 本地模型管理 Tab
- * V4：分类菜单（顶部 Chip 切换）+ 卡片网格；Python 依赖移至 HealthPage
+ * V5：分类菜单（顶部 Chip 切换）+ 卡片网格；21 条具体模型记录
  */
 export const ModelTab: React.FC = () => {
   const [models, setModels] = useState<ModelItem[]>(

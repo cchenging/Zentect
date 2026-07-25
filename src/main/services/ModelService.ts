@@ -12,70 +12,161 @@ import { PathManager } from '../utils/pathManager';
 
 /**
  * 模型定义（与前端 DEFAULT_MODELS 对齐）
- * 用于 seed local_models 表，每个模型映射到 manifest.json 的实际文件
+ * V5 细化版：基于 manifest.json 的每个具体模型文件一条记录
+ * 旧版 7 条粗粒度记录已废弃，ensureSeedData 会自动迁移
  */
 interface ModelSeedDef {
   id: string;
-  name: string;           // 英文技术名
+  name: string;           // 英文技术名（对应 manifest.json 的 name 字段）
   displayName: string;    // 中文显示名
   type: string;           // 模型类别：asr/tts/vision/audio/emotion
   description: string;
   version: string;
-  pythonPkg?: string;     // 对应 Python 依赖包名
-  /** manifest.json 中的 path 数组，用于扫描磁盘判断是否已下载 */
+  pythonPkg?: string;     // 对应 Python 依赖包名（用于依赖检查）
+  /** manifest.json 中的 path，用于扫描磁盘判断是否已下载；空数组表示 pip 包内置无独立文件 */
   manifestPaths: string[];
 }
 
-/** 7 个模型定义（与前端 ModelTab DEFAULT_MODELS 对齐，映射到 manifest.json） */
+/** 21 个具体模型定义（V5 细化版，与 manifest.json models 数组对齐） */
 const MODEL_DEFINITIONS: ModelSeedDef[] = [
+  // === ASR 语音识别 ===
   {
-    id: 'moss_tts', name: 'MOSS-TTS-Nano', displayName: 'moss-tts-nano', type: 'tts',
-    description: 'TTS 语音合成', version: '1.0',
-    manifestPaths: ['moss-tts-nano/config.json', 'moss-tts-nano/model.onnx'],
+    id: 'whisper_base', name: 'Whisper Base', displayName: 'Whisper Base 基座模型', type: 'asr',
+    description: 'Whisper.cpp 中文语音识别基座模型（ggml 格式）', version: '1.0',
+    manifestPaths: ['whisper/ggml-base.bin'],
   },
   {
-    id: 'whisper', name: 'Whisper Base', displayName: 'Whisper.cpp', type: 'asr',
-    description: '语音识别 ASR', version: '1.0',
-    manifestPaths: ['whisper/ggml-base.bin', 'whisper/whisper-cli.exe'],
+    id: 'sensevoice_onnx', name: 'SenseVoice ONNX', displayName: 'SenseVoice 量化模型', type: 'asr',
+    description: 'SenseVoice 多语言语音识别量化模型（中/日/韩/粤/auto 默认引擎）', version: '1.0', pythonPkg: 'funasr',
+    manifestPaths: ['sensevoice_onnx/model_quant.onnx'],
+  },
+  // === TTS 语音合成 ===
+  {
+    id: 'moss_tokenizer_encode', name: 'MOSS Audio Tokenizer Encode', displayName: 'MOSS 音频分词器编码端', type: 'tts',
+    description: 'MOSS TTS 音频分词器编码端 ONNX', version: '1.0',
+    manifestPaths: ['moss-tts-nano/MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_encode.onnx'],
   },
   {
-    id: 'sensevoice', name: 'SenseVoiceSmall', displayName: 'SenseVoiceSmall', type: 'asr',
-    description: '语音识别增强', version: '1.0', pythonPkg: 'funasr',
-    manifestPaths: ['sensevoice_small/model.pt'],
+    id: 'moss_tokenizer_decode_full', name: 'MOSS Audio Tokenizer Decode Full', displayName: 'MOSS 音频分词器完整解码端', type: 'tts',
+    description: 'MOSS TTS 音频分词器完整解码端 ONNX', version: '1.0',
+    manifestPaths: ['moss-tts-nano/MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_decode_full.onnx'],
   },
   {
-    id: 'mdx_net', name: 'UVR-MDX-NET', displayName: '音频分离模型', type: 'audio',
-    description: '人声与BGM分离', version: '1.0', pythonPkg: 'audio_separator',
-    manifestPaths: ['mdx_net/UVR-MDX-NET-Inst_HQ_3.onnx'],
+    id: 'moss_tokenizer_decode_step', name: 'MOSS Audio Tokenizer Decode Step', displayName: 'MOSS 音频分词器逐步解码端', type: 'tts',
+    description: 'MOSS TTS 音频分词器逐步解码端 ONNX', version: '1.0',
+    manifestPaths: ['moss-tts-nano/MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_decode_step.onnx'],
   },
   {
-    id: 'insightface', name: 'InsightFace Buffalo L', displayName: '人脸识别模型', type: 'vision',
-    description: '人物面部检测', version: '1.0', pythonPkg: 'insightface',
-    manifestPaths: ['buffalo_l/det_10g.onnx', 'buffalo_l/genderage.onnx'],
+    id: 'moss_tts_prefill', name: 'MOSS TTS 100M Prefill', displayName: 'MOSS TTS 100M 预填充', type: 'tts',
+    description: 'MOSS TTS 100M 预填充模型 ONNX', version: '1.0',
+    manifestPaths: ['moss-tts-nano/MOSS-TTS-Nano-100M-ONNX/moss_tts_prefill.onnx'],
   },
   {
-    id: 'emotion', name: 'Emotion Model', displayName: '情绪分析模型', type: 'emotion',
-    description: '文本+音频情绪', version: '1.0',
-    manifestPaths: [],  // 暂无对应 manifest 条目
+    id: 'moss_tts_decode', name: 'MOSS TTS 100M Decode', displayName: 'MOSS TTS 100M 逐步解码', type: 'tts',
+    description: 'MOSS TTS 100M 逐步解码模型 ONNX', version: '1.0',
+    manifestPaths: ['moss-tts-nano/MOSS-TTS-Nano-100M-ONNX/moss_tts_decode_step.onnx'],
+  },
+  {
+    id: 'moss_tts_local_decoder', name: 'MOSS TTS 100M Local Decoder', displayName: 'MOSS TTS 100M 本地解码器', type: 'tts',
+    description: 'MOSS TTS 100M 本地解码器 ONNX', version: '1.0',
+    manifestPaths: ['moss-tts-nano/MOSS-TTS-Nano-100M-ONNX/moss_tts_local_decoder.onnx'],
+  },
+  {
+    id: 'moss_tokenizer_model', name: 'MOSS TTS Tokenizer', displayName: 'MOSS TTS 分词器', type: 'tts',
+    description: 'MOSS TTS SentencePiece 分词器模型', version: '1.0',
+    manifestPaths: ['moss-tts-nano/MOSS-TTS-Nano-100M-ONNX/tokenizer.model'],
   },
   {
     id: 'sovits', name: 'GPT-SoVITS', displayName: 'GPT-SoVITS', type: 'tts',
-    description: 'TTS 增强', version: '1.0',
+    description: 'TTS 增强（音色克隆，pip 包内置）', version: '1.0', pythonPkg: 'sovits',
+    manifestPaths: [],
+  },
+  // === Vision 视觉识别 ===
+  {
+    id: 'buffalo_l_det_10g', name: 'Buffalo L det_10g', displayName: 'Buffalo L 人脸检测主干', type: 'vision',
+    description: 'InsightFace Buffalo L 人脸检测主干网络', version: '1.0', pythonPkg: 'insightface',
+    manifestPaths: ['buffalo_l/det_10g.onnx'],
+  },
+  {
+    id: 'buffalo_l_w600k_r50', name: 'Buffalo L w600k_r50', displayName: 'Buffalo L 人脸特征嵌入', type: 'vision',
+    description: 'InsightFace Buffalo L 人脸特征嵌入模型', version: '1.0', pythonPkg: 'insightface',
+    manifestPaths: ['buffalo_l/w600k_r50.onnx'],
+  },
+  {
+    id: 'buffalo_l_1k3d68', name: 'Buffalo L 1k3d68', displayName: 'Buffalo L 3D关键点', type: 'vision',
+    description: 'InsightFace Buffalo L 3D 人脸关键点检测', version: '1.0', pythonPkg: 'insightface',
+    manifestPaths: ['buffalo_l/1k3d68.onnx'],
+  },
+  {
+    id: 'buffalo_l_2d106det', name: 'Buffalo L 2d106det', displayName: 'Buffalo L 2D 106点', type: 'vision',
+    description: 'InsightFace Buffalo L 2D 106点人脸关键点', version: '1.0', pythonPkg: 'insightface',
+    manifestPaths: ['buffalo_l/2d106det.onnx'],
+  },
+  {
+    id: 'buffalo_l_genderage', name: 'Buffalo L genderage', displayName: 'Buffalo L 性别年龄', type: 'vision',
+    description: 'InsightFace Buffalo L 性别年龄估计', version: '1.0', pythonPkg: 'insightface',
+    manifestPaths: ['buffalo_l/genderage.onnx'],
+  },
+  {
+    id: 'yunnet_detection', name: 'YunNet Face Detection', displayName: 'YunNet 人脸检测', type: 'vision',
+    description: 'YunNet 人脸检测模型 (2023年3月版)', version: '1.0',
+    manifestPaths: ['yunnet/face_detection_yunet_2023mar.onnx'],
+  },
+  {
+    id: 'sface_recognition', name: 'SFace Face Recognition', displayName: 'SFace 人脸识别', type: 'vision',
+    description: 'SFace 人脸识别特征提取', version: '1.0',
+    manifestPaths: ['yunnet/face_recognition_sface_2021dec.onnx'],
+  },
+  // === Audio 音频分离 ===
+  {
+    id: 'mdx_hq3', name: 'MDX-Net HQ 3', displayName: 'UVR MDX-Net HQ3', type: 'audio',
+    description: 'UVR MDX-Net 人声/伴奏分离模型 HQ3', version: '1.0', pythonPkg: 'audio_separator',
+    manifestPaths: ['mdx_net/UVR-MDX-NET-Inst_HQ_3.onnx'],
+  },
+  {
+    id: 'mdx_hq4', name: 'MDX-Net HQ 4', displayName: 'UVR MDX-Net HQ4', type: 'audio',
+    description: 'UVR MDX-Net 人声/伴奏分离模型 HQ4', version: '1.0', pythonPkg: 'audio_separator',
+    manifestPaths: ['mdx_net/UVR-MDX-NET-Inst_HQ_4.onnx'],
+  },
+  {
+    id: 'demucs_htdemucs', name: 'Demucs htdemucs', displayName: 'Demucs htdemucs', type: 'audio',
+    description: 'Demucs htdemucs 4-stem 分离模型（pip 包内置，无独立文件）', version: '1.0', pythonPkg: 'demucs',
+    manifestPaths: [],
+  },
+  // === Emotion 情绪分析 ===
+  {
+    id: 'emotion', name: 'Emotion Model', displayName: '情绪分析模型', type: 'emotion',
+    description: '文本+音频情绪分析（暂未实现）', version: '1.0',
     manifestPaths: [],
   },
 ];
 
-/** 模型下载源配置（已修正 URL，旧版 URL 全部无效） */
+/** 旧版粗粒度模型 id（用于 ensureSeedData 迁移检测） */
+const LEGACY_MODEL_IDS = ['moss_tts', 'whisper', 'sensevoice', 'mdx_net', 'insightface', 'emotion', 'sovits'];
+
+/** 模型下载源配置（V5 细化版，URL 仍为占位，实际下载依赖预装或 huggingface-cli） */
 const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
-  // 注：这些 URL 仍为占位，实际下载请用 huggingface-cli 或 modelscope
-  // 当前主要依赖 resources/models/ 预装，下载功能为辅助
-  moss_tts: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'model.onnx' },
-  whisper: { url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main', file: 'ggml-base.bin' },
-  sensevoice: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model.pt' },
-  mdx_net: { url: 'https://huggingface.co/JeffreyCA/audio-separator-models/resolve/main', file: 'UVR-MDX-NET-Inst_HQ_3.onnx' },
-  insightface: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l.zip' },
-  emotion: { url: '', file: '' },
+  whisper_base: { url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main', file: 'ggml-base.bin' },
+  sensevoice_onnx: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model_quant.onnx' },
+  moss_tokenizer_encode: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_encode.onnx' },
+  moss_tokenizer_decode_full: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_decode_full.onnx' },
+  moss_tokenizer_decode_step: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_decode_step.onnx' },
+  moss_tts_prefill: { url: 'https://huggingface.co/OpenMOSS/MOSS-TTS-Nano-100M-ONNX/resolve/main', file: 'moss_tts_prefill.onnx' },
+  moss_tts_decode: { url: 'https://huggingface.co/OpenMOSS/MOSS-TTS-Nano-100M-ONNX/resolve/main', file: 'moss_tts_decode_step.onnx' },
+  moss_tts_local_decoder: { url: 'https://huggingface.co/OpenMOSS/MOSS-TTS-Nano-100M-ONNX/resolve/main', file: 'moss_tts_local_decoder.onnx' },
+  moss_tokenizer_model: { url: 'https://huggingface.co/OpenMOSS/MOSS-TTS-Nano-100M-ONNX/resolve/main', file: 'tokenizer.model' },
+  buffalo_l_det_10g: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/det_10g.onnx' },
+  buffalo_l_w600k_r50: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/w600k_r50.onnx' },
+  buffalo_l_1k3d68: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/1k3d68.onnx' },
+  buffalo_l_2d106det: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/2d106det.onnx' },
+  buffalo_l_genderage: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/genderage.onnx' },
+  yunnet_detection: { url: 'https://huggingface.co/opencv/opencv_extra/resolve/main', file: 'face_detection_yunet_2023mar.onnx' },
+  sface_recognition: { url: 'https://huggingface.co/opencv/opencv_extra/resolve/main', file: 'face_recognition_sface_2021dec.onnx' },
+  mdx_hq3: { url: 'https://huggingface.co/JeffreyCA/audio-separator-models/resolve/main', file: 'UVR-MDX-NET-Inst_HQ_3.onnx' },
+  mdx_hq4: { url: 'https://huggingface.co/JeffreyCA/audio-separator-models/resolve/main', file: 'UVR-MDX-NET-Inst_HQ_4.onnx' },
   sovits: { url: '', file: '' },
+  demucs_htdemucs: { url: '', file: '' },
+  emotion: { url: '', file: '' },
 };
 
 /**
@@ -97,15 +188,30 @@ export class ModelService {
   }
 
   /**
-   * 🔧 修复 P0：确保 local_models 表有 seed 数据
-   * 表为空时批量 INSERT 7 条模型记录
+   * 🔧 修复 P0：确保 local_models 表有 seed 数据（V5 细化版）
+   * 迁移逻辑：
+   *   1. 检测旧版 7 条粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 21 条
+   *   2. 表为空 → 直接 seed 21 条
+   *   3. 已有新记录 → 跳过
+   * 旧版 bug：local_models 表永远空表，预装的 21 个模型躺在磁盘但代码不知道
    */
   public ensureSeedData(): void {
     try {
       const existing = this.modelRepo.findAll();
-      if (existing && existing.length > 0) return;
 
-      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] local_models 表为空，开始 seed 7 条记录');
+      // 检测旧版粗粒度记录（id 为 'mdx_net' 等），需要迁移到 V5 细化版
+      const hasLegacy = existing.some(m => LEGACY_MODEL_IDS.includes(m.id));
+      if (hasLegacy) {
+        AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 检测到旧版 7 条粗粒度记录，开始迁移到 V5 21 条细化版');
+        for (const old of existing) {
+          try { this.modelRepo.deleteById(old.id); } catch {}
+        }
+      } else if (existing && existing.length > 0) {
+        // 已是新版，跳过
+        return;
+      }
+
+      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 21 条 V5 细化模型记录');
       for (const def of MODEL_DEFINITIONS) {
         try {
           this.modelRepo.insert({
