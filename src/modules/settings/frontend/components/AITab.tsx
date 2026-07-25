@@ -87,7 +87,7 @@ const PasswordField = ({ label, value, onChange, onCheck, linkUrl, placeholder =
         </Button>
       </div>
       {linkUrl && (
-        <div className="text-[10px] mt-0.5 pl-0.5">
+        <div className="text-xs mt-0.5 pl-0.5">
           <span className="text-muted-foreground mr-1.5">没有密钥？</span>
           <a href="#" onClick={(e) => { e.preventDefault(); window.open(linkUrl, '_blank'); }} className="text-accent hover:underline cursor-pointer">点击获取</a>
         </div>
@@ -152,13 +152,13 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
           <ExternalLink size={15} className="text-accent" />
           <span className="text-sm font-medium text-foreground">获取 API Key</span>
         </div>
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           使用 Zentect 需要第三方云服务的 API Key，点击下方链接注册并获取。
         </p>
         <div className="flex flex-wrap gap-2">
           {PROVIDERS.map(p => (
             <a key={p.id} href="#" onClick={(e) => { e.preventDefault(); if (p.link) window.open(p.link, '_blank'); }}
-               className="text-[10px] text-accent hover:underline flex items-center gap-1 px-2 py-1 rounded-md bg-accent/5 hover:bg-accent/10 transition-colors">
+               className="text-xs text-accent hover:underline flex items-center gap-1 px-2 py-1 rounded-md bg-accent/5 hover:bg-accent/10 transition-colors">
               <ExternalLink size={10} /> {p.name.split(' ')[0]}
             </a>
           ))}
@@ -174,7 +174,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
           </div>
           <button
             onClick={() => setShowAllKeys(!showAllKeys)}
-            className="flex items-center gap-1.5 text-[11px] px-3 py-1.5 rounded-lg border transition-all outline-none cursor-pointer shrink-0 border-border/50 bg-bg-secondary/50 text-muted-foreground hover:border-accent/40 hover:text-foreground"
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border transition-all outline-none cursor-pointer shrink-0 border-border/50 bg-bg-secondary/50 text-muted-foreground hover:border-accent/40 hover:text-foreground"
           >
             {showAllKeys ? <EyeOff size={12} /> : <Eye size={12} />}
             {showAllKeys ? '隐藏密钥' : '显示密钥'}
@@ -243,7 +243,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
           <Server size={18} className="text-accent-cyan" />
           <h3 className="text-base font-semibold text-foreground">管线-模型映射</h3>
         </div>
-        <p className="text-[11px] text-muted-foreground mb-4">为每个管线节点选择使用的模型供应商</p>
+        <p className="text-xs text-muted-foreground mb-4">为每个管线节点选择使用的模型供应商</p>
         <div className="glass-card-sm p-5 flex flex-col gap-4">
           {PIPELINE_NODES.map((node) => {
             /** disabled 节点只显示提示文字，不渲染下拉框 */
@@ -254,7 +254,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                     <span className="text-sm">{node.icon}</span>
                     <span className="text-xs text-foreground font-medium">{node.label}</span>
                   </div>
-                  <span className="text-[11px] text-muted-foreground italic">{(node as any).hint}</span>
+                  <span className="text-xs text-muted-foreground italic">{(node as any).hint}</span>
                 </div>
               );
             }
@@ -287,7 +287,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                         handleBindingChange(tk, pid, nm);
                         if (nm !== currentValue) handleValChange(node.key, nm);
                       }}
-                      className="text-[11px] px-2 py-1.5 rounded bg-bg-secondary border border-border/30 text-foreground outline-none cursor-pointer hover:border-accent/40 w-36"
+                      className="text-xs px-2 py-1.5 rounded bg-bg-secondary border border-border/30 text-foreground outline-none cursor-pointer hover:border-accent/40 w-36"
                     >
                       <option value="">自动匹配</option>
                       {apiProfiles.map((p: any) => (
@@ -330,7 +330,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
           <div className="flex items-center justify-between">
             <div className="flex flex-col gap-0.5">
               <span className="text-xs text-foreground font-medium">默认合成引擎</span>
-              <span className="text-[10px] text-muted-foreground">选择 TTS 语音合成引擎</span>
+              <span className="text-xs text-muted-foreground">选择 TTS 语音合成引擎</span>
             </div>
             <div className="flex items-center gap-3">
               <Select value={aiData.ttsProvider} onValueChange={v => handleValChange('ttsProvider', v)}>
@@ -372,7 +372,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                       <FolderOpen size={13} /> 选择
                     </Button>
                   </div>
-                  <span className="text-[10px] text-muted-foreground mt-1">选择 moss-tts-nano 文件夹所在路径，包含 MOSS-TTS-Nano-100M-ONNX 和 MOSS-Audio-Tokenizer-Nano-ONNX 子目录</span>
+                  <span className="text-xs text-muted-foreground mt-1">选择 moss-tts-nano 文件夹所在路径，包含 MOSS-TTS-Nano-100M-ONNX 和 MOSS-Audio-Tokenizer-Nano-ONNX 子目录</span>
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <span className="text-xs text-muted-foreground font-medium">服务地址（自动启动）</span>

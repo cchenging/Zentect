@@ -265,7 +265,7 @@ export const ModelTab: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-semibold">本地模型</div>
-          <div className="text-[11px] text-muted-foreground">
+          <div className="text-xs text-muted-foreground">
             按功能模块管理 AI 模型文件 · 共 {modules.length} 个模块
           </div>
         </div>
@@ -288,7 +288,7 @@ export const ModelTab: React.FC = () => {
               key={opt.key}
               onClick={() => setActiveCategory(opt.key)}
               className={`
-                inline-flex items-center gap-1.5 h-7 px-3 rounded-full border text-[11px] font-medium transition-all cursor-pointer outline-none select-none
+                inline-flex items-center gap-1.5 h-7 px-3 rounded-full border text-xs font-medium transition-all cursor-pointer outline-none select-none
                 ${isActive
                   ? 'bg-accent/15 border-accent text-accent shadow-sm shadow-accent/10'
                   : 'bg-muted/20 border-border/50 text-muted-foreground hover:bg-muted/40 hover:border-border'}
@@ -296,7 +296,7 @@ export const ModelTab: React.FC = () => {
             >
               <span className="opacity-80">{opt.icon}</span>
               <span>{opt.label}</span>
-              <span className={`text-[10px] px-1 rounded-full ${isActive ? 'bg-accent/20 text-accent' : 'bg-muted/40 text-muted-foreground/70'}`}>
+              <span className={`text-xs px-1 rounded-full ${isActive ? 'bg-accent/20 text-accent' : 'bg-muted/40 text-muted-foreground/70'}`}>
                 {count}
               </span>
             </button>
@@ -338,12 +338,12 @@ export const ModelTab: React.FC = () => {
       )}
 
       {/* 磁盘统计 */}
-      <div className="flex items-center justify-between text-[11px] text-muted-foreground pt-2 border-t border-border/30">
+      <div className="flex items-center justify-between text-xs text-muted-foreground pt-2 border-t border-border/30">
         <span className="flex items-center gap-1.5">
           <HardDrive size={11} />
           模型文件占用：{formatBytes(totalSizeBytes)} · {readyCount}/{modules.length} 个模块可用
         </span>
-        <span className="text-[10px] text-muted-foreground/60">
+        <span className="text-xs text-muted-foreground/60">
           运行时依赖（torch/demucs 等）请前往健康检查
         </span>
       </div>
@@ -404,37 +404,37 @@ const ModuleCardView: React.FC<{
             <div className="flex items-center gap-1.5">
               <div className="text-[13px] font-semibold text-foreground truncate">{module.displayName}</div>
               {module.required === 'builtin' && (
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-accent-green/15 text-accent-green font-medium">
+                <span className="text-xs px-1.5 py-0.5 rounded bg-accent-green/15 text-accent-green font-medium">
                   必装·内置
                 </span>
               )}
               {module.required === 'optional' && (
-                <span className="text-[9px] px-1.5 py-0.5 rounded bg-muted/40 text-muted-foreground">
+                <span className="text-xs px-1.5 py-0.5 rounded bg-muted/40 text-muted-foreground">
                   可选
                 </span>
               )}
             </div>
-            <div className="text-[11px] text-muted-foreground mt-0.5">{module.description}</div>
+            <div className="text-xs text-muted-foreground mt-0.5">{module.description}</div>
           </div>
         </div>
-        <div className={`flex items-center gap-1 text-[11px] font-medium ${statusDisp.color} flex-shrink-0`}>
+        <div className={`flex items-center gap-1 text-xs font-medium ${statusDisp.color} flex-shrink-0`}>
           {statusDisp.icon}
           {statusDisp.text}
         </div>
       </div>
 
       {/* 体积说明 */}
-      <div className="text-[10px] text-muted-foreground/70">
+      <div className="text-xs text-muted-foreground/70">
         📦 {module.sizeNote}
       </div>
 
       {/* 模型文件列表 */}
       <div className="space-y-1.5 bg-muted/15 rounded-lg p-2.5">
-        <div className="text-[10px] text-muted-foreground/80 font-medium uppercase tracking-wide flex items-center gap-1">
+        <div className="text-xs text-muted-foreground/80 font-medium uppercase tracking-wide flex items-center gap-1">
           <Package size={10} /> 模型文件（{module.models.length}）
         </div>
         {module.models.map(m => (
-          <div key={m.id} className="flex items-center justify-between gap-2 text-[11px]">
+          <div key={m.id} className="flex items-center justify-between gap-2 text-xs">
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
               {m.status === 'downloaded' ? (
                 <CheckCircle2 size={11} className="text-accent-green flex-shrink-0" />
@@ -444,17 +444,17 @@ const ModuleCardView: React.FC<{
                 <XCircle size={11} className="text-muted-foreground/50 flex-shrink-0" />
               )}
               <span className="text-foreground truncate">{m.displayName}</span>
-              <span className="text-muted-foreground/60 text-[10px] font-mono truncate">{m.name}</span>
+              <span className="text-muted-foreground/60 text-xs font-mono truncate">{m.name}</span>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
-              <span className="text-[10px] text-muted-foreground">v{m.version}</span>
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-xs text-muted-foreground">v{m.version}</span>
+              <span className="text-xs text-muted-foreground">
                 {m.sizeBytes > 0 ? formatBytes(m.sizeBytes) : '—'}
               </span>
               {m.status === 'downloaded' && (
                 <button
                   onClick={() => onImport(m.id)}
-                  className="text-[10px] text-accent hover:text-accent-cyan transition-colors"
+                  className="text-xs text-accent hover:text-accent-cyan transition-colors"
                   title="导入替换此模型文件"
                 >
                   导入
@@ -469,7 +469,7 @@ const ModuleCardView: React.FC<{
       {module.models.filter(m => m.status === 'downloaded' && m.downloadPath).slice(0, 1).map(m => (
         <div
           key={`path-${m.id}`}
-          className="text-[10px] text-muted-foreground/70 bg-muted/20 rounded px-2 py-1.5 font-mono break-all"
+          className="text-xs text-muted-foreground/70 bg-muted/20 rounded px-2 py-1.5 font-mono break-all"
           title={m.downloadPath}
         >
           <span className="text-muted-foreground/50">路径：</span>{m.downloadPath}
@@ -480,7 +480,7 @@ const ModuleCardView: React.FC<{
           - 已就绪：只显示绿勾 + "就绪"，无跳转链接
           - 未就绪：显示黄叹号 + 缺失依赖数 + "去健康检查"链接
           - 详情（缺失包列表、共用方等）请前往健康检查页查看 */}
-      <div className="flex items-center justify-between text-[11px] py-1.5 border-t border-border/20">
+      <div className="flex items-center justify-between text-xs py-1.5 border-t border-border/20">
         <div className="flex items-center gap-1.5">
           <span className="text-muted-foreground">⚙️ 运行时:</span>
           {runtimeReady ? (
@@ -491,7 +491,7 @@ const ModuleCardView: React.FC<{
             <span className="text-yellow-500 flex items-center gap-1">
               <AlertTriangle size={11} /> 未就绪
               {module.runtime.missing.length > 0 && (
-                <span className="text-[10px] text-muted-foreground">（缺 {module.runtime.missing.length} 个包）</span>
+                <span className="text-xs text-muted-foreground">（缺 {module.runtime.missing.length} 个包）</span>
               )}
             </span>
           )}
@@ -499,7 +499,7 @@ const ModuleCardView: React.FC<{
         {!runtimeReady && (
           <button
             onClick={onGoHealth}
-            className="text-[10px] text-accent hover:text-accent-cyan flex items-center gap-0.5 transition-colors"
+            className="text-xs text-accent hover:text-accent-cyan flex items-center gap-0.5 transition-colors"
           >
             去健康检查 <ExternalLink size={10} />
           </button>
@@ -515,7 +515,7 @@ const ModuleCardView: React.FC<{
             size="sm"
             onClick={onUninstall}
             disabled={isModuleBusy}
-            className="h-7 text-[11px] gap-1 text-muted-foreground hover:text-accent-rose px-2.5 disabled:opacity-50"
+            className="h-7 text-xs gap-1 text-muted-foreground hover:text-accent-rose px-2.5 disabled:opacity-50"
           >
             {isModuleBusy ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
             {isModuleBusy ? '处理中...' : '卸载'}
@@ -526,7 +526,7 @@ const ModuleCardView: React.FC<{
             size="sm"
             onClick={onInstall}
             disabled={isModuleBusy}
-            className="h-7 text-[11px] gap-1 border-accent/30 text-accent hover:bg-accent/10 px-2.5 disabled:opacity-50"
+            className="h-7 text-xs gap-1 border-accent/30 text-accent hover:bg-accent/10 px-2.5 disabled:opacity-50"
           >
             {isModuleBusy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
             {isModuleBusy ? '下载中...' : '安装'}
@@ -539,7 +539,7 @@ const ModuleCardView: React.FC<{
           size="sm"
           onClick={() => onImport(module.models[0]?.id || module.id)}
           disabled={isModuleBusy}
-          className="h-7 text-[11px] gap-1 text-muted-foreground hover:text-accent px-2.5 disabled:opacity-50"
+          className="h-7 text-xs gap-1 text-muted-foreground hover:text-accent px-2.5 disabled:opacity-50"
         >
           {busyModelId === (module.models[0]?.id || module.id) ? (
             <Loader2 size={12} className="animate-spin" />

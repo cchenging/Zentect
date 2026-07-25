@@ -15,6 +15,10 @@ interface HealthReport {
   disk: { freeGB: number; totalGB: number } | null
   process: { pid: number; uptimeS: number; memoryMB: number }
   services: { db: boolean; aiDaemon: boolean; ffmpeg: boolean }
+  /** 🔧 V5 新增：SQLite 版本号（供健康检查主行显示，替代详情 Modal） */
+  sqliteVersion: string
+  /** 🔧 V5 新增：存储路径可写性检测（替代旧版硬编码"所有路径可写入"） */
+  pathsWritable: { projects: boolean; exports: boolean; models: boolean }
   paths: Record<string, string>
 }
 
@@ -50,6 +54,14 @@ export class HealthService {
         memoryMB: Math.round(procMem.rss / (1024 * 1024))
       },
       services: this.checkServices(),
+      // 🔧 V5：SQLite 版本号供主行显示 "SQLite v3.45.0 · 已连接"
+      sqliteVersion: this.getSqliteVersion(),
+      // 🔧 V5：真实检测存储路径可写性（替代旧版硬编码"所有路径可写入"）
+      pathsWritable: {
+        projects: this.checkPathWritable(PathManager.getProjectsPath()),
+        exports: this.checkPathWritable(PathManager.getExportRootPath()),
+        models: this.checkPathWritable(PathManager.getModelsPath()),
+      },
       paths: {
         userData: PathManager.getUserDataPath(),
         projects: PathManager.getProjectsPath(),
@@ -97,43 +109,35 @@ export class HealthService {
   }
 
   /**
-   * 🔧 V7 新增：获取数据库详情（供健康检查页"详情"按钮调用）
-   * 返回 SQLite 路径/大小/版本/表列表（含每张表行数）
+   * 🔧 V5 新增：获取 SQLite 版本号（供健康检查主行显示）
+   *   格式如 "3.45.0"，失败返回 "unknown"
    */
-  getDatabaseDetail(): {
-    path: string;
-    sizeBytes: number;
-    journalMode: string;
-    sqliteVersion: string;
-    tables: Array<{ name: string; rowCount: number }>;
-  } {
-    const dbPath = PathManager.getDatabasePath();
-    let sizeBytes = 0;
+  private getSqliteVersion(): string {
     try {
-      if (fs.existsSync(dbPath)) {
-        sizeBytes = fs.statSync(dbPath).size;
+      const db = SQLiteConnection.getInstance().getDB()
+      const row = db.pragma('sqlite_version') as Array<{ sqlite_version: string }>
+      return row[0]?.sqlite_version || 'unknown'
+    } catch {
+      return 'unknown'
+    }
+  }
+
+  /**
+   * 🔧 V5 新增：检测路径可写性（替代旧版硬编码"所有路径可写入"）
+   *   通过尝试创建临时文件验证写权限
+   */
+  private checkPathWritable(dirPath: string): boolean {
+    try {
+      if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath, { recursive: true })
       }
-    } catch { /* 忽略 */ }
-
-    const db = SQLiteConnection.getInstance().getDB();
-    const journalMode = (db.pragma('journal_mode') as Array<{ journal_mode: string }>)[0]?.journal_mode || 'unknown';
-    const sqliteVersion = (db.pragma('sqlite_version') as Array<{ sqlite_version: string }>)[0]?.sqlite_version || 'unknown';
-
-    // 查询所有用户表（排除 sqlite_internal 系统表）
-    const tablesRaw = db.prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
-    ).all() as Array<{ name: string }>;
-
-    const tables = tablesRaw.map(t => {
-      try {
-        const cnt = db.prepare(`SELECT COUNT(*) as c FROM "${t.name}"`).get() as { c: number };
-        return { name: t.name, rowCount: cnt.c };
-      } catch {
-        return { name: t.name, rowCount: -1 };
-      }
-    });
-
-    return { path: dbPath, sizeBytes, journalMode, sqliteVersion, tables };
+      const testFile = `${dirPath}/.health_write_test_${Date.now()}`
+      fs.writeFileSync(testFile, 'ok', { flag: 'w' })
+      fs.unlinkSync(testFile)
+      return true
+    } catch {
+      return false
+    }
   }
 
   private checkDatabase(): boolean {
