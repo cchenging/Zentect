@@ -1,5 +1,5 @@
 // 📁 路径: src/main/controllers/ModelController.ts
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, dialog } from 'electron';
 import { IpcRouter } from '../core/IpcRouter';
 import { ModelService } from '../services/ModelService';
 import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
@@ -34,6 +34,48 @@ export class ModelController {
     // 获取所有本地模型列表
     IpcRouter.handle(IPC_CHANNELS.MODEL_GET_LIST, async () => {
       return this.modelService.getModelList();
+    });
+
+    // 🔧 V7 新增：获取功能模块列表（7 张卡片 + 4 分类）
+    //   先调 ai_daemon /api/check_deps 拿运行时依赖状态，再聚合模型文件状态
+    IpcRouter.handle(IPC_CHANNELS.MODEL_GET_MODULE_LIST, async () => {
+      try {
+        const { AIService } = await import('../services/AIService');
+        const aiService = new AIService();
+        const depsStatus = await aiService.checkDeps();
+        return this.modelService.getModuleList(depsStatus);
+      } catch (e: any) {
+        // ai_daemon 离线时仍返回模块列表（运行时状态全为 not_ready）
+        AppLogger.warn(LOG_TAGS.SYSTEM, `[ModelController] checkDeps 失败，仅返回模型文件状态: ${e.message}`);
+        return this.modelService.getModuleList();
+      }
+    });
+
+    // 🔧 V7 新增：获取 4 个分类定义（供前端 Chip 菜单）
+    IpcRouter.handle(IPC_CHANNELS.MODEL_GET_CATEGORIES, async () => {
+      return this.modelService.getCategories();
+    });
+
+    // 🔧 V7 新增：导入本地模型文件（用户离线补模型）
+    //   前端只传 modelId，后端弹 dialog 选文件 + 校验 + 复制到 resources/models/
+    //   返回 { status, message, downloadPath } 或 null（用户取消）
+    IpcRouter.handle(IPC_CHANNELS.MODEL_IMPORT_FILE, async (event, modelId: string) => {
+      if (!modelId) {
+        throw new AppError(ErrorCode.FS_PATH_INVALID, '模型 ID 不能为空');
+      }
+      const win = BrowserWindow.fromWebContents(event.sender);
+      const { canceled, filePaths } = await dialog.showOpenDialog(win as BrowserWindow, {
+        title: '选择模型文件',
+        properties: ['openFile'],
+        filters: [
+          { name: '模型文件', extensions: ['pth', 'onnx', 'bin', 'pt', 'safetensors', 'json'] },
+          { name: '所有文件', extensions: ['*'] },
+        ],
+      });
+      if (canceled || filePaths.length === 0) {
+        return { status: 'canceled', message: '用户取消选择', downloadPath: '' };
+      }
+      return this.modelService.importModelFile(modelId, filePaths[0]);
     });
 
     // 下载模型

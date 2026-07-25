@@ -58,6 +58,15 @@ MODELS_DIR = os.path.abspath(models_dir)
 FFMPEG_PATH = args.ffmpeg_path or os.environ.get('FFMPEG_PATH', 'ffmpeg')
 PROJECT_MATERIAL_POOL = {}
 
+# 🔧 修复 P0：重定向所有 AI 框架的模型缓存到 resources/models/，避免散落到 C 盘
+#   旧版 bug：demucs/torch/funasr/transformers 默认下载到 ~/.cache/，用户难管理
+#   修复后：所有模型统一落到 resources/models/<子目录>/，与项目预装模型集中管理
+#   说明：必须在 import torch/funasr/transformers 之前设置（这些模块在 import 时读取环境变量）
+os.environ['TORCH_HOME'] = os.path.join(MODELS_DIR, 'demucs')        # demucs/torch.hub 系
+os.environ['HF_HOME'] = os.path.join(MODELS_DIR, 'huggingface')      # funasr/transformers 系
+os.environ['XDG_CACHE_HOME'] = os.path.join(MODELS_DIR, '.cache')    # 通用兜底
+os.environ['INSIGHTFACE_HOME'] = os.path.join(MODELS_DIR, 'insightface')  # insightface 模型目录
+
 # ============================================================
 # FastAPI 应用
 # ============================================================
@@ -334,8 +343,17 @@ async def health_check():
 
 @app.get('/api/check_deps')
 async def check_deps():
-    """检查 Python 依赖安装状态：供前端模型管理页展示依赖是否就绪
-    返回 { deps: { demucs: {installed, version}, funasr: {...}, ... }, python_executable }
+    """检查 Python 依赖安装状态：供前端健康检查 + 模型管理页展示
+    返回结构：
+      {
+        deps: { demucs: {installed, version, display_name}, ... },  # 扁平依赖状态（兼容旧版）
+        modules: {                                                     # 模块化分组（新版）
+          torch: { ready, missing, size },
+          demucs: { ready, missing, size, deps: [torch, torchaudio] },
+          ...
+        },
+        python_executable
+      }
     """
     import importlib
     # 关键依赖清单：key=导入名, value=显示名
@@ -363,7 +381,43 @@ async def check_deps():
             deps[mod_name] = {'installed': True, 'version': version, 'display_name': display_name}
         except ImportError:
             deps[mod_name] = {'installed': False, 'version': None, 'display_name': display_name}
-    return {'deps': deps, 'python_executable': sys.executable}
+
+    # 🔧 新增 P0：模块化分组，便于前端模型管理页按功能模块展示运行时状态
+    #   每个功能模块 = 一组依赖包，所有依赖都 installed 时 ready=true
+    def _module_ready(pkg_list):
+        """检查一组包是否全部已安装"""
+        missing = [p for p in pkg_list if not deps.get(p, {}).get('installed', False)]
+        return {'ready': len(missing) == 0, 'missing': missing}
+
+    modules = {
+        # 共用引擎
+        'torch': {**_module_ready(['torch', 'torchaudio']),
+                  'display_name': 'PyTorch 推理引擎', 'size': '~2.1 GB',
+                  'shared_by': ['demucs', 'sensevoice', 'clip']},
+        # 音频分离引擎
+        'demucs': {**_module_ready(['demucs']),
+                   'display_name': 'Demucs 音频分离引擎', 'size': '~2.2 GB (含 torch)',
+                   'needs': ['torch', 'torchaudio']},
+        'mdx_net': {**_module_ready(['audio_separator']),
+                    'display_name': 'MDX-Net 音频分离引擎', 'size': '~60 MB',
+                    'needs': []},
+        # ASR 引擎
+        'whisper': {**_module_ready([]),  # Whisper.cpp 是 C++ 可执行文件，无 Python 依赖
+                    'display_name': 'Whisper.cpp ASR 引擎', 'size': '0 (已内置)',
+                    'needs': []},
+        'sensevoice': {**_module_ready(['funasr']),
+                       'display_name': 'SenseVoice ASR 引擎', 'size': '~600 MB (含 torch)',
+                       'needs': ['torch']},
+        # 视觉引擎
+        'insightface': {**_module_ready(['insightface']),
+                        'display_name': 'InsightFace 人脸识别引擎', 'size': '~200 MB',
+                        'needs': []},
+        'clip': {**_module_ready(['transformers']),
+                 'display_name': 'Transformers (CLIP 引擎)', 'size': '~100 MB (含 torch)',
+                 'needs': ['torch']},
+    }
+
+    return {'deps': deps, 'modules': modules, 'python_executable': sys.executable}
 
 
 @app.post('/release_models')

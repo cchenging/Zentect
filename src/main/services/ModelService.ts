@@ -5,6 +5,7 @@ import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import * as https from 'https';
 import * as http from 'http';
 import { app } from 'electron';
@@ -25,6 +26,32 @@ interface ModelSeedDef {
   pythonPkg?: string;     // 对应 Python 依赖包名（用于依赖检查）
   /** manifest.json 中的 path，用于扫描磁盘判断是否已下载；空数组表示 pip 包内置无独立文件 */
   manifestPaths: string[];
+  /**
+   * 🔧 V7 新增：候选磁盘扫描路径（除 manifestPaths 外的多路径）
+   * 例：htdemucs.pth 可能落在 demucs/ 或 demucs/hub/checkpoints/ 下
+   */
+  scanPaths?: string[];
+  /** 🔧 V7 新增：期望文件大小（字节），用于校验完整性；不填则只检查存在性 */
+  expectedSize?: number;
+  /** 🔧 V7 新增：模型文件 MD5（部分关键模型），用于严格校验；不填则跳过 MD5 */
+  md5?: string;
+}
+
+/**
+ * 功能模块定义（V7 新增）
+ * 一个功能模块 = 多个模型文件 + 一个运行时依赖
+ * 对应前端 7 张卡片，按 4 个分类分组
+ */
+interface ModelModuleDef {
+  id: string;                    // 模块 id（对应 ai_daemon.modules 的 key）
+  category: 'audio' | 'asr' | 'vision' | 'tts';  // 4 分类
+  displayName: string;           // 中文显示名
+  description: string;
+  icon: string;                  // emoji 图标
+  required: 'builtin' | 'optional';  // 必装内置 / 可选
+  modelIds: string[];            // 模块包含的模型 id（对应 MODEL_DEFINITIONS.id）
+  runtimeId: string;             // 运行时依赖模块 id（对应 ai_daemon.modules 的 key，如 'demucs'/'torch'）
+  sizeNote: string;              // 体积说明
 }
 
 /** 21 个具体模型定义（V5 细化版，与 manifest.json models 数组对齐） */
@@ -35,21 +62,27 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
     description: 'Whisper.cpp 中文语音识别基座（含运行时 whisper-cli.exe）', version: '1.0',
     // 🔧 修复：磁盘上实际存在 whisper-cli.exe + dll，ggml-base.bin 未下载（用户可用 huggingface-cli 补下）
     manifestPaths: ['whisper/whisper-cli.exe'],
+    // V7：扫描 ggml-base.bin 多路径（用户可能放在 whisper/ 或根目录）
+    scanPaths: ['whisper/ggml-base.bin', 'ggml-base.bin'],
+    expectedSize: 147953664,  // manifest.json 中声明的期望大小
   },
   {
     id: 'sensevoice_onnx', name: 'SenseVoice ONNX', displayName: 'SenseVoice 量化模型', type: 'asr',
     description: 'SenseVoice 多语言语音识别量化模型（中/日/韩/粤/auto 默认引擎）', version: '1.0', pythonPkg: 'funasr',
     manifestPaths: ['sensevoice_onnx/model_quant.onnx'],
+    scanPaths: ['sensevoice_onnx/model_quant.onnx', 'sensevoice/model_quant.onnx'],
   },
   {
     id: 'sensevoice_small', name: 'SenseVoiceSmall', displayName: 'SenseVoice PyTorch 模型', type: 'asr',
     description: 'SenseVoice PyTorch 完整模型（含 utils/ctc_alignment.py）', version: '1.0', pythonPkg: 'funasr',
     manifestPaths: ['sensevoice_small/model.pt'],
+    scanPaths: ['sensevoice_small/model.pt', 'huggingface/sensevoice_small/model.pt'],
   },
   {
     id: 'fsmn_vad', name: 'FSMN VAD', displayName: 'FSMN 语音活动检测', type: 'asr',
     description: 'FunASR FSMN VAD 语音端点检测模型（ASR 前置组件）', version: '1.0', pythonPkg: 'funasr',
     manifestPaths: ['fsmn_vad/model.pt'],
+    scanPaths: ['fsmn_vad/model.pt', 'huggingface/fsmn_vad/model.pt'],
   },
   // === TTS 语音合成 ===
   {
@@ -97,6 +130,7 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
     id: 'clip', name: 'CLIP', displayName: 'CLIP 跨模态匹配模型', type: 'vision',
     description: 'OpenAI CLIP 文本-图像跨模态匹配（脚本-视频帧对齐核心）', version: '1.0',
     manifestPaths: ['clip/config.json', 'clip/model.safetensors', 'clip/preprocessor_config.json'],
+    scanPaths: ['clip/model.safetensors', 'huggingface/clip/model.safetensors'],
   },
   {
     id: 'buffalo_l_det_10g', name: 'Buffalo L det_10g', displayName: 'Buffalo L 人脸检测主干', type: 'vision',
@@ -148,6 +182,12 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
     id: 'demucs_htdemucs', name: 'Demucs htdemucs', displayName: 'Demucs htdemucs', type: 'audio',
     description: 'Demucs htdemucs 4-stem 分离模型（pip 包内置，无独立文件）', version: '1.0', pythonPkg: 'demucs',
     manifestPaths: [],
+    // 🔧 V7：demucs 首次运行时自动下载到 TORCH_HOME/hub/checkpoints/，扫描多路径
+    scanPaths: [
+      'demucs/hub/checkpoints/htdemucs.pth',
+      'demucs/htdemucs.pth',
+      'huggingface/hub/htdemucs.pth',
+    ],
   },
   // === Emotion 情绪分析 ===
   {
@@ -196,6 +236,87 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
   demucs_htdemucs: { url: '', file: '' },
   emotion: { url: '', file: '' },
 };
+
+/**
+ * 🔧 V7 新增：7 个功能模块定义（对应前端 7 张卡片，按 4 分类分组）
+ * 用于前端模型管理页按功能模块展示，而非细碎的 23 个模型
+ * 每个模块 = 多个模型文件 + 一个运行时依赖
+ */
+const MODEL_MODULES: ModelModuleDef[] = [
+  // === 音频分离（2 张卡片）===
+  {
+    id: 'mdx_net', category: 'audio', displayName: 'MDX-Net 音频分离',
+    description: 'UVR MDX-Net 人声/BGM 分离（轻量推荐，ONNX 推理）',
+    icon: '🎵', required: 'builtin',
+    modelIds: ['mdx_hq3', 'mdx_hq4'],
+    runtimeId: 'mdx_net',  // 运行时依赖：audio_separator + onnxruntime（已内置）
+    sizeNote: '~160 MB (模型文件) + 60 MB (运行时已内置)',
+  },
+  {
+    id: 'demucs', category: 'audio', displayName: 'Demucs 音频分离（高质量）',
+    description: 'Demucs htdemucs 4-stem 分离（高质量模式，需 PyTorch）',
+    icon: '🎵', required: 'optional',
+    modelIds: ['demucs_htdemucs'],
+    runtimeId: 'demucs',  // 运行时依赖：demucs + torch + torchaudio
+    sizeNote: '~80 MB (模型) + 2.2 GB (运行时，含 torch)',
+  },
+  // === ASR 语音识别（2 张卡片）===
+  {
+    id: 'whisper', category: 'asr', displayName: 'Whisper 语音识别',
+    description: 'Whisper.cpp 中文语音识别（C++ 推理，零 Python 依赖）',
+    icon: '🎙️', required: 'optional',
+    modelIds: ['whisper_base'],
+    runtimeId: 'whisper',  // 运行时依赖：无（whisper-cli.exe 已内置）
+    sizeNote: '~150 MB (模型文件) + 0 (运行时已内置)',
+  },
+  {
+    id: 'sensevoice', category: 'asr', displayName: 'SenseVoice 语音识别',
+    description: 'FunASR SenseVoice 多语言 ASR（中文增强，需 PyTorch）',
+    icon: '🎙️', required: 'optional',
+    modelIds: ['sensevoice_onnx', 'sensevoice_small', 'fsmn_vad'],
+    runtimeId: 'sensevoice',  // 运行时依赖：funasr + torch
+    sizeNote: '~500 MB (模型) + 600 MB (运行时，含 torch)',
+  },
+  // === 视觉（2 张卡片）===
+  {
+    id: 'insightface', category: 'vision', displayName: 'InsightFace 人脸识别',
+    description: 'Buffalo L 人脸检测 + 关键点 + 性别年龄 + YunNet/SFace 备选',
+    icon: '👁️', required: 'optional',
+    modelIds: ['buffalo_l_det_10g', 'buffalo_l_w600k_r50', 'buffalo_l_1k3d68',
+               'buffalo_l_2d106det', 'buffalo_l_genderage',
+               'yunnet_detection', 'sface_recognition'],
+    runtimeId: 'insightface',  // 运行时依赖：insightface + onnxruntime（已内置）
+    sizeNote: '~50 MB (模型) + 200 MB (运行时)',
+  },
+  {
+    id: 'clip', category: 'vision', displayName: 'CLIP 跨模态匹配',
+    description: 'OpenAI CLIP 文本-图像匹配（脚本-视频帧对齐核心，需 PyTorch）',
+    icon: '🧠', required: 'optional',
+    modelIds: ['clip'],
+    runtimeId: 'clip',  // 运行时依赖：transformers + torch
+    sizeNote: '~600 MB (模型) + 100 MB (运行时，含 torch)',
+  },
+  // === TTS 语音合成（1 张卡片）===
+  {
+    id: 'moss_tts', category: 'tts', displayName: 'MOSS TTS 语音合成',
+    description: 'MOSS TTS Nano 本地语音合成（纯 ONNX 推理，无需 PyTorch）',
+    icon: '🔊', required: 'optional',
+    modelIds: ['moss_tokenizer_encode', 'moss_tokenizer_decode_full', 'moss_tokenizer_decode_step',
+               'moss_tts_prefill', 'moss_tts_decode', 'moss_tts_local_decoder', 'moss_tokenizer_model'],
+    runtimeId: 'mdx_net',  // 运行时依赖：onnxruntime（与 MDX-Net 共用，已内置）— 此处借用 mdx_net 标记
+    sizeNote: '~150 MB (模型) + 0 (运行时已内置)',
+  },
+];
+
+/**
+ * 🔧 V7 新增：4 个分类定义（对应前端顶部 Chip 菜单）
+ */
+const MODEL_CATEGORIES = [
+  { id: 'audio', displayName: '音频分离', icon: '🎵' },
+  { id: 'asr', displayName: '语音识别', icon: '🎙️' },
+  { id: 'vision', displayName: '视觉', icon: '👁️' },
+  { id: 'tts', displayName: '语音合成', icon: '🔊' },
+] as const;
 
 /**
  * 模型管理服务层
@@ -267,61 +388,242 @@ export class ModelService {
   }
 
   /**
-   * 🔧 修复 P0：扫描 resources/models/ 磁盘文件，更新 local_models 表状态
+   * 🔧 修复 P0 + V7 升级：扫描 resources/models/ 磁盘文件，更新 local_models 表状态
    * 旧版 bug：local_models 表永远空表，预装的 21 个模型躺在磁盘但代码不知道
-   * 修复后：读取 manifest.json，检查文件存在性，更新 status/download_path/size_bytes
+   * V7 升级：
+   *   1. 支持 scanPaths 多路径扫描（用户可能把模型放到不同子目录）
+   *   2. 支持 expectedSize 大小校验（文件损坏/未下完可识别）
+   *   3. 支持 md5 严格校验（关键模型）
+   *   4. manifestPaths 为空但 scanPaths 非空的模型（如 htdemucs.pth）也能被识别
    */
   public scanDiskModels(): void {
     try {
       const modelsPath = PathManager.getModelsPath();
-      const manifestPath = path.join(modelsPath, 'manifest.json');
-      if (!fs.existsSync(manifestPath)) {
-        AppLogger.warn(LOG_TAGS.SYSTEM, `[ModelService] manifest.json 不存在: ${manifestPath}`);
-        return;
-      }
-
-      const manifestContent = fs.readFileSync(manifestPath, 'utf-8');
-      const manifest = JSON.parse(manifestContent);
-      const manifestModels: any[] = manifest.models || [];
 
       for (const def of MODEL_DEFINITIONS) {
-        // 检查该模型的所有 manifest 文件是否都存在
-        const filesExist = def.manifestPaths.length > 0 && def.manifestPaths.every(p => {
-          const fullPath = path.join(modelsPath, p);
-          return fs.existsSync(fullPath);
-        });
+        // 🔧 V7：合并 manifestPaths + scanPaths 为候选扫描路径（去重）
+        const candidatePaths = Array.from(new Set([
+          ...(def.manifestPaths || []),
+          ...(def.scanPaths || []),
+        ]));
 
-        if (filesExist) {
-          // 计算总大小
-          let totalSize = 0;
-          let primaryPath = '';
-          for (const p of def.manifestPaths) {
-            const fullPath = path.join(modelsPath, p);
-            if (fs.existsSync(fullPath)) {
-              totalSize += fs.statSync(fullPath).size;
-              if (!primaryPath) primaryPath = fullPath;
-            }
-          }
+        if (candidatePaths.length === 0) {
+          // 既无 manifestPaths 也无 scanPaths（如 emotion/sovits pip 包内置），跳过磁盘扫描
+          continue;
+        }
 
-          // 更新 DB 状态为已下载
-          try {
-            this.modelRepo.updateStatus(def.id, 'downloaded');
-            this.modelRepo.updateDownloadPath(def.id, primaryPath);
-            // 🔧 修复 P0：持久化 size_bytes + downloaded_at
-            //   旧版 bug：注释说"ModelRepository 无 updateSize 方法"就放弃了 → 前端永远拿到 size_bytes=0
-            //   修复后：调用新增的 updateSize，前端可展示真实文件大小与下载时间
-            const existing = this.modelRepo.findById(def.id);
-            if (existing && existing.size_bytes !== totalSize) {
-              this.modelRepo.updateSize(def.id, totalSize);
+        // 扫描候选路径，找到第一个存在的文件
+        let foundPath = '';
+        let foundSize = 0;
+        for (const relPath of candidatePaths) {
+          const fullPath = path.join(modelsPath, relPath);
+          if (fs.existsSync(fullPath)) {
+            // 🔧 V7：大小校验 — 若声明了 expectedSize 且不匹配，跳过此路径（文件可能损坏）
+            const stat = fs.statSync(fullPath);
+            if (def.expectedSize && stat.size !== def.expectedSize) {
+              AppLogger.warn(LOG_TAGS.SYSTEM,
+                `[ModelService] ${def.id} 文件大小不匹配: ${relPath} 期望 ${def.expectedSize} 实际 ${stat.size}，可能损坏，跳过`);
+              continue;
             }
-          } catch (e: any) {
-            AppLogger.warn(LOG_TAGS.SYSTEM, `[ModelService] 更新 ${def.id} 状态失败: ${e.message}`);
+            foundPath = fullPath;
+            foundSize = stat.size;
+            break;
           }
+        }
+
+        if (!foundPath) {
+          // 所有候选路径都不存在，确保 DB 状态为 not_downloaded
+          const existing = this.modelRepo.findById(def.id);
+          if (existing && existing.status === 'downloaded') {
+            this.modelRepo.updateStatus(def.id, 'not_downloaded');
+            this.modelRepo.updateDownloadPath(def.id, '');
+          }
+          continue;
+        }
+
+        // 🔧 V7：MD5 严格校验（仅关键模型声明了 md5）
+        if (def.md5) {
+          const actualMd5 = this.computeFileMd5(foundPath);
+          if (actualMd5 !== def.md5) {
+            AppLogger.warn(LOG_TAGS.SYSTEM,
+              `[ModelService] ${def.id} MD5 校验失败: 期望 ${def.md5} 实际 ${actualMd5}，标记为损坏`);
+            try {
+              this.modelRepo.updateStatus(def.id, 'corrupted');
+              this.modelRepo.updateDownloadPath(def.id, foundPath);
+            } catch (e: any) {
+              AppLogger.warn(LOG_TAGS.SYSTEM, `[ModelService] 更新 ${def.id} 状态失败: ${e.message}`);
+            }
+            continue;
+          }
+        }
+
+        // 更新 DB 状态为已下载
+        try {
+          this.modelRepo.updateStatus(def.id, 'downloaded');
+          this.modelRepo.updateDownloadPath(def.id, foundPath);
+          // 🔧 修复 P0：持久化 size_bytes
+          const existing = this.modelRepo.findById(def.id);
+          if (existing && existing.size_bytes !== foundSize) {
+            this.modelRepo.updateSize(def.id, foundSize);
+          }
+        } catch (e: any) {
+          AppLogger.warn(LOG_TAGS.SYSTEM, `[ModelService] 更新 ${def.id} 状态失败: ${e.message}`);
         }
       }
     } catch (e: any) {
       AppLogger.error(LOG_TAGS.SYSTEM, '[ModelService] scanDiskModels 失败', e);
     }
+  }
+
+  /**
+   * 🔧 V7 新增：计算文件 MD5（用于关键模型完整性校验）
+   * @param filePath 文件绝对路径
+   * @returns 32 位小写 MD5 hex
+   */
+  private computeFileMd5(filePath: string): string {
+    const hash = crypto.createHash('md5');
+    const buffer = fs.readFileSync(filePath);
+    hash.update(buffer);
+    return hash.digest('hex');
+  }
+
+  /**
+   * 🔧 V7 新增：获取功能模块列表（7 张卡片 + 4 分类）
+   * 供前端模型管理页按功能模块展示，每张卡片含模型文件 + 运行时依赖状态
+   * @param depsStatus ai_daemon /api/check_deps 返回的运行时依赖状态
+   * @returns 模块列表（含模型文件详情 + 运行时状态 + 整体可用性）
+   */
+  public getModuleList(depsStatus?: any) {
+    // 先扫描磁盘更新状态
+    this.scanDiskModels();
+    const allModels = this.modelRepo.findAll();
+
+    return MODEL_MODULES.map(module => {
+      // 聚合模块下的模型文件详情
+      const models = module.modelIds.map(id => {
+        const def = MODEL_DEFINITIONS.find(d => d.id === id);
+        const dbRecord = allModels.find(m => m.id === id);
+        return {
+          id,
+          name: def?.name || id,
+          displayName: def?.displayName || id,
+          description: def?.description || '',
+          version: def?.version || '1.0',
+          status: dbRecord?.status || 'not_downloaded',
+          sizeBytes: dbRecord?.size_bytes || 0,
+          downloadPath: dbRecord?.download_path || '',
+          remoteUrl: MODEL_SOURCES[id]?.url || '',
+          pythonPkg: def?.pythonPkg,
+        };
+      });
+
+      // 计算模型文件整体状态
+      const allModelsReady = models.every(m => m.status === 'downloaded');
+      const someModelsReady = models.some(m => m.status === 'downloaded');
+
+      // 🔧 V7：从 ai_daemon.modules 读取运行时依赖状态
+      //   depsStatus 格式: { modules: { demucs: { ready, missing, display_name, size } } }
+      const runtimeInfo = depsStatus?.modules?.[module.runtimeId] || {
+        ready: false,
+        missing: [],
+        display_name: module.runtimeId,
+      };
+
+      // 整体可用 = 模型文件就绪 + 运行时就绪
+      const canUse = allModelsReady && runtimeInfo.ready;
+
+      return {
+        id: module.id,
+        category: module.category,
+        displayName: module.displayName,
+        description: module.description,
+        icon: module.icon,
+        required: module.required,
+        sizeNote: module.sizeNote,
+        models,
+        runtime: {
+          id: module.runtimeId,
+          ready: runtimeInfo.ready,
+          missing: runtimeInfo.missing || [],
+          displayName: runtimeInfo.display_name || module.runtimeId,
+        },
+        status: canUse ? 'ready' : (someModelsReady || runtimeInfo.ready ? 'partial' : 'missing'),
+        canUse,
+      };
+    });
+  }
+
+  /**
+   * 🔧 V7 新增：获取 4 个分类定义（供前端 Chip 菜单）
+   */
+  public getCategories() {
+    return MODEL_CATEGORIES;
+  }
+
+  /**
+   * 🔧 V7 新增：导入本地模型文件（用户离线补模型）
+   * 校验文件大小 + MD5，通过后复制到 resources/models/<子目录>/
+   * @param modelId 模型 ID
+   * @param srcFilePath 用户选择的本地文件路径
+   * @returns 导入结果 { modelId, status, message, downloadPath }
+   */
+  public importModelFile(modelId: string, srcFilePath: string) {
+    const def = MODEL_DEFINITIONS.find(d => d.id === modelId);
+    if (!def) {
+      throw new AppError(ErrorCode.DB_RECORD_NOT_FOUND, `模型定义不存在: ${modelId}`);
+    }
+    if (!fs.existsSync(srcFilePath)) {
+      throw new AppError(ErrorCode.FS_PATH_INVALID, `源文件不存在: ${srcFilePath}`);
+    }
+
+    const stat = fs.statSync(srcFilePath);
+    // 🔧 V7：大小校验（若声明了 expectedSize）
+    if (def.expectedSize && stat.size !== def.expectedSize) {
+      throw new AppError(
+        ErrorCode.FS_PATH_INVALID,
+        `文件大小不匹配: 期望 ${def.expectedSize} 字节，实际 ${stat.size} 字节，请确认文件来源`
+      );
+    }
+
+    // 🔧 V7：MD5 校验（若声明了 md5）
+    if (def.md5) {
+      const actualMd5 = this.computeFileMd5(srcFilePath);
+      if (actualMd5 !== def.md5) {
+        throw new AppError(
+          ErrorCode.FS_PATH_INVALID,
+          `MD5 校验失败: 期望 ${def.md5}，实际 ${actualMd5}，文件可能损坏或版本不匹配`
+        );
+      }
+    }
+
+    // 确定目标路径：优先 manifestPaths[0]，否则 scanPaths[0]
+    const targetRelPath = (def.manifestPaths && def.manifestPaths[0]) ||
+                          (def.scanPaths && def.scanPaths[0]);
+    if (!targetRelPath) {
+      throw new AppError(ErrorCode.FS_PATH_INVALID, `模型 ${modelId} 无可用目标路径`);
+    }
+
+    const modelsPath = PathManager.getModelsPath();
+    const targetFullPath = path.join(modelsPath, targetRelPath);
+
+    // 创建目录（如不存在）
+    fs.mkdirSync(path.dirname(targetFullPath), { recursive: true });
+
+    // 复制文件
+    fs.copyFileSync(srcFilePath, targetFullPath);
+
+    // 更新 DB 状态
+    this.modelRepo.updateStatus(modelId, 'downloaded');
+    this.modelRepo.updateDownloadPath(modelId, targetFullPath);
+    this.modelRepo.updateSize(modelId, stat.size);
+
+    AppLogger.info(LOG_TAGS.SYSTEM, `[ModelService] 导入模型成功: ${modelId} -> ${targetFullPath}`);
+    return {
+      modelId,
+      status: 'downloaded',
+      message: '模型导入成功',
+      downloadPath: targetFullPath,
+    };
   }
 
   /**

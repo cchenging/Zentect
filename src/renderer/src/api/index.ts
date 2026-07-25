@@ -305,6 +305,16 @@ export const API = {
     offDownloadProgress: () => {
       window.api.ipc.removeAllListeners(IPC_CHANNELS.MODEL_DOWNLOAD_PROGRESS);
     },
+    // 🔧 V7 新增：功能模块化接口
+    /** 获取功能模块列表（7 张卡片，含模型文件 + 运行时状态） */
+    getModuleList: () =>
+      invokeSafe<any[]>(IPC_CHANNELS.MODEL_GET_MODULE_LIST),
+    /** 获取 4 个分类定义（供 Chip 菜单） */
+    getCategories: () =>
+      invokeSafe<any[]>(IPC_CHANNELS.MODEL_GET_CATEGORIES),
+    /** 导入本地模型文件（用户离线补模型，后端弹 dialog 选文件） */
+    importFile: (modelId: string) =>
+      invokeSafe<any>(IPC_CHANNELS.MODEL_IMPORT_FILE, modelId),
   },
 
   /** 管线模型映射域 */

@@ -186,6 +186,10 @@ export const IPC_CHANNELS = {
   MODEL_SET_PATH: 'model:setPath',
   MODEL_BATCH_DOWNLOAD: 'model:batchDownload',
   MODEL_BATCH_UPDATE: 'model:batchUpdate',
+  // 🔧 V7 新增：功能模块化 + 离线导入
+  MODEL_GET_MODULE_LIST: 'model:getModuleList',
+  MODEL_GET_CATEGORIES: 'model:getCategories',
+  MODEL_IMPORT_FILE: 'model:importFile',
 
   // --- 管线模型映射域 ---
   PIPELINE_GET_NODE_MODEL_CONFIG: 'pipeline:getNodeModelConfig',
