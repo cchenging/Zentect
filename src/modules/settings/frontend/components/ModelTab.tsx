@@ -56,8 +56,10 @@ interface ModelItem {
  */
 const DEFAULT_MODELS: Omit<ModelItem, 'status' | 'progress'>[] = [
   // === ASR 语音识别 ===
-  { id: 'whisper_base', label: 'Whisper Base 基座模型', englishName: 'Whisper Base', size: '~150MB', sizeBytes: 0, description: 'Whisper.cpp 中文语音识别基座（ggml 格式）', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '' },
+  { id: 'whisper_base', label: 'Whisper Base 基座模型', englishName: 'Whisper Base', size: '~150MB', sizeBytes: 0, description: 'Whisper.cpp 中文语音识别基座（含运行时 whisper-cli.exe）', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '' },
   { id: 'sensevoice_onnx', label: 'SenseVoice 量化模型', englishName: 'SenseVoice ONNX', size: '~80MB', sizeBytes: 0, description: '中/日/韩/粤 多语言语音识别', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'funasr' },
+  { id: 'sensevoice_small', label: 'SenseVoice PyTorch 模型', englishName: 'SenseVoiceSmall', size: '~90MB', sizeBytes: 0, description: 'SenseVoice PyTorch 完整模型（含 ctc_alignment）', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'funasr' },
+  { id: 'fsmn_vad', label: 'FSMN 语音活动检测', englishName: 'FSMN VAD', size: '~5MB', sizeBytes: 0, description: 'FunASR FSMN VAD 语音端点检测（ASR 前置）', category: 'asr', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'funasr' },
   // === TTS 语音合成 ===
   { id: 'moss_tokenizer_encode', label: 'MOSS 音频分词器编码端', englishName: 'MOSS Audio Tokenizer Encode', size: '~20MB', sizeBytes: 0, description: 'MOSS TTS 音频分词器编码端', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
   { id: 'moss_tokenizer_decode_full', label: 'MOSS 音频分词器完整解码端', englishName: 'MOSS Audio Tokenizer Decode Full', size: '~20MB', sizeBytes: 0, description: 'MOSS TTS 音频分词器完整解码端', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
@@ -68,6 +70,7 @@ const DEFAULT_MODELS: Omit<ModelItem, 'status' | 'progress'>[] = [
   { id: 'moss_tokenizer_model', label: 'MOSS TTS 分词器', englishName: 'MOSS TTS Tokenizer', size: '~1MB', sizeBytes: 0, description: 'MOSS TTS SentencePiece 分词器', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '' },
   { id: 'sovits', label: 'GPT-SoVITS', englishName: 'GPT-SoVITS', size: '~200MB', sizeBytes: 0, description: 'TTS 增强（音色克隆，pip 包内置）', category: 'tts', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'sovits' },
   // === Vision 视觉识别 ===
+  { id: 'clip', label: 'CLIP 跨模态匹配模型', englishName: 'CLIP', size: '~600MB', sizeBytes: 0, description: 'OpenAI CLIP 文本-图像跨模态匹配（脚本-视频帧对齐核心）', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '' },
   { id: 'buffalo_l_det_10g', label: 'Buffalo L 人脸检测主干', englishName: 'Buffalo L det_10g', size: '~10MB', sizeBytes: 0, description: 'InsightFace Buffalo L 人脸检测主干网络', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
   { id: 'buffalo_l_w600k_r50', label: 'Buffalo L 人脸特征嵌入', englishName: 'Buffalo L w600k_r50', size: '~5MB', sizeBytes: 0, description: 'InsightFace Buffalo L 人脸特征嵌入', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
   { id: 'buffalo_l_1k3d68', label: 'Buffalo L 3D关键点', englishName: 'Buffalo L 1k3d68', size: '~3MB', sizeBytes: 0, description: 'InsightFace Buffalo L 3D 人脸关键点', category: 'vision', version: '1.0', downloadPath: '', downloadedAt: '', pythonPkg: 'insightface' },
@@ -165,22 +168,44 @@ export const ModelTab: React.FC = () => {
   const loadModelStatus = async () => {
     try {
       const list = await API.model.getList();
+      // 🔧 修复 P0：并行获取 Python 依赖状态，用于补充 pythonPkg 内置模型的状态
+      //   场景：用户通过 pip install demucs/insightface/funasr 安装包时，模型自动下载到 C 盘缓存
+      //   （如 ~/.cache/huggingface, ~/insightface/models），scanDiskModels 扫不到 resources/models/ 下的文件
+      //   修复后：deps 显示已安装 → 即使 resources/models/ 下无文件，也标记为 ready
+      let depsInfo: DepsInfo | null = null;
+      try {
+        const depsRes = await API.ai.checkDeps();
+        depsInfo = depsRes?.deps || null;
+        setDeps(depsInfo);
+      } catch {
+        setDeps(null);
+      }
+
       if (Array.isArray(list) && list.length > 0) {
         setModels(prev => prev.map(m => {
           const serverModel = list.find((s: any) => s.model_id === m.id || s.id === m.id);
           if (serverModel) {
             // 🔧 修复 P0：后端 scanDiskModels 写入 status='downloaded'，旧版只认 'ready' → 已下载模型识别不到
             //   修复后：同时接受 'downloaded' / 'ready' / is_installed 三种已下载信号
-            const isReady = serverModel.status === 'downloaded'
+            let isReady = serverModel.status === 'downloaded'
               || serverModel.status === 'ready'
               || serverModel.is_installed === true;
+
+            // 🔧 修复 P0：pythonPkg 内置模型（demucs/sovits/insightface/funasr）的补充判断
+            //   即使 resources/models/ 下无独立文件，只要 pip 包已安装，模型就可用
+            //   覆盖场景：buffalo_l_*/mdx_hq3/hq4 等虽然 .onnx 文件不在本地，但 insightface/audio_separator 包已安装
+            //            包会自动下载模型到 C 盘缓存，Python 能加载 → 应显示为 ready
+            if (!isReady && m.pythonPkg && depsInfo && depsInfo[m.pythonPkg]?.installed) {
+              isReady = true;
+            }
+
             return {
               ...m,
               status: isReady ? 'ready' : m.status,
               version: serverModel.version || m.version,
               englishName: serverModel.name || m.englishName,
               sizeBytes: serverModel.size_bytes || 0,
-              downloadPath: serverModel.download_path || '',
+              downloadPath: serverModel.download_path || (isReady && m.pythonPkg ? `pip 包内置（${m.pythonPkg}）` : ''),
               downloadedAt: serverModel.downloaded_at || '',
             };
           }

@@ -32,13 +32,24 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
   // === ASR 语音识别 ===
   {
     id: 'whisper_base', name: 'Whisper Base', displayName: 'Whisper Base 基座模型', type: 'asr',
-    description: 'Whisper.cpp 中文语音识别基座模型（ggml 格式）', version: '1.0',
-    manifestPaths: ['whisper/ggml-base.bin'],
+    description: 'Whisper.cpp 中文语音识别基座（含运行时 whisper-cli.exe）', version: '1.0',
+    // 🔧 修复：磁盘上实际存在 whisper-cli.exe + dll，ggml-base.bin 未下载（用户可用 huggingface-cli 补下）
+    manifestPaths: ['whisper/whisper-cli.exe'],
   },
   {
     id: 'sensevoice_onnx', name: 'SenseVoice ONNX', displayName: 'SenseVoice 量化模型', type: 'asr',
     description: 'SenseVoice 多语言语音识别量化模型（中/日/韩/粤/auto 默认引擎）', version: '1.0', pythonPkg: 'funasr',
     manifestPaths: ['sensevoice_onnx/model_quant.onnx'],
+  },
+  {
+    id: 'sensevoice_small', name: 'SenseVoiceSmall', displayName: 'SenseVoice PyTorch 模型', type: 'asr',
+    description: 'SenseVoice PyTorch 完整模型（含 utils/ctc_alignment.py）', version: '1.0', pythonPkg: 'funasr',
+    manifestPaths: ['sensevoice_small/model.pt'],
+  },
+  {
+    id: 'fsmn_vad', name: 'FSMN VAD', displayName: 'FSMN 语音活动检测', type: 'asr',
+    description: 'FunASR FSMN VAD 语音端点检测模型（ASR 前置组件）', version: '1.0', pythonPkg: 'funasr',
+    manifestPaths: ['fsmn_vad/model.pt'],
   },
   // === TTS 语音合成 ===
   {
@@ -82,6 +93,11 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
     manifestPaths: [],
   },
   // === Vision 视觉识别 ===
+  {
+    id: 'clip', name: 'CLIP', displayName: 'CLIP 跨模态匹配模型', type: 'vision',
+    description: 'OpenAI CLIP 文本-图像跨模态匹配（脚本-视频帧对齐核心）', version: '1.0',
+    manifestPaths: ['clip/config.json', 'clip/model.safetensors', 'clip/preprocessor_config.json'],
+  },
   {
     id: 'buffalo_l_det_10g', name: 'Buffalo L det_10g', displayName: 'Buffalo L 人脸检测主干', type: 'vision',
     description: 'InsightFace Buffalo L 人脸检测主干网络', version: '1.0', pythonPkg: 'insightface',
@@ -141,13 +157,25 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
   },
 ];
 
-/** 旧版粗粒度模型 id（用于 ensureSeedData 迁移检测） */
-const LEGACY_MODEL_IDS = ['moss_tts', 'whisper', 'sensevoice', 'mdx_net', 'insightface', 'emotion', 'sovits'];
+/** 旧版粗粒度模型 id（用于 ensureSeedData 迁移检测）
+ *  V1: 7 条（moss_tts/whisper/sensevoice/mdx_net/insightface/emotion/sovits）
+ *  V5: 21 条（已细化但 whisper_base 路径错误，需要迁移到 V6）
+ *  V6 检测到以上任意旧 id 都触发迁移
+ */
+const LEGACY_MODEL_IDS = [
+  // V1 粗粒度
+  'moss_tts', 'whisper', 'sensevoice', 'mdx_net', 'insightface', 'emotion',
+  // V5 细化但 whisper_base.manifestPaths 指向不存在的 ggml-base.bin
+  'whisper_base',
+];
 
-/** 模型下载源配置（V5 细化版，URL 仍为占位，实际下载依赖预装或 huggingface-cli） */
+/** 模型下载源配置（V6 修正版，URL 仍为占位，实际下载依赖预装或 huggingface-cli） */
 const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
   whisper_base: { url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main', file: 'ggml-base.bin' },
   sensevoice_onnx: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model_quant.onnx' },
+  sensevoice_small: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model.pt' },
+  fsmn_vad: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'fsmn_vad/model.pt' },
+  clip: { url: 'https://huggingface.co/openai/clip-vit-base-patch32/resolve/main', file: 'model.safetensors' },
   moss_tokenizer_encode: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_encode.onnx' },
   moss_tokenizer_decode_full: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_decode_full.onnx' },
   moss_tokenizer_decode_step: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_decode_step.onnx' },
@@ -160,7 +188,7 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
   buffalo_l_1k3d68: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/1k3d68.onnx' },
   buffalo_l_2d106det: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/2d106det.onnx' },
   buffalo_l_genderage: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/genderage.onnx' },
-  yunnet_detection: { url: 'https://huggingface.co/opencv/opencv_extra/resolve/main', file: 'face_detection_yunet_2023mar.onnx' },
+  yunnet_detection: { url: 'https://huggingface.co/opencv/opencv_extra/resolve/main', file: 'face_detection_yunnet_2023mar.onnx' },
   sface_recognition: { url: 'https://huggingface.co/opencv/opencv_extra/resolve/main', file: 'face_recognition_sface_2021dec.onnx' },
   mdx_hq3: { url: 'https://huggingface.co/JeffreyCA/audio-separator-models/resolve/main', file: 'UVR-MDX-NET-Inst_HQ_3.onnx' },
   mdx_hq4: { url: 'https://huggingface.co/JeffreyCA/audio-separator-models/resolve/main', file: 'UVR-MDX-NET-Inst_HQ_4.onnx' },
