@@ -1,0 +1,40 @@
+# Zentect AI Daemon Python 依赖
+# 安装命令：<pythonPath> -m pip install -r requirements.txt
+# 注意：版本约束基于 Python 3.10 + torch 2.x 适配，避免 API 漂移
+
+# === Web 框架 ===
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+sse-starlette>=1.6.0
+
+# === ASR 语音识别 ===
+funasr>=1.1.2
+modelscope
+huggingface_hub
+numpy<=1.26.4
+
+# === 音频分离 ===
+# demucs 锁定 4.0.x，避免 4.1+ 进度回调节段名变更导致进度永远 0%
+demucs>=4.0.1,<4.1.0
+audio_separator
+onnxruntime
+
+# === 人脸识别 ===
+insightface
+opencv-python
+
+# === 视觉/语义 ===
+transformers
+# torch 与 torchaudio 版本必须配套，避免运行时不兼容
+torch>=2.0.0,<2.2.0
+torchaudio>=2.0.0,<2.2.0
+
+# === 音频处理 ===
+librosa
+soundfile
+scipy
+
+# === 其他 ===
+hdbscan
+scikit-learn

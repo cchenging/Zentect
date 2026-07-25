@@ -332,6 +332,40 @@ async def health_check():
     return {'status': 'ok', 'port': port}
 
 
+@app.get('/api/check_deps')
+async def check_deps():
+    """检查 Python 依赖安装状态：供前端模型管理页展示依赖是否就绪
+    返回 { deps: { demucs: {installed, version}, funasr: {...}, ... }, python_executable }
+    """
+    import importlib
+    # 关键依赖清单：key=导入名, value=显示名
+    targets = {
+        'demucs': 'Demucs (音频分离)',
+        'audio_separator': 'MDX-Net (音频分离)',
+        'funasr': 'SenseVoice (ASR)',
+        'insightface': 'InsightFace (人脸识别)',
+        'hdbscan': 'HDBSCAN (人脸聚类)',
+        'torch': 'PyTorch',
+        'torchaudio': 'Torchaudio',
+        'transformers': 'Transformers',
+        'fastapi': 'FastAPI',
+        'uvicorn': 'Uvicorn',
+        'cv2': 'OpenCV',
+        'librosa': 'Librosa',
+        'soundfile': 'SoundFile',
+        'scipy': 'SciPy',
+    }
+    deps = {}
+    for mod_name, display_name in targets.items():
+        try:
+            mod = importlib.import_module(mod_name)
+            version = getattr(mod, '__version__', None) or 'unknown'
+            deps[mod_name] = {'installed': True, 'version': version, 'display_name': display_name}
+        except ImportError:
+            deps[mod_name] = {'installed': False, 'version': None, 'display_name': display_name}
+    return {'deps': deps, 'python_executable': sys.executable}
+
+
 @app.post('/release_models')
 async def release_models():
     """释放所有已加载模型，回收内存（空闲时调用）"""

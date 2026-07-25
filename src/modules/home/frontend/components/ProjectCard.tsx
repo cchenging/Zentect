@@ -4,6 +4,7 @@ import type { ProjectRecord } from '../../types';
 import { AppIcon } from '@renderer/components/app-icon';
 import { useI18n } from '@renderer/store/useI18n';
 import { formatDurationStandard } from '@renderer/utils/timeUtils';
+import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@renderer/components/ui/dropdown-menu';
 
 interface ProjectCardProps {
@@ -64,7 +65,9 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRe
   const { t } = useI18n();
   const [imgError, setImgError] = useState(false);
 
-  const coverUrl = project.coverPath || '';
+  // 🔧 修复 P2：防御性转换，应对后端漏转 magic URL 的情况
+  //   后端 getList() 已做转换，但若 coverPath 为裸相对路径，getSafeMediaUrl 会兜底转 magic URL
+  const coverUrl = getSafeMediaUrl(project.coverPath) || '';
   const displayName = truncateMiddleSmart(project.name);
 
   return (

@@ -1,10 +1,16 @@
 export const PROJECT_SQL = {
   // --- 基础读写 ---
   FIND_ALL: `
-    SELECT id, name, type, category, cover_path as coverPath, duration,
-           json_extract(metadata, '$.stepStatuses[4]') as step5Status,
-           disk_size as size, create_time as createdAt, update_time as updatedAt
-    FROM projects WHERE is_deleted = 0 ORDER BY create_time DESC, update_time DESC
+    SELECT p.id, p.name, p.type, p.category,
+           COALESCE(p.cover_path,
+             (SELECT m.cover_path FROM media_assets m
+              WHERE m.project_id = p.id AND m.cover_path IS NOT NULL AND m.cover_path != '' AND m.is_deleted = 0
+              ORDER BY m.create_time ASC LIMIT 1)
+           ) as coverPath,
+           p.duration,
+           json_extract(p.metadata, '$.stepStatuses[4]') as step5Status,
+           p.disk_size as size, p.create_time as createdAt, p.update_time as updatedAt
+    FROM projects p WHERE p.is_deleted = 0 ORDER BY p.create_time DESC, p.update_time DESC
   `,
   FIND_BY_ID: `\n    SELECT id, name, category, cover_path as coverPath, duration, \n           canvas_data as canvasData,\n           create_time as createdAt, update_time as updatedAt \n    FROM projects WHERE id = @id AND is_deleted = 0\n  `,
   CREATE: `

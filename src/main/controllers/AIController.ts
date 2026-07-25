@@ -64,6 +64,11 @@ export class AIController {
       return await this.aiService.visionSingle(data);
     });
 
+    // Python 依赖检查：返回 { deps, python_executable } 或 null（服务离线）
+    IpcRouter.handle(IPC_CHANNELS.AI_CHECK_DEPS, async () => {
+      return await this.aiService.checkDeps();
+    });
+
     IpcRouter.handle(IPC_CHANNELS.AI_EMOTION_SINGLE, async (_, data) => {
       return await this.aiService.emotionSingle(data);
     });

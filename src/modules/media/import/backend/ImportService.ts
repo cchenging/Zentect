@@ -87,6 +87,15 @@ export class ImportService {
               fastCoverPath = `thumbnails/${fastCoverName}`;
               // 同步写入 DB，避免后台未完成时关闭应用导致封面丢失
               this.repo.updateMediaMeta(mediaId, { coverPath: fastCoverPath });
+              // 🔧 修复 P0：同步写 projects.cover_path，让首页立即显示封面
+              // 旧版 bug：只写 media_assets.cover_path，projects.cover_path 推迟到异步后台任务写入
+              //   用户在后台完成前切回首页 → projects.cover_path 为 NULL → 首页显示图标
+              try {
+                const { ProjectRepository } = require('../../../../main/database/repositories/ProjectRepository');
+                new ProjectRepository().updateCover(projectId, fastCoverPath);
+              } catch (e) {
+                AppLogger.warn(LOG_TAGS.MEDIA, `同步回写 projects.cover_path 失败: ${projectId}`);
+              }
             }
           } catch (e) {
             AppLogger.warn(LOG_TAGS.MEDIA, `generateCoverFast failed for ${mediaId}`);

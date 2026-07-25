@@ -1,4 +1,4 @@
-﻿import * as path from 'path';
+import * as path from 'path';
 import * as http from 'http';
 import { ChildProcess, spawn } from 'child_process';
 import { PathManager } from '../utils/pathManager';
@@ -95,7 +95,7 @@ export class AIDaemon {
       scriptPath,
       '--port', this.ttsPort.toString(),
       '--model_dir', modelDir,
-    ]);
+    ], { env: pythonEnv });
     ProcessManager.register(this.ttsProcess, 'MOSS_TTS_Worker');
 
     // 捕获 stdout 输出（uvicorn 启动日志走 stdout）

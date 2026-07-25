@@ -82,6 +82,8 @@ export const API = {
     runSingleTTS: (projectId: string, shot: any) => invokeSafe(IPC_CHANNELS.AI_RUN_SINGLE_TTS, projectId, shot),
     runGlobalTTS: (projectId: string, shots: any[]) => invokeSafe(IPC_CHANNELS.AI_RUN_GLOBAL_TTS, projectId, shots),
     visionSingle: (data: any) => invokeSafe(IPC_CHANNELS.AI_VISION_SINGLE, data),
+    // 检查 Python 依赖安装状态（返回 { deps, python_executable } 或 null）
+    checkDeps: () => invokeSafe<{ deps: Record<string, { installed: boolean; version: string | null; display_name: string }>; python_executable: string } | null>(IPC_CHANNELS.AI_CHECK_DEPS),
     emotionSingle: (data: any) => invokeSafe(IPC_CHANNELS.AI_EMOTION_SINGLE, data),
     generateAiScript: (data: any) => invokeSafe(IPC_CHANNELS.AI_GENERATE_SCRIPT, data),
     streamText: (payload: any) => window.api.ai.streamText(payload),

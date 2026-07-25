@@ -1,4 +1,4 @@
-﻿import { spawn, ChildProcess } from 'child_process'
+import { spawn, ChildProcess } from 'child_process'
 import path from 'path'
 import * as http from 'http'
 import { PathManager } from '../utils/pathManager'
@@ -72,6 +72,7 @@ export class AiRuntimeManager {
       })
 
       const pyLibsPath = path.join(PathManager.getResourcesPath(), 'scripts', 'py_libs');
+      // 🔧 修复 PYTHONPATH 死代码：pythonEnv 构造后必须传给 spawn，否则 py_libs 中的包不会被加载
       const pythonEnv = { ...process.env, PYTHONPATH: pyLibsPath };
       const proc = spawn(pythonPath, [
         scriptPath,
@@ -79,7 +80,8 @@ export class AiRuntimeManager {
         '--models_dir', modelsDir,
         '--device', deviceType
       ], {
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: pythonEnv  // 🔧 修复：补上 env 参数，让 py_libs 生效
       })
 
       if (!proc.pid) {
@@ -227,7 +229,7 @@ export class AiRuntimeManager {
         '--port', String(port),
         '--models_dir', modelsDir,
         '--device', deviceType
-      ], { stdio: ['pipe', 'pipe', 'pipe'] })
+      ], { stdio: ['pipe', 'pipe', 'pipe'], env: pythonEnv })
 
       if (!proc.pid) {
         throw new Error('重启失败: 无法获取进程 PID')

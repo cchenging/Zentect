@@ -96,14 +96,14 @@ export const AudioSeparationConfig: React.FC<AudioSeparationConfigProps> = ({ is
               className={`
                 flex flex-col items-center gap-1 py-2 px-1.5 rounded-lg border text-center transition-all cursor-pointer outline-none select-none
                 ${isSelected
-                  ? 'bg-primary/10 border-primary/30 text-primary shadow-sm shadow-primary/5'
-                  : 'bg-muted/30 border-border/50 text-muted-foreground hover:bg-muted/50 hover:border-border'}
+                  ? 'bg-accent/15 border-accent text-accent shadow-sm shadow-accent/10'
+                  : `bg-muted/30 border-border/50 text-muted-foreground ${isRunning ? '' : 'hover:bg-muted/50 hover:border-border'}`}
                 ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}
               `}
             >
-              <opt.Icon size={14} strokeWidth={isSelected ? 2.2 : 1.8} />
+              <opt.Icon size={14} strokeWidth={isSelected ? 2.4 : 1.8} />
               <span className="text-[11px] font-semibold leading-tight">{opt.label}</span>
-              <span className="text-[9px] opacity-50 leading-tight">{opt.desc}</span>
+              <span className={`text-[9px] leading-tight ${isSelected ? 'text-accent/70' : 'opacity-50'}`}>{opt.desc}</span>
             </button>
           );
         })}

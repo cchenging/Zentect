@@ -755,17 +755,27 @@ def _separate_sync(req: SeparateReq, task_id: str):
                 _set_progress(task_id, pct=5, msg="正在加载 Demucs htdemucs 模型...")
 
                 # P2: Demucs 真实进度回调
-                # callback 接收 info dict，包含 segment_offset 和 audio_length
+                # callback 接收 info dict，字段名随 demucs 版本变化：
+                #   v4.0.1+: segment_offset / audio_length
+                #   早期 v4.0.0: offset / total
+                #   部分 fork: progress (0~1 浮点)
                 # 将进度映射到 5-85 区间（85=Demucs 分离完成），替代旧版 5-15 的极粗粒度
                 def _demucs_progress_callback(info):
                     try:
-                        seg_offset = info.get('segment_offset', 0) or 0
-                        audio_len = info.get('audio_length', 0) or 0
+                        # 多字段 fallback，兼容不同 demucs 版本
+                        seg_offset = info.get('segment_offset') or info.get('offset') or 0
+                        audio_len = info.get('audio_length') or info.get('total') or 0
+                        # 部分版本直接给 progress 字段（0~1 浮点）
+                        progress_ratio = info.get('progress')
                         if audio_len > 0:
                             ratio = min(1.0, seg_offset / audio_len)
-                            # Demucs 分离阶段占总进度 5-85，共 80 个百分点（旧版仅 10）
-                            _set_progress(task_id, pct=5 + int(ratio * 80),
-                                          msg=f"Demucs 正在分离... {int(ratio * 100)}%")
+                        elif progress_ratio is not None:
+                            ratio = min(1.0, max(0.0, float(progress_ratio)))
+                        else:
+                            return  # 无法计算进度，跳过
+                        # Demucs 分离阶段占总进度 5-85，共 80 个百分点（旧版仅 10）
+                        _set_progress(task_id, pct=5 + int(ratio * 80),
+                                      msg=f"Demucs 正在分离... {int(ratio * 100)}%")
                     except Exception:
                         pass  # 进度回调不应影响主流程
 
@@ -843,8 +853,11 @@ def _separate_sync(req: SeparateReq, task_id: str):
                         _set_progress(task_id, pct=98, msg="分离完成，即将返回结果")
                         return {"success": True, "vocals": final_vocals, "bgm": final_bgm}
 
-            except ImportError:
-                print("[AI Daemon] Demucs 未安装，降级到 MDX-Net", file=sys.stderr)
+            except ImportError as ie:
+                # 🔧 增强诊断：打印 Python 解释器路径和 ImportError 详情，帮助定位环境不一致问题
+                print(f"[AI Daemon] Demucs 未安装 (ImportError: {ie}), "
+                      f"sys.executable={sys.executable}, "
+                      f"sys.path[:3]={sys.path[:3]}", file=sys.stderr)
                 _set_progress(task_id, pct=5, msg="Demucs 未安装，降级到 MDX-Net...")
             except Exception as demucs_err:
                 print(f"[AI Daemon] Demucs 分离失败，降级到 MDX-Net: {demucs_err}", file=sys.stderr)

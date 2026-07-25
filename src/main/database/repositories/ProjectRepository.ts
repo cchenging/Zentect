@@ -468,6 +468,9 @@ export class ProjectRepository {
         id: (project as any).id,
         name: (project as any).name,
         videoPath: meta.videoPath || '',
+        // 🔧 修复 P1：补 coverPath 字段，修复 duplicateProject 复制项目时封面丢失
+        //   旧版 bug：返回对象不含 coverPath → duplicate 时 oldProject.coverPath 为 undefined
+        coverPath: (project as any).cover_path || null,
         metadata: (project as any).metadata,
         shots: shots
       };

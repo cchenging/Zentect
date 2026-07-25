@@ -197,18 +197,28 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       }
       try {
         const whisperStrategy = new LocalWhisperStrategy();
-        const langMap: Record<string, string> = {
-          'zh-CN': 'zh', 'en-US': 'en', 'ja-JP': 'ja', 'ko-KR': 'ko'
-        };
-        const targetLang = langMap[config.targetLanguage] || 'auto';
-        const asrEngine = (typeof config.whisper === 'object' ? config.whisper.engine : 'sensevoice') || 'sensevoice';
+        const whisperCfg = typeof config.whisper === 'object' ? config.whisper : { enabled: true, engine: 'sensevoice' as const };
+        // 🔧 修复：ASR 识别语言用 auto（自动检测视频实际语言），不再用 config.targetLanguage
+        //   旧版 bug：config.targetLanguage 是翻译目标语言（如 zh-CN），被误用为识别语言
+        //   → 英文视频被强制按中文识别 → 识别结果错误
+        //   正确逻辑：识别阶段用 auto（视频是什么语言就识别什么语言），翻译阶段才用 targetLanguage
+        //   config.whisper.language 可覆盖（用户在前端指定视频源语言时生效）
+        const asrLang = whisperCfg.language || 'auto';
+        // 引擎选择：中日韩用 sensevoice（识别更好），其他用 whisper-v3（英文/欧洲语言更好）
+        //   用户未指定 engine 时，auto 模式默认 sensevoice（支持多语言自动检测）
+        const CJK_LANGS = ['zh', 'ja', 'ko'];
+        let asrEngine = whisperCfg.engine || 'sensevoice';
+        if (asrLang !== 'auto' && !CJK_LANGS.includes(asrLang) && !whisperCfg.engine) {
+          // 用户指定了非中日韩语言且未指定引擎 → 自动选 whisper-v3
+          asrEngine = 'whisper-v3';
+        }
         // ASR 进度映射到 45-65 区间（Python 端 pct 0-100 → Step1 45-65）
         const asrOnProgress = (pct: number, msg: string) => {
           const mapped = 45 + Math.round(pct * 0.2);
           onProgress(Math.max(lastProgress, mapped), msg || 'ASR 识别中');
         };
         whisperResult = await whisperStrategy.transcribe(
-          targetAudio, audioDir, mediaId, targetLang, asrEngine, signal, asrOnProgress
+          targetAudio, audioDir, mediaId, asrLang, asrEngine, signal, asrOnProgress
         );
         lastProgress = Math.max(lastProgress, 65); onProgress(lastProgress, 'ASR 识别完成');
       } catch (e: any) {

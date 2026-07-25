@@ -197,6 +197,25 @@ export class AIService {
     return await AIDaemon.getInstance().post('/api/vision', data);
   }
 
+  /**
+   * 检查 Python 端依赖安装状态（供模型管理页展示）
+   * 返回 { deps: { demucs: {installed, version, display_name}, ... }, python_executable }
+   * Python 服务离线时返回 null
+   */
+  public async checkDeps(): Promise<{ deps: Record<string, { installed: boolean; version: string | null; display_name: string }>; python_executable: string } | null> {
+    try {
+      const daemon = AIDaemon.getInstance();
+      if (!daemon.isOnline()) return null;
+      const { HttpClient } = await import('../core/HttpClient');
+      const port = daemon.getPort();
+      const res = await HttpClient.get(`http://127.0.0.1:${port}/api/check_deps`, { timeout: 5000 });
+      return res;
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT, `checkDeps 失败: ${e.message}`);
+      return null;
+    }
+  }
+
   public async emotionSingle(data: any) {
     return await AIDaemon.getInstance().post('/api/emotion', data);
   }

@@ -91,6 +91,8 @@ export const IPC_CHANNELS = {
   AI_RUN_GLOBAL_TTS: 'ai:runGlobalTTS',
   AI_VISION_SINGLE: 'ai:visionSingle',
   AI_EMOTION_SINGLE: 'ai:emotionSingle',
+  // Python 依赖检查（供模型管理页展示 demucs/funasr 等是否已安装）
+  AI_CHECK_DEPS: 'ai:checkDeps',
   AI_GENERATE_SCRIPT: 'ai:generateAiScript',
   AI_STREAM_TEXT: 'ai:streamText',
   AI_SEARCH_SEMANTICS: 'ai:searchSemantics',
