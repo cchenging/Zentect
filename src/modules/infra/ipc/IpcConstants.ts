@@ -72,6 +72,8 @@ export const IPC_CHANNELS = {
   SYSTEM_TEST_LLM: 'system:testLLM',
   SYSTEM_MIGRATE: 'system:migrateProjects',
   SYSTEM_LOG: 'system:log',
+  // 🔧 V7 新增：健康检查详情查询（数据库/本地模型等子项详情）
+  SYSTEM_GET_DB_DETAIL: 'system:getDbDetail',
 
   // --- 任务调度域 ---
   TASK_GET_ALL: 'task:getAll',

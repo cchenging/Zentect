@@ -96,6 +96,46 @@ export class HealthService {
     }
   }
 
+  /**
+   * 🔧 V7 新增：获取数据库详情（供健康检查页"详情"按钮调用）
+   * 返回 SQLite 路径/大小/版本/表列表（含每张表行数）
+   */
+  getDatabaseDetail(): {
+    path: string;
+    sizeBytes: number;
+    journalMode: string;
+    sqliteVersion: string;
+    tables: Array<{ name: string; rowCount: number }>;
+  } {
+    const dbPath = PathManager.getDatabasePath();
+    let sizeBytes = 0;
+    try {
+      if (fs.existsSync(dbPath)) {
+        sizeBytes = fs.statSync(dbPath).size;
+      }
+    } catch { /* 忽略 */ }
+
+    const db = SQLiteConnection.getInstance().getDB();
+    const journalMode = (db.pragma('journal_mode') as Array<{ journal_mode: string }>)[0]?.journal_mode || 'unknown';
+    const sqliteVersion = (db.pragma('sqlite_version') as Array<{ sqlite_version: string }>)[0]?.sqlite_version || 'unknown';
+
+    // 查询所有用户表（排除 sqlite_internal 系统表）
+    const tablesRaw = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+    ).all() as Array<{ name: string }>;
+
+    const tables = tablesRaw.map(t => {
+      try {
+        const cnt = db.prepare(`SELECT COUNT(*) as c FROM "${t.name}"`).get() as { c: number };
+        return { name: t.name, rowCount: cnt.c };
+      } catch {
+        return { name: t.name, rowCount: -1 };
+      }
+    });
+
+    return { path: dbPath, sizeBytes, journalMode, sqliteVersion, tables };
+  }
+
   private checkDatabase(): boolean {
     try {
       const db = SQLiteConnection.getInstance().getDB()

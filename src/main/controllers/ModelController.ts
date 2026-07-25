@@ -59,11 +59,19 @@ export class ModelController {
     // 🔧 V7 新增：导入本地模型文件（用户离线补模型）
     //   前端只传 modelId，后端弹 dialog 选文件 + 校验 + 复制到 resources/models/
     //   返回 { status, message, downloadPath } 或 null（用户取消）
+    //   修复 P0-2：win 兜底链路 fromWebContents → getFocusedWindow → getAllWindows[0]
     IpcRouter.handle(IPC_CHANNELS.MODEL_IMPORT_FILE, async (event, modelId: string) => {
       if (!modelId) {
         throw new AppError(ErrorCode.FS_PATH_INVALID, '模型 ID 不能为空');
       }
-      const win = BrowserWindow.fromWebContents(event.sender);
+      let win: BrowserWindow | null = BrowserWindow.fromWebContents(event.sender);
+      if (!win) {
+        win = BrowserWindow.getFocusedWindow();
+      }
+      if (!win) {
+        const all = BrowserWindow.getAllWindows();
+        if (all.length > 0) win = all[0];
+      }
       const { canceled, filePaths } = await dialog.showOpenDialog(win as BrowserWindow, {
         title: '选择模型文件',
         properties: ['openFile'],

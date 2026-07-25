@@ -60,6 +60,14 @@ export const API = {
     migrateProjects: (oldPath: string, newPath: string) => invokeSafe(IPC_CHANNELS.SYSTEM_MIGRATE, oldPath, newPath),
     health: () => invokeSafe<any>('system:health'),
     smokeTest: () => invokeSafe<any>('system:smoke-test'),
+    /** 🔧 V7 新增：获取数据库详情（路径/大小/版本/表列表） */
+    getDbDetail: () => invokeSafe<{
+      path: string;
+      sizeBytes: number;
+      journalMode: string;
+      sqliteVersion: string;
+      tables: Array<{ name: string; rowCount: number }>;
+    }>(IPC_CHANNELS.SYSTEM_GET_DB_DETAIL),
   },
 
   media: {
@@ -82,8 +90,20 @@ export const API = {
     runSingleTTS: (projectId: string, shot: any) => invokeSafe(IPC_CHANNELS.AI_RUN_SINGLE_TTS, projectId, shot),
     runGlobalTTS: (projectId: string, shots: any[]) => invokeSafe(IPC_CHANNELS.AI_RUN_GLOBAL_TTS, projectId, shots),
     visionSingle: (data: any) => invokeSafe(IPC_CHANNELS.AI_VISION_SINGLE, data),
-    // 检查 Python 依赖安装状态（返回 { deps, python_executable } 或 null）
-    checkDeps: () => invokeSafe<{ deps: Record<string, { installed: boolean; version: string | null; display_name: string }>; python_executable: string } | null>(IPC_CHANNELS.AI_CHECK_DEPS),
+    // 检查 Python 依赖安装状态（返回 { deps, modules, python_executable } 或 null）
+    // V7 modules 字段：torch/demucs/mdx_net/whisper/sensevoice/insightface/clip 7 个引擎的 ready 状态
+    checkDeps: () => invokeSafe<{
+      deps: Record<string, { installed: boolean; version: string | null; display_name: string }>;
+      modules: Record<string, {
+        ready: boolean;
+        missing: string[];
+        display_name: string;
+        size?: string;
+        shared_by?: string[];
+        needs?: string[];
+      }>;
+      python_executable: string;
+    } | null>(IPC_CHANNELS.AI_CHECK_DEPS),
     emotionSingle: (data: any) => invokeSafe(IPC_CHANNELS.AI_EMOTION_SINGLE, data),
     generateAiScript: (data: any) => invokeSafe(IPC_CHANNELS.AI_GENERATE_SCRIPT, data),
     streamText: (payload: any) => window.api.ai.streamText(payload),

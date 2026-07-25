@@ -382,20 +382,23 @@ async def check_deps():
         except ImportError:
             deps[mod_name] = {'installed': False, 'version': None, 'display_name': display_name}
 
-    # 🔧 新增 P0：模块化分组，便于前端模型管理页按功能模块展示运行时状态
-    #   每个功能模块 = 一组依赖包，所有依赖都 installed 时 ready=true
+    # 🔧 V7 模块化分组：每个功能模块 = 一组依赖包，所有依赖都 installed 时 ready=true
+    #   修复 P0-3：demucs/sensevoice/clip 等模块的 ready 判断必须包含 needs 中声明的共用引擎
+    #   旧版 bug：demucs 仅检查 ['demucs'] 包，导致 demucs 装了但 torch 没装时仍显示 ready=true
+    #   修复后：demucs ready = demucs + torch + torchaudio 全部已安装
     def _module_ready(pkg_list):
         """检查一组包是否全部已安装"""
         missing = [p for p in pkg_list if not deps.get(p, {}).get('installed', False)]
         return {'ready': len(missing) == 0, 'missing': missing}
 
     modules = {
-        # 共用引擎
+        # 共用基础引擎（PyTorch 推理底座，被 demucs/sensevoice/clip 共用）
         'torch': {**_module_ready(['torch', 'torchaudio']),
                   'display_name': 'PyTorch 推理引擎', 'size': '~2.1 GB',
                   'shared_by': ['demucs', 'sensevoice', 'clip']},
         # 音频分离引擎
-        'demucs': {**_module_ready(['demucs']),
+        # 🔧 修复 P0-3：demucs ready 包含 torch + torchaudio，与 needs 字段一致
+        'demucs': {**_module_ready(['demucs', 'torch', 'torchaudio']),
                    'display_name': 'Demucs 音频分离引擎', 'size': '~2.2 GB (含 torch)',
                    'needs': ['torch', 'torchaudio']},
         'mdx_net': {**_module_ready(['audio_separator']),
@@ -405,14 +408,16 @@ async def check_deps():
         'whisper': {**_module_ready([]),  # Whisper.cpp 是 C++ 可执行文件，无 Python 依赖
                     'display_name': 'Whisper.cpp ASR 引擎', 'size': '0 (已内置)',
                     'needs': []},
-        'sensevoice': {**_module_ready(['funasr']),
+        # 🔧 修复 P0-3：sensevoice ready 包含 funasr + torch
+        'sensevoice': {**_module_ready(['funasr', 'torch']),
                        'display_name': 'SenseVoice ASR 引擎', 'size': '~600 MB (含 torch)',
                        'needs': ['torch']},
         # 视觉引擎
         'insightface': {**_module_ready(['insightface']),
                         'display_name': 'InsightFace 人脸识别引擎', 'size': '~200 MB',
                         'needs': []},
-        'clip': {**_module_ready(['transformers']),
+        # 🔧 修复 P0-3：clip ready 包含 transformers + torch
+        'clip': {**_module_ready(['transformers', 'torch']),
                  'display_name': 'Transformers (CLIP 引擎)', 'size': '~100 MB (含 torch)',
                  'needs': ['torch']},
     }

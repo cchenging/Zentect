@@ -198,11 +198,35 @@ export class AIService {
   }
 
   /**
-   * 检查 Python 端依赖安装状态（供模型管理页展示）
-   * 返回 { deps: { demucs: {installed, version, display_name}, ... }, python_executable }
+   * 检查 Python 端依赖安装状态（供模型管理页 + 健康检查页展示）
+   * 返回结构：
+   *   {
+   *     deps: { demucs: {installed, version, display_name}, ... },   // 扁平依赖状态（兼容旧版）
+   *     modules: {                                                    // V7 模块化分组（新版）
+   *       torch:     { ready, missing, display_name, size, shared_by },
+   *       demucs:    { ready, missing, display_name, size, needs },
+   *       mdx_net:   { ready, missing, display_name, size, needs },
+   *       whisper:   { ready, missing, display_name, size, needs },
+   *       sensevoice:{ ready, missing, display_name, size, needs },
+   *       insightface:{ ready, missing, display_name, size, needs },
+   *       clip:      { ready, missing, display_name, size, needs },
+   *     },
+   *     python_executable
+   *   }
    * Python 服务离线时返回 null
    */
-  public async checkDeps(): Promise<{ deps: Record<string, { installed: boolean; version: string | null; display_name: string }>; python_executable: string } | null> {
+  public async checkDeps(): Promise<{
+    deps: Record<string, { installed: boolean; version: string | null; display_name: string }>;
+    modules: Record<string, {
+      ready: boolean;
+      missing: string[];
+      display_name: string;
+      size?: string;
+      shared_by?: string[];
+      needs?: string[];
+    }>;
+    python_executable: string;
+  } | null> {
     try {
       const daemon = AIDaemon.getInstance();
       if (!daemon.isOnline()) return null;

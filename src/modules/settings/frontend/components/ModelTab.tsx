@@ -98,6 +98,16 @@ export const ModelTab: React.FC = () => {
   const [modules, setModules] = useState<ModuleCard[]>([]);
   const [activeCategory, setActiveCategory] = useState<'all' | CategoryId>('all');
   const [loading, setLoading] = useState(true);
+  // 🔧 修复 P0-2：per-module 操作中状态 + 全局 toast 反馈，替代无反馈的 alert
+  const [busyModuleId, setBusyModuleId] = useState<string | null>(null);
+  const [busyModelId, setBusyModelId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ type: 'success' | 'error' | 'info'; msg: string } | null>(null);
+
+  /** 显示 toast 提示（3 秒后自动消失） */
+  const showToast = (type: 'success' | 'error' | 'info', msg: string) => {
+    setToast({ type, msg });
+    setTimeout(() => setToast(null), 3000);
+  };
 
   /** 加载功能模块列表（含模型文件 + 运行时状态） */
   const loadModules = async () => {
@@ -109,6 +119,7 @@ export const ModelTab: React.FC = () => {
       }
     } catch (err) {
       console.error('[ModelTab] 加载模块列表失败:', err);
+      showToast('error', `加载模块列表失败: ${(err as Error).message}`);
     } finally {
       setLoading(false);
     }
@@ -126,15 +137,38 @@ export const ModelTab: React.FC = () => {
     );
     if (missing.length === 0 && module.runtime.ready) {
       // 模型文件齐全 + 运行时就绪，无需操作
+      showToast('info', `${module.displayName} 已就绪，无需安装`);
       return;
     }
+    if (missing.length === 0 && !module.runtime.ready) {
+      // 模型文件齐全但运行时缺失，提示去健康检查
+      showToast('info', `${module.displayName} 模型文件已就绪，运行时依赖未装，请去健康检查`);
+      return;
+    }
+    // 🔧 修复 P0-2：标记 busy 状态，给用户即时反馈
+    setBusyModuleId(module.id);
+    showToast('info', `开始下载 ${module.displayName}（${missing.length} 个文件）...`);
+    let successCount = 0;
+    let failCount = 0;
     // 串行下载缺失的模型文件
     for (const m of missing) {
+      setBusyModelId(m.id);
       try {
         await API.model.download(m.id);
+        successCount++;
       } catch (err) {
+        failCount++;
         console.error(`[ModelTab] 下载 ${m.id} 失败:`, err);
       }
+    }
+    setBusyModelId(null);
+    setBusyModuleId(null);
+    if (failCount === 0) {
+      showToast('success', `${module.displayName} 安装完成（${successCount} 个文件）`);
+    } else if (successCount === 0) {
+      showToast('error', `${module.displayName} 安装失败（${failCount} 个文件失败）`);
+    } else {
+      showToast('error', `${module.displayName} 部分安装：${successCount} 成功 / ${failCount} 失败`);
     }
     // 刷新列表
     loadModules();
@@ -143,29 +177,52 @@ export const ModelTab: React.FC = () => {
   /** 卸载模块（删除所有模型文件） */
   const handleUninstall = async (module: ModuleCard) => {
     if (!window.confirm(`确认卸载「${module.displayName}」？\n将删除 ${module.models.length} 个模型文件。`)) return;
+    setBusyModuleId(module.id);
+    let successCount = 0;
+    let failCount = 0;
     for (const m of module.models) {
       if (m.status === 'downloaded') {
-        try { await API.model.uninstall(m.id); } catch {}
+        try {
+          await API.model.uninstall(m.id);
+          successCount++;
+        } catch (err) {
+          failCount++;
+          console.error(`[ModelTab] 卸载 ${m.id} 失败:`, err);
+        }
       }
+    }
+    setBusyModuleId(null);
+    if (failCount === 0) {
+      showToast('success', `${module.displayName} 已卸载（${successCount} 个文件）`);
+    } else {
+      showToast('error', `${module.displayName} 卸载部分失败：${successCount} 成功 / ${failCount} 失败`);
     }
     loadModules();
   };
 
   /** 导入本地模型文件（用户离线补模型）
    *  后端会弹 dialog 选文件 + 校验大小/MD5 + 复制到 resources/models/
+   *  修复 P0-2：调用前显示"正在打开文件选择器..."给用户即时反馈
    */
   const handleImport = async (modelId: string) => {
+    setBusyModelId(modelId);
+    showToast('info', '正在打开文件选择器...');
     try {
       const result = await API.model.importFile(modelId);
-      if (result?.status === 'canceled') return;  // 用户取消
+      if (result?.status === 'canceled') {
+        // 用户取消，不显示 toast
+        return;
+      }
       if (result?.status === 'downloaded') {
-        alert(`导入成功：${result.downloadPath}`);
+        showToast('success', `导入成功：${result.downloadPath}`);
         loadModules();
       } else {
-        alert(`导入失败：${result?.message || '未知错误'}`);
+        showToast('error', `导入失败：${result?.message || '未知错误'}`);
       }
     } catch (err: any) {
-      alert(`导入失败：${err.message || '校验不通过'}`);
+      showToast('error', `导入失败：${err.message || '校验不通过'}`);
+    } finally {
+      setBusyModelId(null);
     }
   };
 
@@ -190,6 +247,20 @@ export const ModelTab: React.FC = () => {
 
   return (
     <div className="space-y-4 animate-fade-in" style={{ maxWidth: '1100px' }}>
+      {/* 🔧 修复 P0-2：全局 toast 提示，替代无反馈的 alert */}
+      {toast && (
+        <div className={`
+          fixed top-4 right-4 z-50 max-w-md px-4 py-2.5 rounded-lg border shadow-lg text-[12px] font-medium animate-fade-in
+          ${toast.type === 'success'
+            ? 'bg-accent-green/15 border-accent-green/30 text-accent-green'
+            : toast.type === 'error'
+              ? 'bg-accent-rose/15 border-accent-rose/30 text-accent-rose'
+              : 'bg-accent/15 border-accent/30 text-accent'}
+        `}>
+          {toast.msg}
+        </div>
+      )}
+
       {/* 标题与全局操作 */}
       <div className="flex items-center justify-between">
         <div>
@@ -248,6 +319,8 @@ export const ModelTab: React.FC = () => {
             <ModuleCardView
               key={module.id}
               module={module}
+              busyModuleId={busyModuleId}
+              busyModelId={busyModelId}
               onInstall={() => handleInstall(module)}
               onUninstall={() => handleUninstall(module)}
               onImport={handleImport}
@@ -281,18 +354,22 @@ export const ModelTab: React.FC = () => {
 /**
  * 功能模块卡片
  * 显示模块信息 + 模型文件列表 + 运行时状态 + 操作按钮
+ * 修复 P0-2：接受 busyModuleId/busyModelId，按钮在 busy 时显示 spinner 并 disabled
  */
 const ModuleCardView: React.FC<{
   module: ModuleCard;
+  busyModuleId: string | null;
+  busyModelId: string | null;
   onInstall: () => void;
   onUninstall: () => void;
   onImport: (modelId: string) => void;
   onGoHealth: () => void;
-}> = ({ module, onInstall, onUninstall, onImport, onGoHealth }) => {
+}> = ({ module, busyModuleId, busyModelId, onInstall, onUninstall, onImport, onGoHealth }) => {
   const modelsReady = module.models.every(m => m.status === 'downloaded');
   const someReady = module.models.some(m => m.status === 'downloaded');
   const runtimeReady = module.runtime.ready;
   const canUse = module.canUse;
+  const isModuleBusy = busyModuleId === module.id;
 
   /** 获取模块整体状态文案与图标 */
   const getStatusDisplay = () => {
@@ -399,17 +476,23 @@ const ModuleCardView: React.FC<{
         </div>
       ))}
 
-      {/* 运行时依赖状态（只显示状态 + 跳转链接，不显示依赖详情） */}
+      {/* 运行时依赖状态（V4 P1-1：精简显示，避免与 HealthPage 重复）
+          - 已就绪：只显示绿勾 + "就绪"，无跳转链接
+          - 未就绪：显示黄叹号 + 缺失依赖数 + "去健康检查"链接
+          - 详情（缺失包列表、共用方等）请前往健康检查页查看 */}
       <div className="flex items-center justify-between text-[11px] py-1.5 border-t border-border/20">
         <div className="flex items-center gap-1.5">
           <span className="text-muted-foreground">⚙️ 运行时:</span>
           {runtimeReady ? (
             <span className="text-accent-green flex items-center gap-1">
-              <CheckCircle2 size={11} /> {module.runtime.displayName} 已就绪
+              <CheckCircle2 size={11} /> 就绪
             </span>
           ) : (
             <span className="text-yellow-500 flex items-center gap-1">
-              <AlertTriangle size={11} /> {module.runtime.displayName} 未安装
+              <AlertTriangle size={11} /> 未就绪
+              {module.runtime.missing.length > 0 && (
+                <span className="text-[10px] text-muted-foreground">（缺 {module.runtime.missing.length} 个包）</span>
+              )}
             </span>
           )}
         </div>
@@ -431,18 +514,22 @@ const ModuleCardView: React.FC<{
             variant="ghost"
             size="sm"
             onClick={onUninstall}
-            className="h-7 text-[11px] gap-1 text-muted-foreground hover:text-accent-rose px-2.5"
+            disabled={isModuleBusy}
+            className="h-7 text-[11px] gap-1 text-muted-foreground hover:text-accent-rose px-2.5 disabled:opacity-50"
           >
-            <Trash2 size={12} /> 卸载
+            {isModuleBusy ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+            {isModuleBusy ? '处理中...' : '卸载'}
           </Button>
         ) : (
           <Button
             variant="outline"
             size="sm"
             onClick={onInstall}
-            className="h-7 text-[11px] gap-1 border-accent/30 text-accent hover:bg-accent/10 px-2.5"
+            disabled={isModuleBusy}
+            className="h-7 text-[11px] gap-1 border-accent/30 text-accent hover:bg-accent/10 px-2.5 disabled:opacity-50"
           >
-            <Download size={12} /> 安装
+            {isModuleBusy ? <Loader2 size={12} className="animate-spin" /> : <Download size={12} />}
+            {isModuleBusy ? '下载中...' : '安装'}
           </Button>
         )}
 
@@ -451,9 +538,15 @@ const ModuleCardView: React.FC<{
           variant="ghost"
           size="sm"
           onClick={() => onImport(module.models[0]?.id || module.id)}
-          className="h-7 text-[11px] gap-1 text-muted-foreground hover:text-accent px-2.5"
+          disabled={isModuleBusy}
+          className="h-7 text-[11px] gap-1 text-muted-foreground hover:text-accent px-2.5 disabled:opacity-50"
         >
-          <Upload size={12} /> 导入
+          {busyModelId === (module.models[0]?.id || module.id) ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <Upload size={12} />
+          )}
+          {busyModelId === (module.models[0]?.id || module.id) ? '选择中...' : '导入'}
         </Button>
       </div>
     </div>

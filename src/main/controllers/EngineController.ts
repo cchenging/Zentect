@@ -355,6 +355,13 @@ export class EngineController {
       return healthService.smokeTest();
     });
 
+    // 🔧 V7 新增：数据库详情查询（供健康检查页"详情"按钮调用）
+    //   返回 { path, sizeBytes, journalMode, sqliteVersion, tables: [{name, rowCount}] }
+    IpcRouter.handle(IPC_CHANNELS.SYSTEM_GET_DB_DETAIL, async () => {
+      const healthService = new HealthService();
+      return healthService.getDatabaseDetail();
+    });
+
     // ========== V1.2: FFmpeg 独立 MP4 渲染 ==========
     IpcRouter.handle(IPC_CHANNELS.EXPORT_MP4_RENDER, async (_, payload) => {
       AppLogger.info(LOG_TAGS.EXPORT, `[IPC] MP4 渲染请求: ${payload.projectName}`);
