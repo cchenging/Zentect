@@ -1,4 +1,4 @@
-﻿import { SettingsRepository } from '../../database/repositories/SettingsRepository';
+import { SettingsRepository } from '../../database/repositories/SettingsRepository';
 import { ApiProfileRepository } from '../../database/repositories/ApiProfileRepository';
 
 export interface LLMConfig { provider: string; model: string; baseURL: string; apiKey: string; temperature: number; }
@@ -117,14 +117,4 @@ switch (provider) {
       mossModelDir: this.settings.get<string>('mossModelDir', ''),
     };
   }
-
-  private static getDefaultModel(provider: string): string {
-    switch (provider) {
-      case 'deepseek': return 'deepseek-chat';
-      case 'qwen': return 'qwen-turbo';
-      case 'doubao': return 'doubao-pro-32k';
-      case 'tencent': return 'hunyuan-turbo';
-      case 'proxy': return 'gpt-4o-mini';
-      default: return '';
-    }
-  }}
+}

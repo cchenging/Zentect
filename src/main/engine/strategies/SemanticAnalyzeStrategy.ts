@@ -3,7 +3,6 @@ import { PipelineTask } from '../../../shared/types';
 import { AIDaemon } from '../../core/AIDaemon';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
-import { PathManager } from '../../utils/pathManager';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -19,7 +18,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
   protected async performTask(
     task: PipelineTask,
-    context: ExecutionContext,
+    _context: ExecutionContext,
     cacheDir: string,
     onProgress: (p: number, s: string) => void
   ): Promise<any> {
@@ -111,7 +110,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
       /** 将匹配结果转换为前端需要的格式 */
       const matchData = kmResult?.results || kmResult?.data || [];
-      const matches = queries.map((q, i) => {
+      const matches = queries.map((q) => {
         const matched = matchData.find((m: any) => m.shotId === q.shotId);
         if (matched) {
           return {

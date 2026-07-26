@@ -74,16 +74,29 @@ export class PathManager {
 
   /**
    * 获取便携 Python 解释器路径
-   * - Windows: resources/ai-env/Scripts/python.exe
-   * - macOS/Linux: resources/ai-env/bin/python
-   * 若 ai-env 不存在则返回 null，调用方需降级到系统 Python
+   *
+   * 兼容两种 ai-env 目录结构：
+   *  - embeddable Python（推荐，发版内置）: resources/ai-env/python.exe
+   *    特点：解压即用，无 Scripts 子目录，python.exe 直接在 ai-env 根目录
+   *  - venv 风格（开发期/历史兼容）: resources/ai-env/Scripts/python.exe
+   *    特点：通过 `python -m venv` 创建，python.exe 在 Scripts 子目录下
+   *
+   * macOS/Linux 仍走 venv 风格路径：resources/ai-env/bin/python
+   * 若都不存在则返回 null，调用方需降级到系统 Python
    */
   public static getAiEnvPythonPath(): string | null {
     const aiEnvPath = this.getAiEnvPath();
-    const pythonExe = process.platform === 'win32'
-      ? path.join(aiEnvPath, 'Scripts', 'python.exe')
-      : path.join(aiEnvPath, 'bin', 'python');
-    return fs.existsSync(pythonExe) ? pythonExe : null;
+    // 候选路径数组：按优先级顺序检查，第一个命中即返回
+    const candidates: string[] = process.platform === 'win32'
+      ? [
+          path.join(aiEnvPath, 'python.exe'),              // embeddable Python（首选）
+          path.join(aiEnvPath, 'Scripts', 'python.exe'),   // venv 风格（兼容旧版）
+        ]
+      : [path.join(aiEnvPath, 'bin', 'python')];           // macOS/Linux venv
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    return null;
   }
 
   public static getPlatformDir(): string {
@@ -171,7 +184,15 @@ export class PathManager {
     const rootPath = app.isPackaged ? process.resourcesPath : process.cwd();
     return path.join(rootPath, 'resources', 'models');
   }
-  
+
+  // 🔧 修复 TS2339：新增 getCacheRootPath（index.ts/magic.ts 调用但原代码缺失）
+  /** 全局缓存根目录（区别于项目级 extractions） */
+  public static getCacheRootPath(): string {
+    const dir = path.join(this.dataRootPath, 'zentect-cache');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
   public static getExportRootPath(): string {
     try {
       const customPath = this.getSettings().get<string>('exportPath', '');

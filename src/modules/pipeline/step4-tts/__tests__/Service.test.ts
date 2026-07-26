@@ -28,7 +28,7 @@ import os from 'os';
 import path from 'path';
 
 import { TTSProvider } from '../backend/Service';
-import { AppError, ErrorCode } from '@modules/infra/error/AppError';
+import { ErrorCode } from '@modules/infra/error/AppError';
 
 // ---------- helpers ----------
 
@@ -87,7 +87,6 @@ describe('TTSProvider', () => {
       const saveDir = path.join(os.tmpdir(), 'zentect-test-tts');
 
       // MD5('|edge|') → 先计算
-      const expectedHash = 'd79340cb72e0'; // MD5 前12位
       // 实际使用 crypto，我们依赖运行环境。直接让 existSync 返回 true 验证缓存路径。
 
       // 清除 mock 重置 → 让缓存命中

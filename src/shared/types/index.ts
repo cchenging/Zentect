@@ -27,6 +27,11 @@ export interface MediaItem {
   narrationScript?: string;
   createTime?: string;
   updateTime?: string;
+  // 🔧 修复 TS2339：动态访问的可选字段
+  sourceType?: string;
+  mediaId?: string;
+  startMs?: number;
+  endMs?: number;
 }
 
 /**
@@ -71,6 +76,13 @@ export interface PipelineTask {
   params: Record<string, any>;
   dependsOn: string[];
   mergedInputs: Record<string, any>;
+  // 🔧 修复 TS2339：策略类动态访问的运行时字段（可选，由 BaseNodeStrategy 合并 params 后填充）
+  mediaPath?: string;
+  audioPath?: string;
+  vocalPath?: string;
+  scriptShots?: any[];
+  ttsDurations?: number[];
+  bgmInfo?: any;
 }
 
 export interface PipelinePayload {

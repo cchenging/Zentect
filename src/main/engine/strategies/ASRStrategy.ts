@@ -25,7 +25,7 @@ export class ASRStrategy extends BaseNodeStrategy {
   protected async performTask(
     task: PipelineTask,
     context: ExecutionContext,
-    cacheDir: string,
+    _cacheDir: string,
     onProgress: (p: number, s: string) => void,
   ): Promise<any> {
     const sourceMediaId = task.dependsOn?.[0];

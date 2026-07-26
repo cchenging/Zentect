@@ -2,6 +2,8 @@
 // 原 editor/utils/pipelineConstants.ts — 已迁移
 
 import { Search, PictureInPicture, PenLine, Mic, Clapperboard, Film, Music, Image, type LucideIcon } from 'lucide-react';
+// 🔧 修复 TS2339：导入 PipelineTask 类型供 STEP_SEQUENCES 使用
+import type { PipelineTask } from '../../../../shared/types';
 
 /** 步骤定义 */
 export const STEPS = [
@@ -13,11 +15,12 @@ export const STEPS = [
 ];
 
 /** 步骤编号到管线节点序列的映射 */
-export const STEP_SEQUENCES: Record<number, { actionType: string; nodeId: string; label: string }[]> = {
-  2: [{ actionType: 'vision-extract', nodeId: 'vlm-1', label: '画面描述' }],
-  3: [{ actionType: 'script-gen', nodeId: 'script-1', label: '解说文案' }],
-  4: [{ actionType: 'tts-synthesize', nodeId: 'tts-1', label: '配音合成' }],
-  5: [{ actionType: 'semantic-analyze', nodeId: 'match-1', label: '镜头匹配' }],
+// 🔧 修复 TS2339：使用 PipelineTask 类型，包含 params/dependsOn/mergedInputs 字段
+export const STEP_SEQUENCES: Record<number, PipelineTask[]> = {
+  2: [{ nodeId: 'vlm-1', actionType: 'vision-extract', label: '画面描述', params: {}, dependsOn: [], mergedInputs: {} }],
+  3: [{ nodeId: 'script-1', actionType: 'script-gen', label: '解说文案', params: {}, dependsOn: [], mergedInputs: {} }],
+  4: [{ nodeId: 'tts-1', actionType: 'tts-synthesize', label: '配音合成', params: {}, dependsOn: [], mergedInputs: {} }],
+  5: [{ nodeId: 'match-1', actionType: 'semantic-analyze', label: '镜头匹配', params: {}, dependsOn: [], mergedInputs: {} }],
 };
 
 /** 文案风格选项 */

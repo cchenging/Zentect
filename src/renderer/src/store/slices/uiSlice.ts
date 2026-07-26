@@ -1,10 +1,54 @@
 // 📁 路径: src/renderer/src/store/slices/uiSlice.ts
+//
+// 🔧 启动性能修复（关键）：
+//   原顶部 `import { useProjectStore }` 和 `import { usePlayerStore }`
+//   会同步拉入整个 @modules/editor 模块树（含 timeline/canvas/player + 5 个 step stores），
+//   通过 useStore → AppSidebar/AppLayout/App.tsx 同步加载链进入首屏 bundle，
+//   导致 vite dev 首次编译耗时 100+ 秒。
+//   修复：改为 type-only import + 动态 import()，让 editor 模块成为按需编译的 chunk。
 import type { StateCreator } from 'zustand';
 import { API } from '../../api';
 import { AppNotifier } from '../../core/AppNotifier';
 import type { EditorState, UISlice } from '../storeTypes';
-import { useProjectStore } from '@modules/editor/stores/useProjectStore';
-import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
+
+// 🔧 类型只读导入：编译期擦除，不会触发运行时加载
+import type { useProjectStore as UseProjectStoreType } from '@modules/editor/stores/useProjectStore';
+import type { usePlayerStore as UsePlayerStoreType } from '@modules/editor/stores/usePlayerStore';
+
+// 🔧 模块级缓存：首次调用动态 import，后续同步访问已加载的模块
+let _projectStoreMod: typeof UseProjectStoreType | null = null;
+let _playerStoreMod: typeof UsePlayerStoreType | null = null;
+
+/** 懒加载 useProjectStore（首次调用触发动态 import，后续返回缓存） */
+const getProjectStore = async () => {
+  if (!_projectStoreMod) {
+    try {
+      _projectStoreMod = await import('@modules/editor/stores/useProjectStore');
+    } catch (err) {
+      console.error('[uiSlice] 动态加载 useProjectStore 失败:', err);
+    }
+  }
+  return _projectStoreMod;
+};
+
+/** 懒加载 usePlayerStore（首次调用触发动态 import，后续返回缓存） */
+const getPlayerStore = async () => {
+  if (!_playerStoreMod) {
+    try {
+      _playerStoreMod = await import('@modules/editor/stores/usePlayerStore');
+    } catch (err) {
+      console.error('[uiSlice] 动态加载 usePlayerStore 失败:', err);
+    }
+  }
+  return _playerStoreMod;
+};
+
+// 🔧 修复 ReferenceError：方法内部不能引用方法名本身
+// 使用模块级 timer 变量替代 (fn as any).__timer，避免作用域解析失败
+let setModeTimer: ReturnType<typeof setTimeout> | null = null;
+let setParticleStyleTimer: ReturnType<typeof setTimeout> | null = null;
+let setSkinTimer: ReturnType<typeof setTimeout> | null = null;
+let setScaleTimer: ReturnType<typeof setTimeout> | null = null;
 
 // 💥 我们为 UISlice 补充缺失的 saveStatus 方法，补齐类型拼图。
 declare module '../storeTypes' {
@@ -110,32 +154,32 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
   setMode: (mode) => {
     set({ mode });
     document.documentElement.dataset.mode = mode;
-    clearTimeout((setMode as any).__timer);
-    (setMode as any).__timer = setTimeout(() => {
+    if (setModeTimer) clearTimeout(setModeTimer);
+    setModeTimer = setTimeout(() => {
       API.system.setSetting('mode', mode).catch(() => {});
     }, 300);
   },
   setParticleStyle: (style) => {
     set({ particleStyle: style });
     document.documentElement.dataset.particleStyle = style;
-    clearTimeout((setParticleStyle as any).__timer);
-    (setParticleStyle as any).__timer = setTimeout(() => {
+    if (setParticleStyleTimer) clearTimeout(setParticleStyleTimer);
+    setParticleStyleTimer = setTimeout(() => {
       API.system.setSetting('particleStyle', style).catch(() => {});
     }, 300);
   },
   setSkin: (skin) => {
     set({ skin });
     document.documentElement.dataset.skin = skin;
-    clearTimeout((setSkin as any).__timer);
-    (setSkin as any).__timer = setTimeout(() => {
+    if (setSkinTimer) clearTimeout(setSkinTimer);
+    setSkinTimer = setTimeout(() => {
       API.system.setSetting('skin', skin).catch(() => {});
     }, 300);
   },
   setScale: (scale) => {
     set({ scale });
     document.documentElement.dataset.scale = scale;
-    clearTimeout((setScale as any).__timer);
-    (setScale as any).__timer = setTimeout(() => {
+    if (setScaleTimer) clearTimeout(setScaleTimer);
+    setScaleTimer = setTimeout(() => {
       API.system.setSetting('scale', scale).catch(() => {});
     }, 300);
   },
@@ -178,7 +222,10 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
 
   clearSelection: () => {
     set({ selectedItemId: null, selectedItemType: null });
-    usePlayerStore.getState().resetState();
+    // 🔧 动态加载 playerStore，避免同步拉入 editor 模块
+    getPlayerStore().then((mod) => {
+      mod?.getState().resetState();
+    }).catch(() => {});
   },
 
   setProjectRatio: (ratio) => set({ projectRatio: ratio }),
@@ -217,7 +264,9 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
 
       set({ pipelineMessage: '正在抽取音频与关键帧...' });
 
-      const projectId = useProjectStore.getState().projectId;
+      // 🔧 动态加载 projectStore，避免同步拉入 editor 模块
+      const projectStore = await getProjectStore();
+      const projectId = projectStore?.getState().projectId;
       if (!projectId) {
         AppNotifier.error('项目ID不存在');
         set({ workflowState: 'idle' });
@@ -225,11 +274,13 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
       }
 
       const newItems = await API.media.import(projectId, paths);
-      useProjectStore.getState().addMediaItems(newItems);
-      
+      projectStore?.getState().addMediaItems(newItems);
+
       if (newItems.length > 0) {
          get().selectItem(newItems[0].id, 'media');
-         usePlayerStore.getState().setActivePlaySource(newItems[0]);
+         // 🔧 动态加载 playerStore
+         const playerStore = await getPlayerStore();
+         playerStore?.getState().setActivePlaySource(newItems[0]);
       }
 
       set({ workflowState: 'finetuning', pipelineMessage: '导入完成' });

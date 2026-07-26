@@ -72,7 +72,7 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
     <div className="flex-1 flex flex-col min-w-[400px] glass-card overflow-hidden" style={{ borderRadius: '0 12px 12px 0' }}>
       <div className="flex items-center justify-between px-5 py-2.5 border-b border-border/30 shrink-0">
         <div className="flex items-center gap-0">
-          <StepIndicator currentStep={currentStep} steps={STEPS.map(s => ({ id: s.key, label: s.label }))} stepStatuses={stepStatuses as any} stepCompleted={stepCompleted} onStepClick={handleStepClick} />
+          <StepIndicator currentStep={currentStep} steps={STEPS.map(s => ({ id: String(s.key), label: s.label }))} stepStatuses={stepStatuses as any} stepCompleted={stepCompleted as any} onStepClick={handleStepClick} />
         </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-0.5 bg-bg-secondary rounded-lg p-[3px]">

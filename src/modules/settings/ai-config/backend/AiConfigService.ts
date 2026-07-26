@@ -2,7 +2,7 @@
 // AI 配置服务：封装 API Profile CRUD + 连接测试（§3.7.1）
 // 委托层：现有 ApiProfileRepository 已完整实现，此处提供类型化封装
 
-import type { ApiProfile, ProviderConfig } from '../types';
+import type { ProviderConfig } from '../types';
 
 // 委托到原有实现
 export { ApiProfileRepository } from '../../../../main/database/repositories/ApiProfileRepository';

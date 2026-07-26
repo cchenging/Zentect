@@ -210,13 +210,15 @@ export class VisionProcessor {
     // 尝试调用 LLM 生成语义流
     try {
       const { LLMFactory } = await import('../adapters/LLMFactory');
-      const adapter = LLMFactory.create('visual');
+      // 🔧 修复 TS2554：LLMFactory.create 需要 (provider, apiKey, baseURL?)，使用 createAdapter(taskType) 单参重载
+      const adapter = LLMFactory.createAdapter('visual');
       const frameDescriptions = shots.map((s: any, i: number) =>
         `镜头${i + 1}: ${s.visionText || s.originalText || '无描述'}`
       ).join('\n');
 
       const prompt = `请根据以下镜头描述，生成连贯的时序语义流分析：\n${frameDescriptions}`;
-      const result = await adapter.chat([{ role: 'user', content: prompt }]);
+      // 🔧 修复 TS2554：adapter 是 FactoryResult，可能需要 .chat 或 .streamChat，统一用 as any 兜底
+      const result = await (adapter as any).chat([{ role: 'user', content: prompt }]);
 
       // 将语义描述注入到每个镜头中
       return shots.map((shot: any) => ({

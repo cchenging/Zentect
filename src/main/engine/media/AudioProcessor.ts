@@ -14,7 +14,7 @@ export class AudioProcessor {
   public static async separateAudio(
     inputPath: string,
     outputPath: string,
-    mediaId: string,
+    _mediaId: string,
     inPoint?: number,
     outPoint?: number,
     signal?: AbortSignal
@@ -358,7 +358,7 @@ export class AudioProcessor {
   public static async separateVocals(
     inputAudioPath: string,
     outputDir: string,
-    engine: 'spleeter' | 'uvr5' = 'spleeter',
+    _engine: 'spleeter' | 'uvr5' = 'spleeter',
     onProgress?: (p: number, msg: string) => void
   ): Promise<{ vocalPath: string; bgmPath: string }> {
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });

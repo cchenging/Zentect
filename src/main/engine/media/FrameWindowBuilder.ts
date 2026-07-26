@@ -13,14 +13,14 @@ export interface FrameWindowItem {
 /**
  * 构建多帧滑动窗口，为 VLM 提供前后帧画面上下文
  * @param allFrames 所有帧文件路径数组
- * @param frameTimeMs 当前帧的绝对时间（毫秒）
+ * @param frameTimeMsArr 每帧在视频中的绝对时间（毫秒）数组
  * @param frameIdx 当前帧在 allFrames 中的索引
  * @param windowRadius 窗口半径（向前/后取多少帧），默认 2
  * @returns 窗口内的帧信息数组，至少包含当前帧
  */
 export function buildFrameWindow(
   allFrames: string[],
-  frameTimeMs: number,
+  frameTimeMsArr: number[],
   frameIdx: number,
   windowRadius: number = 2,
 ): FrameWindowItem[] {
@@ -32,15 +32,15 @@ export function buildFrameWindow(
   const endIdx = Math.min(allFrames.length - 1, frameIdx + windowRadius);
   const windowItems: FrameWindowItem[] = [];
 
-  /** 估算帧间隔时间（毫秒） */
-  const estimatedIntervalMs = allFrames.length > 1
-    ? (frameTimeMs * 2) / (frameIdx + 1) || 1000
-    : 1000;
+  /** 当前帧的绝对时间（毫秒），缺省为 0 */
+  const currentFrameTimeMs = frameTimeMsArr[frameIdx] ?? 0;
 
   for (let i = startIdx; i <= endIdx; i++) {
+    // 优先使用数组中的精确时间，缺省时基于当前帧时间线性外推
+    const timeMs = frameTimeMsArr[i] ?? currentFrameTimeMs;
     windowItems.push({
       filePath: allFrames[i],
-      timeMs: Math.round(frameTimeMs + (i - frameIdx) * estimatedIntervalMs),
+      timeMs: Math.round(timeMs),
       index: i,
     });
   }

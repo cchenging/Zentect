@@ -4,7 +4,6 @@ import { ProviderManager } from '../../../../main/engine/config/ProviderManager'
 import { PathManager } from '../../../../main/utils/pathManager'
 import fs from 'fs'
 import path from 'path'
-import os from 'os'
 import crypto from 'crypto'
 import { AppError, ErrorCode } from '@modules/infra/error/AppError'
 

@@ -21,6 +21,8 @@
 // ──────────────────────────────────────────────
 
 /** @deprecated 抽帧策略枚举已迁移至 src/modules/media/frames/，请使用 FrameStrategy from '@/modules/media/frames' */
+// 🔧 修复 TS2304：re-export 不会引入当前作用域，需要同步 import type 才能在 ExtractConfig 中使用
+import type { FrameStrategy } from '../../../modules/media/frames';
 export type { FrameStrategy } from '../../../modules/media/frames';
 
 /** 抽帧命令配置 */
@@ -80,66 +82,6 @@ export interface ProbeConfig {
 abstract class VideoFilter {
   /** 将滤镜序列化为 FFmpeg 滤镜表达式 */
   abstract toString(): string;
-}
-
-/** fps 滤镜：均匀抽帧 */
-class FpsFilter extends VideoFilter {
-  constructor(private readonly fps: number) {
-    super();
-    if (fps <= 0 || fps > 120) throw new Error(`[FFmpegBuilder] fps 超出合法范围 (0, 120]: ${fps}`);
-  }
-  toString(): string { return `fps=${this.fps}`; }
-}
-
-/** select 滤镜：关键帧选择 */
-class KeyframeSelectFilter extends VideoFilter {
-  toString(): string { return "select='eq(pict_type\\,I)'"; }
-}
-
-/** select 滤镜：场景变化检测 */
-class SceneSelectFilter extends VideoFilter {
-  constructor(private readonly threshold: number) {
-    super();
-    if (threshold <= 0 || threshold > 1) throw new Error(`[FFmpegBuilder] sceneThreshold 超出合法范围 (0, 1]: ${threshold}`);
-  }
-  toString(): string { return `select='gt(scene\\,${this.threshold})'`; }
-}
-
-/** select 滤镜：VLM 最优化复合选择（场景变化 + 最小间隔兜底） */
-class VlmOptimizedSelectFilter extends VideoFilter {
-  private readonly threshold: number;
-  private readonly minInterval: number;
-
-  constructor(threshold: number, minInterval: number) {
-    super();
-    if (threshold <= 0 || threshold > 1) throw new Error(`[FFmpegBuilder] sceneThreshold 超出合法范围 (0, 1]: ${threshold}`);
-    if (minInterval <= 0) throw new Error(`[FFmpegBuilder] minFrameInterval 必须 > 0: ${minInterval}`);
-    this.threshold = threshold;
-    this.minInterval = minInterval;
-  }
-
-  /**
-   * 复合 select 表达式：
-   * gt(scene, threshold) — 检测场景剧变（导演切镜头、画面转场）
-   * gte(t-prev_selected_t, minInterval) — 最小间隔兜底（防止文戏场景丢失）
-   * 两者取 OR（+），确保即使无转场也能定期补帧
-   */
-  toString(): string {
-    return `select='gt(scene\\,${this.threshold})+gte(t-prev_selected_t\\,${this.minInterval})'`;
-  }
-}
-
-/** scale 滤镜：缩放 */
-class ScaleFilter extends VideoFilter {
-  constructor(private readonly width: number) {
-    super();
-    if (width < 0) throw new Error(`[FFmpegBuilder] scale width 不能为负数: ${width}`);
-  }
-  toString(): string {
-    /** width=0 表示不缩放，width>0 按宽度等比缩放 */
-    const w = this.width > 0 ? this.width : -1;
-    return `scale=${w}:-1`;
-  }
 }
 
 /** scale 滤镜：按高度缩放（封面专用） */

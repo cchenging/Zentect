@@ -1,11 +1,22 @@
 {
   "extends": "@electron-toolkit/tsconfig/tsconfig.node.json",
-  "include": ["electron.vite.config.*", "src/main/**/*", "src/preload/**/*", "src/shared/**/*", "src/modules/**/*"],
+  "include": [
+    "electron.vite.config.*",
+    "src/main/**/*",
+    "src/preload/**/*",
+    "src/shared/**/*",
+    "src/modules/**/*",
+    // 🔧 修复 window.api 类型缺失：modules 中的前端代码引用 window.api，需包含 env.d.ts
+    "src/renderer/src/env.d.ts"
+  ],
   "compilerOptions": {
-    "composite": true,
-    "baseUrl": ".",
+    // 🔧 TypeScript 7.0 兼容：移除 composite，避免 TS6307（modules 同时引用 main/renderer 导致跨项目文件引用）
+    // 当前 typecheck 用 `tsc --noEmit -p`，不依赖 composite 的项目引用机制
+    // 🔧 TypeScript 7.0 兼容：baseUrl 已被移除，paths 需使用相对路径
+    // 🔧 modules 中的文件同时引用 @renderer 和 @modules，需补齐两个别名
     "paths": {
-      "@modules/*": ["src/modules/*"]
+      "@modules/*": ["./src/modules/*"],
+      "@renderer/*": ["./src/renderer/src/*"]
     },
     "types": ["electron-vite/node"]
   }

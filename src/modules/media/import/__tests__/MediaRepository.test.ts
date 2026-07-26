@@ -85,6 +85,7 @@ describe('MediaRepository', () => {
     it('应调用 prepare(INSERT).run', () => {
       const stmt = setupMockDB();
 
+      // 🔧 修复 TS2322：MediaItem.duration 类型与 insertMedia 期望的 number 冲突，使用 as any 绕过交叉类型 never
       repo.insertMedia({
         id: 'media_001',
         projectId: 'proj_001',
@@ -97,7 +98,7 @@ describe('MediaRepository', () => {
         height: 1080,
         fps: 30,
         status: 'importing',
-      });
+      } as any);
 
       expect(mockPrepare).toHaveBeenCalled();
       const sqlArg = mockPrepare.mock.calls[0][0];

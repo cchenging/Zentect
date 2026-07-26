@@ -67,7 +67,7 @@ vi.mock('../../../../infra/i18n/dictionary', () => ({
   DICT: {},
 }));
 
-const { mockGetAllWindows, mockWebContentsSend } = vi.hoisted(() => ({
+const { mockGetAllWindows } = vi.hoisted(() => ({
   mockGetAllWindows: vi.fn(),
   mockWebContentsSend: vi.fn(),
 }));
@@ -85,14 +85,13 @@ import { ImportService } from '../backend/ImportService';
 describe('ImportService', () => {
   let service: ImportService;
   let existsSyncSpy: ReturnType<typeof vi.spyOn>;
-  let mkdirSyncSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     service = new ImportService();
     vi.clearAllMocks();
 
     existsSyncSpy = vi.spyOn(fs, 'existsSync');
-    mkdirSyncSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(() => undefined);
+    vi.spyOn(fs, 'mkdirSync').mockImplementation(() => undefined);
 
     mockGetAllWindows.mockReturnValue([]);
   });
@@ -559,7 +558,7 @@ describe('ImportService', () => {
         })
         .mockImplementationOnce(() => {});
 
-      const results = await service.importMedia(
+      await service.importMedia(
         'proj_001',
         ['F:/videos/bad.mp4', 'F:/videos/good.mp4'],
         { getProjectMediaDir: vi.fn(), getProjectThumbnailsDir: vi.fn(), getBinPath: vi.fn() },

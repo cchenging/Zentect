@@ -5,6 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline' 'unsafe-eval';" />
     <title>Zentect</title>
+    <script>
+      // — 预内联主题脚本：在 HTML 解析阶段同步读取 localStorage，
+      //   提前设置 .dark/.light class，消除主题跳变（深→亮闪烁）
+      (function() {
+        try {
+          var stored = localStorage.getItem('theme-mode');
+          if (stored === 'light' || stored === 'dark') {
+            document.documentElement.classList.add(stored);
+          } else {
+            document.documentElement.classList.add('dark');
+          }
+        } catch(e) {
+          document.documentElement.classList.add('dark');
+        }
+      })();
+    </script>
+    <style>
+      /* vite 编译期间（约 1-2 秒）显示纯深色背景，与最终页面一致，避免视觉闪烁 */
+      html, body { margin: 0; padding: 0; background: #0a0a0f; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

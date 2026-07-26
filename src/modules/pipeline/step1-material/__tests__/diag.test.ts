@@ -1,6 +1,5 @@
 
 import { describe, it, expect, vi } from 'vitest';
-import * as fs from 'fs';
 
 const { mockTranscribe } = vi.hoisted(() => ({ mockTranscribe: vi.fn() }));
 
@@ -44,7 +43,7 @@ describe('CLOSURE_TEST2', () => {
     console.log('transcribe === mockTranscribe:', instance.transcribe === mockTranscribe);
     console.log('typeof instance.transcribe:', typeof instance.transcribe);
     
-    instance.transcribe('test');
+    instance.transcribe('test', '/out', 'media-1', 'zh', 'sensevoice');
     console.log('mockTranscribe calls after call:', mockTranscribe.mock.calls.length);
     
     expect(instance.transcribe).toBe(mockTranscribe);

@@ -113,14 +113,14 @@ ${styleInstruction}
   /**
    * 构建 User Prompt
    */
-  buildUserPrompt(input: Step3Input, sceneContext: string): string {
+  buildUserPrompt(_input: Step3Input, sceneContext: string): string {
     return `【原片画面扫描日志】：\n${sceneContext}\n\n请直接输出 JSON 数组：`;
   }
 
   /**
    * 解析 LLM 返回的原始 JSON → ScriptParagraph[]
    */
-  parseScriptResponse(rawText: string, speechRate?: number): ScriptParagraph[] {
+  parseScriptResponse(rawText: string, _speechRate?: number): ScriptParagraph[] {
     if (!rawText || rawText.trim().length === 0) {
       throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'LLM 返回了空文本');
     }
@@ -147,8 +147,6 @@ ${styleInstruction}
     if (!Array.isArray(rawShots)) {
       throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'LLM 返回的不是数组');
     }
-
-    const rate = speechRate || DEFAULT_SPEECH_RATE;
 
     return rawShots.map((raw, index) => {
       const shotId = raw.shotId || `s_${String(index + 1).padStart(2, '0')}`;

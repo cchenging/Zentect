@@ -3,7 +3,7 @@
 // 专注于 LLM 供应商配置 + 管线模型映射 + TTS 配置
 // 本地模型管理已移至独立 ModelTab
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, Server, Play, ExternalLink, ChevronDown, ChevronUp, Zap, AlertCircle, FolderOpen } from 'lucide-react';
+import { Eye, EyeOff, Server, Play, ExternalLink, ChevronDown, ChevronUp, Zap, FolderOpen } from 'lucide-react';
 import { Input } from '@renderer/components/ui/input';
 import { Button } from '@renderer/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select';

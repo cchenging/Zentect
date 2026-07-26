@@ -58,15 +58,6 @@ class KeyframeSelectFilter extends VideoFilter {
   toString(): string { return "select='eq(pict_type\\,I)'"; }
 }
 
-/** select 滤镜：场景变化检测 */
-class SceneSelectFilter extends VideoFilter {
-  constructor(private readonly threshold: number) {
-    super();
-    if (threshold <= 0 || threshold > 1) throw new AppError(ErrorCode.SYS_UNKNOWN, `[FrameStrategy] sceneThreshold 超出合法范围 (0, 1]: ${threshold}`);
-  }
-  toString(): string { return `select='gt(scene\\,${this.threshold})'`; }
-}
-
 /** select 滤镜：VLM 最优化复合选择（场景变化 + 最小间隔兜底） */
 class VlmOptimizedSelectFilter extends VideoFilter {
   private readonly threshold: number;

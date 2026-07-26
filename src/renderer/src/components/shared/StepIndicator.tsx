@@ -24,7 +24,8 @@ export const StepIndicator: React.FC<StepIndicatorProps> = ({
       {steps.map((step, index) => (
         <button
           key={step.id}
-          onClick={() => onStepClick?.(step.id)}
+          // 🔧 修复 TS2345：onStepClick 签名是 (step: number)，应传 index 而非 step.id
+          onClick={() => onStepClick?.(index)}
           className={`px-3 py-1 rounded text-sm ${
             index === currentStep
               ? 'bg-blue-500 text-white'

@@ -446,6 +446,308 @@ async def release_models():
 
 
 # ============================================================
+# 🚀 GPU 加速管理（阶段 3 新增）
+# ============================================================
+# 端点：
+#   GET  /api/gpu/status      — 查询 GPU/CUDA 状态（显卡型号、CUDA 可用性、torch 版本）
+#   POST /api/gpu/install_cuda — 触发 CUDA 版 torch 安装（卸载 CPU 版 → 装 cu121 版）
+#   GET  /api/gpu/install_stream/{task_id} — SSE 推送安装进度
+#
+# 设计要点：
+#   1. 状态查询无副作用（不触发 torch 重载）
+#   2. CUDA 安装走后台线程，SSE 推进度，失败自动回滚 CPU 版
+#   3. 安装完成后需重启 AI Daemon（由前端触发 settings.set + AiRuntimeManager.restart）
+
+_gpu_install_progress: dict = {}  # CUDA 安装任务进度缓存（key=task_id）
+
+
+def _detect_gpu_info() -> dict:
+    """检测 GPU 硬件与 CUDA 状态（不抛异常，失败返回 unknown）
+
+    返回结构：
+      {
+        cuda_available: bool,           # torch.cuda.is_available() 结果
+        device_count: int,              # 可见 GPU 数量
+        devices: [{name, vram_mb}],     # GPU 设备列表（含名称与显存）
+        torch_version: str,             # torch 版本号（区分 +cpu / +cu121）
+        is_cuda_torch: bool,            # 当前 torch 是否为 CUDA 版（基于版本字符串判断）
+        cuda_version: str | None,       # CUDA 运行时版本（torch.version.cuda）
+        needs_cuda_install: bool        # 是否需要安装 CUDA 版（有 GPU 且当前为 CPU 版）
+      }
+    """
+    info = {
+        'cuda_available': False,
+        'device_count': 0,
+        'devices': [],
+        'torch_version': 'unknown',
+        'is_cuda_torch': False,
+        'cuda_version': None,
+        'needs_cuda_install': False,
+    }
+
+    try:
+        import torch
+        info['torch_version'] = torch.__version__  # 如 "2.7.0+cpu" 或 "2.7.0+cu121"
+        info['is_cuda_torch'] = '+cu' in torch.__version__ and '+cpu' not in torch.__version__
+        info['cuda_version'] = torch.version.cuda  # CUDA 版本字符串或 None
+        info['cuda_available'] = torch.cuda.is_available()
+        if info['cuda_available']:
+            info['device_count'] = torch.cuda.device_count()
+            for i in range(info['device_count']):
+                try:
+                    props = torch.cuda.get_device_properties(i)
+                    # 显存以 MB 为单位（保留整数）
+                    vram_mb = int(props.total_memory / (1024 * 1024))
+                    info['devices'].append({
+                        'name': props.name,
+                        'vram_mb': vram_mb,
+                    })
+                except Exception:
+                    info['devices'].append({'name': f'GPU {i}', 'vram_mb': 0})
+    except ImportError:
+        # torch 未安装，保持 unknown 默认值
+        pass
+    except Exception:
+        # 任何异常都视为不可用，避免健康检查崩溃
+        pass
+
+    # 需要安装 CUDA 版的条件：有 GPU 硬件 + 当前 torch 为 CPU 版
+    info['needs_cuda_install'] = info['cuda_available'] is False and info['device_count'] > 0 \
+        or (not info['is_cuda_torch'] and info['device_count'] > 0)
+    # 修正：torch.cuda.is_available() 在 CPU 版 torch 下永远 False，需用 nvidia-smi 探测硬件
+    # 但若 torch 已是 CUDA 版且 is_available=True，则无需安装
+    if info['is_cuda_torch'] and info['cuda_available']:
+        info['needs_cuda_install'] = False
+    else:
+        # 用 nvidia-smi 兜底探测 GPU 硬件存在性（不依赖 torch CUDA 支持）
+        info['needs_cuda_install'] = _has_nvidia_gpu() and not info['is_cuda_torch']
+
+    return info
+
+
+def _has_nvidia_gpu() -> bool:
+    """通过 nvidia-smi 探测是否存在 NVIDIA GPU（不依赖 torch CUDA 支持）
+
+    用途：当 torch 为 CPU 版时，torch.cuda.is_available() 永远返回 False，
+          无法判断用户机器是否有 NVIDIA 显卡。此函数用系统命令兜底探测。
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+            capture_output=True, text=True, timeout=5
+        )
+        # 退出码 0 且有输出 = 有 NVIDIA GPU
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+@app.get('/api/gpu/status')
+async def gpu_status():
+    """查询 GPU 与 CUDA 状态（无副作用，可在健康检查页轮询）
+
+    前端用途：
+      - HealthPage GPU 卡片显示显卡型号、CUDA 可用性
+      - 决定是否显示"安装 CUDA 版 torch"按钮
+      - 显示当前 torch 版本（+cpu / +cu121）
+    """
+    return _detect_gpu_info()
+
+
+@app.post('/api/gpu/install_cuda')
+async def install_cuda_torch():
+    """触发 CUDA 版 torch 安装（cu121）
+
+    流程：
+      1. 卸载当前 CPU 版 torch / torchaudio
+      2. 安装 cu121 版 torch==2.7.0 / torchaudio==2.7.0
+      3. 失败则回滚：重装 CPU 版 torch / torchaudio
+
+    返回 {task_id}，前端用 task_id 订阅 SSE 进度
+    """
+    import asyncio
+    import uuid
+
+    task_id = f'cuda_install_{uuid.uuid4().hex[:8]}'
+    _gpu_install_progress[task_id] = {
+        'status': 'pending',      # pending | uninstalling | installing | done | error | rollback
+        'percent': 0,
+        'message': '准备安装 CUDA 版 torch...',
+        'current_step': None,     # uninstall_cpu | install_cuda | verify | rollback
+        'error': None,
+    }
+
+    loop = asyncio.get_running_loop()
+    # 后台线程执行安装，不阻塞 HTTP 响应
+    loop.run_in_executor(None, _install_cuda_torch_sync, task_id)
+
+    return {'task_id': task_id, 'status': 'started'}
+
+
+@app.get('/api/gpu/install_stream/{task_id}')
+async def gpu_install_stream(task_id: str):
+    """SSE 推流：CUDA 版 torch 安装进度
+
+    前端用 EventSource 订阅，收到 status=done/error 后关闭连接并刷新状态
+    """
+    import asyncio
+    from fastapi.responses import StreamingResponse
+
+    async def event_generator():
+        while True:
+            progress = _gpu_install_progress.get(task_id, {
+                'status': 'error', 'message': '任务不存在', 'error': 'invalid task_id'
+            })
+            yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+            if progress.get('status') in ('done', 'error'):
+                # 任务完成后清理缓存（延迟 60 秒，避免前端读取失败）
+                break
+            await asyncio.sleep(0.5)  # 500ms 推送间隔
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+def _set_gpu_progress(task_id: str, **kwargs) -> None:
+    """更新 CUDA 安装任务进度（内部工具函数）"""
+    if task_id not in _gpu_install_progress:
+        _gpu_install_progress[task_id] = {'status': 'pending', 'percent': 0, 'message': ''}
+    _gpu_install_progress[task_id].update(kwargs)
+
+
+def _install_cuda_torch_sync(task_id: str) -> None:
+    """同步执行 CUDA 版 torch 安装（在线程池中跑）
+
+    步骤：
+      1. 卸载 CPU 版 torch / torchaudio
+      2. 安装 cu121 版 torch==2.7.0 / torchaudio==2.7.0
+      3. 验证 import + torch.cuda.is_available()
+      4. 任何步骤失败 → 回滚重装 CPU 版
+
+    注意：此函数在子线程中执行，不能直接操作 FastAPI 全局状态
+    """
+    import subprocess
+
+    # CUDA 版 torch 安装索引（PyTorch 官方 cu121）
+    CUDA_INDEX_URL = 'https://download.pytorch.org/whl/cu121'
+    CPU_INDEX_URL = 'https://download.pytorch.org/whl/cpu'
+    TORCH_VERSION = '2.7.0'
+
+    try:
+        # ---------- 步骤 1: 卸载 CPU 版 ----------
+        _set_gpu_progress(task_id, status='uninstalling', percent=10,
+                          current_step='uninstall_cpu',
+                          message='正在卸载 CPU 版 torch / torchaudio...')
+
+        # 卸载 torch 与 torchaudio（--yes 跳过确认）
+        result = subprocess.run(
+            [sys.executable, '-m', 'pip', 'uninstall', '-y', 'torch', 'torchaudio'],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            # 卸载失败但非致命（可能本就是 CUDA 版或未安装）
+            print(f'[GPU Install] 卸载 torch 警告: {result.stderr[-200:]}', file=sys.stderr)
+
+        # ---------- 步骤 2: 安装 CUDA 版 ----------
+        _set_gpu_progress(task_id, status='installing', percent=30,
+                          current_step='install_cuda',
+                          message=f'正在下载安装 CUDA 版 torch=={TORCH_VERSION}+cu121（约 2.5GB，请耐心等待）...')
+
+        result = subprocess.run(
+            [sys.executable, '-m', 'pip', 'install',
+             f'torch=={TORCH_VERSION}', f'torchaudio=={TORCH_VERSION}',
+             '--index-url', CUDA_INDEX_URL,
+             '--progress-bar', 'off', '--no-input'],
+            capture_output=True, text=True, timeout=1800  # 30 分钟超时（2.5GB 下载）
+        )
+
+        if result.returncode != 0:
+            err_msg = result.stderr[-500:] if result.stderr else '未知错误'
+            _set_gpu_progress(task_id, status='rollback', percent=50,
+                              current_step='rollback',
+                              message=f'CUDA 版安装失败，正在回滚到 CPU 版...错误: {err_msg[:100]}')
+            # 回滚到 CPU 版
+            _rollback_to_cpu_torch(task_id, CPU_INDEX_URL, TORCH_VERSION)
+            return
+
+        # ---------- 步骤 3: 验证安装 ----------
+        _set_gpu_progress(task_id, status='installing', percent=90,
+                          current_step='verify',
+                          message='正在验证 CUDA 安装...')
+
+        # 重新检测 GPU 状态（验证 torch.cuda.is_available()）
+        gpu_info = _detect_gpu_info()
+        if not gpu_info['is_cuda_torch']:
+            _set_gpu_progress(task_id, status='rollback', percent=95,
+                              current_step='rollback',
+                              message='CUDA 版 torch 安装后仍检测为 CPU 版，回滚中...')
+            _rollback_to_cpu_torch(task_id, CPU_INDEX_URL, TORCH_VERSION)
+            return
+
+        # ---------- 步骤 4: 完成 ----------
+        _set_gpu_progress(task_id, status='done', percent=100,
+                          current_step=None,
+                          message=f'CUDA 版 torch 安装完成！torch={gpu_info["torch_version"]}，'
+                                  f'CUDA={gpu_info["cuda_version"]}，'
+                                  f'GPU 数量={gpu_info["device_count"]}。'
+                                  f'请重启 AI 运行时以启用 GPU 加速。')
+
+    except subprocess.TimeoutExpired:
+        _set_gpu_progress(task_id, status='rollback', percent=50,
+                          current_step='rollback',
+                          message='CUDA 版安装超时（>30分钟），正在回滚到 CPU 版...')
+        _rollback_to_cpu_torch(task_id, CPU_INDEX_URL, TORCH_VERSION)
+    except Exception as e:
+        _set_gpu_progress(task_id, status='error', percent=0,
+                          current_step=None,
+                          error=f'安装异常: {str(e)}',
+                          message=f'安装异常: {str(e)}')
+
+
+def _rollback_to_cpu_torch(task_id: str, cpu_index_url: str, torch_version: str) -> None:
+    """回滚到 CPU 版 torch（CUDA 安装失败时调用）"""
+    import subprocess
+    try:
+        _set_gpu_progress(task_id, status='rollback', percent=70,
+                          current_step='rollback',
+                          message='正在卸载失败的 CUDA 版 torch...')
+        subprocess.run(
+            [sys.executable, '-m', 'pip', 'uninstall', '-y', 'torch', 'torchaudio'],
+            capture_output=True, text=True, timeout=120
+        )
+
+        _set_gpu_progress(task_id, status='rollback', percent=85,
+                          current_step='rollback',
+                          message='正在重装 CPU 版 torch...')
+        result = subprocess.run(
+            [sys.executable, '-m', 'pip', 'install',
+             f'torch=={torch_version}', f'torchaudio=={torch_version}',
+             '--index-url', cpu_index_url,
+             '--progress-bar', 'off', '--no-input'],
+            capture_output=True, text=True, timeout=600  # CPU 版约 200MB，10 分钟超时
+        )
+
+        if result.returncode != 0:
+            err_msg = result.stderr[-300:] if result.stderr else '未知错误'
+            _set_gpu_progress(task_id, status='error', percent=0,
+                              current_step=None,
+                              error=f'CPU 版回滚失败: {err_msg}',
+                              message=f'CPU 版回滚失败，请手动重装 torch: {err_msg[:100]}')
+            return
+
+        _set_gpu_progress(task_id, status='error', percent=0,
+                          current_step=None,
+                          error='CUDA 版安装失败，已回滚到 CPU 版',
+                          message='CUDA 版安装失败，已自动回滚到 CPU 版 torch。'
+                                  '请检查网络或显卡驱动后重试。')
+    except Exception as e:
+        _set_gpu_progress(task_id, status='error', percent=0,
+                          current_step=None,
+                          error=f'回滚异常: {str(e)}',
+                          message=f'回滚异常: {str(e)}。请手动执行: '
+                                  f'pip install torch=={torch_version} --index-url {cpu_index_url}')
+
+
+# ============================================================
 # 🔧 V8 运行时依赖安装（pip install + SSE 进度推送）
 # ============================================================
 # 用户在 HealthPage 点"一键安装缺失依赖"时调用
@@ -497,7 +799,7 @@ async def install_dep(payload: dict):
     _set_install_progress(task_id, total=len(packages), status='downloading',
                          message=f'准备安装 {len(packages)} 个包: {", ".join(packages)}')
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     # fire-and-forget：后台线程池执行 pip install，不阻塞 HTTP 响应
     loop.run_in_executor(None, _pip_install_sync, task_id, packages)
 

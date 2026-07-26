@@ -71,7 +71,7 @@ class JianyingExportReq(BaseModel):
 @router.post("/api/jianying/export")
 async def export_endpoint(req: JianyingExportReq):
     """接收前端 matchResults + scripts + tts 数据，构建加密剪映草稿"""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         try:
             result = await loop.run_in_executor(

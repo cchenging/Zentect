@@ -64,7 +64,9 @@ function makeShot(overrides: Partial<Shot> = {}): Shot {
 function makeRole(overrides: Partial<Role> = {}): Role {
   return {
     id: 'role-001',
+    systemId: 'sys-001',
     name: '主角',
+    avatar: '/avatars/role-001.png',
     ...overrides,
   };
 }

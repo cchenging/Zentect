@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
-import { IPC_CHANNELS } from '../IpcConstants';
+// 🔧 修复 TS2307：IpcConstants 实际位置在 modules/infra/ipc/
+import { IPC_CHANNELS } from '../../../modules/infra/ipc/IpcConstants';
 
 describe('AppError', () => {
   it('should create error with correct code and message', () => {

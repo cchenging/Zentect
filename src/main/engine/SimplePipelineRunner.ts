@@ -1,7 +1,8 @@
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { PathManager } from '../utils/pathManager';
-import { AIEngine } from './AIEngine';
+// 🔧 修复 TS2304：补充 healthCheckService 的 import（preflightCheck/formatCheckResult 在此服务上）
+import { healthCheckService } from './HealthCheckService';
 import { CheckpointRepository } from '../pipeline/CheckpointRepository';
 import { TaskEventBus } from './TaskEventBus';
 import { TraceContext } from '../core/TraceContext';
@@ -74,7 +75,6 @@ export class SimplePipelineRunner {
   private checkpointRepo = new CheckpointRepository();
   private eventBus = TaskEventBus.getInstance();
   private stepRegistry: PipelineStepRegistry;
-  private suspendController: PipelineSuspendController | undefined;
 
   constructor() {
     this.stepRegistry = PipelineStepRegistry.getInstance();
@@ -98,9 +98,8 @@ export class SimplePipelineRunner {
     ));
   }
 
-  async run(projectId: string, mediaId: string, mediaPath: string, suspendController?: PipelineSuspendController): Promise<PipelineResult> {
+  async run(projectId: string, mediaId: string, mediaPath: string, _suspendController?: PipelineSuspendController): Promise<PipelineResult> {
     this.aborted = false;
-    this.suspendController = suspendController;
 
     // 启动全链路追踪
     TraceContext.startTrace('pipeline_run', {

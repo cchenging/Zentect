@@ -288,7 +288,8 @@ export class HealthService {
       }
       const port = daemon.getPort()
       const { HttpClient } = await import('../core/HttpClient')
-      const res = await HttpClient.get(`http://127.0.0.1:${port}/api/check_deps`, { timeout: 5000 })
+      // 🔧 修复 TS2554：HttpClient.get 静态方法只接受 url，超时由内部默认 60s 控制
+      const res = await HttpClient.get(`http://127.0.0.1:${port}/api/check_deps`)
       const pythonPath = res?.python_executable || null
       const ready = !!pythonPath
       let version: string | null = null
@@ -367,7 +368,8 @@ export class HealthService {
       }
       const port = daemon.getPort()
       const { HttpClient } = await import('../core/HttpClient')
-      const res = await HttpClient.get(`http://127.0.0.1:${port}/api/check_deps`, { timeout: 5000 })
+      // 🔧 修复 TS2554：HttpClient.get 静态方法只接受 url，超时由内部默认 60s 控制
+      const res = await HttpClient.get(`http://127.0.0.1:${port}/api/check_deps`)
       const deps = res?.deps || {}
 
       return Object.keys(pkgUsedBy).map(name => {
@@ -488,14 +490,124 @@ export class HealthService {
       }
       const port = daemon.getPort()
       const { HttpClient } = await import('../core/HttpClient')
+      // 🔧 修复 TS2353：HttpClient.post 第三参数只支持 { signal? }，不支持 timeout
       const res = await HttpClient.post(
         `http://127.0.0.1:${port}/api/install_dep`,
-        { packages },
-        { timeout: 10000 }
+        { packages }
       )
       return res
     } catch (e: any) {
       throw new Error(`触发安装失败: ${e.message}`)
+    }
+  }
+
+  /**
+   * 🚀 阶段 3 新增：查询 GPU/CUDA 状态
+   * 调用 ai_daemon /api/gpu/status 端点，返回 torch 版本、显卡型号、CUDA 可用性等
+   * @returns GpuStatus 对象，AI 运行时离线时返回 null
+   */
+  async getGpuStatus(): Promise<GpuStatus | null> {
+    try {
+      const daemon = AIDaemon.getInstance()
+      if (!daemon.isOnline()) return null
+      const port = daemon.getPort()
+      // 用 fetch 直接调用，加 5 秒超时（HttpClient.get 不支持 timeout 参数）
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/gpu/status`, {
+          signal: controller.signal
+        })
+        if (!res.ok) return null
+        return await res.json() as GpuStatus
+      } finally {
+        clearTimeout(timeoutId)
+      }
+    } catch (e: any) {
+      // GPU 状态查询失败不抛异常，返回 null 让前端降级显示
+      console.warn('[HealthService] getGpuStatus 失败:', e.message)
+      return null
+    }
+  }
+
+  /**
+   * 🚀 阶段 3 新增：触发 CUDA 版 torch 安装
+   * 调用 ai_daemon POST /api/gpu/install_cuda，立即返回 task_id
+   * 安装流程：卸载 CPU 版 → 装 cu121 版 → 验证 → 失败自动回滚 CPU 版
+   * @returns { task_id, status } 启动结果
+   */
+  async installCudaTorch(): Promise<{ task_id: string; status: string } | null> {
+    try {
+      const daemon = AIDaemon.getInstance()
+      if (!daemon.isOnline()) {
+        throw new Error('AI 运行时离线，无法安装 CUDA 版 torch')
+      }
+      const port = daemon.getPort()
+      const { HttpClient } = await import('../core/HttpClient')
+      const res = await HttpClient.post(
+        `http://127.0.0.1:${port}/api/gpu/install_cuda`,
+        {}
+      )
+      return res
+    } catch (e: any) {
+      throw new Error(`触发 CUDA 安装失败: ${e.message}`)
+    }
+  }
+
+  /**
+   * 🚀 阶段 3 新增：订阅 CUDA 版 torch 安装进度 SSE 流
+   * @param taskId installCudaTorch 返回的 task_id
+   * @param onProgress 进度回调
+   * @param signal 取消信号
+   */
+  async subscribeGpuInstallProgress(
+    taskId: string,
+    onProgress: (progress: GpuInstallProgress) => void,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const port = AIDaemon.getInstance()?.getPort() || 34567
+    const url = `http://127.0.0.1:${port}/api/gpu/install_stream/${taskId}`
+
+    try {
+      const res = await fetch(url, { signal })
+      if (!res.ok || !res.body) {
+        onProgress({
+          status: 'error', percent: 0, message: `SSE 连接失败: HTTP ${res.status}`,
+          current_step: null, error: `HTTP ${res.status}`
+        })
+        return
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        if (signal?.aborted) break
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const progress = JSON.parse(line.slice(6)) as GpuInstallProgress
+            onProgress(progress)
+            if (progress.status === 'done' || progress.status === 'error') return
+          } catch {
+            // 单行解析失败跳过
+          }
+        }
+      }
+    } catch (e: any) {
+      if (e.name === 'AbortError') return
+      onProgress({
+        status: 'error', percent: 0, message: e.message,
+        current_step: null, error: e.message
+      })
     }
   }
 
@@ -562,5 +674,29 @@ export interface InstallProgress {
   current: string | null
   percent: number
   message: string
+  error: string | null
+}
+
+/**
+ * 🚀 阶段 3 新增：GPU/CUDA 状态信息（与 ai_daemon._detect_gpu_info 对齐）
+ */
+export interface GpuStatus {
+  cuda_available: boolean           // torch.cuda.is_available() 结果
+  device_count: number              // 可见 GPU 数量
+  devices: Array<{ name: string; vram_mb: number }>  // GPU 设备列表
+  torch_version: string             // torch 版本（如 "2.7.0+cpu" / "2.7.0+cu121"）
+  is_cuda_torch: boolean            // 当前 torch 是否为 CUDA 版
+  cuda_version: string | null       // CUDA 运行时版本
+  needs_cuda_install: boolean       // 是否需要安装 CUDA 版（有 NVIDIA GPU + 当前为 CPU 版）
+}
+
+/**
+ * 🚀 阶段 3 新增：CUDA 版 torch 安装进度（与 ai_daemon._gpu_install_progress 对齐）
+ */
+export interface GpuInstallProgress {
+  status: 'pending' | 'uninstalling' | 'installing' | 'done' | 'error' | 'rollback'
+  percent: number
+  message: string
+  current_step: 'uninstall_cpu' | 'install_cuda' | 'verify' | 'rollback' | null
   error: string | null
 }

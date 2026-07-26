@@ -67,7 +67,8 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
           {currentVoices.map((voice) => (
             <VoiceCard key={voice.id} id={voice.id} name={voice.name} lang={voice.lang}
               selected={ttsVoiceId === voice.id} isPreviewing={previewingVoiceId === voice.id}
-              onSelect={onSetTtsVoiceId} onPreview={onVoicePreview} />
+              // 🔧 修复 TS2322：VoiceCard onSelect 期望 () => void，用箭头函数包装 id 参数
+              onSelect={() => onSetTtsVoiceId(voice.id)} onPreview={onVoicePreview} />
           ))}
           {currentVoices.length === 0 && <div className="col-span-3 text-[10px] text-muted-foreground py-1">暂无可用音色</div>}
         </div>

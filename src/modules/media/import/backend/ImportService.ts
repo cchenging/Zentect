@@ -8,7 +8,6 @@ import { BrowserWindow } from 'electron';
 import { MediaRepository } from '../data/MediaRepository';
 import { AppLogger } from '@modules/infra/logger/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
-import { DICT } from '@modules/infra/i18n/dictionary';
 import type { MediaItem } from '../types';
 
 /** 需转码的视频容器格式 */

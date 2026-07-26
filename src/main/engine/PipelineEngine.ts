@@ -1,4 +1,4 @@
-﻿// 📁 src/main/engine/PipelineEngine.ts
+// 📁 src/main/engine/PipelineEngine.ts
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { PipelineTask, PipelinePayload, TaskProgressPayload } from '../../shared/types';
@@ -21,7 +21,6 @@ import { WorkflowService } from '../services/WorkflowService';
 import { SettingsRepository } from '../database/repositories/SettingsRepository';
 import { EngineStateGuard } from '../core/EngineStateGuard';
 import { ExceptionHub } from '../core/ExceptionHub';
-import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import * as path from 'path';
 import * as fs from 'fs';
 

@@ -83,8 +83,8 @@ function wrapNodeStream(stream: fs.ReadStream): ReadableStream<Uint8Array> {
   let destroyed = false;
   return new ReadableStream<Uint8Array>({
     start(controller) {
-      stream.on('data', (chunk: Buffer) => {
-        if (!destroyed) controller.enqueue(new Uint8Array(chunk));
+      stream.on('data', (chunk: string | Buffer) => {
+        if (!destroyed) controller.enqueue(new Uint8Array(typeof chunk === 'string' ? Buffer.from(chunk) : chunk));
       });
       stream.on('end', () => {
         if (!destroyed) {

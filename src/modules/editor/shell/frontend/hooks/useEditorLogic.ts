@@ -3,7 +3,7 @@
 
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useStore, useEditorStore } from '@renderer/store/useStore';
+import { useStore } from '@renderer/store/useStore';
 import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
@@ -28,7 +28,6 @@ export const useEditorHydration = (id: string | undefined) => {
     }
 
     let isMounted = true;
-    const store = useEditorStore.getState();
     const projectStore = useProjectStore.getState();
 
     projectStore.resetProjectState();

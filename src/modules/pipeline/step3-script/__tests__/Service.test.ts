@@ -3,8 +3,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ScriptGenerator } from '../backend/Service';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
-import type { Step3Input, Step3Output } from '../types';
-import type { ScriptParagraph } from '../../../../shared/types/entities/editor';
+import type { Step3Input } from '../types';
 
 // ---------- helpers ----------
 
@@ -38,7 +37,8 @@ describe('ScriptGenerator', () => {
 
   beforeEach(() => {
     mockLLM = vi.fn();
-    generator = new ScriptGenerator(mockLLM);
+    // 🔧 修复 TS2345：vi.fn() 的 Mock 类型与 LLMChatFn 不直接兼容，使用断言对齐
+    generator = new ScriptGenerator(mockLLM as any);
   });
 
   // ==================== buildSceneContext ====================

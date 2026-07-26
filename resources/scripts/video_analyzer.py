@@ -35,7 +35,7 @@ async def detect_scene_chunks(req: SceneChunkReq):
         os.makedirs(req.output_dir, exist_ok=True)
 
         # 第一步：获取视频总时长
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         video_info = await loop.run_in_executor(None, _get_video_info, req.file_path)
         if not video_info:
             return {"success": False, "error": "无法读取视频文件信息"}

@@ -12,7 +12,8 @@ export class SearchBrollCommand implements IAICommand {
 
       try {
         const projectState = useProjectStore.getState();
-        const searchResult = await API.engine.searchBroll(action.query, projectState.projectId);
+        // 🔧 修复 TS2345：projectId 是 string | null，API 期望 string，用 ?? '' 兜底
+        const searchResult = await API.engine.searchBroll(action.query, projectState.projectId ?? '');
 
         if (searchResult.success && searchResult.mediaId) {
           const media = projectState.mediaItems.find(m => m.id === searchResult.mediaId);

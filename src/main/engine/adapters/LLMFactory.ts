@@ -4,6 +4,8 @@ import { ProfileBindingRepository } from '../../database/repositories/ProfileBin
 import { OpenAICompatibleAdapter } from './OpenAICompatibleAdapter';
 import { VolcengineAdapter } from './VolcengineAdapter';
 import type { ILLMProvider } from './ILLMProvider';
+// 🔧 修复 TS2339：导入 LLMConfig 类型供 createFromConfig 使用
+import type { LLMConfig } from '../config/ProviderManager';
 
 export type AITaskType = 'visual' | 'script' | 'translate' | 'helper' | 'chat';
 
@@ -21,6 +23,12 @@ export class LLMFactory {
       return new VolcengineAdapter(cleanBaseURL || 'https://ark.cn-beijing.volces.com/api/v3', apiKey);
     }
     return new OpenAICompatibleAdapter(cleanBaseURL || 'https://api.openai.com/v1', apiKey);
+  }
+
+  // 🔧 修复 TS2339：新增 createFromConfig 方法（AIEngine.ts 调用但原代码缺失）
+  // 从 LLMConfig 直接构造 adapter，避免重复查表
+  static createFromConfig(config: LLMConfig): ILLMProvider {
+    return this.create(config.provider, config.apiKey, config.baseURL);
   }
 
   private static resolveApiKey(provider: string, settings: SettingsRepository, oldKey: string): string {

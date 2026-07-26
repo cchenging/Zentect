@@ -19,12 +19,6 @@ import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
 
-const DENSITY_MAP: Record<string, { fps: number }> = {
-  sparse: { fps: 1 },
-  standard: { fps: 2 },
-  dense: { fps: 5 },
-};
-
 export enum PipelineMode {
   STEP = 'step',
   QUICK = 'quick',
@@ -279,9 +273,10 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
           frames: config.frames.enabled ? {
             enabled: true,
             mode: config.frames.mode,
-            sceneThreshold: config.frames.value || 0.28,
+            // 🔧 修复 TS2339：frames 配置无 value/density 字段，直接用 sceneThreshold/fps
+            sceneThreshold: config.frames.sceneThreshold ?? 0.28,
             minFrameInterval: config.frames.minFrameInterval ?? 4,
-            fps: DENSITY_MAP[config.frames.density || 'standard']?.fps || 2,
+            fps: config.frames.fps ?? 2,
             scale: config.frames.scale ?? 1024,
             quality: config.frames.quality ?? 3,
           } : { enabled: false },

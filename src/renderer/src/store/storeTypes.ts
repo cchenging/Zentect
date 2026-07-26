@@ -1,4 +1,5 @@
-﻿import type { MediaItem, Shot, Role } from '../../../shared/types';
+// 🔧 修复 TS6196：MediaItem 和 Role 在 storeTypes 中未使用，移除
+import type { Shot } from '../../../shared/types';
 import type { AsrLine } from '../../../shared/types/entities/editor';
 import type { HydrationStatusType } from './constants';
 
@@ -85,13 +86,9 @@ export type StepStatus = 'idle' | 'running' | 'completed' | 'failed';
 // - currentStep / isAutoMode → useEditorNavStore
 // - 管线状态（stepStatuses/pipelineRunning 等）→ usePipelineStore
 // - 步骤专属数据 → useStep1Store ~ useStep5Store
+// 🔧 修复 TS2739：移除已迁移的 Canvas 遗留字段（nodes/edges/setActiveNode），与 editorSlice 实现对齐
 export interface EditorSlice {
   // 水合与项目整体加载状态
   hydrationStatus: HydrationStatusType;
   setHydrationStatus: (status: HydrationStatusType) => void;
-
-  // === Canvas 遗留字段（待后续清理）===
-  nodes: any[];
-  edges: any[];
-  setActiveNode: (node: any, type?: any) => void;
 }

@@ -8,7 +8,7 @@
 //   5. 字体规范 12px 起步：辅助 12px / 正文 13px / 标题 14-16px / 数值 18px
 import React, { useEffect, useState } from 'react';
 import {
-  CheckCircle2, XCircle, AlertTriangle, Loader2, RefreshCw, ChevronRight, X, Download,
+  CheckCircle2, XCircle, AlertTriangle, Loader2, RefreshCw, ChevronRight, X, Download, Zap,
 } from 'lucide-react';
 import { API } from '@renderer/api';
 
@@ -20,6 +20,26 @@ interface InstallProgressState {
   current: string | null;
   percent: number;
   message: string;
+  error: string | null;
+}
+
+/** 🚀 阶段 3 GPU/CUDA 状态（与后端 GpuStatus 对齐） */
+interface GpuStatusState {
+  cuda_available: boolean;
+  device_count: number;
+  devices: Array<{ name: string; vram_mb: number }>;
+  torch_version: string;
+  is_cuda_torch: boolean;
+  cuda_version: string | null;
+  needs_cuda_install: boolean;
+}
+
+/** 🚀 阶段 3 CUDA 版 torch 安装进度（与后端 GpuInstallProgress 对齐） */
+interface GpuInstallProgressState {
+  status: 'pending' | 'uninstalling' | 'installing' | 'done' | 'error' | 'rollback' | null;
+  percent: number;
+  message: string;
+  current_step: string | null;
   error: string | null;
 }
 
@@ -76,6 +96,12 @@ export const HealthPage: React.FC = () => {
   /** 🔧 V8 pip install 安装状态 */
   const [installing, setInstalling] = useState(false);
   const [installProgress, setInstallProgress] = useState<InstallProgressState | null>(null);
+
+  // 🚀 阶段 3: GPU 加速相关状态
+  const [gpuStatus, setGpuStatus] = useState<GpuStatusState | null>(null);
+  const [enableGPU, setEnableGPU] = useState(false);
+  const [cudaInstalling, setCudaInstalling] = useState(false);
+  const [cudaInstallProgress, setCudaInstallProgress] = useState<GpuInstallProgressState | null>(null);
 
   /** 执行健康检查 */
   const fetchHealth = async () => {
@@ -137,7 +163,128 @@ export const HealthPage: React.FC = () => {
     }
   };
 
-  useEffect(() => { fetchHealth(); }, []);
+  /** 🚀 阶段 3: 查询 GPU 状态 + enableGPU 设置项 */
+  const fetchGpuStatus = async () => {
+    try {
+      // 并行查询 GPU 状态和 enableGPU 设置（设置项可能以 boolean 或 string 形式返回）
+      const [gpuRes, gpuEnabledVal] = await Promise.all([
+        API.system.getGpuStatus(),
+        API.system.getSetting<boolean>('enableGPU', false),
+      ]);
+      setGpuStatus(gpuRes || null);
+      // 兼容 boolean / string 两种返回形式（SettingsService 可能返回 'true'/'false' 字符串）
+      setEnableGPU(gpuEnabledVal === true || String(gpuEnabledVal) === 'true');
+    } catch (err) {
+      // GPU 状态查询失败不阻塞健康检查
+      console.warn('[HealthPage] GPU 状态查询失败:', err);
+    }
+  };
+
+  /** 🚀 阶段 3: 触发 CUDA 版 torch 安装 */
+  const handleInstallCudaTorch = async () => {
+    if (cudaInstalling) return;
+    if (!window.confirm(
+      '即将下载并安装 CUDA 版 torch（约 2.5GB），安装过程可能需要 5-30 分钟。\n\n' +
+      '安装流程：\n' +
+      '1. 卸载当前 CPU 版 torch\n' +
+      '2. 下载 CUDA 12.1 版 torch（约 2.5GB）\n' +
+      '3. 验证 CUDA 可用性\n' +
+      '4. 安装失败将自动回滚到 CPU 版\n\n' +
+      '安装完成后需要重启 AI 运行时以启用 GPU 加速。\n\n' +
+      '确认开始安装？'
+    )) return;
+
+    setCudaInstalling(true);
+    setCudaInstallProgress({
+      status: 'pending', percent: 0, message: '准备安装 CUDA 版 torch...',
+      current_step: null, error: null,
+    });
+
+    // 注册 SSE 进度监听
+    const unsubscribe = API.system.onGpuInstallProgress((progress: any) => {
+      setCudaInstallProgress(progress);
+      if (progress.status === 'done' || progress.status === 'error') {
+        setCudaInstalling(false);
+        // 安装完成后刷新 GPU 状态
+        if (progress.status === 'done') {
+          setTimeout(() => fetchGpuStatus(), 1000);
+        }
+      }
+    });
+
+    try {
+      const result = await API.system.installCudaTorch();
+      if (!result?.success) {
+        setCudaInstalling(false);
+        setCudaInstallProgress(prev => prev ? {
+          ...prev, status: 'error',
+          error: result?.message || '触发 CUDA 安装失败',
+          message: result?.message || '触发 CUDA 安装失败',
+        } : null);
+      }
+    } catch (err: any) {
+      setCudaInstalling(false);
+      setCudaInstallProgress(prev => prev ? {
+        ...prev, status: 'error',
+        error: err.message, message: err.message,
+      } : null);
+    } finally {
+      setTimeout(() => unsubscribe(), 1000);
+    }
+  };
+
+  /** 🚀 阶段 3: 切换 AI 运行时 GPU 加速开关 */
+  const handleToggleEnableGPU = async (newVal: boolean) => {
+    // 开启 GPU 前的预检查
+    if (newVal) {
+      if (!gpuStatus) {
+        window.alert('正在查询 GPU 状态，请稍后再试');
+        return;
+      }
+      if (gpuStatus.needs_cuda_install) {
+        // 当前为 CPU 版 torch，需要先安装 CUDA 版
+        const confirmed = window.confirm(
+          `检测到 NVIDIA GPU：${gpuStatus.devices[0]?.name || '未知型号'}\n` +
+          `当前 torch 版本：${gpuStatus.torch_version}（CPU 版）\n\n` +
+          `启用 GPU 加速需要先安装 CUDA 版 torch（约 2.5GB）。\n` +
+          `点击"确定"开始安装，安装完成后将自动启用 GPU 加速。\n` +
+          `点击"取消"暂不启用。`
+        );
+        if (!confirmed) return;
+        // 先触发 CUDA 安装，安装成功后再开启开关
+        await handleInstallCudaTorch();
+        // 安装成功后 enableGPU 会在 fetchGpuStatus 中更新（暂不强制设 true，避免安装失败时状态错乱）
+        return;
+      }
+      if (!gpuStatus.cuda_available) {
+        window.alert(
+          `未检测到可用的 CUDA GPU。\n\n` +
+          `torch 版本：${gpuStatus.torch_version}\n` +
+          `可能原因：\n` +
+          `1. 未安装 NVIDIA 显卡驱动\n` +
+          `2. 显卡驱动版本过低（需支持 CUDA 12.1+）\n` +
+          `3. 无 NVIDIA 显卡`
+        );
+        return;
+      }
+    }
+
+    // 切换设置项
+    setEnableGPU(newVal);
+    try {
+      await API.system.setSetting('enableGPU', newVal);
+      // 切换后提示用户需重启 AI 运行时
+      window.alert(
+        `AI 运行时 GPU 加速已${newVal ? '开启' : '关闭'}。\n\n` +
+        `需要重启 AI 运行时才能生效。请关闭并重新打开应用，或在设置中点击"重启 AI 运行时"。`
+      );
+    } catch (err: any) {
+      setEnableGPU(!newVal);  // 回滚 UI 状态
+      window.alert(`切换 GPU 开关失败: ${err.message}`);
+    }
+  };
+
+  useEffect(() => { fetchHealth(); fetchGpuStatus(); }, []);
 
   /** 获取状态图标 */
   const getStatusIcon = (status: HealthStatus) => {
@@ -425,6 +572,126 @@ export const HealthPage: React.FC = () => {
           </div>
           {installProgress.status === 'error' && installProgress.error && (
             <div className="text-xs text-accent-rose break-all">{installProgress.error}</div>
+          )}
+        </div>
+      )}
+
+      {/* 🚀 阶段 3: GPU 加速管理区（含开关 + 显卡型号 + CUDA 状态 + 安装进度） */}
+      {!loading && (
+        <div className="glass-card-sm p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Zap size={16} className={enableGPU ? 'text-accent-cyan' : 'text-muted-foreground'} />
+              <div>
+                <div className="text-sm font-semibold text-foreground">AI 运行时 GPU 加速</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  启用 NVIDIA CUDA 加速 PyTorch 推理（CLIP/SenseVoice/Demucs）
+                </div>
+              </div>
+            </div>
+            {/* GPU 开关 */}
+            <button
+              onClick={() => handleToggleEnableGPU(!enableGPU)}
+              disabled={cudaInstalling}
+              className={`relative w-11 h-6 rounded-full transition-colors cursor-pointer outline-none disabled:opacity-50 ${
+                enableGPU ? 'bg-accent-cyan' : 'bg-bg-tertiary'
+              }`}
+              title={enableGPU ? '点击关闭 GPU 加速' : '点击开启 GPU 加速'}
+            >
+              <span
+                className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                  enableGPU ? 'translate-x-5' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+
+          {/* GPU 状态信息 */}
+          {gpuStatus && (
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="space-y-1">
+                <div className="text-muted-foreground">显卡型号</div>
+                <div className="text-foreground font-medium">
+                  {gpuStatus.device_count > 0
+                    ? gpuStatus.devices.map(d => d.name).join(', ')
+                    : '未检测到 NVIDIA GPU'}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-muted-foreground">显存</div>
+                <div className="text-foreground font-medium">
+                  {gpuStatus.device_count > 0
+                    ? gpuStatus.devices.map(d => `${(d.vram_mb / 1024).toFixed(1)} GB`).join(', ')
+                    : '—'}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-muted-foreground">torch 版本</div>
+                <div className={`font-medium ${gpuStatus.is_cuda_torch ? 'text-accent-cyan' : 'text-muted-foreground'}`}>
+                  {gpuStatus.torch_version}
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="text-muted-foreground">CUDA 状态</div>
+                <div className={`font-medium ${
+                  gpuStatus.cuda_available ? 'text-accent-green' : 'text-muted-foreground'
+                }`}>
+                  {gpuStatus.cuda_available
+                    ? `可用 (CUDA ${gpuStatus.cuda_version})`
+                    : gpuStatus.is_cuda_torch
+                      ? 'CUDA 版 torch 但不可用（驱动问题？）'
+                      : '不可用（CPU 版 torch）'}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 未查询到 GPU 状态时显示提示 */}
+          {!gpuStatus && (
+            <div className="text-xs text-muted-foreground">
+              GPU 状态查询中...（需 AI 运行时在线）
+            </div>
+          )}
+
+          {/* "安装 CUDA 版" 按钮（仅当 needs_cuda_install=true 且未在安装中时显示） */}
+          {gpuStatus?.needs_cuda_install && !cudaInstalling && (
+            <button
+              onClick={handleInstallCudaTorch}
+              className="h-8 px-4 rounded-md bg-accent-cyan/10 border border-accent-cyan/30 text-xs font-medium text-accent-cyan hover:bg-accent-cyan/20 transition-all cursor-pointer outline-none flex items-center gap-1.5"
+            >
+              <Download size={12} />
+              安装 CUDA 版 torch（约 2.5GB）
+            </button>
+          )}
+
+          {/* CUDA 安装进度条 */}
+          {cudaInstalling && cudaInstallProgress && (
+            <div className="space-y-2 p-3 rounded-lg bg-bg-tertiary/50">
+              <div className="flex items-center justify-between">
+                <div className="text-xs font-medium text-foreground">
+                  {cudaInstallProgress.current_step === 'uninstall_cpu' && '卸载 CPU 版 torch...'}
+                  {cudaInstallProgress.current_step === 'install_cuda' && '下载安装 CUDA 版 torch...'}
+                  {cudaInstallProgress.current_step === 'verify' && '验证 CUDA 安装...'}
+                  {cudaInstallProgress.current_step === 'rollback' && '回滚到 CPU 版...'}
+                  {!cudaInstallProgress.current_step && cudaInstallProgress.message}
+                </div>
+                <div className="text-xs text-muted-foreground">{cudaInstallProgress.percent}%</div>
+              </div>
+              <div className="h-2 bg-bg-tertiary rounded-full overflow-hidden">
+                <div
+                  className={`h-full transition-all duration-300 ${
+                    cudaInstallProgress.current_step === 'rollback'
+                      ? 'bg-yellow-500'
+                      : 'bg-accent-cyan'
+                  }`}
+                  style={{ width: `${cudaInstallProgress.percent}%` }}
+                />
+              </div>
+              <div className="text-xs text-muted-foreground">{cudaInstallProgress.message}</div>
+              {cudaInstallProgress.status === 'error' && cudaInstallProgress.error && (
+                <div className="text-xs text-accent-rose break-all">{cudaInstallProgress.error}</div>
+              )}
+            </div>
           )}
         </div>
       )}

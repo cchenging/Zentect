@@ -37,6 +37,16 @@ export class SystemController {
       return repo.get(key, defaultVal ?? null);
     });
 
+    /** 🔧 启动性能修复：批量获取设置，避免 20+ 次并发 IPC + DPAPI 锁竞争
+     *  原理：原 useSettingsManager 用 Promise.all 并发 20+ 次 getSetting，
+     *  每次 getSetting 在主进程调用 safeDecrypt → CredentialManager.decrypt →
+     *  safeStorage.decryptString（Windows DPAPI 同步阻塞），20+ 并发瞬间挤爆
+     *  IPC 通道与 SQLite 句柄，DPAPI 频繁进行系统级密钥句柄申请导致锁竞争。
+     *  修复：单次 IPC 调用 getAllSettings 返回所有键值对，前端用 schema 做默认值合并。 */
+    IpcRouter.handle('settings:getBatch', async () => {
+      return repo.getAllSettings();
+    });
+
     // 💥 致命修复 2：接收平铺参数 key, value
     IpcRouter.handle(IPC_CHANNELS.SYSTEM_SETTING_SET, async (_, key: string, value: any) => {
       if (!key) return false;

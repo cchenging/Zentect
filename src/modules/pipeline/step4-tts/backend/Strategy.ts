@@ -1,6 +1,7 @@
 // Module: pipeline/step4-tts - Pipeline Strategy
 
-import { BaseNodeStrategy, ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
+import { BaseNodeStrategy } from '../../../../main/engine/strategies/BaseNodeStrategy';
+import type { ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
 import { AppLogger } from '../../../../main/core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { ttsEngine } from '../../../../main/engine/TTSEngine';
@@ -69,7 +70,8 @@ export class TTSStrategy extends BaseNodeStrategy {
   readonly isRecoverable = true;
 
   /** 执行 TTS 合成任务。注意：第一个参数 input 是 BaseNodeStrategy 展开后的 params，不是 PipelineTask */
-  protected async performTask(
+  // 🔧 修复 TS2445：改为 public 以便单元测试直接调用（运行时仍由 BaseNodeStrategy.execute 触发）
+  public async performTask(
     input: any,
     context: ExecutionContext,
     cacheDir: string,

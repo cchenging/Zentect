@@ -13,7 +13,8 @@ interface ResizablePanelOptions {
 interface ResizablePanelResult {
   leftWidth: number;
   isDragging: boolean;
-  leftPanelRef: React.RefObject<HTMLDivElement>;
+  // 🔧 React 19 兼容：useRef 类型从 RefObject<T> 变为 RefObject<T | null>
+  leftPanelRef: React.RefObject<HTMLDivElement | null>;
   handleDividerMouseDown: (e: React.MouseEvent) => void;
 }
 

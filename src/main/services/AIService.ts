@@ -2,7 +2,6 @@
 import { AIEngine } from '../engine/AIEngine';
 import { healthCheckService } from '../engine/HealthCheckService';
 import { ttsEngine } from '../engine/TTSEngine';
-import { mediaProcessingService } from '../engine/MediaProcessingService';
 import { AIDaemon } from '../core/AIDaemon';
 import { ChatHistoryRepository } from '../database/repositories/ChatHistoryRepository';
 import { AppLogger } from '../core/AppLogger';
@@ -232,7 +231,8 @@ export class AIService {
       if (!daemon.isOnline()) return null;
       const { HttpClient } = await import('../core/HttpClient');
       const port = daemon.getPort();
-      const res = await HttpClient.get(`http://127.0.0.1:${port}/api/check_deps`, { timeout: 5000 });
+      // 🔧 修复 TS2554：HttpClient.get 静态方法只接受 url，超时由内部默认 60s 控制
+      const res = await HttpClient.get(`http://127.0.0.1:${port}/api/check_deps`);
       return res;
     } catch (e: any) {
       AppLogger.warn(LOG_TAGS.AI_AGENT, `checkDeps 失败: ${e.message}`);
@@ -298,7 +298,7 @@ export class AIService {
     mediaPath: string;
     mediaId: string;
   }) {
-    const { scriptShots, ttsDurations, bgmInfo, mediaPath, mediaId } = payload;
+    const { scriptShots, ttsDurations, bgmInfo, mediaPath } = payload;
     AppLogger.info(LOG_TAGS.AI_AGENT, `[AIService] 启动 Layer-5 多维松弛代价矩阵解算程序`);
 
     try {

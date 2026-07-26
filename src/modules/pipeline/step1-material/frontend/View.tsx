@@ -1,23 +1,22 @@
 // Module: pipeline/step1-material - View
 
 import React, { useState } from "react";
-import { Edit3, User, Music, Play, UndoDot, RotateCcw, AlertTriangle } from "lucide-react";
+import { Edit3, Music, Play, UndoDot, RotateCcw, AlertTriangle } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "@renderer/components/shared";
 import { FrameExtractConfig } from "./components/FrameExtractConfig";
 import { AudioSeparationConfig } from "./components/AudioSeparationConfig";
 import { useI18n } from "@renderer/store/useI18n";
-import type { AsrLine, Role, MediaItem } from "../../../../shared/types";
-import type { StepStatus } from "../../../../shared/types/entities/editor";
+import type { AsrLine } from "../../../../shared/types/entities/editor";
 import type { StepMaterialAnalysisViewProps } from "../types";
 
 export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> = (props) => {
   const { t } = useI18n();
   const {
-    asrLines, frameCount, audioSeparated, vocalsIsFallback, mediaItems, roles,
-    subStepStatuses, subStepProgresses, extractionConfig, extractedData,
+    asrLines, frameCount, vocalsIsFallback, mediaItems, roles,
+    subStepStatuses, subStepProgresses,
     onUpdateAsrLine, onSetAsrLines, onSetCurrentTime, onSetActivePlaySource,
-    onUpdateRole, onSetSubStepStatus, onRetrySubStep,
+    onUpdateRole, onRetrySubStep,
   } = props;
 
   const [expandedSubSteps, setExpandedSubSteps] = useState<Record<string, boolean>>({
@@ -63,7 +62,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
   return (
     <div className="flex flex-col gap-1">
       {/* 1. 关键帧提取 */}
-      <CollapsibleCard expanded={expandedSubSteps.frames} onExpandedChange={(v) => toggleSubStep("frames")}
+      <CollapsibleCard expanded={expandedSubSteps.frames} onExpandedChange={() => toggleSubStep("frames")}
         title={<><StatusIcon status={framesStatus === "idle" ? "pending" : framesStatus} /><span className={`text-[13px] font-semibold ${framesStatus === "completed" ? "text-accent-green" : framesStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.frames.title"]}</span></>}
         extra={<>
           <span className="text-[13px] text-muted-foreground">{framesStatus === "completed" ? (t["editor.step1.frames.statusDone"]?.replace("{count}", String(frameCount)) || '') : statusText(framesStatus, "editor.step1.frames.statusRunning", "frames", "editor.step1.frames.statusFail", "editor.step1.frames.statusIdle")}</span>
@@ -74,7 +73,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
       </CollapsibleCard>
 
       {/* 2. 音频分离 */}
-      <CollapsibleCard expanded={expandedSubSteps.audio} onExpandedChange={(v) => toggleSubStep("audio")}
+      <CollapsibleCard expanded={expandedSubSteps.audio} onExpandedChange={() => toggleSubStep("audio")}
         title={<><StatusIcon status={audioStatus === "idle" ? "pending" : audioStatus} /><span className={`text-[13px] font-semibold ${audioStatus === "completed" ? "text-accent-green" : audioStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.audio.title"]}</span></>}
         extra={<span className="text-[13px] text-muted-foreground">{audioStatus === "completed" ? t["editor.step1.audio.separated"] : statusText(audioStatus, "editor.step1.audio.statusRunning", "audio", "editor.step1.audio.statusFailed", "editor.step1.audio.statusIdle")}</span>}
         borderColor={audioStatus === "failed" ? "var(--accent-rose)" : undefined}>
@@ -108,7 +107,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
       </CollapsibleCard>
 
       {/* 3. ASR 台词识别 */}
-      <CollapsibleCard expanded={expandedSubSteps.whisper} onExpandedChange={(v) => toggleSubStep("whisper")}
+      <CollapsibleCard expanded={expandedSubSteps.whisper} onExpandedChange={() => toggleSubStep("whisper")}
         title={<><StatusIcon status={whisperStatus === "idle" ? "pending" : whisperStatus} /><span className={`text-[13px] font-semibold ${whisperStatus === "completed" ? "text-accent-green" : whisperStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.asr.title"]}</span></>}
         extra={<>
           {whisperStatus === "completed" ? <StatHeader value={asrLines.length} unit={t["editor.step1.asr.sentenceCount"]?.replace("{count}", String(asrLines.length)) || ''} secondary={t["editor.step1.asr.confirmedCount"]?.replace("{count}", String(confirmed)) || ''} /> : <span className="text-[13px] text-muted-foreground">{statusText(whisperStatus, "editor.step1.asr.statusRunning", "whisper", "editor.step1.asr.statusFailed", "editor.step1.asr.statusIdle")}</span>}
@@ -140,7 +139,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
       </CollapsibleCard>
 
       {/* 4. 人物识别 */}
-      <CollapsibleCard expanded={expandedSubSteps.faces} onExpandedChange={(v) => toggleSubStep("faces")}
+      <CollapsibleCard expanded={expandedSubSteps.faces} onExpandedChange={() => toggleSubStep("faces")}
         title={<><StatusIcon status={facesStatus === "idle" ? "pending" : facesStatus} /><span className={`text-[13px] font-semibold ${facesStatus === "completed" ? "text-accent-purple" : facesStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.faces.title"]}</span></>}
         extra={<span className="text-[13px] text-muted-foreground">{facesStatus === "completed" ? (t["editor.step1.faces.statusDone"]?.replace("{count}", String(roles.length)) || '') : statusText(facesStatus, "editor.step1.faces.statusRunning", "faces", "editor.step1.faces.statusFailed", "editor.step1.faces.statusIdle")}</span>}
         borderColor={facesStatus === "failed" ? "var(--accent-rose)" : undefined}>

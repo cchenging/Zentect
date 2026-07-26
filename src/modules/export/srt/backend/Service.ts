@@ -65,9 +65,11 @@ export class SrtExportService {
       if (endStr) {
         end = SrtExportService.normalizeTimestamp(endStr);
       } else if (i + 1 < asrLines.length) {
-        const nextStartStr = asrLines[i + 1].startMs !== undefined
-          ? msToMmSs(asrLines[i + 1].startMs)
-          : asrLines[i + 1].start;
+        // 🔧 修复 TS2345：提取局部变量以利用 narrowing，避免直接访问 .startMs
+        const nextLine = asrLines[i + 1];
+        const nextStartStr = nextLine.startMs !== undefined
+          ? msToMmSs(nextLine.startMs)
+          : nextLine.start;
         end = SrtExportService.normalizeTimestamp(nextStartStr);
       } else {
         // 最后一行：start + 3 秒

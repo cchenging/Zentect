@@ -332,7 +332,7 @@ describe('FrameExtractionService', () => {
     });
 
     it('应清除旧帧文件', async () => {
-      const unlinkSyncSpy = mockUnlinkSync.mockImplementation(() => undefined);
+      mockUnlinkSync.mockImplementation(() => undefined);
 
       mockExistsSync.mockImplementation((p: string) => {
         if (typeof p === 'string' && p.includes('frames')) return true;

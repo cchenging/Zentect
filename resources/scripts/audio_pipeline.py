@@ -438,7 +438,7 @@ async def api_transcribe(req: TranscribeReq):
         "error": None,
     }
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     # fire-and-forget：后台线程池执行，不等待结果
     loop.run_in_executor(None, _transcribe_sync_safe, req, task_id)
     # 立即返回 task_id，Node 端通过 SSE 订阅进度和最终结果
@@ -678,7 +678,7 @@ async def api_separate(req: SeparateReq):
         "error": None,
     }
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(None, _separate_sync, req, task_id)
         _set_progress(task_id, done=True, pct=100, msg="分离完成", result=result)
@@ -922,7 +922,7 @@ def _separate_sync(req: SeparateReq, task_id: str):
 async def detect_beats(req: BeatDetectReq):
     """流式窗口 STFT 节拍检测，ThreadPool 中运行避免阻塞事件循环"""
     import asyncio
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(None, _detect_beats_sync, req)
         return result

@@ -3,7 +3,8 @@ import path from 'path'
 import * as http from 'http'
 import { PathManager } from '../utils/pathManager'
 import { ProcessManager } from '../utils/processManager'
-import { ProcessSupervisor, RestartCallback } from './ProcessSupervisor'
+import { ProcessSupervisor } from './ProcessSupervisor'
+import type { RestartCallback } from './ProcessSupervisor'
 import { AppLogger } from './AppLogger'
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants'
 import { SettingsRepository } from '../database/repositories/SettingsRepository'
@@ -61,7 +62,7 @@ export class AiRuntimeManager {
     const pythonPath = this.resolvePythonPath()
     const customPort = this.settings.get<number>('aiPort', 34567)
     this.runtimePort = Number(customPort) || 34567
-    const gpuEnabled = this.settings.get<boolean>('enableGPU', true)
+    const gpuEnabled = this.settings.get<boolean>('enableGPU', false)
     const deviceType = gpuEnabled ? 'cuda' : 'cpu'
     const scriptPath = PathManager.getScriptPath('ai_daemon.py')
     const modelsDir = PathManager.getModelsPath()
@@ -156,7 +157,7 @@ export class AiRuntimeManager {
       port: this.runtimePort,
       pid: this.runtimePid,
       modelStatus: this.getModelStatusSummary(),
-      gpuEnabled: this.settings.get<boolean>('enableGPU', true)
+      gpuEnabled: this.settings.get<boolean>('enableGPU', false)
     }
   }
 
@@ -216,7 +217,7 @@ export class AiRuntimeManager {
   private createRestartCallback(): RestartCallback {
     const pythonPath = this.resolvePythonPath()
     const port = this.runtimePort
-    const gpuEnabled = this.settings.get<boolean>('enableGPU', true)
+    const gpuEnabled = this.settings.get<boolean>('enableGPU', false)
     const deviceType = gpuEnabled ? 'cuda' : 'cpu'
     const scriptPath = PathManager.getScriptPath('ai_daemon.py')
     const modelsDir = PathManager.getModelsPath()

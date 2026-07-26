@@ -1,9 +1,9 @@
 // Module: pipeline/step5-match - MatchService 单元测试
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { MatchService } from '../backend/Service';
 import type { MatchPipelineInput, PipelineAPI } from '../backend/Service';
-import { AppError, ErrorCode } from '@modules/infra/error/AppError';
+import { ErrorCode } from '@modules/infra/error/AppError';
 
 // ---------- helpers ----------
 

@@ -8,7 +8,6 @@ import { SimplePipelineRunner } from '../engine/SimplePipelineRunner';
 import { healthCheckService } from '../engine/HealthCheckService';
 import { PipelineRecoveryService } from '../pipeline/PipelineRecoveryService';
 import { PipelineSuspendController } from '../pipeline/PipelineSuspendController';
-import { ProjectService } from '../services/ProjectService';
 import { LocalAiGateway } from '../engine/LocalAiGateway';
 import { HealthService } from '../services/HealthService';
 import { WorkflowService } from '../services/WorkflowService';
@@ -34,7 +33,6 @@ const V1_PIPELINE_PAYLOAD_SCHEMA = z.object({
 });
 
 export class EngineController {
-  private projectService = new ProjectService();
   private static engines = new Map<string, PipelineEngine>();
   private static simpleRunners = new Map<string, SimplePipelineRunner>();
   private static suspendController = new PipelineSuspendController();
@@ -50,8 +48,9 @@ export class EngineController {
         return preflightCache;
       }
       const stepIds = payload?.steps || ['extract_frames', 'separate_audio', 'asr', 'face_detect', 'scene_detect', 'script_gen', 'tts_export'];
-      const checks = AIEngine.preflightCheck(stepIds);
-      const { ok, message } = AIEngine.formatCheckResult(checks);
+      // 🔧 修复 TS2304：AIEngine 无 preflightCheck，实际方法在 healthCheckService
+      const checks = healthCheckService.preflightCheck(stepIds);
+      const { ok, message } = healthCheckService.formatCheckResult(checks);
       preflightCache = { ok, message, checks };
       preflightCacheTime = now;
       return preflightCache;
@@ -78,7 +77,8 @@ export class EngineController {
     // V1.1+: DAG PipelineEngine + 极速向导分流
     IpcRouter.handle(IPC_CHANNELS.ENGINE_RUN_PIPELINE, async (event, payload: any) => {
       const { projectId, isQuickMode, extractedData, isSaveAction } = payload;
-      const window = event.sender.getOwnerBrowserWindow();
+      // 🔧 修复 TS2339：Electron 43 已移除 getOwnerBrowserWindow，改用 BrowserWindow.fromWebContents
+      const window = require('electron').BrowserWindow.fromWebContents(event.sender);
 
       // A. 前端发来的完工落盘信号
       if (isSaveAction || payload.action === 'SAVE_QUICK_DATA') {
@@ -387,6 +387,55 @@ export class EngineController {
         return { success: true, task_id: result.task_id };
       } catch (err: any) {
         AppLogger.error(LOG_TAGS.SYSTEM, `[install-dep] 触发安装失败`, err);
+        return { success: false, message: err.message };
+      }
+    });
+
+    // 🚀 阶段 3: GPU 状态查询（无副作用，可轮询）
+    IpcRouter.handle(IPC_CHANNELS.SYSTEM_GPU_STATUS, async () => {
+      const healthService = new HealthService();
+      try {
+        const status = await healthService.getGpuStatus();
+        return { success: true, data: status };
+      } catch (err: any) {
+        AppLogger.warn(LOG_TAGS.SYSTEM, `[gpu-status] 查询失败: ${err.message}`);
+        return { success: true, data: null };  // 失败返回 null，前端降级显示
+      }
+    });
+
+    // 🚀 阶段 3: 触发 CUDA 版 torch 安装（fire-and-forget + SSE 进度推送）
+    //   流程与 install-dep 同模式：
+    //   1. 前端调 system:gpu-install-cuda → 主进程 POST /api/gpu/install_cuda 拿 task_id
+    //   2. 主进程订阅 SSE 流 /api/gpu/install_stream/{task_id}
+    //   3. 通过 system:gpu-install:progress event 推送进度给前端
+    //   4. 安装完成后前端需触发 AiRuntimeManager.restart() 让新 torch 生效
+    IpcRouter.handle(IPC_CHANNELS.SYSTEM_GPU_INSTALL_CUDA, async (event) => {
+      const healthService = new HealthService();
+      try {
+        const result = await healthService.installCudaTorch();
+        if (!result?.task_id) {
+          return { success: false, message: '未获取到 task_id' };
+        }
+
+        const sender = event.sender;
+        const abortController = new AbortController();
+        healthService.subscribeGpuInstallProgress(
+          result.task_id,
+          (progress) => {
+            try {
+              if (!sender.isDestroyed()) {
+                sender.send(IPC_CHANNELS.SYSTEM_GPU_INSTALL_PROGRESS, progress);
+              }
+            } catch { /* 推送失败忽略 */ }
+          },
+          abortController.signal
+        ).catch((err) => {
+          AppLogger.warn(LOG_TAGS.SYSTEM, `[gpu-install-cuda] SSE 订阅异常: ${err.message}`);
+        });
+
+        return { success: true, task_id: result.task_id };
+      } catch (err: any) {
+        AppLogger.error(LOG_TAGS.SYSTEM, `[gpu-install-cuda] 触发安装失败`, err);
         return { success: false, message: err.message };
       }
     });

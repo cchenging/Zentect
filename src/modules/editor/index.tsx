@@ -55,7 +55,6 @@ export default function Editor() {
 
   /** 播放器状态 */
   const activePlaySource = usePlayerStore((s) => s.activePlaySource);
-  const currentTime = usePlayerStore((s) => s.currentTime);
   const mediaItems = useProjectStore((s) => s.mediaItems);
   const addMediaItems = useProjectStore((s) => s.addMediaItems);
   const videoChunks = useStep5Store((s) => s.videoChunks);

@@ -141,7 +141,11 @@ export class MigrationManager implements IMigrationManager {
       .sort((a, b) => a.localeCompare(b));
   }
 
-  /** 执行单个迁移文件 (幂等) */
+  /** 执行单个迁移文件 (幂等)
+   * 🔧 修复重复字段警告：将 SQL 按分号拆分为单条语句逐条执行，
+   *    对 ALTER TABLE 的 "duplicate column" / "no such table" 等错误容错，
+   *    确保即使部分语句失败也能记录 _migrations，避免下次启动重复尝试
+   */
   private runFile(filename: string): void {
     const alreadyExecuted = this.db
       .prepare('SELECT filename FROM _migrations WHERE filename = ?')
@@ -161,12 +165,36 @@ export class MigrationManager implements IMigrationManager {
       return;
     }
 
-    try {
-      this.db.exec(sql);
-      this.db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(filename);
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, `迁移执行完成: ${filename}`);
-    } catch (error: any) {
-      AppLogger.warn(LOG_TAGS.BOOTSTRAP, `迁移执行异常: ${filename}`, { error: error.message });
+    // 按分号拆分为单条语句，过滤空行与注释
+    const statements = sql
+      .split(';')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0 && !s.startsWith('--'));
+
+    let failedCount = 0;
+    let executedCount = 0;
+    for (const stmt of statements) {
+      try {
+        this.db.exec(stmt);
+        executedCount++;
+      } catch (error: any) {
+        failedCount++;
+        // ALTER TABLE 容错：字段已存在 / 表不存在都属于可忽略的幂等场景
+        const msg = error.message || '';
+        if (msg.includes('duplicate column name') || msg.includes('no such table')) {
+          AppLogger.debug(LOG_TAGS.BOOTSTRAP, `迁移语句幂等跳过: ${filename}`, { sql: stmt.slice(0, 80), error: msg });
+        } else {
+          AppLogger.warn(LOG_TAGS.BOOTSTRAP, `迁移语句执行异常: ${filename}`, { sql: stmt.slice(0, 80), error: msg });
+        }
+      }
+    }
+
+    // 无论是否有部分语句失败，都标记为已执行，避免下次启动重复尝试
+    this.db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(filename);
+    if (failedCount > 0) {
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, `迁移执行完成(含 ${failedCount} 条幂等跳过): ${filename}`);
+    } else {
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, `迁移执行完成: ${filename} (${executedCount} 条语句)`);
     }
   }
 

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Zentect 实体类型定义
  * 替换 storeTypes.ts 中所有 any[] 的使用
  */
@@ -51,6 +51,9 @@ export interface MediaItem {
   id: string; type: 'video'|'audio'|'frame'|'video_chunk'; filePath: string;
   fileName?: string; name?: string; coverPath?: string; thumbnail?: string;
   duration?: number; startMs?: number; endMs?: number; motionScore?: number;
+  // 🔧 修复 TS2339：useExtractionHandler/useStepRunner 动态访问的可选字段
+  sourceType?: 'vocals' | 'bgm' | 'original' | string;
+  mediaId?: string;
 }
 
 /** 视频片段 */
@@ -66,4 +69,17 @@ export interface BgmInfo { id: string; filePath: string; }
 export interface Role {
   id: string; name: string; avatarPath?: string; featureVector?: number[];
   mergedFrom?: string[]; appearances?: number;
+}
+
+/**
+ * 抽帧配置
+ * 🔧 修复 TS2305：usePipelineStore 需要导入此类型
+ */
+export interface ExtractionConfig {
+  /** 抽帧模式：scene=场景切换 / fixed=固定间隔 / manual=手动 */
+  mode: 'scene' | 'fixed' | 'manual';
+  /** 抽帧参数（mode=fixed 时为间隔秒数，scene 时为阈值） */
+  value: number;
+  /** 是否使用 GPU 加速 */
+  useGpu?: boolean;
 }

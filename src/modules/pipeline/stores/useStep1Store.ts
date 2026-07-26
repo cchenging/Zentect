@@ -13,7 +13,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AsrLine } from '../../../shared/types/entities/editor';
-import type { VlmFrame } from '../../../shared/types/entities/editor';
 
 /** 音频分离配置（与 step1-material/types.ts 的 AudioConfig 保持一致） */
 export interface AudioConfig {

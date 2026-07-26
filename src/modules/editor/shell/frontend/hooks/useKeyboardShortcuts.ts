@@ -2,16 +2,12 @@
 // 原 editor/hooks/useKeyboardShortcuts.ts — 已迁移
 
 import { useEffect } from 'react';
-import { useEditorStore } from '@renderer/store/useStore';
 import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 import { DraftService } from '@renderer/services/DraftService';
 
 export const useKeyboardShortcuts = () => {
-  const nodes = useEditorStore(s => s.nodes);
-  const edges = useEditorStore(s => s.edges);
+  // 🔧 修复 TS2339：nodes/edges/setActiveNode 已从 EditorSlice 迁移/移除，本 hook 仅保留 Ctrl+S 草稿保存
   const projectId = useProjectStore(s => s.projectId);
-  const setInspectorOpen = useEditorStore(s => s.setInspectorOpen);
-  const setActiveNode = useEditorStore(s => s.setActiveNode);
   const undo = useProjectStore(s => s.undo);
   const redo = useProjectStore(s => s.redo);
 
@@ -22,7 +18,8 @@ export const useKeyboardShortcuts = () => {
       if (isCtrlOrCmd && e.key === 's') {
         e.preventDefault();
         if (projectId) {
-          const snapshot = JSON.stringify({ nodes, edges });
+          // 草稿快照仅保留 projectId（nodes/edges 已迁移，不再持久化画布状态）
+          const snapshot = JSON.stringify({ projectId, savedAt: new Date().toISOString() });
           DraftService.saveDraft(projectId, snapshot).catch(() => {});
         }
         return;
@@ -41,13 +38,12 @@ export const useKeyboardShortcuts = () => {
       }
 
       if (e.key === 'Escape') {
-        setInspectorOpen(false);
-        setActiveNode(null, null);
+        // 🔧 修复 TS2339：setInspectorOpen/setActiveNode 已移除，Escape 不再处理画布选中清空
         return;
       }
     };
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [nodes, edges, projectId, setInspectorOpen, setActiveNode, undo, redo]);
+  }, [projectId, undo, redo]);
 };

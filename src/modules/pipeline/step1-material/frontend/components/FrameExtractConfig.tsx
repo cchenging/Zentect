@@ -48,8 +48,8 @@ export const FrameExtractConfig: React.FC<FrameExtractConfigProps> = ({ isRunnin
       frames: {
         ...frames,
         ...patch,
-        sceneThreshold: nextThreshold,
-        value: nextThreshold
+        // 🔧 修复 TS2353：frames 配置无 value 字段，统一用 sceneThreshold
+        sceneThreshold: nextThreshold
       }
     });
   };

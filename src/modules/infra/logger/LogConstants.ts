@@ -32,7 +32,9 @@ export const LOG_TAGS = {
   AI_ENGINE: 'AI_Engine',
   AI_AGENT: 'AI_Agent',
   EXPORT: 'Export',
-  MEDIA: 'Media'
+  MEDIA: 'Media',
+  // 🔧 修复 TS2339：补充 PROJECT 标签（ProjectService 调用但原定义缺失）
+  PROJECT: 'Project'
 } as const;
 
 export interface LogPayload {

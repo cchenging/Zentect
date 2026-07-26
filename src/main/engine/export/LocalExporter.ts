@@ -35,7 +35,8 @@ export class LocalExporter {
 
     const meta = {
       draft_name: draftName,
-      draft_id: draftContent.id,
+      // 🔧 修复 TS2339：draftContent 类型推断为 object，用 (as any) 访问 id 字段
+      draft_id: (draftContent as any).id,
       draft_type: "short_video"
     };
     fs.writeFileSync(path.join(draftFolder, 'draft_meta.json'), JSON.stringify(meta));

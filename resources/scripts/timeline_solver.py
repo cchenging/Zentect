@@ -23,7 +23,7 @@ async def kuhn_munkres_match(req: KMMatchReq):
     长电影场景下，将全局 O(N³) 的 KM 求解降级为时序分块的 K × O(n³) 级联匹配
     🚀 关键修复：CPU 密集型计算放入线程池，避免阻塞 uvicorn 事件循环
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         try:
             result = await loop.run_in_executor(executor, _kuhn_munkres_match_sync, req)

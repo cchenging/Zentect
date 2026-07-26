@@ -1,9 +1,15 @@
 // Module: pipeline/step5-match - Types
 
-import type { ScriptParagraph, VlmFrame, TtsResult, MatchResult, MediaItem, VideoChunk } from '../../../shared/types/entities/editor';
+// 🔧 修复 TS2322/TS2300：MediaItem 改从 shared/types 导入，与 useProjectStore.mediaItems 类型保持一致
+// 同时清理重复 re-export 导致的 TS2300 错误
+import type { MediaItem } from '../../../shared/types';
+import type { ScriptParagraph, VlmFrame, TtsResult, MatchResult, VideoChunk } from '../../../shared/types/entities/editor';
 
-// Re-export shared types
+// 🔧 修复 TS2459：re-export 给 backend/Service.ts 使用
+export type { ScriptParagraph, VlmFrame, TtsResult, VideoChunk } from '../../../shared/types/entities/editor';
+// MatchResult 和 MediaItem 单独从各自源 re-export（避免冲突）
 export type { MatchResult } from '../../../shared/types/entities/editor';
+export type { MediaItem } from '../../../shared/types';
 
 /** BGM 信息 */
 export interface BgmInfo {

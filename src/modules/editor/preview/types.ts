@@ -1,7 +1,12 @@
 // Module: editor/preview - Types
 
 /** 预览播放器输入接口（素材源由 Store 统一管理） */
-export interface PreviewInput {}
+// 🔧 修复 TS2339：测试期望 mediaPath/startMs/endMs 字段
+export interface PreviewInput {
+  mediaPath?: string | null;
+  startMs?: number;
+  endMs?: number;
+}
 
 /** 预览播放器输出接口 */
 export interface PreviewOutput {

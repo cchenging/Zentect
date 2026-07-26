@@ -86,7 +86,7 @@ vi.mock('@modules/infra/logger/LogConstants', () => ({
 
 vi.mock('@modules/infra/error/AppError', () => ({
   AppError: class AppError extends Error {
-    constructor(code: string, message: string) {
+    constructor(_code: string, message: string) {
       super(message);
       this.name = 'AppError';
     }

@@ -153,7 +153,7 @@ export class FFmpegRenderer {
     sourceVideoPath: string,
     outputVideoPath: string,
     bgmPath?: string,
-    ttsAudioPaths?: string[]
+    _ttsAudioPaths?: string[]
   ): Promise<RenderResult> {
     this.isAborted = false;
     const startTime = Date.now();

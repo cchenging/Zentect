@@ -243,7 +243,7 @@ describe('JianyingExportService', () => {
     };
 
     it('应创建草稿文件夹并写入 draft_content.json 和 draft_meta.json', () => {
-      const result = JianyingExportService.export(validInput, 'C:/jianying/drafts');
+      JianyingExportService.export(validInput, 'C:/jianying/drafts');
 
       expect(mockFsExistsSync).toHaveBeenCalledWith('C:/jianying/drafts');
       expect(mockFsMkdirSync).toHaveBeenCalledTimes(1);
@@ -276,7 +276,9 @@ describe('JianyingExportService', () => {
       const writeCall = mockFsWriteFileSync.mock.calls.find(
         (c: any) => String(c[0]).endsWith('draft_content.json'),
       );
-      const content = writeCall[1] as string;
+      // 🔧 修复 TS18048：find 可能返回 undefined，需显式断言
+      expect(writeCall).toBeDefined();
+      const content = writeCall![1] as string;
       const parsed = JSON.parse(content);
       expect(parsed.version).toBe(6);
       expect(parsed.tracks).toHaveLength(4);
@@ -288,7 +290,9 @@ describe('JianyingExportService', () => {
       const writeCall = mockFsWriteFileSync.mock.calls.find(
         (c: any) => String(c[0]).endsWith('draft_meta.json'),
       );
-      const content = writeCall[1] as string;
+      // 🔧 修复 TS18048：find 可能返回 undefined，需显式断言
+      expect(writeCall).toBeDefined();
+      const content = writeCall![1] as string;
       const parsed = JSON.parse(content);
       expect(parsed).toHaveProperty('draft_name');
       expect(parsed).toHaveProperty('draft_id');

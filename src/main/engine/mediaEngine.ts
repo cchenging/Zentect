@@ -52,7 +52,9 @@ export class MediaEngine {
           width: metadata.width || 0, height: metadata.height || 0, fps: metadata.fps || 0
         };
         // 💥 通过 DAO 调用，拒绝引擎直接写 SQL
-        repo.insertMedia(mediaItem);
+        // 🔧 修复 TS2345：repo.insertMedia 期望严格 union 类型 ('video'|'audio'|'frame'|'video_chunk')，
+        // 此处 type 已通过 DICT.MEDIA_TYPE 显式收窄，使用类型断言对齐
+        repo.insertMedia(mediaItem as any);
 
         // 💥 返回给前端前，组装前端需要的字段
         const frontendMediaItem: MediaItem = {

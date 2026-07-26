@@ -38,6 +38,9 @@ export interface FramesConfig {
   fps: number;
   minFrameInterval?: number;
   timePoint?: number;
+  // 🔧 修复 TS2339：usePipelineOrchestrator 动态访问的字段（用于 UI 配置传递到管线）
+  value?: number;
+  density?: 'sparse' | 'standard' | 'dense' | string;
 }
 
 /** 音频分离配置 */

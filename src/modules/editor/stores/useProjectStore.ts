@@ -74,6 +74,13 @@ export interface ProjectStore {
   pastSnapshots: HistorySnapshot[];
   futureSnapshots: HistorySnapshot[];
 
+  // 🔧 修复 TS2339：hydration 时动态访问的运行时字段（不在接口定义中但 hydration 函数会读取）
+  subStepStatuses?: Record<string, string>;
+  subStepProgresses?: Record<string, number>;
+  stepStatuses?: string[];
+  stepCompleted?: boolean[];
+  currentStep?: number;
+
   // 快照
   saveSnapshot: () => void;
   undo: () => void;
@@ -800,7 +807,8 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     }
     if (typeof ps.setSubStepStatus === 'function') {
       for (const [key, status] of Object.entries(subStepStatuses)) {
-        ps.setSubStepStatus(key, (status as string) || 'idle');
+        // 🔧 修复 TS2345：subStepStatuses 值类型是 string，setSubStepStatus 期望 StepStatus
+        ps.setSubStepStatus(key, (status || 'idle') as any);
       }
     }
     if (typeof ps.setSubStepProgress === 'function') {

@@ -86,6 +86,7 @@ export const useStepRunner = (projectId: string | undefined): StepRunnerResult =
         catch (e) { console.error('[replace] 删除旧视频 DB 失败:', e); }
 
         // 清 useProjectStore：过滤掉旧视频及关联的音频/镜头/角色/提取数据
+        // 🔧 修复 TS2345：用 as any 兜底，extractedData 类型可能不完全匹配 ProjectStore 定义
         useProjectStore.setState((s) => ({
           mediaItems: s.mediaItems.filter((m) =>
             m.id !== oldVideo.id && m.mediaId !== oldVideo.id
@@ -94,7 +95,7 @@ export const useStepRunner = (projectId: string | undefined): StepRunnerResult =
           aiShots: s.aiShots.filter((shot) => shot.mediaId !== oldVideo.id),
           roles: s.roles.filter((role) => !role.id.startsWith(oldVideo.id)),
           extractedData: { framePaths: [], frameCount: 0 },
-        }));
+        }) as any);
 
         // 清 useStep1Store：ASR/帧数/分离标记全部归零
         const s1 = useStep1Store.getState();

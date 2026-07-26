@@ -1,6 +1,6 @@
 // 📁 路径：src/main/core/ExceptionHub.ts
 // Layer 5: 异常归一化翻译官 — 将各种野鸡报错清洗为标准 I18N Key 契约载荷
-import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
+import { ErrorCode } from '../../modules/infra/error/AppError';
 import { AppLogger } from './AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
@@ -95,7 +95,7 @@ export class ExceptionHub {
    * 触发 AI 守护进程静默自愈 — 停止并重新拉起本地 Python 运行时
    * @param rawMsg 原始错误信息
    */
-  private static triggerDaemonSelfHealing(rawMsg: string): void {
+  private static triggerDaemonSelfHealing(_rawMsg: string): void {
     AppLogger.warn(LOG_TAGS.SYSTEM, '检测到本地 AI 守护进程响应中断，触发引擎静默自愈序列...');
 
     try {

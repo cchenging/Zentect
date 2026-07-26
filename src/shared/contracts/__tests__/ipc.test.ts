@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
+// 🔧 修复 TS2307：模块路径修正，原 '../ipc' 不存在
 import {
   BASE_IPC_RESPONSE_SCHEMA,
   CREATE_ERROR_RESPONSE,
   CREATE_SUCCESS_RESPONSE,
   VALIDATION_ERROR_RESPONSE,
   IPC_ERROR_CODES,
-} from '../ipc';
+} from '../../../modules/infra/ipc/ipc-contracts';
 
 describe('BASE_IPC_RESPONSE_SCHEMA', () => {
   it('validates success response', () => {

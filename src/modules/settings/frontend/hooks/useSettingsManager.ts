@@ -65,19 +65,18 @@ export const useSettingsManager = () => {
   }, []);
 
   // 💥 增量更新点：基于 Schema 批量拉取配置
+  // 🔧 启动性能修复：并发 2 次 IPC（getPaths + getAll），消灭 catch 降级中的 20+ 次 DPAPI 锁竞争
   useEffect(() => {
     const fetchConfig = async () => {
       try {
-        const systemPaths = await API.system.getPaths();
+        // ⚡ 并发拉取系统路径与批量配置（只发 2 次 IPC）
+        const [systemPaths, allSettings] = await Promise.all([
+          API.system.getPaths(),
+          API.settingsExt.getAll().catch(() => ({})),
+        ]);
 
-        // 并发执行 Schema 中的所有 getSetting 任务
-        const fetchPromises = Object.entries(DEFAULT_SETTINGS_SCHEMA).map(async ([key, defaultVal]) => {
-          const val = await API.system.getSetting(key, defaultVal);
-          return [key, val];
-        });
-
-        const resultsArray = await Promise.all(fetchPromises);
-        const dynamicSettings = Object.fromEntries(resultsArray);
+        // 用 Schema 默认值填充缺失的 key
+        const dynamicSettings: Record<string, any> = { ...DEFAULT_SETTINGS_SCHEMA, ...allSettings };
 
         const loadedData = {
           projectPath: systemPaths.projects,

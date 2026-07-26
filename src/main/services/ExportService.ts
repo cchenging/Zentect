@@ -1,6 +1,5 @@
 // 📁 路径: src/main/services/ExportService.ts
 import { LocalExporter } from '../engine/export/LocalExporter';
-import { JianyingExportService } from '../../modules/export/jianying';
 import { SrtExportService } from '../../modules/export/srt';
 import { TxtExportService } from '../../modules/export/txt';
 import { AppLogger } from '../core/AppLogger';

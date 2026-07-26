@@ -1,10 +1,9 @@
-﻿/**
+/**
  * 旧 API 配置自动迁移到 api_profiles 表
  * 在应用启动时调用，幂等执行（已有数据则跳过）
  */
 import { ApiProfileRepository } from '../repositories/ApiProfileRepository';
 import { SettingsRepository } from '../repositories/SettingsRepository';
-import { decryptData } from '../../utils/crypto';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 

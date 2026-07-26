@@ -361,13 +361,13 @@ export class ProjectService {
    * @returns 备份文件路径
    */
   public async exportProject(id: string): Promise<string> {
-    const project = await this.repo.getById(id);
+    // 🔧 修复 TS2339：ProjectRepository 实际方法名是 findById
+    const project = await this.repo.findById(id);
     if (!project) {
       throw new AppError(ErrorCode.DATABASE_ERROR, `项目不存在: ${id}`);
     }
 
     const projectData = await this.loadData(id);
-    const projectPath = PathManager.getProjectPath(id);
 
     const exportData = {
       project: {
@@ -382,7 +382,8 @@ export class ProjectService {
       version: '1.0.0',
     };
 
-    const exportDir = PathManager.getExportPath();
+    // 🔧 修复 TS2551：方法名实际是 getExportRootPath（不是 getExportPath）
+    const exportDir = PathManager.getExportRootPath();
     await fs.mkdir(exportDir, { recursive: true });
 
     const safeName = project.name.replace(/[<>:"/\\|?*]/g, '_');

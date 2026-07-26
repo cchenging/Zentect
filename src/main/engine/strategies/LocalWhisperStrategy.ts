@@ -1,4 +1,4 @@
-import { ITextExtractor, TextExtractResult } from './IExtractor';
+import type { ITextExtractor, TextExtractResult } from './IExtractor';
 import { AIDaemon } from '../../core/AIDaemon';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';

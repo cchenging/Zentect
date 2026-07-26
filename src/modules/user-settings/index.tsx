@@ -18,7 +18,7 @@ import { API } from '@renderer/api';
  */
 const UserSettings: React.FC = () => {
   const navigate = useNavigate();
-  const { userInfo, logout } = useUserStore();
+  const { userInfo } = useUserStore();
 
   const [activeTab, setActiveTab] = useState<'profile' | 'security'>('profile');
 

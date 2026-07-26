@@ -9,11 +9,25 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  # 🔧 排除 ai-env：通过 extraResources 单独打包，避免 asar 内重复包含导致体积翻倍
+  #   ai-env 体积约 1.9GB，若不排除会同时存在于 asar 包和 extraResources 中
+  - '!resources/ai-env/**/*'
 asarUnpack:
   - resources/**
   - "**/*.node"  # 关键：告诉打包工具，把所有的原生二进制文件单独拿出来
+# 便携 Python 环境（embeddable Python 3.12 + 全部 AI 依赖）
+# 使用 from/to/filter 语法：打包时排除 __pycache__、.pyc 等运行时缓存，
+# 这些文件运行时会自动重建，无需打包进安装包（可减少约 300MB 体积）
 extraResources:
-  - "resources/ai-env/**/*"
+  - from: resources/ai-env/
+    to: ai-env/
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
+      - "!**/*.pyc"
+      - "!**/*.pyo"
+      - "!**/_cache/**"
+      - "!**/cache/**"
 win:
   executableName: Zentect
   icon: build/icon.ico

@@ -9,7 +9,8 @@ import type {
 describe('IFrameExtractor interface contract', () => {
   it('defines required method signatures', () => {
     const mock: IFrameExtractor = {
-      extractFrames: async () => ({ framePaths: ['f1.jpg'], fps: 1, totalFrames: 1, duration: 10 }),
+      // 🔧 修复 TS2322/TS2551：duration → durationMs（与 ExtractFramesResult 对齐）
+      extractFrames: async () => ({ framePaths: ['f1.jpg'], fps: 1, totalFrames: 1, durationMs: 10 }),
       getProgress: () => 50,
       abort: () => {},
     };
@@ -20,23 +21,24 @@ describe('IFrameExtractor interface contract', () => {
 
   it('extractFrames returns correct result shape', async () => {
     const mock: IFrameExtractor = {
-      extractFrames: async () => ({ framePaths: ['a.jpg', 'b.jpg'], fps: 2, totalFrames: 2, duration: 5 }),
+      extractFrames: async () => ({ framePaths: ['a.jpg', 'b.jpg'], fps: 2, totalFrames: 2, durationMs: 5 }),
       getProgress: () => 100,
       abort: () => {},
     };
     const r = await mock.extractFrames({ mediaPath: '/v.mp4', outputDir: '/out' });
     expect(r.framePaths).toHaveLength(2);
     expect(r.totalFrames).toBe(2);
-    expect(r.duration).toBe(5);
+    expect(r.durationMs).toBe(5);
   });
 
   it('extractFrames accepts optional params', async () => {
     const mock: IFrameExtractor = {
-      extractFrames: async (p) => ({ framePaths: [], fps: p.fps ?? 1, totalFrames: 0, duration: 0 }),
+      extractFrames: async (p) => ({ framePaths: [], fps: p.fps ?? 1, totalFrames: 0, durationMs: 0 }),
       getProgress: () => 0,
       abort: () => {},
     };
-    const r = await mock.extractFrames({ mediaPath: '/v.mp4', outputDir: '/out', fps: 5, startTime: 10, endTime: 20 });
+    // 🔧 修复 TS2353：ExtractFramesParams 没有 startTime/endTime，改为 inPoint/outPoint
+    const r = await mock.extractFrames({ mediaPath: '/v.mp4', outputDir: '/out', fps: 5, outPoint: 20 });
     expect(r.fps).toBe(5);
   });
 });

@@ -1,6 +1,6 @@
 // 📁 路径：src/main/engine/adapters/OpenAICompatibleAdapter.ts
-import { ILLMProvider, LLMResponse } from './ILLMProvider';
-import { WebContents } from 'electron';
+import type { ILLMProvider, LLMResponse } from './ILLMProvider';
+import type { WebContents } from 'electron';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { StreamBufferGuard } from '../../core/StreamBufferGuard';

@@ -195,6 +195,8 @@ export class AIDaemon {
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // 🔧 修复 TS2304：onExternalAbort 提升到 try 外，catch 块也能访问
+      let onExternalAbort: (() => void) | null = null;
       try {
         /** 每次重试前先做一次快速健康检查（5秒超时），确保 daemon 存活 */
         if (attempt > 0) {
@@ -210,7 +212,7 @@ export class AIDaemon {
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
         // Fix 10: 外部取消信号触发时同步中止 fetch
-        const onExternalAbort = () => controller.abort();
+        onExternalAbort = () => controller.abort();
         options?.signal?.addEventListener('abort', onExternalAbort);
 
         const res = await fetch(url, {
@@ -221,6 +223,7 @@ export class AIDaemon {
         });
         clearTimeout(timeoutId);
         options?.signal?.removeEventListener('abort', onExternalAbort);
+        onExternalAbort = null;
         if (!res.ok) {
           const errText = await res.text().catch(() => '未返回详细错误');
           const errMsg = `HTTP ${res.status} - ${errText}`;
@@ -251,7 +254,10 @@ export class AIDaemon {
 
         if (attempt < maxRetries && (isNetworkError || isTimeout)) {
           // Fix 10: 重试前清理外部 abort listener，下次迭代重新注册
-          options?.signal?.removeEventListener('abort', onExternalAbort);
+          if (onExternalAbort) {
+            options?.signal?.removeEventListener('abort', onExternalAbort);
+            onExternalAbort = null;
+          }
           const delay = isConnectionReset ? 3000 * (attempt + 1) : 1000 * (attempt + 1);
           const reason = isConnectionRefused ? '连接被拒绝 (端口未监听)'
             : isConnectionReset ? '连接被重置 (进程可能崩溃)'
@@ -265,7 +271,10 @@ export class AIDaemon {
             `❌ 请求失败 [${endpoint}] (已重试 ${maxRetries} 次): ${e.message}`);
 
           // Fix 10: 清理外部 abort listener
-          options?.signal?.removeEventListener('abort', onExternalAbort);
+          if (onExternalAbort) {
+            options?.signal?.removeEventListener('abort', onExternalAbort);
+            onExternalAbort = null;
+          }
 
           /** 抛出带友好提示和解决方案的错误 */
           if (isConnectionRefused) {

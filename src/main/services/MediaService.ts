@@ -12,8 +12,6 @@ import { ImportService } from '../../modules/media/import/backend/ImportService'
 import { MediaRepository } from '../../modules/media/import/data/MediaRepository';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
-import * as fs from 'fs';
-import * as path from 'path';
 
 export class MediaService {
   private importService = new ImportService();
@@ -58,7 +56,7 @@ export class MediaService {
     }
   }
 
-  private async deleteThumbnail(mediaId: string): Promise<void> {
+  private async deleteThumbnail(_mediaId: string): Promise<void> {
     // 缩略图清理由上层 controller 配合 PathManager 处理
   }
 }

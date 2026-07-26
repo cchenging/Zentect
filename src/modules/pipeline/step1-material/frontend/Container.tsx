@@ -7,8 +7,6 @@ import { useProjectStore } from "@modules/editor/stores/useProjectStore";
 import { usePlayerStore } from "@modules/editor/stores/usePlayerStore";
 import { usePipelineStore } from "@renderer/store/usePipelineStore";
 import { IPC_CHANNELS } from "@modules/infra/ipc/IpcConstants";
-import type { MediaItem, Role } from "../../../../shared/types";
-import type { AsrLine, StepStatus } from "../../../../shared/types/entities/editor";
 import type { Step1Config } from "../types";
 import { StepMaterialAnalysisView } from "./View";
 
@@ -36,8 +34,6 @@ export const StepMaterialAnalysis: React.FC = () => {
   const updateAsrLine = useStep1Store((s) => s.updateAsrLine);
   const setSubStepStatus = usePipelineStore((s) => s.setSubStepStatus);
   const setSubStepProgress = useStep1Store((s) => s.setSubStepProgress);
-  const setFrameCount = useStep1Store((s) => s.setFrameCount);
-  const setAudioSeparated = useStep1Store((s) => s.setAudioSeparated);
   const updateExtractionConfig = useStep1Store((s) => s.updateExtractionConfig);
 
   const mediaItems = useProjectStore((s) => s.mediaItems);

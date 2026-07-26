@@ -80,6 +80,23 @@ export const API = {
       ipcRenderer.on(IPC_CHANNELS.SYSTEM_INSTALL_DEP_PROGRESS, handler);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.SYSTEM_INSTALL_DEP_PROGRESS, handler);
     },
+
+    /** 🚀 阶段 3 新增：查询 GPU/CUDA 状态 */
+    getGpuStatus: () => invokeSafe<any>(IPC_CHANNELS.SYSTEM_GPU_STATUS),
+
+    /** 🚀 阶段 3 新增：触发 CUDA 版 torch 安装（返回 task_id，进度通过 onGpuInstallProgress 监听） */
+    installCudaTorch: () => invokeSafe<{ success: boolean; task_id?: string; message?: string }>(
+      IPC_CHANNELS.SYSTEM_GPU_INSTALL_CUDA
+    ),
+
+    /** 🚀 阶段 3 新增：注册 CUDA 安装进度监听器 */
+    onGpuInstallProgress: (callback: (progress: any) => void) => {
+      const { ipcRenderer } = window.electron as any;
+      if (!ipcRenderer) return () => {};
+      const handler = (_event: any, progress: any) => callback(progress);
+      ipcRenderer.on(IPC_CHANNELS.SYSTEM_GPU_INSTALL_PROGRESS, handler);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.SYSTEM_GPU_INSTALL_PROGRESS, handler);
+    },
   },
 
   media: {
@@ -120,6 +137,9 @@ export const API = {
     generateAiScript: (data: any) => invokeSafe(IPC_CHANNELS.AI_GENERATE_SCRIPT, data),
     streamText: (payload: any) => window.api.ai.streamText(payload),
     searchSemantics: (mediaId: string, query: string) => invokeSafe(IPC_CHANNELS.AI_SEARCH_SEMANTICS, mediaId, query),
+    // 🔧 修复 TS2339：usePipelineOrchestrator 调用 visionExtract
+    visionExtract: (projectId: string, filePath: string, mediaId: string, existingFrames?: string[]) =>
+      invokeSafe(IPC_CHANNELS.AI_VISION_SINGLE, { projectId, filePath, mediaId, existingFrames }),
   },
 
   export: {
@@ -147,7 +167,7 @@ export const API = {
     saveCanvas: (id: string, canvasData: string) => invokeSafe(IPC_CHANNELS.PROJECT_SAVE_CANVAS, id, canvasData),
     getRecent: () => invokeSafe(IPC_CHANNELS.PROJECT_GET_RECENT),
     getList: () => invokeSafe(IPC_CHANNELS.PROJECT_GET_LIST),
-    create: (payload?: { name?: string, type?: string }) => invokeSafe(IPC_CHANNELS.PROJECT_CREATE, payload),
+    create: (payload?: { name?: string, type?: string, workflowData?: any }) => invokeSafe(IPC_CHANNELS.PROJECT_CREATE, payload),
     delete: (id: string) => invokeSafe(IPC_CHANNELS.PROJECT_DELETE, id),
     rename: (id: string, newName: string) => invokeSafe(IPC_CHANNELS.PROJECT_RENAME, id, newName),
     duplicate: (id: string) => invokeSafe(IPC_CHANNELS.PROJECT_DUPLICATE, id),

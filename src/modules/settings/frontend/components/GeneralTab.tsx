@@ -196,11 +196,13 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({ data, onUpdate }) => {
       <div className="glass-card-sm p-5">
         <div className="text-sm font-semibold mb-4">性能</div>
         <div className="flex flex-col gap-5">
-          {/* GPU 硬件加速 */}
+          {/* GPU 硬件加速（视频编解码，非 AI 运行时 GPU） */}
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-xs text-foreground font-medium">GPU 硬件加速</div>
-              <div className="text-xs text-muted-foreground">启用 GPU 加速视频编解码</div>
+              <div className="text-xs text-foreground font-medium">视频编解码 GPU 加速</div>
+              <div className="text-xs text-muted-foreground">
+                启用 GPU 加速视频编解码（仅影响播放器/导出，AI 推理加速请去"健康检查"页配置）
+              </div>
             </div>
             <Switch
               checked={data.gpuAcceleration !== false}

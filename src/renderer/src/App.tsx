@@ -2,7 +2,9 @@ import React, { useEffect, Suspense } from 'react';
 import { HashRouter, Routes, Route } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { AppLayout } from './layout/AppLayout';
-import { Settings as SettingsPage } from '@modules/settings/frontend';
+// 🔧 启动性能修复：SettingsPage 改为懒加载，避免 vite 首次编译时
+//    把整个 Settings 模块树（HealthPage 31KB + AITab 23KB + ModelTab 18KB）全部编译
+//    之前是唯一同步导入的页面，导致 vite 编译耗时 100+ 秒
 import { IPCBridge } from './core/IPCBridge';
 import { useEditorStore } from './store/useStore';
 import { API } from './api';
@@ -22,12 +24,28 @@ const Home = React.lazy(() => import('@modules/home').then(m => ({ default: m.Ho
 const Editor = React.lazy(() => import('@modules/editor'));
 const ModelsPage = React.lazy(() => import('@modules/models'));
 const UserSettingsPage = React.lazy(() => import('@modules/user-settings'));
+// 🔧 修复：SettingsPage 也改为懒加载，与其它页面保持一致
+const SettingsPage = React.lazy(() => import('@modules/settings/frontend').then(m => ({ default: m.Settings })));
 
 function App() {
   const mode = useEditorStore((state) => state.mode);
   const hydrateUI = useEditorStore((state) => state.hydrateUI);
 
+  // ⏱️ App 组件首次执行（render 阶段）
+  if (!(window as any).__APP_RENDER) {
+    (window as any).__APP_RENDER = performance.now();
+    const t0 = (window as any).__BOOT_T0 || 0;
+    const mainStart = (window as any).__MAIN_START || 0;
+    console.log(`[BOOT] App() 首次 render | HTML→App render 总耗时 ${Math.round(performance.now() - t0)}ms | main.tsx→App 耗时 ${Math.round(performance.now() - mainStart)}ms`);
+  }
+
   useEffect(() => {
+    // ⏱️ App useEffect 触发（commit 阶段完成）
+    if (!(window as any).__APP_COMMIT) {
+      (window as any).__APP_COMMIT = performance.now();
+      const t0 = (window as any).__BOOT_T0 || 0;
+      console.log(`[BOOT] App useEffect 首次 commit | HTML→commit 总耗时 ${Math.round(performance.now() - t0)}ms`);
+    }
     hydrateUI();
   }, []);
 
@@ -42,6 +60,8 @@ function App() {
     root.classList.remove('light', 'dark');
     root.classList.add(resolvedMode);
     document.body.setAttribute('theme-mode', resolvedMode);
+    // — 回写 localStorage，保持与预内联脚本同步
+    localStorage.setItem('theme-mode', resolvedMode);
     // — 注入：主题切换追踪
     FrontendLogger.info('AppRoot', `System theme switched to: ${resolvedMode}`);
 
@@ -60,25 +80,37 @@ function App() {
 
   // ==========================================================
   // — 引擎点火握手信号发射器
+  // 🔧 修复黑屏：移除 requestAnimationFrame 包裹（窗口失焦时 raf 会暂停），
+  //   改为同步发送 + try/catch 防止任何异常阻断握手信号
   // ==========================================================
   useEffect(() => {
-    requestAnimationFrame(() => {
+    console.log('[AppRoot]握手useEffect触发');
+    // 同步发送握手信号，避免 raf 在窗口失焦时暂停导致超时
+    try {
       API.system.appIsReady();
       FrontendLogger.info('AppRoot', '=== Frontend React Engine Ready ===', FrontendLogger.generateTraceId());
-    });
+      console.log('[AppRoot]握手信号已发送');
+    } catch (err) {
+      console.error('[AppRoot]握手信号发送失败:', err);
+      // 即使握手失败也尝试发送原始 IPC，避免主进程永远等不到信号
+      try { (window as any).api?.system?.appIsReady?.(); } catch {}
+    }
 
-    useTaskStore.getState().initIpcListeners();
+    try {
+      useTaskStore.getState().initIpcListeners();
+    } catch (err) {
+      console.error('[AppRoot]initIpcListeners失败:', err);
+    }
 
     // 启动时检查用户会话有效性
-    useUserStore.getState().checkSession();
+    useUserStore.getState().checkSession().catch(err => console.error('[AppRoot]checkSession失败:', err));
 
     // 首次启动检测：无 API Key 时通过通知中心提示
     (async () => {
       try {
-        const deepseek = await API.system.getSetting('ai.deepseekKey', '');
-        const qwen = await API.system.getSetting('ai.qwenKey', '');
-        const doubao = await API.system.getSetting('ai.doubaoKey', '');
-        const hasAnyKey = !!(deepseek || qwen || doubao);
+        // ⚡ 单次批量获取所有设置，消灭 3 次独立 getSetting IPC 调用
+        const settings = await API.settingsExt.getAll().catch(() => ({}));
+        const hasAnyKey = !!(settings.deepseekKey || settings.qwenKey || settings.doubaoKey || settings.openaiKey);
         if (!hasAnyKey) {
           useNotificationCenter.getState().addNotification({
             title: '欢迎使用 Zentect',
@@ -91,7 +123,11 @@ function App() {
     })();
 
     return () => {
-      useTaskStore.getState().cleanupIpcListeners();
+      try {
+        useTaskStore.getState().cleanupIpcListeners();
+      } catch (err) {
+        console.error('[AppRoot]cleanupIpcListeners失败:', err);
+      }
     };
   }, []);
 

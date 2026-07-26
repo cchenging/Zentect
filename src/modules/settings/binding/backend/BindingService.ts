@@ -2,8 +2,6 @@
 // 管线-模型绑订服务：封装 ProfileBinding CRUD（§3.7.2）
 // 委托层：委托 ProfileBindingRepository 现有实现
 
-import type { ProfileBinding, BindingInput } from '../types';
-
 // 委托到原有实现，保持零侵入
 export { ProfileBindingRepository } from '../../../../main/database/repositories/ProfileBindingRepository';
 export type { ProfileBinding as ProfileBindingRow } from '../../../../main/database/repositories/ProfileBindingRepository';

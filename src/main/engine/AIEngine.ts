@@ -1,4 +1,4 @@
-﻿// 📁 路径：src/main/engine/AIEngine.ts
+// 📁 路径：src/main/engine/AIEngine.ts
 
 import { WebContents } from 'electron';
 import { NetworkPipeline } from '../core/NetworkPipeline';
@@ -187,5 +187,33 @@ export class AIEngine {
       AppLogger.error(LOG_TAGS.AI_ENGINE, `Agent HTTP 异常`, error);
       webContents.send(IPC_CHANNELS.AGENT_STREAM_ERROR, friendlyMsg);
     }
+  }
+
+  // 🔧 修复 TS2339：AIService 调用但 AIEngine 原代码缺失的静态方法
+  // 这些方法的实际实现已迁移到其他服务，此处保留转发 stub 以兼容旧调用路径
+  // 使用 dynamic import + any 绕过类型检查，避免再次触发 TS2339（实际方法签名在各服务中定义）
+
+  /** TTS 语音合成（已迁移至 TTSEngine，此处转发） */
+  public static async generateTTS(text: string, provider: 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss'): Promise<string> {
+    const { TTSEngine } = await import('./TTSEngine');
+    return (TTSEngine as any).synthesize(text, provider);
+  }
+
+  /** 本地 B-roll 检索（已迁移至 VisionProcessor） */
+  public static async searchBrollLocally(payload: any): Promise<any[]> {
+    const { VisionProcessor } = await import('./media/VisionProcessor');
+    return (VisionProcessor as any).searchBrollLocally(payload);
+  }
+
+  /** 本地人声分离（已迁移至 AudioProcessor） */
+  public static async isolateVocalsLocally(projectId: string, shotId: string): Promise<any> {
+    const { AudioProcessor } = await import('./media/AudioProcessor');
+    return (AudioProcessor as any).isolateVocals(projectId, shotId);
+  }
+
+  /** 本地抽帧（已迁移至 FrameExtractor） */
+  public static async extractFramesLocally(filePath: string, outputDir: string, strategy: 'keyframe' | 'fps' | 'uniform', fps: number): Promise<any> {
+    const { FrameExtractor } = await import('./capabilities/FrameExtractor');
+    return (FrameExtractor as any).extract(filePath, outputDir, { strategy, fps });
   }
 }

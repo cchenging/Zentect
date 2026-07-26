@@ -8,7 +8,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 
 afterEach(cleanup);
-import React from 'react';
+// 🔧 React 19 兼容：新 JSX transform 无需显式 import React
 import { StepVisionDescriptionView } from '../frontend/View';
 import type { VlmFrame } from '../../../../shared/types/entities/editor';
 

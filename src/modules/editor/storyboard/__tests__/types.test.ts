@@ -83,9 +83,9 @@ describe('Storyboard Types', () => {
         shot: makeMatchResult(),
         index: 0,
         isSelected: false,
-        onSelect: (shotId: string) => {},
-        onConfirm: (shotId: string) => {},
-        onReplace: (shotId: string) => {},
+        onSelect: (_shotId: string) => {},
+        onConfirm: (_shotId: string) => {},
+        onReplace: (_shotId: string) => {},
       };
       expect(props.index).toBe(0);
       expect(props.isSelected).toBe(false);

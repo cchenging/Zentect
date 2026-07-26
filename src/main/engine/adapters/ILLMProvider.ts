@@ -1,5 +1,5 @@
 // 📁 路径：src/main/engine/adapters/ILLMProvider.ts
-import { WebContents } from 'electron';
+import type { WebContents } from 'electron';
 
 export interface LLMResponse {
   success: boolean;

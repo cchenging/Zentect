@@ -1,4 +1,4 @@
-﻿/// <reference types="vite/client" />
+/// <reference types="vite/client" />
 
 /**
  * Preload 暴露的 IPC API 类型声明
@@ -54,4 +54,14 @@ interface WindowApi {
 
 interface Window {
   api: WindowApi;
+  // 🔧 修复 TS2551：renderer/src/api/index.ts 使用 window.electron 访问 ipcRenderer
+  electron?: {
+    ipcRenderer: {
+      on: (channel: string, callback: (...args: any[]) => void) => void;
+      removeListener: (channel: string, callback: (...args: any[]) => void) => void;
+      removeAllListeners: (channel: string) => void;
+      send: (channel: string, ...args: any[]) => void;
+      invoke: (channel: string, ...args: any[]) => Promise<any>;
+    };
+  };
 }

@@ -9,15 +9,15 @@
     "src/modules/**/*"
   ],
   "compilerOptions": {
-    "composite": true,
+    // 🔧 TypeScript 7.0 兼容：移除 composite，避免 TS6307
     "jsx": "react-jsx",
-    "baseUrl": ".",
+    // 🔧 TypeScript 7.0 兼容：baseUrl 已被移除，paths 需使用相对路径
     "paths": {
       "@renderer/*": [
-        "src/renderer/src/*"
+        "./src/renderer/src/*"
       ],
       "@modules/*": [
-        "src/modules/*"
+        "./src/modules/*"
       ]
     },
     "target": "ESNext",

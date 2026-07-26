@@ -146,6 +146,11 @@ export const IPC_CHANNELS = {
   SYSTEM_INSTALL_DEP: 'system:install-dep',                     // 触发安装，返回 task_id
   SYSTEM_INSTALL_DEP_PROGRESS: 'system:install-dep:progress',   // 主进程 → 渲染进程 推送进度
 
+  // 🚀 阶段 3: GPU 加速管理（CUDA 版 torch 安装 + GPU 状态查询）
+  SYSTEM_GPU_STATUS: 'system:gpu-status',                       // 查询 GPU/CUDA 状态
+  SYSTEM_GPU_INSTALL_CUDA: 'system:gpu-install-cuda',           // 触发 CUDA 版 torch 安装
+  SYSTEM_GPU_INSTALL_PROGRESS: 'system:gpu-install:progress',   // 主进程 → 渲染进程 推送安装进度
+
   // --- V1.1 工作流持久化 ---
   WORKFLOW_SAVE: 'workflow:save',
   WORKFLOW_LOAD: 'workflow:load',

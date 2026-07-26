@@ -172,10 +172,10 @@ describe('Step5 Types', () => {
         mediaItems: [],
         hasBgm: false,
         isProcessing: false,
-        onConfirm: (shotId: string) => {},
-        onReplace: (shotId: string, chunkItem: any) => {},
+        onConfirm: (_shotId: string) => {},
+        onReplace: (_shotId: string, _chunkItem: any) => {},
         onRematch: () => {},
-        onReorder: (reordered: MatchResult[]) => {},
+        onReorder: (_reordered: MatchResult[]) => {},
       };
       expect(props.matchResults).toHaveLength(0);
       expect(props.hasBgm).toBe(false);

@@ -11,6 +11,8 @@ export interface GeneralSettings {
   jianyingPath: string;
   /** 主题：深色 / 浅色 / 跟随系统 */
   theme: 'dark' | 'light' | 'system';
+  /** 🔧 修复 TS2353：兼容旧字段 mode（与 theme 同义，部分历史代码仍使用 mode） */
+  mode?: 'dark' | 'light' | 'system';
   /** 界面语言 */
   language: 'zh-CN' | 'en';
   /** GPU 加速 */

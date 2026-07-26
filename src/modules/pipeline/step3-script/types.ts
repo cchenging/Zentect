@@ -1,6 +1,7 @@
 // Module: pipeline/step3-script - Types
 
-import type { VlmFrame } from '../../../shared/types/entities/editor';
+// 🔧 修复 TS2304：re-export 不会引入当前作用域，需要同步 import type 才能在 interface 中使用
+import type { VlmFrame, ScriptParagraph, PipelineParams } from '../../../shared/types/entities/editor';
 
 // Re-export shared types
 export type { ScriptParagraph, PipelineParams } from '../../../shared/types/entities/editor';

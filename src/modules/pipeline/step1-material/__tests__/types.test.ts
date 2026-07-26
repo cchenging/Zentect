@@ -50,11 +50,13 @@ describe('Step1 Types', () => {
   describe('Step1Output', () => {
     it('应包含所有输出字段', () => {
       const output: Step1Output = {
-        asrLines: [{ id: '1', text: '你好', start: 0, end: 1.5 }],
+        // 🔧 修复 TS2322：AsrLine.start 为 string，startMs/endMs 为 number（毫秒）
+        asrLines: [{ id: '1', text: '你好', start: '00:00', startMs: 0, end: '00:01', endMs: 1500, editing: false } as any],
         framePaths: ['/frames/f1.jpg', '/frames/f2.jpg'],
         frameCount: 2,
         audioSeparated: true,
-        roles: [{ id: 'r1', name: '角色A', facePath: '/faces/r1.jpg' }],
+        // 🔧 修复 TS2353：Role 不含 facePath，改用 avatarPath
+        roles: [{ id: 'r1', name: '角色A', avatarPath: '/faces/r1.jpg' }],
       };
       expect(output.asrLines).toHaveLength(1);
       expect(output.frameCount).toBe(2);
@@ -163,10 +165,10 @@ describe('Step1 Types', () => {
 
     it('进度应反映子步骤完成状态', () => {
       const state: Step1State = {
-        asrLines: [{ id: '1', text: '测试', start: 0, end: 1 }],
+        asrLines: [{ id: '1', text: '测试', start: '00:00', startMs: 0, end: '00:01', endMs: 1000, editing: false } as any],
         frameCount: 10,
         audioSeparated: true,
-        roles: [{ id: 'r1', name: '角色', facePath: '/f.jpg' }],
+        roles: [{ id: 'r1', name: '角色', avatarPath: '/f.jpg' }],
         subStepProgresses: { frames: 100, asr: 100 },
         extractionConfig: {
           targetLanguage: 'zh-CN',
@@ -186,6 +188,8 @@ describe('Step1 Types', () => {
         asrLines: [],
         frameCount: 0,
         audioSeparated: false,
+        // 🔧 修复 TS2741：补齐 vocalsIsFallback 必填字段
+        vocalsIsFallback: false,
         mediaItems: [],
         roles: [],
         subStepStatuses: {},
@@ -211,6 +215,8 @@ describe('Step1 Types', () => {
         asrLines: [],
         frameCount: 5,
         audioSeparated: true,
+        // 🔧 修复 TS2741：补齐 vocalsIsFallback 必填字段
+        vocalsIsFallback: false,
         mediaItems: [],
         roles: [],
         subStepStatuses: {},
@@ -226,7 +232,8 @@ describe('Step1 Types', () => {
           videoPath: '/media/v.mp4',
           vocalPath: '/audio/vocals.wav',
           backgroundPath: '/audio/bgm.wav',
-          asrLines: [{ id: '1', text: '测试', start: 0, end: 1 }],
+          // 🔧 修复 TS2322：AsrLine.start 为 string，使用 as any 绕过严格类型
+          asrLines: [{ id: '1', text: '测试', start: '00:00', startMs: 0, end: '00:01', endMs: 1000, editing: false } as any],
           frameCount: 5,
           framePaths: ['/frames/1.jpg'],
         },

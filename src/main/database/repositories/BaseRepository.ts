@@ -1,4 +1,4 @@
-﻿/**
+/**
  * BaseRepository - 通用 Repository 基类
  *
  * DB 句柄获取已迁移至 src/modules/infra/database/SQLiteConnection，
@@ -14,7 +14,8 @@ export interface IEntity {
 
 export abstract class BaseRepository<T extends IEntity> {
   protected abstract tableName: string;
-  protected abstract primaryKey: string = 'id';
+  // 🔧 修复 TS1267：abstract 属性不能有初始化器，改为带默认值的普通属性
+  protected primaryKey: string = 'id';
 
   protected get db() {
     return SQLiteConnection.getInstance().getDB();

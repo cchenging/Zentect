@@ -1,4 +1,22 @@
-@import "tailwindcss";
+/* 🔧 修复 Vite dev 首次编译 220 秒卡顿：
+   Tailwind v4 默认从当前工作目录（项目根目录 f:\Tools\Zentect）扫描所有源文件，
+   包括 Python 脚本、resources、node_modules 等，首次编译耗时 117~221 秒。
+
+   🔬 根因分析 (2026-07-26)：
+   - @source "./" 只是"额外添加"扫描目录，不会替换默认的全项目扫描行为
+   - 必须用 source(none) 禁用默认扫描，再用 @source 显式指定扫描范围
+   - 官方文档：https://tailwindcss.com/docs/detecting-classes-in-source-files#disabling-automatic-detection
+
+   ✅ 最终方案：
+   - source(none) 禁用自动检测，阻止扫描项目根目录下的所有文件
+   - @source "./" 扫描 src/renderer/src/（90 个前端文件）
+   - @source "../../modules" 扫描 src/modules/（首页/编辑器/设置/流水线等前端组件）
+   - 预计首次编译 < 5 秒，样式输出完整 */
+@import "tailwindcss" source(none);
+/* ⚡ 仅匹配前端视图代码文件，避开潜在的文本/配置文件，减少无意义的 CSS 重新计算 */
+@source "./**/*.{tsx,jsx,ts,js}";
+@source "../../modules/**/*.{tsx,jsx,ts,js}";
+
 
 /* =========================================
    V3 设计系统：深空紫蓝 + 霓虹青 + 玫瑰粉

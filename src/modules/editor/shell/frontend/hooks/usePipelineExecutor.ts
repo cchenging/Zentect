@@ -10,7 +10,6 @@ import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 import { AppNotifier } from '@renderer/core/AppNotifier';
 
 export const usePipelineExecutor = () => {
-  const store = useProjectStore();
   const pipelineStore = usePipelineStore();
   const asrBufferRef = useRef<any[]>([]);
   const renderTimerRef = useRef<any>(null);

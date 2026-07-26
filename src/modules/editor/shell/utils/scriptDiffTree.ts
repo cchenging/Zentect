@@ -32,7 +32,6 @@ export function diffParagraphs(
   newParagraphs: any[]
 ): ParagraphDiff[] {
   const oldMap = new Map(oldParagraphs.map(p => [p.id || p.shotId, p]));
-  const newMap = new Map(newParagraphs.map(p => [p.id || p.shotId, p]));
 
   const diffs: ParagraphDiff[] = [];
 

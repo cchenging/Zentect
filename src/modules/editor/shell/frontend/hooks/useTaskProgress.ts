@@ -55,7 +55,6 @@ export const useTaskProgress = () => {
       if (!code) return;
 
       const state = usePipelineStore.getState();
-      const progressKey = `${code}:${percent}`;
       if (lastProgressRef.current[code] === percent && code !== 'TASK_SUCCESS' && code !== 'TASK_FAILED') {
         return;
       }

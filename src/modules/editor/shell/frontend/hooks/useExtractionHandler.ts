@@ -127,9 +127,10 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             updatedMediaItems.push({
               id: uuidv4(), type: 'audio', sourceType: 'vocals',
               fileName: '分离人声', name: '分离人声',
-              filePath: media.extractedVocals, projectId: projectState.projectId, mediaId,
+              // 🔧 修复 TS2322：extractedVocals 是 string | null，filePath 期望 string | undefined
+              filePath: media.extractedVocals ?? undefined, projectId: projectState.projectId ?? undefined, mediaId: mediaId ?? undefined,
               createdAt: new Date().toISOString(),
-            });
+            } as any);
           }
         }
 
@@ -141,9 +142,10 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             updatedMediaItems.push({
               id: uuidv4(), type: 'audio', sourceType: 'bgm',
               fileName: '分离背景音', name: '分离背景音',
-              filePath: media.extractedBgm, projectId: projectState.projectId, mediaId,
+              // 🔧 修复 TS2322：extractedBgm 是 string | null，filePath 期望 string | undefined
+              filePath: media.extractedBgm ?? undefined, projectId: projectState.projectId ?? undefined, mediaId: mediaId ?? undefined,
               createdAt: new Date().toISOString(),
-            });
+            } as any);
           }
         }
 
@@ -155,9 +157,10 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             updatedMediaItems.push({
               id: uuidv4(), type: 'audio', sourceType: 'extracted',
               fileName: '提取音频', name: '提取音频',
-              filePath: media.extractedAudio, projectId: projectState.projectId, mediaId,
+              // 🔧 修复 TS2322：extractedAudio 是 string | null，filePath 期望 string | undefined
+              filePath: media.extractedAudio ?? undefined, projectId: projectState.projectId ?? undefined, mediaId: mediaId ?? undefined,
               createdAt: new Date().toISOString(),
-            });
+            } as any);
           }
         }
 

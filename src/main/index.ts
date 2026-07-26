@@ -1,4 +1,4 @@
-﻿// — 路径：src/main/index.ts
+// — 路径：src/main/index.ts
 // Windows 中文乱码修复：在所有 import 之前强制设置控制台 UTF-8 编码
 if (process.platform === 'win32') {
   try { require('child_process').execSync('chcp 65001', { stdio: 'ignore' }); } catch {}
@@ -7,12 +7,11 @@ if (process.platform === 'win32') {
   if (process.stderr) { try { (process.stderr as any).setEncoding('utf8'); } catch {} }
 }
 
-import { app, shell, BrowserWindow, ipcMain, protocol, screen, safeStorage, session, net } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, protocol, screen, safeStorage, session } from 'electron'
 import path from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import fs from 'fs'
-import { pathToFileURL } from 'url'
 
 // — 引入核心基建
 import { PathManager } from './utils/pathManager'
@@ -73,6 +72,10 @@ app.commandLine.appendSwitch('enable-features', 'PlatformHEVCDecoderSupport');
 app.commandLine.appendSwitch('enable-features', 'VaapiVideoDecoder,VaapiVideoEncoder');
 // — 允许不安全的本地 HTTP 资源（开发模式）
 app.commandLine.appendSwitch('allow-insecure-localhost', 'true');
+// — 禁用 GPU 着色器磁盘缓存，避免缓存目录权限问题导致启动卡顿
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+// — 禁用磁盘缓存目录写入，避免 EBADF/权限问题导致 HTTP 响应卡住
+app.commandLine.appendSwitch('disable-disk-cache');
 
 let currentView = 'home'
 let homeSize = { width: 1280, height: 800 }
@@ -86,68 +89,128 @@ class AppBootstrap {
   private static mainWindow: BrowserWindow | null = null
 
   // ==========================================
-  // — 1. 点火序列 (严格单向启动)
+  // — 1. 点火序列 (窗口前置 + 服务并行启动)
   // ==========================================
   static async ignite() {
+    /** ⏱️ 启动耗时诊断：记录每步相对起始时间，定位真实瓶颈 */
+    const t0 = performance.now();
+    const stepTimes: { name: string; ms: number }[] = [];
+    const mark = (name: string) => {
+      const ms = Math.round(performance.now() - t0);
+      stepTimes.push({ name, ms });
+      return ms;
+    };
+
     AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 开始执行主引擎点火序列...')
 
     try {
       // 步骤 1: 初始化物理路径寻址中枢 (最优先，否则后面全崩)
       PathManager.initialize()
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 1/10 寻址中枢初始化完成')
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 1/10 寻址中枢初始化完成 (${mark('PathManager')}ms)`)
 
-      // 步骤 2: 挂载本地 SQLite 数据库引擎
-      SQLiteConnection.getInstance().getDB()
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 2/10 数据库引擎挂载完成')
-
-      // 步骤 2.5: 迁移清理跨 Electron 版本的失效加密数据
-      const staleKeys = new SettingsRepository().migrateStaleEncryptedData();
-      if (staleKeys.length > 0) {
-        AppLogger.info(LOG_TAGS.BOOTSTRAP,
-          `— 2.5/10 旧加密数据迁移完成，已清理 ${staleKeys.length} 个失效设置`);
-      }
-
-      // 步骤 2.6: License 启动校验（已迁移至 VIP 激活码体系，此处仅保留兼容日志）
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 2.6/10 License 校验已迁移至 VIP 激活码体系');
-
-      // 检查 safeStorage 系统可用性与平台兼容性
-
-      // 步骤 3: 注册所有 IPC 路由防腐层
-      this.registerControllers()
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 3/10 IPC 路由网关注册完成')
-
-      // 步骤 4: 初始化全局反馈总线 (Feedback → Renderer)
-      this.initFeedbackBus();
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 4/10 反馈总线就绪')
-
-      // 步骤 5: 唤醒 AI 运行时 (AiRuntimeManager接管, AIDaemon为facade)
-      AiRuntimeManager.getInstance();
-      AIDaemon.getInstance().start()
-      // 并行启动 MOSS TTS 本地语音合成
-      AIDaemon.getInstance().startTTS()
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 5/10 AI 运行时已拉起')
-
-      // 步骤 6: M4.0 运行时服务启动 (崩溃/遥测/统计)
-      CrashReporter.getInstance().init();
-      TelemetryOptInGate.getInstance();
-      UsageStatsCollector.getInstance().init();
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 6/10 运行时服务就绪')
-
-      // 步骤 7: 清理僵尸任务
-      JobScheduler.getInstance().recoverZombieJobs()
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 7/10 僵尸任务清洗完毕')
-
-      // 步骤 8: 启动任务调度器
-      JobScheduler.getInstance().start()
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 8/10 任务调度器启动')
-
-      // 步骤 9: 预热计算资源管理器 (Pipeline执行前水位检查)
-      ComputeResourceManager.getInstance();
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 9/10 计算资源管理器就绪')
-
-      // 步骤 10: 启动渲染主窗口
+      // ⚡⚡ 性能优化（极致前置）：窗口在第 2 步就创建！
+      //    之前的序列把 createWindow 放在步骤 5，导致数据库迁移、IPC 注册
+      //    全部串行阻塞窗口显示。现在窗口立即显示，让用户第一时间看到 UI，
+      //    后续数据库/IPC/服务全部并行启动。
+      //    注意：createWindow 内部会 loadURL 触发 vite 编译（dev），
+      //    编译期间 index.html 的 "Zentect 引擎点火中…" 占位符会先显示，
+      //    给用户即时反馈。IPC 路由在前端首次调用前注册即可。
       this.createWindow()
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, '— 10/10 UI 渲染引擎点火完成。Zentect 启动成功！')
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 2/10 UI 窗口已极致前置创建（用户可见） (${mark('createWindow')}ms)`)
+
+      // ⚡⚡ 性能优化：后续初始化全部并行，不再阻塞窗口
+      //    - 数据库迁移 (SQLiteConnection)
+      //    - IPC 路由注册 (registerControllers)
+      //    - 反馈总线 (initFeedbackBus)
+      //    - AI 运行时 / 崩溃报告 / 任务调度器
+      await Promise.all([
+        // 2. 数据库引擎挂载 (含迁移) + 旧 API 配置迁移
+        (async () => {
+          try {
+            SQLiteConnection.getInstance().getDB();
+            // 🔧 启动性能修复：将 migrateStaleEncryptedData 延迟到数据库就绪后 2 秒执行，
+            //   避免 SQLite 同步大事务阻塞启动关键路径。migrateStaleEncryptedData 会
+            //   遍历 settings 表逐条解密，在 WAL 模式下独占写锁，导致后续所有
+            //   DB 读写（项目列表加载、配置读取）被挂起等待。
+            //   延迟 2 秒确保窗口已显示、前端已渲染后再执行。
+            setTimeout(() => {
+              try {
+                const staleKeys = new SettingsRepository().migrateStaleEncryptedData();
+                if (staleKeys.length > 0) {
+                  AppLogger.info(LOG_TAGS.BOOTSTRAP,
+                    `— 旧加密数据迁移完成，已清理 ${staleKeys.length} 个失效设置`);
+                }
+              } catch (e) {
+                AppLogger.warn(LOG_TAGS.BOOTSTRAP, '旧加密数据迁移失败（非致命）', e as Error);
+              }
+            }, 2000);
+            // 🔧 migrateOldApiConfig 依赖数据库，必须在 DB 就绪后执行
+            try {
+              migrateOldApiConfig();
+            } catch (e) {
+              AppLogger.warn(LOG_TAGS.BOOTSTRAP, '旧 API 配置迁移失败（非致命）', e as Error);
+            }
+            AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 3/10 数据库引擎挂载完成 (${mark('SQLite+Migrations')}ms)`);
+          } catch (e) {
+            AppLogger.error(LOG_TAGS.BOOTSTRAP, '数据库引擎挂载失败', e as Error);
+          }
+        })(),
+        // 4. IPC 路由注册
+        (async () => {
+          try {
+            this.registerControllers();
+            AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 4/10 IPC 路由网关注册完成 (${mark('IPC')}ms)`);
+          } catch (e) {
+            AppLogger.error(LOG_TAGS.BOOTSTRAP, 'IPC 路由注册失败', e as Error);
+          }
+        })(),
+        // 5. 反馈总线
+        (async () => {
+          try {
+            this.initFeedbackBus();
+            AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 5/10 反馈总线就绪 (${mark('FeedbackBus')}ms)`);
+          } catch (e) {
+            AppLogger.warn(LOG_TAGS.BOOTSTRAP, '反馈总线初始化失败（非致命）', e as Error);
+          }
+        })(),
+        // 6. AI 运行时唤醒 (AiRuntimeManager 接管, AIDaemon 为 facade)
+        (async () => {
+          try {
+            AiRuntimeManager.getInstance();
+            AIDaemon.getInstance().start();
+            AIDaemon.getInstance().startTTS();
+            AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 6/10 AI 运行时已拉起 (${mark('AiRuntime')}ms)`);
+          } catch (e) {
+            AppLogger.warn(LOG_TAGS.BOOTSTRAP, 'AI 运行时启动失败（非致命）', e as Error);
+          }
+        })(),
+        // 7. M4.0 运行时服务启动 (崩溃/遥测/统计)
+        (async () => {
+          try {
+            CrashReporter.getInstance().init();
+            TelemetryOptInGate.getInstance();
+            UsageStatsCollector.getInstance().init();
+            AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 7/10 运行时服务就绪 (${mark('CrashReporter')}ms)`);
+          } catch (e) {
+            AppLogger.warn(LOG_TAGS.BOOTSTRAP, '运行时服务启动失败（非致命）', e as Error);
+          }
+        })(),
+        // 8-9. 任务调度 + 计算资源预热
+        (async () => {
+          try {
+            JobScheduler.getInstance().recoverZombieJobs();
+            JobScheduler.getInstance().start();
+            ComputeResourceManager.getInstance();
+            AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 8/10 任务调度器与计算资源管理器就绪 (${mark('JobScheduler')}ms)`);
+          } catch (e) {
+            AppLogger.warn(LOG_TAGS.BOOTSTRAP, '任务调度器启动失败（非致命）', e as Error);
+          }
+        })(),
+      ]);
+
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 10/10 Zentect 启动成功！总耗时 ${mark('TOTAL')}ms`)
+      // ⏱️ 输出耗时汇总表，便于定位真实瓶颈
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, `⏱️ 启动耗时汇总: ${stepTimes.map(s => `${s.name}=${s.ms}ms`).join(' | ')}`)
 
     } catch (error) {
       AppLogger.error(LOG_TAGS.BOOTSTRAP, '❌ 致命错误：点火序列中断，应用启动失败！', error)
@@ -161,12 +224,7 @@ class AppBootstrap {
   // ==========================================
   private static registerControllers() {
     new SystemController().register();
-try {
-      new ApiProfileController().register();
-      migrateOldApiConfig();
-    } catch (e) {
-      console.warn('ApiProfile init failed (non-fatal):', e);
-    }
+    new ApiProfileController().register();
     new ProjectController().register()
     new MediaController().register()
     new AIController().register()
@@ -199,17 +257,26 @@ try {
         sandbox: true,
         webSecurity: true,
         contextIsolation: true,
-        nodeIntegration: false
+        nodeIntegration: false,
+        // 🔧 修复启动卡顿：禁用磁盘缓存，避免 EBADF/权限问题导致 HTTP 响应卡住
+        cache: false
       }
     })
 
-    // 防御性编程：万一前端崩溃没发信号，保底 3 秒后强制显影
+    // 防御性编程：万一前端崩溃没发信号，保底超时后强制显影
+    // 🔧 修复黑屏：dev 模式 vite 首次编译需 2-3 分钟，任何保底超时都会导致黑屏
+    //   - dev 模式：立即显示窗口，让用户看到 vite loading 页面而非黑屏
+    //   - prod 模式：保持 3 秒保底（打包产物已编译，挂载应在 1 秒内完成）
+    if (is.dev) {
+      this.mainWindow.show()
+    }
+    const fallbackMs = is.dev ? 120000 : 3000
     const fallbackTimer = setTimeout(() => {
       if (this.mainWindow && !this.mainWindow.isVisible()) {
-        AppLogger.warn(LOG_TAGS.BOOTSTRAP, '前端握手超时，强制显影窗口')
+        AppLogger.warn(LOG_TAGS.BOOTSTRAP, `前端握手超时(${fallbackMs}ms)，强制显影窗口`)
         this.mainWindow.show()
       }
-    }, 3000)
+    }, fallbackMs)
 
     // 接收到前端 App.tsx 发来的点火完成信号，瞬间揭开黑幕！
     ipcMain.once(IPC_CHANNELS.APP_READY, () => {
@@ -225,8 +292,38 @@ try {
       return { action: 'deny' }
     })
 
+    // 🔍 启动诊断：监听渲染进程所有关键事件，定位前端卡顿
+    this.mainWindow.webContents.on('did-start-loading', () => {
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, '[诊断] webContents did-start-loading')
+    })
+    this.mainWindow.webContents.on('dom-ready', () => {
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, '[诊断] webContents dom-ready')
+    })
+    this.mainWindow.webContents.on('did-stop-loading', () => {
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, '[诊断] webContents did-stop-loading')
+    })
+    this.mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
+      AppLogger.error(LOG_TAGS.BOOTSTRAP, `[诊断] webContents did-fail-load | code=${errorCode} desc=${errorDescription} url=${validatedURL}`)
+    })
+    this.mainWindow.webContents.on('render-process-gone', (_e, details) => {
+      AppLogger.error(LOG_TAGS.BOOTSTRAP, `[诊断] render-process-gone | reason=${details.reason} exitCode=${details.exitCode}`)
+    })
+    this.mainWindow.webContents.on('unresponsive', () => {
+      AppLogger.error(LOG_TAGS.BOOTSTRAP, '[诊断] 渲染进程无响应 (unresponsive)')
+    })
+    this.mainWindow.webContents.on('responsive', () => {
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, '[诊断] 渲染进程恢复响应 (responsive)')
+    })
+    // 🔍 转发所有 console 消息到主进程日志，定位前端执行点
+    this.mainWindow.webContents.on('console-message', (_e, level, message, line, sourceId) => {
+      const levelStr = ['LOG', 'WARN', 'ERROR'][level] || `L${level}`
+      AppLogger.info(LOG_TAGS.BOOTSTRAP, `[前端console][${levelStr}] ${message} | src=${sourceId}:${line}`)
+    })
+
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       this.mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+      // 🔍 启动诊断：dev 模式打开 DevTools，查看渲染进程网络请求和 console
+      this.mainWindow.webContents.openDevTools({ mode: 'detach' })
     } else {
       this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
     }
@@ -428,7 +525,7 @@ app.whenReady().then(async () => {
       const nodeStream = fs.createReadStream(filePath, { highWaterMark: 64 * 1024 });
       const webStream = new ReadableStream({
         start(ctrl) {
-          nodeStream.on('data', (chunk: Buffer) => { ctrl.enqueue(new Uint8Array(chunk)); });
+          nodeStream.on('data', (chunk: string | Buffer) => { ctrl.enqueue(new Uint8Array(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)); });
           nodeStream.on('end', () => { ctrl.close(); });
           nodeStream.on('error', (err) => { ctrl.error(err); });
         },

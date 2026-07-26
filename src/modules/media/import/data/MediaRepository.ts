@@ -4,7 +4,7 @@ import { SQLiteConnection } from '../../../infra/database/core/SQLiteConnection'
 import { AppLogger } from '../../../infra/logger/AppLogger';
 import { LOG_TAGS } from '../../../infra/logger/LogConstants';
 import { AppError, ErrorCode } from '../../../infra/error/AppError';
-import type { MediaItem, MediaRow } from '../types';
+import type { MediaItem } from '../types';
 import { MEDIA_SQL } from './MediaQueries';
 
 export class MediaRepository {

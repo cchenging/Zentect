@@ -73,15 +73,6 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
-/** 格式化时间戳为 YYYY-MM-DD */
-function formatDate(dateStr: string): string {
-  if (!dateStr) return '';
-  try {
-    const d = new Date(dateStr);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  } catch { return dateStr; }
-}
-
 /**
  * 本地模型管理 Tab - V7 功能模块化版本
  * 🔧 修复 M3：只管模型文件，运行时依赖去健康检查页查看
@@ -341,7 +332,6 @@ const ModuleCardView: React.FC<{
   onUninstall: () => void;
   onImport: (modelId: string) => void;
 }> = ({ module, busyModuleId, busyModelId, onInstall, onUninstall, onImport }) => {
-  const modelsReady = module.models.every(m => m.status === 'downloaded');
   const someReady = module.models.some(m => m.status === 'downloaded');
   const canUse = module.canUse;
   const isModuleBusy = busyModuleId === module.id;

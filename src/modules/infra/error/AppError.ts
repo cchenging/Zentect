@@ -6,6 +6,7 @@ export enum ErrorCode {
   SYS_UNKNOWN = 'SYS_UNKNOWN',                 // 未知系统异常
   SYS_IPC_FAILED = 'SYS_IPC_FAILED',           // IPC 通信通道崩溃
   SYS_ENV_ERROR = 'SYS_ENV_ERROR',             // 运行环境/路径异常
+  SYS_INVALID_INPUT = 'SYS_INVALID_INPUT',     // 输入参数不合法
 
   // === 数据库与存储错误 ===
   DB_CONNECTION_FAILED = 'DB_CONNECTION_FAILED', // 数据库连接失败

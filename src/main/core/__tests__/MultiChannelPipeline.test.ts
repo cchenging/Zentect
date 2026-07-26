@@ -1,6 +1,6 @@
 // 📁 路径：src/main/core/__tests__/MultiChannelPipeline.test.ts
 // Layer 4 进阶: AI 通道熔断自动切换单元测试
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { MultiChannelPipeline } from '../MultiChannelPipeline';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 

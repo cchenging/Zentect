@@ -1,6 +1,7 @@
 // Module: pipeline/step1-material - Pipeline Strategy
 
-import { BaseNodeStrategy, ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
+import { BaseNodeStrategy } from '../../../../main/engine/strategies/BaseNodeStrategy';
+import type { ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
 import { FrameExtractionService } from '@modules/media/frames';
 import { PathManager } from '../../../../main/utils/pathManager';
 import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';

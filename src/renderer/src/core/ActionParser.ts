@@ -149,7 +149,7 @@ export class ActionParser {
         }
       }
 
-      for (const [parserKey, parser] of Object.entries(nodeParsers)) {
+      for (const [, parser] of Object.entries(nodeParsers)) {
         const task = parser.parse(node, upstreamContext);
         if (task) {
           sequence.push(task);
