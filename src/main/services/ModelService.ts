@@ -53,7 +53,7 @@ interface ModelModuleDef {
   sizeNote: string;              // 体积说明
 }
 
-/** 21 个具体模型定义（V5 细化版，与 manifest.json models 数组对齐） */
+/** 22 个具体模型定义（V5 细化版 + V8 增 faster_whisper_large_v3，与 manifest.json models 数组对齐） */
 const MODEL_DEFINITIONS: ModelSeedDef[] = [
   // === ASR 语音识别 ===
   {
@@ -73,6 +73,16 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
     description: 'FunASR FSMN VAD 语音端点检测模型（ASR 前置组件）', version: '1.0', pythonPkg: 'funasr',
     manifestPaths: ['fsmn_vad/model.pt'],
     scanPaths: ['fsmn_vad/model.pt', 'huggingface/fsmn_vad/model.pt'],
+  },
+  {
+    id: 'faster_whisper_large_v3', name: 'Faster-Whisper large-v3', displayName: 'Faster-Whisper large-v3 (英文/欧洲语言)', type: 'asr',
+    description: 'Faster-Whisper CTranslate2 英文/欧洲语言 ASR 模型（large-v3，WER 约 5%，比 whisper.cpp 快 4-8 倍）',
+    version: '1.0', pythonPkg: 'faster-whisper',
+    manifestPaths: ['faster_whisper/large-v3/model.bin'],
+    scanPaths: [
+      'faster_whisper/large-v3/model.bin',
+      'faster_whisper/large-v3/ct2.bin',
+    ],
   },
   // === TTS 语音合成 ===
   {
@@ -204,6 +214,10 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
   sensevoice_onnx: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model_quant.onnx' },
   sensevoice_small: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model.pt' },
   fsmn_vad: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'fsmn_vad/model.pt' },
+  // 🔧 faster-whisper large-v3：CTranslate2 格式，首次使用时自动从 HuggingFace 下载
+  //   下载源：https://huggingface.co/Systran/faster-whisper-large-v3/tree/main
+  //   用户也可手动下载整个目录放到 resources/models/faster_whisper/large-v3/
+  faster_whisper_large_v3: { url: 'https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main', file: 'model.bin' },
   clip: { url: 'https://huggingface.co/openai/clip-vit-base-patch32/resolve/main', file: 'model.safetensors' },
   moss_tokenizer_encode: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_encode.onnx' },
   moss_tokenizer_decode_full: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_decode_full.onnx' },
@@ -227,8 +241,8 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
 };
 
 /**
- * 🔧 V7 新增：7 个功能模块定义（对应前端 7 张卡片，按 4 分类分组）
- * 用于前端模型管理页按功能模块展示，而非细碎的 23 个模型
+ * 🔧 V7 新增：8 个功能模块定义（对应前端 8 张卡片，按 4 分类分组）
+ * 用于前端模型管理页按功能模块展示，而非细碎的 22 个模型
  * 每个模块 = 多个模型文件 + 一个运行时依赖
  */
 const MODEL_MODULES: ModelModuleDef[] = [
@@ -249,7 +263,7 @@ const MODEL_MODULES: ModelModuleDef[] = [
     runtimeId: 'demucs',  // 运行时依赖：demucs + torch + torchaudio
     sizeNote: '~80 MB (模型) + 2.2 GB (运行时，含 torch)',
   },
-  // === ASR 语音识别（1 张卡片）===
+  // === ASR 语音识别（2 张卡片）===
   {
     id: 'sensevoice', category: 'asr', displayName: 'SenseVoice 语音识别',
     description: 'FunASR SenseVoice 多语言 ASR（中文增强，需 PyTorch）',
@@ -257,6 +271,14 @@ const MODEL_MODULES: ModelModuleDef[] = [
     modelIds: ['sensevoice_onnx', 'sensevoice_small', 'fsmn_vad'],
     runtimeId: 'sensevoice',  // 运行时依赖：funasr + torch
     sizeNote: '~500 MB (模型) + 600 MB (运行时，含 torch)',
+  },
+  {
+    id: 'faster_whisper', category: 'asr', displayName: 'Faster-Whisper 语音识别（英文/欧洲语言）',
+    description: 'Faster-Whisper CTranslate2 英文/欧洲语言 ASR（large-v3，WER 约 5%）',
+    icon: '🎙️', required: 'optional',
+    modelIds: ['faster_whisper_large_v3'],
+    runtimeId: 'faster_whisper',  // 运行时依赖：faster-whisper + ctranslate2 + onnxruntime
+    sizeNote: '~3 GB (模型) + 200 MB (运行时，含 ctranslate2)',
   },
   // === 视觉（2 张卡片）===
   {
@@ -322,12 +344,12 @@ export class ModelService {
   }
 
   /**
-   * 🔧 修复 P0：确保 local_models 表有 seed 数据（V5 细化版）
+   * 🔧 修复 P0：确保 local_models 表有 seed 数据（V5 细化版 + V8 增 faster_whisper）
    * 迁移逻辑：
-   *   1. 检测旧版 7 条粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 21 条
-   *   2. 表为空 → 直接 seed 21 条
+   *   1. 检测旧版 7 条粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 22 条
+   *   2. 表为空 → 直接 seed 22 条
    *   3. 已有新记录 → 跳过
-   * 旧版 bug：local_models 表永远空表，预装的 21 个模型躺在磁盘但代码不知道
+   * 旧版 bug：local_models 表永远空表，预装的模型躺在磁盘但代码不知道
    */
   public ensureSeedData(): void {
     try {
@@ -336,7 +358,7 @@ export class ModelService {
       // 检测旧版粗粒度记录（id 为 'mdx_net' 等），需要迁移到 V5 细化版
       const hasLegacy = existing.some(m => LEGACY_MODEL_IDS.includes(m.id));
       if (hasLegacy) {
-        AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 检测到旧版 7 条粗粒度记录，开始迁移到 V5 21 条细化版');
+        AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 检测到旧版 7 条粗粒度记录，开始迁移到 V5 22 条细化版');
         for (const old of existing) {
           try { this.modelRepo.deleteById(old.id); } catch {}
         }
@@ -345,7 +367,7 @@ export class ModelService {
         return;
       }
 
-      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 21 条 V5 细化模型记录');
+      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 22 条 V5 细化模型记录');
       for (const def of MODEL_DEFINITIONS) {
         try {
           this.modelRepo.insert({
@@ -491,7 +513,7 @@ export class ModelService {
   }
 
   /**
-   * 🔧 V7 新增：获取功能模块列表（7 张卡片 + 4 分类）
+   * 🔧 V7 新增：获取功能模块列表（8 张卡片 + 4 分类）
    * 🔧 修复 M1：模型管理只管模型文件，删除 runtime 字段
    *   - 旧版：canUse = 模型文件就绪 + 运行时就绪（混合职责，与 HealthPage 冲突）
    *   - 新版：canUse = 模型文件就绪（纯模型文件管理，运行时去健康检查页看）
