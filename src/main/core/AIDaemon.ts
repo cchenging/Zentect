@@ -147,8 +147,8 @@ export class AIDaemon {
     return this.ttsReady;
   }
 
-  /** 等待就绪 — 查询 AiRuntimeManager 状态 */
-  private async waitForReady(): Promise<void> {
+  /** 等待就绪 — 查询 AiRuntimeManager 状态；若离线则自动点火 */
+  public async waitForReady(): Promise<void> {
     if (this.isReady) return;
 
     if (!this.runtimeManager.online) {

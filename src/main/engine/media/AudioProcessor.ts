@@ -153,28 +153,41 @@ export class AudioProcessor {
       const { AIDaemon } = await import('../../core/AIDaemon');
       const { HttpClient } = await import('../../core/HttpClient');
       const { PythonProgressSubscriber } = await import('./PythonProgressSubscriber');
-      const pythonPort = AIDaemon.getInstance().getPort();
+      // 🔧 修复 fetch failed：请求前必须等待 daemon 就绪，否则端口无监听 → ECONNREFUSED
+      const daemon = AIDaemon.getInstance();
+      await daemon.waitForReady();
+      const pythonPort = daemon.getPort();
       const separateUrl = `http://127.0.0.1:${pythonPort}/api/separate`;
 
       // POST fire-and-forget：只负责触发 Python 任务，不等待结果
       // 结果通过 SSE 流回传（progress.result），彻底规避 HttpClient 90s 超时问题
+      // 🔧 修复静默吞错：POST 失败时立即 abort SSE，避免无谓等待
+      const postController = new AbortController();
       HttpClient.post(separateUrl, {
         audio_path: inputAudioPath,
         output_dir: outBaseDir,
         engine,
         task_id: taskId,
-      }, { signal }).catch((err) => {
-        // POST 触发失败（如 Python 端不可达）记录日志，下方 SSE 会超时返回
+      }, { signal: postController.signal }).catch((err) => {
         AppLogger.warn('AudioProcessor', `POST 触发分离失败 (task=${taskId}): ${err?.message || err}`);
+        // POST 失败说明 daemon 不可达，abort SSE 的等待
+        postController.abort();
       });
 
       // SSE 订阅：实时推送 pct/msg，任务结束时携带 result 返回
+      // 🔧 组合 signal：外部取消 或 POST 失败 abort 都能中断 SSE
+      const sseController = new AbortController();
+      const onExternalAbort = () => sseController.abort();
+      signal?.addEventListener('abort', onExternalAbort);
+      postController.signal.addEventListener('abort', onExternalAbort);
       const sseResult = await PythonProgressSubscriber.subscribe(
         taskId,
         (pct, msg) => { if (onProgress) onProgress(pct, msg); },
         600000,
-        signal
+        sseController.signal
       );
+      signal?.removeEventListener('abort', onExternalAbort);
+      postController.signal.removeEventListener('abort', onExternalAbort);
 
       // 从 SSE 携带的 result 取分离产物（Python 端 _set_progress(done=True, result=result) 已存入）
       if (sseResult.result?.vocals) {

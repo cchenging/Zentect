@@ -41,7 +41,16 @@ export class PythonProgressSubscriber {
     signal?: AbortSignal,
     streamPath = '/api/separate/stream/'
   ): Promise<SubscribeResult> {
-    const port = AIDaemon.getInstance?.()?.getPort?.() || 34567;
+    // 🔧 修复 fetch failed：订阅前等待 daemon 就绪，避免端口无监听 → ECONNREFUSED
+    const daemon = AIDaemon.getInstance?.();
+    if (daemon && !daemon.isOnline()) {
+      try {
+        await daemon.waitForReady();
+      } catch (err: any) {
+        return { done: true, error: `AI daemon 未就绪: ${err?.message || err}` };
+      }
+    }
+    const port = daemon?.getPort?.() || 34567;
     const url = `http://127.0.0.1:${port}${streamPath}${taskId}`;
 
     AppLogger.debug(LOG_TAGS.MEDIA_ENGINE,

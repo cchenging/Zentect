@@ -285,7 +285,14 @@ export class JobScheduler {
       window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 5, status: 'processing' });
 
       const { AIDaemon } = require('./AIDaemon');
-      const pythonPort = AIDaemon.getInstance?.().getPort?.() || 34567;
+      // 🔧 修复 fetch failed：请求前等待 daemon 就绪，避免端口无监听 → ECONNREFUSED
+      const daemon = AIDaemon.getInstance?.();
+      if (daemon && !daemon.isOnline()) {
+        try { await daemon.waitForReady(); } catch (e: any) {
+          AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] AI daemon 未就绪`, { error: e?.message });
+        }
+      }
+      const pythonPort = daemon?.getPort?.() || 34567;
 
       // 1. 抽帧（FFmpeg 本地执行，不依赖 Python）
       window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 10, status: 'processing', nodeName: '正在提取关键帧...' });
