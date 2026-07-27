@@ -161,9 +161,14 @@ export class AudioProcessor {
 
       // POST fire-and-forget：只负责触发 Python 任务，不等待结果
       // 结果通过 SSE 流回传（progress.result），彻底规避 HttpClient 90s 超时问题
+      // 🔧 修复 P0 崩溃：用专用 HttpClient 实例（maxRetries=0, timeoutMs=10000）
+      //   原默认实例 90s 超时 + 2 次重试 → Demucs 4 分钟超时 → 重试重新 POST 相同 task_id →
+      //   daemon 重复加载 Demucs 模型（~2GB/次）→ 内存爆炸崩溃 (code 3221225477)
+      //   修复：POST 只负责触发，10s 超时足够，禁用重试避免重复触发
       // 🔧 修复静默吞错：POST 失败时立即 abort SSE，避免无谓等待
+      const triggerClient = new HttpClient({ timeoutMs: 10000, maxRetries: 0 });
       const postController = new AbortController();
-      HttpClient.post(separateUrl, {
+      triggerClient.post(separateUrl, {
         audio_path: inputAudioPath,
         output_dir: outBaseDir,
         engine,

@@ -263,7 +263,13 @@ export class ProjectRepository {
       }
 
       const metadata: any = { ...existingMetadata };
-      if (data.asrLines) metadata.asrLines = data.asrLines;
+      // 🔧 修复状态丢失：空数组不覆盖已有 asrLines
+      // 旧版 bug：ASR 失败时 asrLines=[] 仍是 truthy → 覆盖数据库中已有的成功 asrLines
+      //          → 重新进项目 asrLines 全没了
+      // 修复：只有非空数组才覆盖，空数组保留数据库原值（保留之前成功状态）
+      if (Array.isArray(data.asrLines) && data.asrLines.length > 0) {
+        metadata.asrLines = data.asrLines;
+      }
       if (data.frameCount !== undefined) metadata.frameCount = data.frameCount;
       /** 💥 持久化帧路径数组，确保重进项目帧数据不丢失 */
       if (data.framePaths && Array.isArray(data.framePaths) && data.framePaths.length > 0) {

@@ -73,12 +73,17 @@ export class LocalWhisperStrategy implements ITextExtractor {
 
     // fire-and-forget POST：触发 Python ASR 任务，立即返回 task_id
     // 结果通过 SSE 流回传（progress.result），彻底规避 HttpClient 超时问题
+    // 🔧 修复 P0 崩溃：用专用 HttpClient 实例（maxRetries=0, timeoutMs=10000）
+    //   原默认实例 90s 超时 + 2 次重试 → 超时后重试重新 POST 相同 task_id →
+    //   daemon 重复加载 ASR 模型（SenseVoice ~1.5GB）→ OOM 崩溃
+    //   修复：POST 只负责触发，10s 超时足够，禁用重试避免重复触发
     const { HttpClient } = await import('../../core/HttpClient');
     const { PythonProgressSubscriber } = await import('../media/PythonProgressSubscriber');
     const pythonPort = daemon.getPort();
     const transcribeUrl = `http://127.0.0.1:${pythonPort}/api/transcribe`;
 
-    HttpClient.post(transcribeUrl, {
+    const triggerClient = new HttpClient({ timeoutMs: 10000, maxRetries: 0 });
+    triggerClient.post(transcribeUrl, {
       audio_path: audioPath,
       output_json_path: whisperOutPath,
       language: langCode,

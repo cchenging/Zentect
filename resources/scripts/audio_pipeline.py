@@ -440,12 +440,22 @@ def api_emotion(req: EmotionReq):
 # ==========================================
 @router.post("/api/transcribe")
 async def api_transcribe(req: TranscribeReq):
-    """异步 ASR 转写：立即返回 task_id，后台线程池执行推理，进度通过 SSE 推送"""
+    """异步 ASR 转写：立即返回 task_id，后台线程池执行推理，进度通过 SSE 推送
+
+    🔧 task_id 去重：相同 task_id 进行中时拒绝重复执行，避免重复加载 ASR 模型
+       （SenseVoice + fsmn-vad 约 1.5GB，重复加载会触发 OOM）
+    """
     import asyncio
     import uuid
 
-    # 生成或复用 task_id，按任务隔离进度状态
     task_id = req.task_id or str(uuid.uuid4())
+
+    # 🔧 去重防御：如果该 task_id 已在进行中，直接返回（不重复启动 ASR）
+    existing = _task_progress.get(task_id)
+    if existing and not existing.get("done") and not existing.get("error"):
+        print(f"[AI Daemon] ⚠️ task_id={task_id} ASR 已在进行中，拒绝重复触发", file=sys.stderr)
+        return {"success": True, "task_id": task_id, "deduplicated": True}
+
     # 重置该任务的进度状态
     _task_progress[task_id] = {
         "pct": 0,
@@ -813,12 +823,28 @@ async def api_separate_stream(task_id: str):
 
 @router.post("/api/separate")
 async def api_separate(req: SeparateReq):
-    """异步人声分离：将 CPU 密集型的分离计算放入线程池，不阻塞事件循环"""
+    """异步人声分离：立即返回 task_id，后台线程池执行分离，进度通过 SSE 推送
+
+    🔧 修复 P0 崩溃：原 `await loop.run_in_executor(...)` 会等待分离完成（Demucs 约 4 分钟），
+       而 Node 端 HttpClient 默认 90s 超时 → 重试 2 次 → 重复 POST 相同 task_id →
+       daemon 收到 3 次请求，每次都启动 Demucs 模型加载（~2GB/次）→ 内存爆炸崩溃
+       (Windows code 3221225477 = ACCESS_VIOLATION)。
+       修复：改为 fire-and-forget（与 /api/transcribe 一致），POST 只负责触发，
+       结果通过 SSE 流回传（Node 端 PythonProgressSubscriber.subscribe 读取）。
+    🔧 task_id 去重：相同 task_id 进行中时拒绝重复执行，避免重复加载模型。
+    """
     import asyncio
     import uuid
 
-    # 生成或复用 task_id，按任务隔离进度状态
     task_id = req.task_id or str(uuid.uuid4())
+
+    # 🔧 去重防御：如果该 task_id 已在进行中，直接返回（不重复启动分离）
+    #   避免 Node 端 HttpClient 重试或前端重复点击导致 daemon 同时加载多个 Demucs 模型
+    existing = _task_progress.get(task_id)
+    if existing and not existing.get("done") and not existing.get("error"):
+        print(f"[AI Daemon] ⚠️ task_id={task_id} 已在进行中，拒绝重复触发", file=sys.stderr)
+        return {"success": True, "task_id": task_id, "deduplicated": True}
+
     # 重置该任务的进度状态
     _task_progress[task_id] = {
         "pct": 0,
@@ -829,18 +855,30 @@ async def api_separate(req: SeparateReq):
     }
 
     loop = asyncio.get_running_loop()
+    # 🔧 fire-and-forget：后台线程池执行，不等待结果（与 /api/transcribe 一致）
+    #   结果通过 SSE /api/separate/stream/{task_id} 推送，彻底规避 HttpClient 超时重试
+    loop.run_in_executor(None, _separate_sync_safe, req, task_id)
+    # 立即返回 task_id，Node 端通过 SSE 订阅进度和最终结果
+    return {"success": True, "task_id": task_id}
+
+
+def _separate_sync_safe(req, task_id: str):
+    """分离任务安全包装：捕获所有异常写入 task_progress，避免线程池静默崩溃
+
+    🔧 修复：原 api_separate 的 try/except 在 await 层，线程池异常会被吞掉。
+       现在线程池内部捕获，确保 _set_progress(done=True, error=...) 被调用，
+       Node 端 SSE 能收到错误信号而非无限等待。
+    """
     try:
-        result = await loop.run_in_executor(None, _separate_sync, req, task_id)
+        result = _separate_sync(req, task_id)
         _set_progress(task_id, done=True, pct=100, msg="分离完成", result=result)
         # 补充 task_id 便于 Node 端关联
         if isinstance(result, dict):
             result["task_id"] = task_id
-        return result
     except Exception as e:
         _set_progress(task_id, done=True, error=str(e), msg=f"分离失败: {e}")
         print(f"[AI Daemon] 分离崩溃: {e}", file=sys.stderr)
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 def _finalize_output(output_dir, vocals_path, bgm_path):
