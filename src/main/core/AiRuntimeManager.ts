@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'child_process'
+import { spawn, ChildProcess, execSync } from 'child_process'
 import path from 'path'
 import * as http from 'http'
 import { PathManager } from '../utils/pathManager'
@@ -68,6 +68,12 @@ export class AiRuntimeManager {
     const modelsDir = PathManager.getModelsPath()
 
     try {
+      // 🔧 修复 P0：启动前清理端口占用的残留 daemon 进程
+      //   场景：应用异常退出（crash/force kill）时 stop() 未执行，旧 daemon 残留监听 34567 端口。
+      //   新 daemon 因端口冲突启动失败，但 waitForHttpReady 检测到旧进程 /health 误判为就绪，
+      //   导致业务路由全部 404（旧代码路由未注册）。
+      this.killStaleDaemonOnPort(this.runtimePort)
+
       AppLogger.info(LOG_TAGS.AI_DAEMON, '[AiRuntimeManager] 启动 AI 运行时...', {
         script: scriptPath, port: this.runtimePort, device: deviceType
       })
@@ -147,6 +153,43 @@ export class AiRuntimeManager {
     }
     this.isOnline = false
     AppLogger.info(LOG_TAGS.SYSTEM, '[AiRuntimeManager] AI 运行时已停止')
+  }
+
+  /**
+   * 清理占用指定端口的残留 daemon 进程
+   * 通过 netstat 查找监听端口的 PID，若与当前 runtimePid 不同则 kill
+   */
+  private killStaleDaemonOnPort(port: number): void {
+    try {
+      // netstat 查找监听目标端口的进程 PID
+      const output = execSync(`netstat -ano | findstr ":${port} "`, {
+        encoding: 'utf-8',
+        timeout: 5000
+      })
+      const pids = new Set<number>()
+      for (const line of output.trim().split('\n')) {
+        const parts = line.trim().split(/\s+/)
+        // netstat 输出格式：协议 本地地址 外部地址 状态 PID
+        // 仅匹配 LISTENING 状态的 TCP 连接
+        if (parts.length >= 5 && parts[3] === 'LISTENING') {
+          const pid = parseInt(parts[4], 10)
+          if (pid && pid !== this.runtimePid && pid !== process.pid) {
+            pids.add(pid)
+          }
+        }
+      }
+      if (pids.size === 0) return
+      AppLogger.warn(LOG_TAGS.AI_DAEMON, `[AiRuntimeManager] 检测到端口 ${port} 被残留进程占用，正在清理: PIDs=[${[...pids].join(', ')}]`)
+      for (const pid of pids) {
+        try {
+          ProcessManager.killTree(pid)
+        } catch {
+          // 单个 PID kill 失败不阻断流程
+        }
+      }
+    } catch {
+      // netstat 无输出或命令失败 → 端口未被占用，正常情况
+    }
   }
 
   /** 重启 AI 运行时 */
@@ -229,6 +272,8 @@ export class AiRuntimeManager {
     const modelsDir = PathManager.getModelsPath()
 
     return async (_label: string, _restartCount: number): Promise<ChildProcess> => {
+      // 🔧 自动重启时也清理端口残留进程，防止旧 daemon 占用端口
+      this.killStaleDaemonOnPort(port)
       const scriptsPath = path.join(PathManager.getResourcesPath(), 'scripts');
       // 🔧 修复 P0：PYTHONPATH 只加 scriptsPath，不再加 py_libs（py_libs/scipy 不完整会导致 MDX-Net 崩溃）
       const pythonEnv = { ...process.env, PYTHONPATH: scriptsPath };
