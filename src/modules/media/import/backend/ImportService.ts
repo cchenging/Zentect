@@ -6,6 +6,7 @@ import path from 'path';
 import { spawn } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { MediaRepository } from '../data/MediaRepository';
+import { ProjectRepository } from '../../../../main/database/repositories/ProjectRepository';
 import { AppLogger } from '@modules/infra/logger/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import type { MediaItem } from '../types';
@@ -90,7 +91,6 @@ export class ImportService {
               // 旧版 bug：只写 media_assets.cover_path，projects.cover_path 推迟到异步后台任务写入
               //   用户在后台完成前切回首页 → projects.cover_path 为 NULL → 首页显示图标
               try {
-                const { ProjectRepository } = require('../../../../main/database/repositories/ProjectRepository');
                 new ProjectRepository().updateCover(projectId, fastCoverPath);
               } catch (e) {
                 AppLogger.warn(LOG_TAGS.MEDIA, `同步回写 projects.cover_path 失败: ${projectId}`);
@@ -259,7 +259,6 @@ export class ImportService {
       // 首页读取时 ProjectService.getList() 会转成 magic://{projectId}/... URL
       if (relativeCoverPath) {
         try {
-          const { ProjectRepository } = require('../../../../main/database/repositories/ProjectRepository');
           new ProjectRepository().updateCover(projectId, relativeCoverPath);
         } catch (e: any) {
           // 🔧 修复 P2-A：补全错误堆栈，便于定位 db 单例/require 路径/SQL 异常
