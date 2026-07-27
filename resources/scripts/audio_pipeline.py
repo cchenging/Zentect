@@ -451,18 +451,21 @@ async def api_transcribe(req: TranscribeReq):
     task_id = req.task_id or str(uuid.uuid4())
 
     # 🔧 去重防御：如果该 task_id 已在进行中，直接返回（不重复启动 ASR）
+    # 🔧 修复竞态：必须检查 started=True 才算真正启动，
+    #   SSE 流先连接时 _get_progress 会创建 started=False 的占位条目，不能误判为已在执行
     existing = _task_progress.get(task_id)
-    if existing and not existing.get("done") and not existing.get("error"):
+    if existing and existing.get("started") and not existing.get("done") and not existing.get("error"):
         print(f"[AI Daemon] ⚠️ task_id={task_id} ASR 已在进行中，拒绝重复触发", file=sys.stderr)
         return {"success": True, "task_id": task_id, "deduplicated": True}
 
-    # 重置该任务的进度状态
+    # 重置该任务的进度状态（started=True 表示任务真正启动）
     _task_progress[task_id] = {
         "pct": 0,
         "msg": "正在启动 ASR 引擎...",
         "done": False,
         "result": None,
         "error": None,
+        "started": True,
     }
 
     loop = asyncio.get_running_loop()
@@ -782,7 +785,7 @@ _task_progress: dict[str, dict] = {}
 
 
 def _get_progress(task_id: str) -> dict:
-    """获取指定任务的进度状态，不存在则初始化"""
+    """获取指定任务的进度状态，不存在则初始化（SSE 流初始化，不代表任务已启动）"""
     if task_id not in _task_progress:
         _task_progress[task_id] = {
             "pct": 0,
@@ -790,6 +793,7 @@ def _get_progress(task_id: str) -> dict:
             "done": False,
             "result": None,
             "error": None,
+            "started": False,  # 🔧 修复竞态：SSE 流初始化时 started=False，POST 真正启动任务时设为 True
         }
     return _task_progress[task_id]
 
@@ -840,18 +844,21 @@ async def api_separate(req: SeparateReq):
 
     # 🔧 去重防御：如果该 task_id 已在进行中，直接返回（不重复启动分离）
     #   避免 Node 端 HttpClient 重试或前端重复点击导致 daemon 同时加载多个 Demucs 模型
+    # 🔧 修复竞态：必须检查 started=True 才算真正启动，
+    #   SSE 流先连接时 _get_progress 会创建 started=False 的占位条目，不能误判为已在执行
     existing = _task_progress.get(task_id)
-    if existing and not existing.get("done") and not existing.get("error"):
+    if existing and existing.get("started") and not existing.get("done") and not existing.get("error"):
         print(f"[AI Daemon] ⚠️ task_id={task_id} 已在进行中，拒绝重复触发", file=sys.stderr)
         return {"success": True, "task_id": task_id, "deduplicated": True}
 
-    # 重置该任务的进度状态
+    # 重置该任务的进度状态（started=True 表示任务真正启动）
     _task_progress[task_id] = {
         "pct": 0,
         "msg": "正在启动分离引擎...",
         "done": False,
         "result": None,
         "error": None,
+        "started": True,
     }
 
     loop = asyncio.get_running_loop()

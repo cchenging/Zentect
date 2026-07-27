@@ -159,32 +159,38 @@ export class AudioProcessor {
       const pythonPort = daemon.getPort();
       const separateUrl = `http://127.0.0.1:${pythonPort}/api/separate`;
 
-      // POST fire-and-forget：只负责触发 Python 任务，不等待结果
-      // 结果通过 SSE 流回传（progress.result），彻底规避 HttpClient 90s 超时问题
-      // 🔧 修复 P0 崩溃：用专用 HttpClient 实例（maxRetries=0, timeoutMs=10000）
-      //   原默认实例 90s 超时 + 2 次重试 → Demucs 4 分钟超时 → 重试重新 POST 相同 task_id →
-      //   daemon 重复加载 Demucs 模型（~2GB/次）→ 内存爆炸崩溃 (code 3221225477)
-      //   修复：POST 只负责触发，10s 超时足够，禁用重试避免重复触发
-      // 🔧 修复静默吞错：POST 失败时立即 abort SSE，避免无谓等待
+      // 🔧 修复 P0 竞态：必须先 await POST 确认任务已启动，再订阅 SSE
+      //   旧版 bug：POST fire-and-forget 不 await → SSE 先连接 →
+      //   Python _get_progress() 创建 started=False 占位条目 →
+      //   POST 到达时去重检查误判为"已在执行"→ 返回 deduplicated=true → 任务根本没启动 →
+      //   SSE 永远等不到 done=True → 10 分钟超时
+      //   修复：await POST 返回（POST 立即返回，不等 Demucs 执行，10s 超时足够），
+      //   确认 started=True 后再订阅 SSE，彻底消除竞态
       const triggerClient = new HttpClient({ timeoutMs: 10000, maxRetries: 0 });
-      const postController = new AbortController();
-      triggerClient.post(separateUrl, {
-        audio_path: inputAudioPath,
-        output_dir: outBaseDir,
-        engine,
-        task_id: taskId,
-      }, { signal: postController.signal }).catch((err) => {
+      let postOk = false;
+      try {
+        const postRes = await triggerClient.post(separateUrl, {
+          audio_path: inputAudioPath,
+          output_dir: outBaseDir,
+          engine,
+          task_id: taskId,
+        }, { signal });
+        postOk = !!(postRes && (postRes.success || postRes.deduplicated));
+      } catch (err: any) {
         AppLogger.warn('AudioProcessor', `POST 触发分离失败 (task=${taskId}): ${err?.message || err}`);
-        // POST 失败说明 daemon 不可达，abort SSE 的等待
-        postController.abort();
-      });
+        return null;
+      }
+
+      if (!postOk) {
+        AppLogger.warn('AudioProcessor', `POST 触发分离返回失败 (task=${taskId})`);
+        return null;
+      }
 
       // SSE 订阅：实时推送 pct/msg，任务结束时携带 result 返回
-      // 🔧 组合 signal：外部取消 或 POST 失败 abort 都能中断 SSE
+      // 此时 POST 已确认任务启动（started=True），SSE 不会再创建占位条目导致去重误判
       const sseController = new AbortController();
       const onExternalAbort = () => sseController.abort();
       signal?.addEventListener('abort', onExternalAbort);
-      postController.signal.addEventListener('abort', onExternalAbort);
       const sseResult = await PythonProgressSubscriber.subscribe(
         taskId,
         (pct, msg) => { if (onProgress) onProgress(pct, msg); },
@@ -192,7 +198,6 @@ export class AudioProcessor {
         sseController.signal
       );
       signal?.removeEventListener('abort', onExternalAbort);
-      postController.signal.removeEventListener('abort', onExternalAbort);
 
       // 从 SSE 携带的 result 取分离产物（Python 端 _set_progress(done=True, result=result) 已存入）
       if (sseResult.result?.vocals) {
