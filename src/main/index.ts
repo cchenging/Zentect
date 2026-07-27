@@ -322,8 +322,6 @@ class AppBootstrap {
 
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
       this.mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-      // 🔍 启动诊断：dev 模式打开 DevTools，查看渲染进程网络请求和 console
-      this.mainWindow.webContents.openDevTools({ mode: 'detach' })
     } else {
       this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
     }

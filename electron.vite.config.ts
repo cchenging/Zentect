@@ -1,7 +1,7 @@
 import { resolve } from 'path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+import tailwindcss from '@tailwindcss/vite' // ⚡ Tailwind v4 Vite 插件替代 PostCSS 管道，CSS 编译更快
 
 export default defineConfig({
   main: {
