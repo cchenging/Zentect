@@ -6,6 +6,7 @@ import { useStep1Store } from "../../stores/useStep1Store";
 import { useProjectStore } from "@modules/editor/stores/useProjectStore";
 import { usePlayerStore } from "@modules/editor/stores/usePlayerStore";
 import { usePipelineStore } from "@renderer/store/usePipelineStore";
+import { usePipelineOrchestrator } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
 import { IPC_CHANNELS } from "@modules/infra/ipc/IpcConstants";
 import type { Step1Config } from "../types";
 import { StepMaterialAnalysisView } from "./View";
@@ -91,6 +92,20 @@ export const StepMaterialAnalysis: React.FC = () => {
     [setSubStepStatus, setSubStepProgress]
   );
 
+  /** 停止正在运行的子任务：调用后端 abortPipeline + 前端状态置为 idle
+   *  注意：abortPipeline 会停止整个管线，但在重试场景下只启用了当前子任务，效果等同停止单个子任务 */
+  const { abortPipeline } = usePipelineOrchestrator();
+  const handleAbortSubStep = useCallback(
+    async (stepKey: string) => {
+      try {
+        await abortPipeline();
+      } catch {}
+      setSubStepStatus(stepKey, "idle");
+      setSubStepProgress(stepKey, 0);
+    },
+    [abortPipeline, setSubStepStatus, setSubStepProgress]
+  );
+
   const handleUpdateExtractionConfig = useCallback(
     (config: Partial<Step1Config>) => {
       updateExtractionConfig(config);
@@ -117,6 +132,7 @@ export const StepMaterialAnalysis: React.FC = () => {
       onUpdateRole={updateRole}
       onSetSubStepStatus={setSubStepStatus}
       onRetrySubStep={handleRetrySubStep}
+      onAbortSubStep={handleAbortSubStep}
       onUpdateExtractionConfig={handleUpdateExtractionConfig}
     />
   );

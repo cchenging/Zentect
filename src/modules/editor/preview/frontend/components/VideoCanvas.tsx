@@ -2,7 +2,7 @@
 // 原 editor/components/player/VideoCanvas.tsx — 已迁移
 
 import { useRef, useEffect } from 'react';
-import { Video } from 'lucide-react';
+import { Video, Music } from 'lucide-react';
 import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
 import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
 
@@ -14,30 +14,38 @@ export const VideoCanvas = () => {
   const setCurrentTime = usePlayerStore((s) => s.setCurrentTime);
   const setVideoDuration = usePlayerStore((s) => s.setVideoDuration);
   const setManualSeekTime = usePlayerStore((s) => s.setManualSeekTime);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  // 💥 统一媒体引用：兼容 <video> 和 <audio>，避免音频源无法播放
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  /** 进度条拖拽 → 实际跳转视频位置 */
+  /** 进度条拖拽 → 实际跳转媒体位置（视频/音频通用） */
   useEffect(() => {
     if (manualSeekTime === null) return;
-    const video = videoRef.current;
-    if (!video) return;
-    video.currentTime = manualSeekTime;
+    const media = videoRef.current || audioRef.current;
+    if (!media) return;
+    media.currentTime = manualSeekTime;
     setManualSeekTime(null);
   }, [manualSeekTime, setManualSeekTime]);
 
   const isPlaying = usePlayerStore((s) => s.isPlaying);
   const prevIsPlayingRef = useRef(isPlaying);
 
+  /** 播放/暂停控制：根据当前活跃媒体类型选择对应元素 */
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
+    const media = videoRef.current || audioRef.current;
+    if (!media) return;
     if (isPlaying && !prevIsPlayingRef.current) {
-      video.play().catch(() => {});
+      media.play().catch(() => {});
     } else if (!isPlaying && prevIsPlayingRef.current) {
-      video.pause();
+      media.pause();
     }
     prevIsPlayingRef.current = isPlaying;
   }, [isPlaying]);
+
+  // 💥 当前活跃媒体的 URL（视频或音频统一处理）
+  const activeMediaUrl = activePlaySource
+    ? getSafeMediaUrl(activePlaySource.path || activePlaySource.filePath)
+    : null;
 
   return (
     <div className="relative w-full flex-1 min-h-0 bg-[var(--bg-deepest)] flex items-center justify-center overflow-hidden">
@@ -52,12 +60,36 @@ export const VideoCanvas = () => {
         <video 
           ref={videoRef}
           preload="auto"
-          src={getSafeMediaUrl(activePlaySource.path || activePlaySource.filePath)} 
+          src={activeMediaUrl || undefined}
           className="w-full h-full object-contain" 
           controls={false}
           onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
           onLoadedMetadata={(e) => setVideoDuration(e.currentTarget.duration)}
         />
+      )}
+
+      {/* 💥 新增：音频渲染分支 — 修复"分离音频不能播放"
+          原因：原代码只渲染 <video>，type='audio' 时无任何媒体元素，
+                导致 usePlayerStore.play() 找不到媒体对象而无法发声。
+          修复：新增 <audio> 元素，复用 usePlayerStore 的播放状态与进度控制。
+          UI：显示音频文件名 + 波形图标占位，让用户感知正在播放音频 */}
+      {activePlaySource?.type === 'audio' && (
+        <>
+          <div className="flex flex-col items-center justify-center gap-3 text-[var(--muted-foreground)] p-6 animate-in fade-in duration-300 w-full max-w-md">
+            <Music className="w-[clamp(40px,10%,72px)] h-[clamp(40px,10%,72px)] opacity-60" strokeWidth={1.2} />
+            <span className="text-[13px] font-medium text-center truncate max-w-full">
+              {activePlaySource.fileName || activePlaySource.name || 'Audio'}
+            </span>
+            {/* 隐藏的 audio 元素：由 usePlayerStore.isPlaying 控制 play/pause */}
+            <audio
+              ref={audioRef}
+              preload="auto"
+              src={activeMediaUrl || undefined}
+              onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+              onLoadedMetadata={(e) => setVideoDuration(e.currentTarget.duration)}
+            />
+          </div>
+        </>
       )}
 
       {activeScript && (
@@ -74,9 +106,9 @@ export const VideoCanvas = () => {
         <div className="absolute bottom-0 left-0 w-full h-20 bg-[var(--bg-deepest)]/80 border-t border-[var(--border-default)] flex items-center gap-2 px-3 overflow-x-auto no-scrollbar">
            {activeShots.map((shot: any, idx: number) => (
              <div 
-               key={idx} 
-               onClick={() => usePlayerStore.getState().seek(shot.start)}
-               className="h-14 aspect-video bg-[var(--bg-secondary)] rounded border border-[var(--border-default)] hover:border-accent cursor-pointer transition-all flex-shrink-0 overflow-hidden relative group"
+              key={idx} 
+              onClick={() => usePlayerStore.getState().seek(shot.start)}
+              className="h-14 aspect-video bg-[var(--bg-secondary)] rounded border border-[var(--border-default)] hover:border-accent cursor-pointer transition-all flex-shrink-0 overflow-hidden relative group"
              >
                 <img src={getSafeMediaUrl(shot.coverPath || shot.imagePath)} className="w-full h-full object-cover opacity-60 group-hover:opacity-100" />
                 <span className="absolute bottom-0.5 right-1 text-[9px] font-mono text-[var(--muted-foreground)] bg-black/40 px-1 rounded">

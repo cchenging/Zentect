@@ -203,6 +203,7 @@ describe('Step1 Types', () => {
         onUpdateRole: () => {},
         onSetSubStepStatus: () => {},
         onRetrySubStep: () => {},
+        onAbortSubStep: () => {},
         onUpdateExtractionConfig: () => {},
       };
       expect(typeof props.onUpdateAsrLine).toBe('function');
@@ -244,6 +245,7 @@ describe('Step1 Types', () => {
         onUpdateRole: () => {},
         onSetSubStepStatus: () => {},
         onRetrySubStep: () => {},
+        onAbortSubStep: () => {},
         onUpdateExtractionConfig: () => {},
       };
       expect(props.extractedData!.videoPath).toBe('/media/v.mp4');

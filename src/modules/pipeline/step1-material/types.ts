@@ -103,5 +103,7 @@ export interface StepMaterialAnalysisViewProps {
   onUpdateRole: (id: string, updates: Partial<Role>) => void;
   onSetSubStepStatus: (key: string, status: StepStatus) => void;
   onRetrySubStep: (stepKey: string) => void;
+  /** 停止正在运行的子任务（调用后端 abortPipeline + 前端状态置为 idle） */
+  onAbortSubStep: (stepKey: string) => void;
   onUpdateExtractionConfig: (config: Partial<Step1Config>) => void;
 }
