@@ -242,8 +242,8 @@ export class ProjectRepository {
       canvasData: project.canvasData,
       mediaItems,
       roles,
-      shots: allShots.filter((s: any) => !s.id.startsWith('ai_shot_')),
-      aiShots: allShots.filter((s: any) => s.id.startsWith('ai_shot_')),
+      shots: allShots.filter((s: any) => s.id && !s.id.startsWith('ai_shot_')),
+      aiShots: allShots.filter((s: any) => s.id && s.id.startsWith('ai_shot_')),
       // 把 metadata 中的其他字段也返回，方便 hydrate
       // 💥 关键修复：排除 mediaItems（已在上面精确合并），防止 ...metadata 覆盖带 frames 的数据
       ...Object.fromEntries(Object.entries(metadata).filter(([key]) => key !== 'mediaItems'))
@@ -331,6 +331,13 @@ export class ProjectRepository {
         const allShots = [...(Array.isArray(data.shots) ? data.shots : []), ...(Array.isArray(data.aiShots) ? data.aiShots : [])];
         const seenIds = new Set<string>();
         for (const shot of allShots) {
+          /** 💥 关键修复：跳过 id 为 NULL/空/undefined 的 shot，防止写入 PRIMARY KEY 为 NULL 的脏数据
+           *  历史bug：上游传入无 id 的 shot → INSERT_SHOT_FULL 写入 NULL id →
+           *  后续 loadFullProjectData 中 s.id.startsWith('ai_shot_') 抛 TypeError 导致项目无法加载 */
+          if (!shot.id || typeof shot.id !== 'string' || !shot.id.trim()) {
+            console.warn('[ProjectRepository] 跳过无 id 的 shot，避免写入脏数据:', { projectId, time: shot.time, originalText: (shot.originalText || '').substring(0, 50) });
+            continue;
+          }
           if (seenIds.has(shot.id)) continue;
           seenIds.add(shot.id);
           insertShot.run({
@@ -353,7 +360,7 @@ export class ProjectRepository {
       this.db.prepare(PROJECT_SQL.HARD_DELETE_AI_SHOTS).run({ projectId });
       const insertShot = this.db.prepare(PROJECT_SQL.INSERT_SHOT_FULL);
       for (const shot of aiShots) {
-        const safeId = shot.id.startsWith('ai_shot_') ? shot.id : `ai_shot_${shot.id}`;
+        const safeId = shot.id && shot.id.startsWith('ai_shot_') ? shot.id : `ai_shot_${shot.id}`;
         insertShot.run({
           id: safeId, projectId, episodeNum: 1, timeCode: shot.time || shot.time_code || '', duration: shot.duration || '',
           aiText: shot.aiText || shot.ai_text || '', originalText: shot.originalText || shot.original_text || '',
