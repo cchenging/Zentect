@@ -315,7 +315,13 @@ export class ProjectRepository {
       if (data.roles && Array.isArray(data.roles)) {
         this.db.prepare(PROJECT_SQL.HARD_DELETE_ROLES).run({ projectId });
         const insertRole = this.db.prepare(PROJECT_SQL.INSERT_ROLE_FULL);
+        /** 💥 关键修复：去重 roles 中相同 id 的条目，防止 UNIQUE constraint failed
+         *  与 shots 去重逻辑一致（L330-336），跳过空 id 和重复 id */
+        const seenRoleIds = new Set<string>();
         for (const role of data.roles) {
+          if (!role.id || typeof role.id !== 'string' || !role.id.trim()) continue;
+          if (seenRoleIds.has(role.id)) continue;
+          seenRoleIds.add(role.id);
           insertRole.run({
             id: role.id, projectId, systemId: role.systemId || null, name: role.name || '', pronoun: role.pronoun || '',
             avatar: role.avatar || '', description: role.description || '', voiceId: role.voiceId || role.voice_id || '',
