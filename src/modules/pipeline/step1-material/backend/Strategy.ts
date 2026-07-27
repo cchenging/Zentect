@@ -205,13 +205,14 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         //   正确逻辑：识别阶段用 auto（视频是什么语言就识别什么语言），翻译阶段才用 targetLanguage
         //   config.whisper.language 可覆盖（用户在前端指定视频源语言时生效）
         const asrLang = whisperCfg.language || 'auto';
-        // 引擎选择：中日韩用 sensevoice（识别更好），其他用 whisper-v3（英文/欧洲语言更好）
+        // 引擎选择：中日韩用 sensevoice（识别更好），英文/欧洲语言用 faster-whisper（WER 约 5%）
         //   用户未指定 engine 时，auto 模式默认 sensevoice（支持多语言自动检测）
-        const CJK_LANGS = ['zh', 'ja', 'ko'];
+        //   注：原 whisper.cpp + ggml-base.bin 已移除（WER 17-30%，识别率不达标）
+        const CJK_LANGS = ['zh', 'ja', 'ko', 'yue'];
         let asrEngine = whisperCfg.engine || 'sensevoice';
         if (asrLang !== 'auto' && !CJK_LANGS.includes(asrLang) && !whisperCfg.engine) {
-          // 用户指定了非中日韩语言且未指定引擎 → 自动选 whisper-v3
-          asrEngine = 'whisper-v3';
+          // 用户指定了非中日韩语言且未指定引擎 → 自动选 faster-whisper
+          asrEngine = 'faster-whisper';
         }
         // ASR 进度映射到 45-65 区间（Python 端 pct 0-100 → Step1 45-65）
         const asrOnProgress = (pct: number, msg: string) => {

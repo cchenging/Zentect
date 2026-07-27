@@ -29,6 +29,9 @@ class TranscribeReq(BaseModel):
     audio_path: str
     output_json_path: str
     language: str = "auto"
+    # ASR 引擎选择：'sensevoice'(默认,中日韩) | 'faster-whisper'(英文/欧洲语言)
+    # 不传或 'auto' 时根据 language 自动选择：CJK → sensevoice，其他 → faster-whisper
+    engine: str = "auto"
     # 任务 ID：由 Node 端生成，用于隔离并发 ASR 任务的进度状态（SSE 推流时按 task_id 查询）
     task_id: str | None = None
 
@@ -265,8 +268,8 @@ def _asr_postprocess_segments(segments):
         total_span = max(prev["end"], seg["end"]) - min(prev["start"], seg["start"])
         overlap_ratio = overlap / total_span if total_span > 0 else 0.0
 
-        # 2) 时间重叠 >= 60% 时合并
-        if overlap_ratio >= 0.6:
+        # 2) 时间重叠 >= 80% 时合并（方案5: 0.6→0.8，避免短句误合并）
+        if overlap_ratio >= 0.8:
             prev["start"] = min(prev["start"], seg["start"])
             prev["end"] = max(prev["end"], seg["end"])
             if seg["text"] not in prev["text"]:
@@ -294,11 +297,14 @@ def _asr_postprocess_segments(segments):
     return merged
 
 
-def _levenshtein_dedup(segments, threshold=0.85):
+def _levenshtein_dedup(segments, threshold=0.92):
     """基于文本重合度的滑动窗口去重：
-    比对相邻句子的文本相似度，如果 > threshold（默认 85%），
+    比对相邻句子的文本相似度，如果 > threshold（默认 92%），
     则延长上一句的时间轴，丢弃重复文本。
     解决音频分离不纯净时 SenseVoice 产生的幻觉重复。
+
+    方案5: threshold 从 0.85 调到 0.92，避免误删相似但不同的短句
+           （如 "I am" / "I'm not" / "I am here" 等英文短语）
     """
     if not segments or len(segments) <= 1:
         return segments
@@ -343,9 +349,10 @@ def _levenshtein_dedup(segments, threshold=0.85):
         prev = final[-1]
         sim = _similarity(prev["text"].strip(), seg["text"].strip())
 
-        # 文本相似度超过阈值，且时间间隔极短（< 1.5 秒），判定为幻觉重复
+        # 文本相似度超过阈值，且时间紧密相邻（gap < 0.5 秒，含重叠），判定为幻觉重复
+        # 方案5: gap 阈值从 1.5s 收紧到 0.5s，避免误删正常对话节奏的相似短句
         gap = seg["start"] - prev["end"]
-        if sim > threshold and gap < 1.5:
+        if sim > threshold and gap < 0.5:
             # 延长上一句的时间轴，丢弃重复文本
             prev["end"] = max(prev["end"], seg["end"])
         else:
@@ -483,13 +490,141 @@ def _transcribe_sync_safe(req: TranscribeReq, task_id: str):
         _set_progress(task_id, done=True, error=str(e), msg=f"ASR 失败: {e}")
 
 
+def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
+    """使用 faster-whisper（CTranslate2）进行 ASR 推理
+
+    英文/欧洲语言识别率优于 whisper.cpp 的 ggml-base.bin（WER 约 5% vs 17-30%），
+    速度比 whisper.cpp 快 4-8 倍。模型首次使用时自动从 HuggingFace 下载。
+
+    参数：
+        req: TranscribeReq 请求对象（audio_path/output_json_path/language）
+        task_id: SSE 任务 ID，用于推送进度
+    返回：
+        dict: {"success": True, "data": result_data} 或 {"success": False, "error": ...}
+    """
+    try:
+        if task_id:
+            _set_progress(task_id, pct=5, msg="正在加载 Faster-Whisper 模型...")
+
+        model = AIModels.get_faster_whisper('large-v3')
+        print(f"[ASR] 使用 faster-whisper large-v3，language={req.language}", file=sys.stderr)
+
+        if task_id:
+            _set_progress(task_id, pct=15, msg="模型已就绪，开始语音推理...")
+
+        # faster-whisper 语言代码映射：'auto' → None（自动检测）
+        fw_lang = None if req.language == 'auto' else req.language
+
+        # 调用 faster-whisper 转写（方案1: 推理参数调优，提升英文/小语种识别率）
+        # beam_size=10: 搜索空间翻倍，专有名词/长句识别显著改善（默认5）
+        # best_of=5: 对每段音频采样多次取最优，对抗噪声/口音
+        # temperature 退火: 低温度失败时自动回退到高温度，处理噪声场景
+        # no_speech_threshold=0.4: 调低阈值避免漏识别安静台词（默认0.6会跳过低音量句）
+        # log_prob_threshold=-1.5: 放宽置信度门槛，减少漏识别（默认-1.0会丢弃低置信段）
+        # condition_on_previous_text=False: 关闭上下文条件，避免长视频幻觉扩散
+        segments_iter, info = model.transcribe(
+            req.audio_path,
+            language=fw_lang,
+            beam_size=10,
+            best_of=5,
+            temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            vad_filter=True,
+            vad_parameters={'min_silence_duration_ms': 500},
+            word_timestamps=True,
+            no_speech_threshold=0.4,
+            log_prob_threshold=-1.5,
+            condition_on_previous_text=False,
+        )
+
+        # 语言检测信息
+        detected_lang = info.language if info else (req.language or 'en')
+        print(f"[ASR] faster-whisper 检测语言: {detected_lang}, 概率: {getattr(info, 'language_probability', 'N/A')}", file=sys.stderr)
+
+        # 收集 segments
+        all_segments = []
+        all_text_parts = []
+        total_segments_est = max(1, int(getattr(info, 'duration', 120)) // 5) if info else 20
+        seg_idx = 0
+
+        for seg in segments_iter:
+            seg_idx += 1
+            text = (seg.text or '').strip()
+            all_segments.append({
+                'start': round(seg.start, 3),
+                'end': round(seg.end, 3),
+                'text': text,
+            })
+            all_text_parts.append(text)
+
+            # 推送进度（15-90 区间）
+            if task_id and seg_idx % 5 == 0:
+                pct = min(90, 15 + int(seg_idx / total_segments_est * 75))
+                _set_progress(task_id, pct=pct, msg=f"已识别 {seg_idx} 段...")
+
+        # 后处理：复用现有的断句和去重逻辑
+        if task_id:
+            _set_progress(task_id, pct=90, msg="后处理：断句与去重...")
+
+        merged_segments = clean_and_merge_to_sentences(all_segments, detected_lang)
+        merged_segments = _asr_postprocess_segments(merged_segments)
+
+        formatted_segments = []
+        for s in merged_segments:
+            formatted_segments.append({
+                'start': round(s['start'], 3),
+                'end': round(s['end'], 3),
+                'text': s['text'],
+                'originalText': s['text'],
+            })
+
+        result_data = {
+            'text': ' '.join(all_text_parts),
+            'language': detected_lang,
+            'segments': formatted_segments,
+            'emotion': 'neutral',
+        }
+
+        with open(req.output_json_path, 'w', encoding='utf-8') as f:
+            json.dump(result_data, f, ensure_ascii=False, indent=2)
+
+        if task_id:
+            _set_progress(task_id, pct=95, msg=f"写入完成，{len(formatted_segments)} 段台词")
+
+        print(f"[ASR SUCCESS] faster-whisper: {len(formatted_segments)} 句台词, lang={detected_lang}", file=sys.stderr)
+        return {"success": True, "data": result_data}
+
+    except Exception as e:
+        print(f"[ASR] faster-whisper 失败: {e}", file=sys.stderr)
+        traceback.print_exc()
+        return {"success": False, "error": f"{type(e).__name__}: {str(e)}"}
+
+
 def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
-    """同步 ASR 推理逻辑：在线程池中执行，不阻塞 uvicorn 事件循环"""
+    """同步 ASR 推理逻辑：在线程池中执行，不阻塞 uvicorn 事件循环
+
+    引擎分发：
+    - 'sensevoice' 或 'auto'+CJK语言 → 调用 SenseVoice funasr AutoModel
+    - 'faster-whisper' 或 'auto'+非CJK语言 → 调用 faster-whisper（CTranslate2）
+    """
     try:
         if not os.path.exists(req.audio_path):
             return {"success": False, "error": "Audio file not found"}
 
-        # ── funasr AutoModel（内置 fsmn-vad） ──
+        # ── 引擎自动选择：CJK 语言用 sensevoice，其他用 faster-whisper ──
+        CJK_LANGS = ['zh', 'ja', 'ko', 'yue']
+        selected_engine = req.engine
+        if selected_engine == 'auto':
+            lang_lower = (req.language or 'auto').lower()
+            if lang_lower in CJK_LANGS:
+                selected_engine = 'sensevoice'
+            else:
+                selected_engine = 'faster-whisper'
+
+        # ── 分支 1：faster-whisper（英文/欧洲语言） ──
+        if selected_engine == 'faster-whisper':
+            return _transcribe_via_faster_whisper(req, task_id)
+
+        # ── 分支 2：funasr AutoModel（内置 fsmn-vad） ──
         try:
             from funasr import AutoModel
             from funasr.utils.postprocess_utils import rich_transcription_postprocess

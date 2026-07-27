@@ -4,19 +4,23 @@ import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 import { detectFromASRJson } from '../media/MediaLanguageDetector';
-import { PathManager } from '../../utils/pathManager';
-import { ProcessManager } from '../../utils/processManager';
 import * as path from 'path';
 import * as fs from 'fs';
-import { spawn } from 'child_process';
 
-const WHISPER_CLI_TIMEOUT_MS = 600000;
-
+/**
+ * ASR 策略：统一通过 Python Daemon 调用本地 ASR 模型
+ *
+ * 引擎选择：
+ * - 'sensevoice'（默认）：中日韩粤语言，基于 FunASR + fsmn-vad
+ * - 'faster-whisper'：英文/欧洲语言，基于 CTranslate2，WER 约 5%，速度比 whisper.cpp 快 4-8 倍
+ *
+ * 注：原 whisper.cpp 路径已移除（ggml-base.bin 模型 WER 17-30%，识别率不达标）
+ */
 export class LocalWhisperStrategy implements ITextExtractor {
 
   public async transcribe(
     audioPath: string, outDir: string, mediaId: string,
-    language: string = 'zh', engine: 'sensevoice' | 'whisper-v3' = 'sensevoice',
+    language: string = 'zh', engine: 'sensevoice' | 'faster-whisper' = 'sensevoice',
     signal?: AbortSignal,
     onProgress?: (pct: number, msg: string) => void
   ): Promise<TextExtractResult> {
@@ -34,36 +38,38 @@ export class LocalWhisperStrategy implements ITextExtractor {
     await fs.promises.mkdir(outDir, { recursive: true });
     const whisperOutPath = path.join(outDir, `transcript_${mediaId}.json`);
 
-    if (engine === 'whisper-v3') {
-      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 用户指定 whisper-v3，跳过 SenseVoice`);
-      return await this.transcribeViaLocalWhisper(audioPath, whisperOutPath, language, signal);
+    // 统一走 Python Daemon：SenseVoice / faster-whisper 都通过 HTTP+SSE 调用
+    const daemon = AIDaemon.getInstance();
+    if (!daemon.isOnline()) {
+      throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, 'Python Daemon 离线，无法执行 ASR 推理');
     }
 
-    try {
-      const daemon = AIDaemon.getInstance();
-      if (daemon.isOnline()) {
-        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，使用 SenseVoice 推理`);
-        return await this.transcribeViaDaemon(daemon, audioPath, whisperOutPath, language, signal, onProgress);
-      }
-    } catch (daemonErr: any) {
-      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 调用失败，准备降级`, { error: daemonErr.message });
-    }
-
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 降级到本地 whisper-cli.exe 推理`);
-    return await this.transcribeViaLocalWhisper(audioPath, whisperOutPath, language, signal);
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，使用 ${engine} 推理`);
+    return await this.transcribeViaDaemon(daemon, audioPath, whisperOutPath, language, engine, signal, onProgress);
   }
 
-  private async transcribeViaDaemon(daemon: AIDaemon, audioPath: string, whisperOutPath: string, language: string, signal?: AbortSignal, onProgress?: (pct: number, msg: string) => void): Promise<TextExtractResult> {
+  /**
+   * 通过 Python Daemon 调用 ASR（HTTP POST 触发 + SSE 流式进度）
+   * SenseVoice 和 faster-whisper 共用此路径，通过 engine 参数区分
+   */
+  private async transcribeViaDaemon(
+    daemon: AIDaemon, audioPath: string, whisperOutPath: string,
+    language: string, engine: string,
+    signal?: AbortSignal, onProgress?: (pct: number, msg: string) => void
+  ): Promise<TextExtractResult> {
     const audioSizeBytes = fs.statSync(audioPath).size;
     const estimatedDurationSec = (audioSizeBytes / (16000 * 2)) || 120;
     // ASR 超时放宽到 2 小时（长视频推理耗时）
     const timeoutMs = Math.max(120000, Math.min(7200000, Math.round(estimatedDurationSec * 1000)));
 
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] SenseVoice 超时设置: ${Math.round(timeoutMs / 1000)}s (音频估算 ${Math.round(estimatedDurationSec)}s)`);
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] ${engine} 超时设置: ${Math.round(timeoutMs / 1000)}s (音频估算 ${Math.round(estimatedDurationSec)}s)`);
 
     // 生成 task_id：Python 端按 task_id 隔离并发 ASR 任务的进度状态
     const taskId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const langCode = language === 'zh-CN' ? 'zh' : (language === 'en-US' ? 'en' : 'auto');
+    // 语言代码映射：BCP-47 (zh-CN/en-US/id-ID) → Whisper 语言代码 (zh/en/id)
+    //   修复: 旧版只映射 zh-CN/en-US，其他语言都被映射成 'auto'，导致 faster-whisper
+    //   自动检测可能误判（如印尼语被识别为马来语）。现在支持所有 Whisper 支持的语言。
+    const langCode = LocalWhisperStrategy.normalizeLangCode(language);
 
     // fire-and-forget POST：触发 Python ASR 任务，立即返回 task_id
     // 结果通过 SSE 流回传（progress.result），彻底规避 HttpClient 超时问题
@@ -76,6 +82,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
       audio_path: audioPath,
       output_json_path: whisperOutPath,
       language: langCode,
+      engine,  // 传给 Python 端：'sensevoice' | 'faster-whisper' | 'auto'
       task_id: taskId,
     }, { signal }).catch((err) => {
       AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] POST 触发转写失败 (task=${taskId}): ${err?.message || err}`);
@@ -102,115 +109,6 @@ export class LocalWhisperStrategy implements ITextExtractor {
     throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'ASR 微服务处理失败');
   }
 
-  private async transcribeViaLocalWhisper(audioPath: string, whisperOutPath: string, language: string, signal?: AbortSignal): Promise<TextExtractResult> {
-    const whisperDir = PathManager.getModelPath('whisper', '');
-    const whisperExe = path.join(whisperDir, 'whisper-cli.exe');
-    const modelPath = PathManager.getModelPath('whisper', 'ggml-base.bin');
-
-    if (!fs.existsSync(whisperExe)) {
-      throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, `whisper-cli.exe 不存在: ${whisperExe}`);
-    }
-    if (!fs.existsSync(modelPath)) {
-      throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, `Whisper 模型不存在: ${modelPath}`);
-    }
-
-    const outputSrtPath = whisperOutPath.replace('.json', '.srt');
-    const langCode = language === 'zh-CN' ? 'zh' : (language === 'en-US' ? 'en' : 'auto');
-
-    const args = [
-      '-m', modelPath,
-      '-f', audioPath,
-      '-l', langCode,
-      '--output-srt',
-      '--output-file', whisperOutPath.replace('.json', ''),
-    ];
-
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Local] whisper-cli 启动`, { exe: whisperExe, model: modelPath, lang: langCode });
-
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn(whisperExe, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-      ProcessManager.register(proc, 'asr-whisper-local');
-
-      // Fix 10: 用户取消管线时强杀 whisper-cli 子进程
-      const onAbort = () => { if (proc.pid) ProcessManager.killTree(proc.pid); reject(new AppError(ErrorCode.AI_PROCESS_FAILED, 'TASK_ABORTED')); };
-      signal?.addEventListener('abort', onAbort);
-      const cleanupSignal = () => signal?.removeEventListener('abort', onAbort);
-
-      const timer = setTimeout(() => {
-        if (proc.pid) ProcessManager.killTree(proc.pid);
-        cleanupSignal();
-        reject(new AppError(ErrorCode.AI_PROCESS_FAILED, `whisper-cli 执行超时 (${WHISPER_CLI_TIMEOUT_MS / 1000}s)`));
-      }, WHISPER_CLI_TIMEOUT_MS);
-
-      let stderr = '';
-      proc.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
-      proc.stdout.on('data', () => {});
-
-      proc.on('close', (code: number) => {
-        clearTimeout(timer);
-        cleanupSignal();
-        if (code !== 0) {
-          AppLogger.error(LOG_TAGS.MEDIA_ENGINE, `[ASR Local] whisper-cli 异常退出 (code: ${code})`, { stderr: stderr.slice(-500) });
-          reject(new Error(`whisper-cli 退出码: ${code}`));
-        } else {
-          resolve();
-        }
-      });
-      proc.on('error', (err) => { clearTimeout(timer); cleanupSignal(); reject(err); });
-    });
-
-    const srtPath = fs.existsSync(outputSrtPath) ? outputSrtPath : whisperOutPath.replace('.json', '.srt');
-    if (!fs.existsSync(srtPath)) {
-      throw new AppError(ErrorCode.AI_PROCESS_FAILED, `whisper-cli 未生成 SRT 文件: ${srtPath}`);
-    }
-
-    const srtContent = fs.readFileSync(srtPath, 'utf-8');
-    const transcription = this.parseSrt(srtContent);
-
-    const finalJson = {
-      language: langCode,
-      transcription
-    };
-
-    fs.writeFileSync(whisperOutPath, JSON.stringify(finalJson, null, 2), 'utf-8');
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Local] whisper-cli 识别完成，${transcription.length} 段台词`);
-
-    const langCheck = detectFromASRJson(finalJson);
-    if (langCheck.status !== 'zh') {
-      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR 语言检测] ${langCheck.message}`, { status: langCheck.status });
-    }
-
-    try { fs.unlinkSync(srtPath); } catch {}
-
-    return { whisperJsonPath: whisperOutPath };
-  }
-
-  private parseSrt(srtContent: string): Array<{ timestamps: { from: string; to: string }; text: string; emotion: string }> {
-    const result: Array<{ timestamps: { from: string; to: string }; text: string; emotion: string }> = [];
-    const blocks = srtContent.trim().split(/\n\s*\n/);
-
-    for (const block of blocks) {
-      const lines = block.trim().split('\n');
-      if (lines.length < 3) continue;
-
-      const timeMatch = lines[1]?.match(/(\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,.]\d{3})/);
-      if (!timeMatch) continue;
-
-      const from = timeMatch[1].replace(',', ',');
-      const to = timeMatch[2].replace(',', ',');
-      const text = lines.slice(2).join(' ').trim();
-
-      if (text) {
-        const cleaned = text.replace(/<\|.*?\|>/g, '').replace(/</g, '＜').replace(/>/g, '＞').trim();
-        if (cleaned) {
-          result.push({ timestamps: { from, to }, text: cleaned, emotion: 'NEUTRAL' });
-        }
-      }
-    }
-
-    return result;
-  }
-
   private static formatSrtTimeFromSeconds(sec: number): string {
     const clamped = Math.max(0, sec);
     const h = Math.floor(clamped / 3600);
@@ -218,6 +116,51 @@ export class LocalWhisperStrategy implements ITextExtractor {
     const s = Math.floor(clamped % 60);
     const ms = Math.round((clamped - Math.floor(clamped)) * 1000);
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+  }
+
+  /**
+   * 语言代码归一化：将 BCP-47 格式（zh-CN/en-US/id-ID）映射为 Whisper 支持的语言代码
+   * Whisper 支持的语言代码列表见: https://github.com/openai/whisper/blob/main/whisper/tokenizer.py
+   *
+   * 规则:
+   *   1. 'auto' / '' / undefined → 'auto'（让 faster-whisper 自动检测）
+   *   2. 已是 Whisper 2字母代码（en/zh/id/ms/th/vi/fr/de/es/...）→ 直接返回
+   *   3. BCP-47 区域代码（zh-CN/en-US/id-ID）→ 取主语言标签
+   *   4. 中文特殊变体：zh-CN/zh-TW/zh-HK → 'zh'，粤语 'yue' 保留
+   *
+   * 支持的 Whisper 语言（部分）：
+   *   en zh ja ko yue id ms th vi fil ta hi bn ar ru fr de es it pt nl pl tr
+   */
+  private static normalizeLangCode(language: string): string {
+    if (!language || language === 'auto') return 'auto';
+
+    const lower = language.toLowerCase().trim();
+
+    // 中文变体：zh-CN/zh-TW/zh-Hans/zh-Hant → zh；yue 保留（粤语 SenseVoice 支持）
+    if (lower.startsWith('zh-') || lower === 'zh') return 'zh';
+    if (lower === 'yue') return 'yue';
+
+    // 已是 2 字母代码的直接返回（白名单：Whisper 支持的常见语言）
+    const WHISPER_LANGS = new Set([
+      'en', 'zh', 'ja', 'ko', 'yue',
+      'id', 'ms', 'th', 'vi', 'fil', 'ta', 'hi', 'bn', 'ar', 'he', 'fa', 'ur',
+      'ru', 'uk', 'kk', 'uz',
+      'fr', 'de', 'es', 'it', 'pt', 'nl', 'pl', 'tr', 'sv', 'no', 'da', 'fi',
+      'cs', 'sk', 'hu', 'ro', 'bg', 'hr', 'sr', 'sl', 'el', 'lt', 'lv', 'et',
+      'ca', 'gl', 'eu', 'af', 'sw',
+    ]);
+    if (WHISPER_LANGS.has(lower)) return lower;
+
+    // BCP-47 格式：取主语言标签（zh-CN → zh, id-ID → id, ms-MY → ms）
+    if (lower.includes('-')) {
+      const primary = lower.split('-')[0];
+      if (WHISPER_LANGS.has(primary)) return primary;
+    }
+
+    // 未识别的语言代码：返回 'auto' 让 faster-whisper 自动检测
+    AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+      `[ASR] 未识别的语言代码: ${language}，回退到 auto 自动检测`);
+    return 'auto';
   }
 
   private static cleanText(raw: any): string {

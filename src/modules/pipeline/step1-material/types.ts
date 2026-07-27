@@ -55,7 +55,8 @@ export interface AudioConfig {
 /** ASR 引擎配置 */
 export interface WhisperConfig {
   enabled: boolean;
-  engine: 'sensevoice' | 'whisper-v3';
+  /** ASR 引擎：'sensevoice'(中日韩) | 'faster-whisper'(英文/欧洲语言) */
+  engine: 'sensevoice' | 'faster-whisper';
   language?: string;
 }
 

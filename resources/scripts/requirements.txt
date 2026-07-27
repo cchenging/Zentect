@@ -36,6 +36,9 @@ modelscope>=1.38.0
 huggingface_hub>=1.24.0
 # sentencepiece 锁定 0.1.99：0.2.x 的 C 扩展在 Python 3.12 下内存访问冲突
 sentencepiece==0.1.99
+# faster-whisper：英文/欧洲语言 ASR 引擎，基于 CTranslate2，比 whisper.cpp 快 4-8 倍
+# 自动依赖 ctranslate2、onnxruntime、tokenizers 等
+faster-whisper>=1.0.3
 
 # === 音频分离 ===
 # demucs 4.1.0：项目代码已适配 4.1 API（多字段进度回调 fallback）
