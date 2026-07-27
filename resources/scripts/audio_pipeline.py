@@ -355,24 +355,34 @@ def _levenshtein_dedup(segments, threshold=0.85):
 
 
 def _asr_extract_lang(raw_text):
-    """Extract language tag from raw SenseVoice text
-    🚀 修复：SenseVoice 在 language='zh' 模式下会错误返回 zh 标签
-    改为根据实际文本内容判断语言
+    """基于纯文本特征的强类型语言推断
+    🚀 修复：SenseVoice 在 language='auto' 或高噪声场景下会产生中文幻觉，
+    旧版仅靠中文字符占比 < 20% 判断，无法纠正带中文幻觉的英文音频。
+    改为同时统计中文字符数与英文单词数，英文单词明显占优时强制修正为 en。
     """
     import re
+    # 提取 SenseVoice 原始语言标签（<|zh|> / <|en|> / <|ja|> 等）
     m = re.match(r'<\|(\w+)\|>', raw_text)
     sensevoice_lang = m.group(1) if m else "zh"
 
-    # 🚀 基于文本内容的语言二次校验：统计中文字符占比
+    # 清理标签后获取纯文本
     cleaned = re.sub(r'<\|.*?\|>', '', raw_text).strip()
-    if cleaned:
-        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', cleaned))
-        total_chars = len(re.sub(r'\s+', '', cleaned))
-        if total_chars > 0:
-            chinese_ratio = chinese_chars / total_chars
-            # 中文字符占比低于 20%，且 SenseVoice 报告为 zh，则修正为 en
-            if chinese_ratio < 0.2 and sensevoice_lang == 'zh':
-                return "en"
+    if not cleaned:
+        return sensevoice_lang
+
+    # 统计中文汉字数与英文单词数（≥2 字母的连续字母序列视为单词）
+    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', cleaned))
+    english_words = len(re.findall(r'\b[a-zA-Z]{2,}\b', cleaned))
+
+    # 英文单词数明显多于中文字符（≥3 个英文单词），强制修正为 en
+    if english_words > chinese_chars and english_words >= 3:
+        return "en"
+
+    # 有中文字符且英文不占优，判定为中文
+    if chinese_chars > 0:
+        return "zh"
+
+    # 既无中文也无英文单词，回退到 SenseVoice 标签
     return sensevoice_lang
 
 

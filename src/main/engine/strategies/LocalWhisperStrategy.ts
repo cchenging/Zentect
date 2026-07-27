@@ -168,7 +168,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
     const transcription = this.parseSrt(srtContent);
 
     const finalJson = {
-      language: language === 'auto' ? 'zh' : language,
+      language: langCode,
       transcription
     };
 

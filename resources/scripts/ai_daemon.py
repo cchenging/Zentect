@@ -73,34 +73,6 @@ os.environ['INSIGHTFACE_HOME'] = os.path.join(MODELS_DIR, 'insightface')  # insi
 app = FastAPI()
 
 # ============================================================
-# 业务路由动态注册
-# ============================================================
-# (module_name, router_var_name) — 模块内必须暴露 APIRouter() 实例 `router`
-# 旧版 bug：列表为空 → 6 个业务模块的 17 条路由全是孤儿，运行时全部 404
-_business_routers = [
-    ('audio_pipeline', 'router'),     # /api/separate, /api/separate/stream/{task_id}, /api/transcribe, /api/emotion, /api/audio/detect_beats, /api/separate/progress/{task_id}
-    ('face_analysis', 'router'),      # /api/vision, /api/cluster_faces, /api/load_clusters
-    ('semantic_engine', 'router'),    # /api/match, /api/extract_semantics, /api/search_semantics
-    ('timeline_solver', 'router'),    # /api/solver/kuhn_munkres_match
-    ('video_analyzer', 'router'),     # /api/video/detect_scene_chunks
-    ('jianying_export', 'router'),    # /api/jianying/export
-]
-
-
-def _register_business_routers():
-    """动态加载并注册业务子路由"""
-    for module_name, _var_name in _business_routers:
-        try:
-            mod = __import__(module_name, fromlist=['router'])
-            app.include_router(mod.router)
-            print(f'[AI Daemon] ✅ 已注册路由模块: {module_name}', file=sys.stderr)
-        except Exception as e:
-            print(f'[AI Daemon] ⚠️ 模块 {module_name} 加载失败: {e}',
-                  file=sys.stderr)
-            traceback.print_exc(file=sys.stderr)
-
-
-# ============================================================
 # AIModels — AI 模型管理类
 # ============================================================
 class AIModels:
@@ -322,13 +294,29 @@ class KMMatchReq(BaseModel):
 
 
 # ============================================================
-# FastAPI 生命周期事件
+# 子路由模块导入与注册
+# ⚠️ 必须在 AIModels / FFMPEG_PATH / SceneChunkReq / KMMatchReq
+#    等所有符号定义完成之后再 import 子模块，否则子模块中的
+#    `from ai_daemon import AIModels, FFMPEG_PATH` 会因循环导入
+#    抛 ImportError（ai_daemon 尚未初始化完成）。
+#    旧版 bug：在 startup 事件中用 __import__ 动态加载，循环导入
+#    被 try/except 吞掉 → 路由未挂载 → /api/separate 返回 404。
 # ============================================================
+import audio_pipeline
+import face_analysis
+import semantic_engine
+import timeline_solver
+import video_analyzer
+import jianying_export
 
-@app.on_event('startup')
-async def on_startup():
-    """启动时注册业务路由"""
-    _register_business_routers()
+app.include_router(audio_pipeline.router)
+app.include_router(face_analysis.router)
+app.include_router(semantic_engine.router)
+app.include_router(timeline_solver.router)
+app.include_router(video_analyzer.router)
+app.include_router(jianying_export.router)
+
+print('[AI Daemon] ✅ 6 个业务子路由已全部注册', file=sys.stderr)
 
 
 # ============================================================

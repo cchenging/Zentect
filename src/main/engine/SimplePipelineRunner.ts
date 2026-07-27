@@ -168,6 +168,13 @@ export class SimplePipelineRunner {
             break;
           } catch (err) {
             lastError = err instanceof Error ? err : new Error(String(err));
+            // 语言检测失败是确定性失败，重试无意义，直接跳出
+            if ((err as any)?.skipRetry) {
+              AppLogger.info(LOG_TAGS.ENGINE, TraceContext.enrichLog(
+                `步骤 ${cfg.id} 确定性失败（语言检测），跳过重试`
+              ));
+              break;
+            }
             AppLogger.warn(LOG_TAGS.ENGINE, TraceContext.enrichLog(
               `步骤 ${cfg.id} 第 ${attempt + 1}/${cfg.maxRetries + 1} 次失败: ${lastError.message}`
             ));
@@ -257,7 +264,7 @@ export class SimplePipelineRunner {
         const vocalPath = path.join(PathManager.getNodeBaseDir(projectId, taskId, 'audio'), `vocal_${mediaId}.wav`);
         const audioPath = fs.existsSync(vocalPath) ? vocalPath : mediaPath;
         const whisper = new LocalWhisperStrategy();
-        const result = await whisper.transcribe(audioPath, asrDir, mediaId, 'zh');
+        const result = await whisper.transcribe(audioPath, asrDir, mediaId, 'auto');
 
         // P2: 语言检测 — ASR 完成后检查是否为外语或无台词
         const asrJsonPath = result?.whisperJsonPath;
@@ -267,11 +274,15 @@ export class SimplePipelineRunner {
             const langCheck = asrJson._languageCheck || detectFromASRJson(asrJson);
             if (langCheck.status === 'foreign') {
               AppLogger.warn(LOG_TAGS.ENGINE, TraceContext.enrichLog(`[Pipeline] 检测到外语影片: ${langCheck.message}`));
-              throw new Error(langCheck.message);
+              const err = new Error(langCheck.message);
+              (err as any).skipRetry = true;
+              throw err;
             }
             if (langCheck.status === 'silent') {
               AppLogger.warn(LOG_TAGS.ENGINE, TraceContext.enrichLog(`[Pipeline] 检测到无台词影片: ${langCheck.message}`));
-              throw new Error(langCheck.message);
+              const err = new Error(langCheck.message);
+              (err as any).skipRetry = true;
+              throw err;
             }
           } catch (err) {
             if (err instanceof Error) throw err;
