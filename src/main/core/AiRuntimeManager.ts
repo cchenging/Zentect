@@ -72,9 +72,15 @@ export class AiRuntimeManager {
         script: scriptPath, port: this.runtimePort, device: deviceType
       })
 
-      const pyLibsPath = path.join(PathManager.getResourcesPath(), 'scripts', 'py_libs');
-      // 🔧 修复 PYTHONPATH 死代码：pythonEnv 构造后必须传给 spawn，否则 py_libs 中的包不会被加载
-      const pythonEnv = { ...process.env, PYTHONPATH: pyLibsPath };
+      const scriptsPath = path.join(PathManager.getResourcesPath(), 'scripts');
+      // 🔧 修复 P0：PYTHONPATH 只加 scriptsPath，不再加 py_libs
+      //   深层根因：py_libs 优先级高于系统 site-packages，会覆盖系统级库。
+      //   py_libs/scipy 不完整（缺 OpenBLAS DLL），导致 MDX-Net 加载 _fblas 失败
+      //   → Demucs（无 demucs.api 模块）+ MDX-Net（scipy 崩溃）双引擎全部失败
+      //   → /api/separate 返回 500 "所选引擎均不可用" → 前端 fetch failed
+      //   系统级 site-packages 已有完整依赖（scipy 1.15.2 + numpy 1.26.4 + librosa 等），
+      //   无需 py_libs。scriptsPath 仍需保留，让 ai_daemon.py 能 import 同目录子模块。
+      const pythonEnv = { ...process.env, PYTHONPATH: scriptsPath };
       const proc = spawn(pythonPath, [
         scriptPath,
         '--port', String(this.runtimePort),
@@ -223,8 +229,9 @@ export class AiRuntimeManager {
     const modelsDir = PathManager.getModelsPath()
 
     return async (_label: string, _restartCount: number): Promise<ChildProcess> => {
-      const pyLibsPath = path.join(PathManager.getResourcesPath(), 'scripts', 'py_libs');
-      const pythonEnv = { ...process.env, PYTHONPATH: pyLibsPath };
+      const scriptsPath = path.join(PathManager.getResourcesPath(), 'scripts');
+      // 🔧 修复 P0：PYTHONPATH 只加 scriptsPath，不再加 py_libs（py_libs/scipy 不完整会导致 MDX-Net 崩溃）
+      const pythonEnv = { ...process.env, PYTHONPATH: scriptsPath };
       const proc = spawn(pythonPath, [
         scriptPath,
         '--port', String(port),

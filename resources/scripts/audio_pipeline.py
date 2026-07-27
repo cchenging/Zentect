@@ -754,6 +754,7 @@ def _separate_sync(req: SeparateReq, task_id: str):
         run_mdx = engine in ("mdx", "auto")
 
         # --- Phase 0: Demucs (highest quality, 4-stem hybrid) ---
+        # demucs 4.1.0+ 官方 API：demucs.api.Separator
         if run_demucs:
             try:
                 import demucs
@@ -764,30 +765,21 @@ def _separate_sync(req: SeparateReq, task_id: str):
                 print("[AI Daemon] 🎵 [Demucs] 正在加载 htdemucs 模型...", file=sys.stderr)
                 _set_progress(task_id, pct=5, msg="正在加载 Demucs htdemucs 模型...")
 
-                # P2: Demucs 真实进度回调
-                # callback 接收 info dict，字段名随 demucs 版本变化：
-                #   v4.0.1+: segment_offset / audio_length
-                #   早期 v4.0.0: offset / total
-                #   部分 fork: progress (0~1 浮点)
-                # 将进度映射到 5-85 区间（85=Demucs 分离完成），替代旧版 5-15 的极粗粒度
                 def _demucs_progress_callback(info):
                     try:
-                        # 多字段 fallback，兼容不同 demucs 版本
                         seg_offset = info.get('segment_offset') or info.get('offset') or 0
                         audio_len = info.get('audio_length') or info.get('total') or 0
-                        # 部分版本直接给 progress 字段（0~1 浮点）
                         progress_ratio = info.get('progress')
                         if audio_len > 0:
                             ratio = min(1.0, seg_offset / audio_len)
                         elif progress_ratio is not None:
                             ratio = min(1.0, max(0.0, float(progress_ratio)))
                         else:
-                            return  # 无法计算进度，跳过
-                        # Demucs 分离阶段占总进度 5-85，共 80 个百分点（旧版仅 10）
+                            return
                         _set_progress(task_id, pct=5 + int(ratio * 80),
                                       msg=f"Demucs 正在分离... {int(ratio * 100)}%")
                     except Exception:
-                        pass  # 进度回调不应影响主流程
+                        pass
 
                 demucs_sep = DemucsSeparator('htdemucs', callback=_demucs_progress_callback)
                 origin, separated = demucs_sep.separate_audio_file(req.audio_path)
@@ -797,7 +789,6 @@ def _separate_sync(req: SeparateReq, task_id: str):
                 sr = demucs_sep.samplerate
                 stem_paths = {}
 
-                # Save each stem to output_dir
                 for stem_name, stem_tensor in separated.items():
                     audio_np = stem_tensor.cpu().numpy()
                     if audio_np.ndim == 2:
@@ -907,7 +898,12 @@ def _separate_sync(req: SeparateReq, task_id: str):
                     _set_progress(task_id, pct=98, msg="分离完成，即将返回结果")
                     return {"success": True, "vocals": final_vocals, "bgm": final_bgm}
             except Exception as mdx_err:
-                print(f"[AI Daemon] MDX-Net 分离失败: {mdx_err}", file=sys.stderr)
+                # 🔧 增强诊断：打印完整 traceback 和 flush，避免 stderr 缓冲吞掉错误
+                print(f"[AI Daemon] ❌ [MDX-Net] 分离失败: {type(mdx_err).__name__}: {mdx_err}", file=sys.stderr, flush=True)
+                print(f"[AI Daemon] ❌ [MDX-Net] traceback:", file=sys.stderr, flush=True)
+                traceback.print_exc(file=sys.stderr)
+                sys.stderr.flush()
+                _set_progress(task_id, error=f"MDX-Net: {mdx_err}", done=True)
 
         # Demucs + MDX-Net 均失败：抛出异常，由 Node 端 separateVocalsBgm 走 fallback
         # （Node 端会标记 vocalsIsFallback=true，ASR 自动使用原始 16kHz 音轨）

@@ -12,6 +12,15 @@ import io
 import argparse
 import warnings
 
+# 🔧 修复循环导入导致的"双 app 实例"问题（音频分离 404/fetch failed 的终极根因）：
+#   当 python ai_daemon.py 运行时，__name__ == '__main__'，sys.modules 中
+#   只有 '__main__' 没有 'ai_daemon'。子模块 from ai_daemon import AIModels
+#   会触发 ai_daemon.py 二次导入，创建第二个 FastAPI app 实例，路由注册到
+#   第二个 app，而 uvicorn.run(app) 运行的是第一个 app → 业务路由全部 404。
+#   修复：在模块级代码执行前，将 __main__ 注册为 'ai_daemon'，避免二次导入。
+if __name__ == '__main__' and 'ai_daemon' not in sys.modules:
+    sys.modules['ai_daemon'] = sys.modules['__main__']
+
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 warnings.filterwarnings('ignore', message='.*pkg_resources.*')
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
@@ -299,24 +308,32 @@ class KMMatchReq(BaseModel):
 #    等所有符号定义完成之后再 import 子模块，否则子模块中的
 #    `from ai_daemon import AIModels, FFMPEG_PATH` 会因循环导入
 #    抛 ImportError（ai_daemon 尚未初始化完成）。
-#    旧版 bug：在 startup 事件中用 __import__ 动态加载，循环导入
-#    被 try/except 吞掉 → 路由未挂载 → /api/separate 返回 404。
+#
+# 🔧 容错导入：单个模块导入失败（如缺少第三方依赖）不应让整个 daemon 崩溃。
+#    旧版用 __import__ + try/except 实现容错，改为直接 import 后丢失了容错能力，
+#    导致 jianying_export 因 pyJianYingDraft 缺失而拖垮整个进程 → 所有路由未注册 → 404/fetch failed。
+#    现恢复容错机制：逐个 import，失败模块跳过注册并打印警告。
 # ============================================================
-import audio_pipeline
-import face_analysis
-import semantic_engine
-import timeline_solver
-import video_analyzer
-import jianying_export
+_loaded_modules = {}
+for _mod_name in ['audio_pipeline', 'face_analysis', 'semantic_engine',
+                  'timeline_solver', 'video_analyzer', 'jianying_export']:
+    try:
+        _loaded_modules[_mod_name] = __import__(_mod_name)
+        print(f'[AI Daemon] 🔍 DEBUG: 模块 {_mod_name} 加载成功, router routes={[r.path for r in _loaded_modules[_mod_name].router.routes if hasattr(r,"path")]}' if hasattr(_loaded_modules[_mod_name], 'router') else f'[AI Daemon] 🔍 DEBUG: 模块 {_mod_name} 加载成功, 无 router', file=sys.stderr)
+    except Exception as _e:
+        print(f'[AI Daemon] ⚠️ 模块 {_mod_name} 加载失败，跳过其路由注册: {_e}', file=sys.stderr)
 
-app.include_router(audio_pipeline.router)
-app.include_router(face_analysis.router)
-app.include_router(semantic_engine.router)
-app.include_router(timeline_solver.router)
-app.include_router(video_analyzer.router)
-app.include_router(jianying_export.router)
+print(f'[AI Daemon] 🔍 DEBUG: app id before include_router: {id(app)}', file=sys.stderr)
+for _mod_name, _mod in _loaded_modules.items():
+    if hasattr(_mod, 'router'):
+        app.include_router(_mod.router)
+        print(f'[AI Daemon] ✅ 已注册路由: {_mod_name}', file=sys.stderr)
 
-print('[AI Daemon] ✅ 6 个业务子路由已全部注册', file=sys.stderr)
+print(f'[AI Daemon] 🔍 DEBUG: app id after include_router: {id(app)}', file=sys.stderr)
+print(f'[AI Daemon] 🔍 DEBUG: app.routes count: {len(app.routes)}', file=sys.stderr)
+print(f'[AI Daemon] 🔍 DEBUG: app paths: {[getattr(r, "path", None) for r in app.routes]}', file=sys.stderr)
+
+print(f'[AI Daemon] 业务子路由注册完成，成功 {len(_loaded_modules)}/6 个模块', file=sys.stderr)
 
 
 # ============================================================
