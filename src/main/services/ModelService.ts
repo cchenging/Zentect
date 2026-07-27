@@ -57,18 +57,6 @@ interface ModelModuleDef {
 const MODEL_DEFINITIONS: ModelSeedDef[] = [
   // === ASR 语音识别 ===
   {
-    id: 'whisper_base', name: 'Whisper Base', displayName: 'Whisper Base 基座模型', type: 'asr',
-    description: 'Whisper.cpp 中文语音识别基座（含运行时 whisper-cli.exe）', version: '1.0',
-    // 🔧 修复 F1：manifestPaths 指向模型文件 ggml-base.bin（而非 whisper-cli.exe）
-    //   旧版 bug：manifestPaths 指向 whisper-cli.exe（480KB 可执行文件），但 expectedSize 用 ggml-base.bin 的 147953664，
-    //   导致 whisper-cli.exe 大小校验必然失败，模型被误判为损坏
-    //   whisper-cli.exe 是运行时可执行文件，归运行时依赖管理（见 manifest.json runtimes），不应作为模型 manifest 路径
-    manifestPaths: ['whisper/ggml-base.bin'],
-    // V7：扫描 ggml-base.bin 多路径（用户可能放在 whisper/ 或根目录）
-    scanPaths: ['whisper/ggml-base.bin', 'ggml-base.bin'],
-    expectedSize: 147953664,  // ggml-base.bin 的期望大小（与 manifest.json 对齐）
-  },
-  {
     id: 'sensevoice_onnx', name: 'SenseVoice ONNX', displayName: 'SenseVoice 量化模型', type: 'asr',
     description: 'SenseVoice 多语言语音识别量化模型（中/日/韩/粤/auto 默认引擎）', version: '1.0', pythonPkg: 'funasr',
     manifestPaths: ['sensevoice_onnx/model_quant.onnx'],
@@ -213,7 +201,6 @@ const LEGACY_MODEL_IDS = [
 
 /** 模型下载源配置（V6 修正版，URL 仍为占位，实际下载依赖预装或 huggingface-cli） */
 const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
-  whisper_base: { url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main', file: 'ggml-base.bin' },
   sensevoice_onnx: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model_quant.onnx' },
   sensevoice_small: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model.pt' },
   fsmn_vad: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'fsmn_vad/model.pt' },
@@ -262,15 +249,7 @@ const MODEL_MODULES: ModelModuleDef[] = [
     runtimeId: 'demucs',  // 运行时依赖：demucs + torch + torchaudio
     sizeNote: '~80 MB (模型) + 2.2 GB (运行时，含 torch)',
   },
-  // === ASR 语音识别（2 张卡片）===
-  {
-    id: 'whisper', category: 'asr', displayName: 'Whisper 语音识别',
-    description: 'Whisper.cpp 中文语音识别（C++ 推理，零 Python 依赖）',
-    icon: '🎙️', required: 'optional',
-    modelIds: ['whisper_base'],
-    runtimeId: 'whisper',  // 运行时依赖：无（whisper-cli.exe 已内置）
-    sizeNote: '~150 MB (模型文件) + 0 (运行时已内置)',
-  },
+  // === ASR 语音识别（1 张卡片）===
   {
     id: 'sensevoice', category: 'asr', displayName: 'SenseVoice 语音识别',
     description: 'FunASR SenseVoice 多语言 ASR（中文增强，需 PyTorch）',

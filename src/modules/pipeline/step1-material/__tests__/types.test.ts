@@ -37,12 +37,12 @@ describe('Step1 Types', () => {
         targetLanguage: 'en-US',
         frames: { enabled: false, mode: 'UNIFORM_FPS', sceneThreshold: 0.3, quality: 5, scale: 720, fps: 1 },
         audio: { enabled: false },
-        whisper: { enabled: false, engine: 'whisper-v3', language: 'en' },
+        whisper: { enabled: false, engine: 'faster-whisper', language: 'en' },
         faces: { enabled: false, engine: 'mediapipe' },
       };
       expect(config.frames.enabled).toBe(false);
       expect(config.audio.enabled).toBe(false);
-      expect(config.whisper.engine).toBe('whisper-v3');
+      expect(config.whisper.engine).toBe('faster-whisper');
       expect(config.faces.engine).toBe('mediapipe');
     });
   });
@@ -124,8 +124,8 @@ describe('Step1 Types', () => {
   });
 
   describe('WhisperConfig', () => {
-    it('应支持 sensevoice 和 whisper-v3 引擎', () => {
-      const engines: WhisperConfig['engine'][] = ['sensevoice', 'whisper-v3'];
+    it('应支持 sensevoice 和 faster-whisper 引擎', () => {
+      const engines: WhisperConfig['engine'][] = ['sensevoice', 'faster-whisper'];
       expect(engines).toHaveLength(2);
     });
 
@@ -174,7 +174,7 @@ describe('Step1 Types', () => {
           targetLanguage: 'zh-CN',
           frames: { enabled: true, mode: 'UNIFORM_FPS', sceneThreshold: 0.3, quality: 3, scale: 1024, fps: 2 },
           audio: { enabled: true },
-          whisper: { enabled: true, engine: 'whisper-v3' },
+          whisper: { enabled: true, engine: 'faster-whisper' },
           faces: { enabled: true, engine: 'insightface' },
         },
       };

@@ -66,7 +66,7 @@ step1-material（素材分析）的功能代码当前分散在多个目录中，
 |------|------|------|------|
 | `AudioSeparateStrategy.ts` | 68 | nodeType='audio-separate'，调用AudioProcessor分离人声+BGM | `.../main/engine/strategies/` |
 | `ASRStrategy.ts` | 61 | nodeType='asr'，委托LocalWhisperStrategy执行识别 | 同上 |
-| `LocalWhisperStrategy.ts` | 259 | ASR核心：SenseVoice优先→whisper-cli降级，解析SRT/JSON | 同上 |
+| `LocalWhisperStrategy.ts` | 259 | ASR核心：SenseVoice优先→faster-whisper降级，解析SRT/JSON | 同上 |
 | `FaceDetectStrategy.ts` | 32 | nodeType='face-detect'，通过AIDaemon调用/api/vision | 同上 |
 
 ### 2.4 管线引擎（3个文件，共 1131 行）
@@ -125,7 +125,7 @@ usePipelineOrchestrator.ts  ← 调用 API.media.process / API.engine.runPipelin
 
 PipelineEngine.ts  ← 注册所有策略
   ├── AudioSeparateStrategy.ts → AudioProcessor.ts
-  ├── ASRStrategy.ts → LocalWhisperStrategy.ts → AIDaemon / whisper-cli
+  ├── ASRStrategy.ts → LocalWhisperStrategy.ts → AIDaemon / faster-whisper
   ├── FaceDetectStrategy.ts → AIDaemon
   └── VisionExtractStrategy.ts / ScriptGenStrategy.ts / ...
 

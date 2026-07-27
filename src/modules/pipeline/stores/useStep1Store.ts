@@ -36,7 +36,7 @@ export interface ExtractionConfig {
     timePoint?: number;
   };
   audio: AudioConfig;
-  whisper: { enabled: boolean; engine: 'sensevoice' | 'whisper-v3' };
+  whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' };
   faces: { enabled: boolean; engine: 'insightface' | 'mediapipe' };
 }
 

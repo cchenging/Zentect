@@ -552,7 +552,7 @@ describe('Step1MaterialStrategy', () => {
           mediaPath: '/v.mp4',
           config: {
             targetLanguage: 'en-US',
-            whisper: { enabled: true, engine: 'whisper-v3' },
+            whisper: { enabled: true, engine: 'faster-whisper' },
             frames: false,
             audio: true,
           },
@@ -568,7 +568,7 @@ describe('Step1MaterialStrategy', () => {
         expect.any(String),
         expect.any(String),
         'en', // 'en-US' → 'en'
-        'whisper-v3',      // asrEngine（config.whisper.engine）
+        'faster-whisper',  // asrEngine（config.whisper.engine）
         undefined,         // signal（context 未传 signal）
       );
     });

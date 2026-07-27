@@ -82,7 +82,7 @@ declare module '../storeTypes' {
         timePoint?: number;
       };
       audio: { enabled: boolean; engine: 'demucs' | 'mdx' | 'auto'; };
-      whisper: { enabled: boolean; engine: 'sensevoice' | 'whisper-v3'; };
+      whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper'; };
       faces: { enabled: boolean; engine: 'insightface' | 'mediapipe'; };
     };
 

@@ -598,7 +598,7 @@ export const zhCN = {
     engine_demucs: 'Demucs (重型,高保真)',
     engine_auto: '自动 (Demucs → MDX 降级)',
     engine_sensevoice: 'SenseVoice (极速版)',
-    engine_whisper_v3: 'Whisper V3 (待接入)',
+    engine_faster_whisper: 'Faster-Whisper (英文/欧洲语言)',
 
     // 💥 补充：嵌套子配置对象（MediaParser 组件按 t.mediaParser.frames?.title 方式访问）
     frames: { title: '物理边界检测与抽帧', desc: 'FFmpeg 引擎 / 提取视觉原料', strategy: '切片策略', sensitivity: '转场灵敏度 (越小越敏感)', density: '抽帧密度 (越大越密)' } as any,

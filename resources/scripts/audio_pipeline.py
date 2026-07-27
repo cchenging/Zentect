@@ -596,6 +596,8 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
     except Exception as e:
         print(f"[ASR] faster-whisper 失败: {e}", file=sys.stderr)
         traceback.print_exc()
+        # 🔧 内存释放：异常时释放 faster-whisper 模型，避免 CTranslate2 session 残留导致 OOM
+        AIModels.release_faster_whisper()
         return {"success": False, "error": f"{type(e).__name__}: {str(e)}"}
 
 
@@ -713,7 +715,8 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
             # ── funasr 返回空结果直接报错，不降级 ──
             if not all_segments:
                 print("[ASR] funasr AutoModel 返回空结果", file=sys.stderr)
-                AIModels._funasr_model = None
+                # 🔧 内存释放：失败时调用 release 而非仅置 None，触发 gc_collect 回收内存
+                AIModels.release_funasr_sensevoice()
                 return {"success": False, "error": "ASR returned empty result"}
 
             from collections import Counter
@@ -749,6 +752,8 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
         except Exception as e:
             print(f"[ASR] funasr AutoModel 失败: {e}", file=sys.stderr)
             traceback.print_exc()
+            # 🔧 内存释放：异常时释放 funasr 模型，避免损坏的模型实例残留导致后续 OOM
+            AIModels.release_funasr_sensevoice()
             return {"success": False, "error": f"{type(e).__name__}: {str(e)}"}
 
     except Exception as e:
@@ -934,11 +939,17 @@ def _separate_sync(req: SeparateReq, task_id: str):
                         import soundfile as sf
                         sf.write(stem_path, audio_np, sr)
                     except ImportError:
-                        from scipy.io import wavfile
+                        # 🔧 兜底：soundfile 不可用时用 scipy.io.wavfile 写文件
+                        import scipy.io.wavfile as wavfile
                         audio_int16 = (audio_np * 32767).astype(np.int16)
                         wavfile.write(stem_path, sr, audio_int16)
 
                     stem_paths[stem_name.lower()] = stem_path
+
+                # 🔧 内存释放：分离完成后立即释放大型 tensor 和 separator 对象
+                # 避免长生命周期 daemon 进程中 demucs 模型缓存导致内存溢出
+                del origin, separated, demucs_sep
+                AIModels._gc_collect()
 
                 demucs_vocals = stem_paths.get("vocals", "")
                 demucs_drums = stem_paths.get("drums", "")
@@ -1025,6 +1036,11 @@ def _separate_sync(req: SeparateReq, task_id: str):
                         target_bgm = os.path.join(req.output_dir, file_name)
                     elif "(Vocals)" in file_name:
                         target_vocals = os.path.join(req.output_dir, file_name)
+
+                # 🔧 内存释放：MDX-Net 分离完成后立即释放 separator 对象
+                # 避免 ONNX 模型缓存累积导致内存溢出
+                del separator
+                AIModels._gc_collect()
 
                 if target_vocals and target_bgm:
                     print("[AI Daemon] ✅ [MDX-Net] 分离完成", file=sys.stderr)

@@ -126,8 +126,6 @@ export class MediaEngine {
     const rawAudioAbsPath = join(audioAbsDir, `audio_${mediaId}_16k.wav`);
 
     // 💥 接入雷达：获取跨端武器和模型
-    const whisperExe = PathManager.getBinPath(PathManager.getExeName('whisper-cli'));
-    const whisperModel = PathManager.getModelPath('whisper', 'ggml-base.bin');
     const aiDaemonScript = PathManager.getScriptPath('ai_daemon.py');
 
     try {
@@ -155,15 +153,9 @@ export class MediaEngine {
              // aiDaemonScript 不存在，跳过
          }
          const whisperOutPrefix = join(PathManager.getProjectExtractionsDir(projectId, 'whisper'), `whisper_${mediaId}`);
-          try {
-              await fs.access(whisperExe);
-              await fs.access(whisperModel);
-              const whisperResult = { whisperJsonPath: null, vocalsPath, bgmPath };
-              void whisperResult;
-             return { whisperJsonPath: whisperOutPrefix + '.json', vocalsPath, bgmPath };
-         } catch (e) {
-             return { whisperJsonPath: null, vocalsPath, bgmPath };
-         }
+          const whisperResult = { whisperJsonPath: null, vocalsPath, bgmPath };
+          void whisperResult;
+         return { whisperJsonPath: whisperOutPrefix + '.json', vocalsPath, bgmPath };
       });
 
       const visionAITask = Promise.all([videoIoTask, audioAITask]).then(async ([frames, audioResult]) => {
