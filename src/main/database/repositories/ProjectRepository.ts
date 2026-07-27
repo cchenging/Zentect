@@ -270,16 +270,44 @@ export class ProjectRepository {
       if (Array.isArray(data.asrLines) && data.asrLines.length > 0) {
         metadata.asrLines = data.asrLines;
       }
-      if (data.frameCount !== undefined) metadata.frameCount = data.frameCount;
+      // 🔧 修复状态丢失：frameCount=0 不覆盖已有非零值
+      // 旧版 bug：ASR 失败时 frameCount=0 覆盖之前成功的帧数
+      if (typeof data.frameCount === 'number' && data.frameCount > 0) {
+        metadata.frameCount = data.frameCount;
+      }
       /** 💥 持久化帧路径数组，确保重进项目帧数据不丢失 */
       if (data.framePaths && Array.isArray(data.framePaths) && data.framePaths.length > 0) {
         metadata.framePaths = data.framePaths;
       }
-      if (data.audioSeparated !== undefined) metadata.audioSeparated = data.audioSeparated;
-      if (data.subStepStatuses) metadata.subStepStatuses = data.subStepStatuses;
-      if (data.subStepProgresses) metadata.subStepProgresses = data.subStepProgresses;
-      if (data.stepStatuses) metadata.stepStatuses = data.stepStatuses;
-      if (data.stepCompleted) metadata.stepCompleted = data.stepCompleted;
+      // 🔧 修复状态丢失：audioSeparated=false 不覆盖已有 true
+      // 旧版 bug：ASR 失败时 audioSeparated=false 覆盖之前成功的 true
+      //          → 重进项目音频分离状态丢失
+      // 修复：只有 true 才覆盖（分离成功），false 保留数据库原值
+      if (data.audioSeparated === true) {
+        metadata.audioSeparated = true;
+      }
+      // 🔧 修复状态丢失：subStepStatuses 空对象不覆盖
+      // 旧版 bug：ASR 失败时 subStepStatuses={whisper:'failed'} 覆盖之前成功的 'completed'
+      // 修复：只有对象非空且包含至少一个 key 才覆盖
+      if (data.subStepStatuses && typeof data.subStepStatuses === 'object'
+          && Object.keys(data.subStepStatuses).length > 0) {
+        // 🔧 合并而非覆盖：保留已有的 completed 状态，只更新新状态
+        // 避免部分失败的状态覆盖整体成功的状态
+        const existing = metadata.subStepStatuses || {};
+        metadata.subStepStatuses = { ...existing, ...data.subStepStatuses };
+      }
+      if (data.subStepProgresses && typeof data.subStepProgresses === 'object'
+          && Object.keys(data.subStepProgresses).length > 0) {
+        metadata.subStepProgresses = data.subStepProgresses;
+      }
+      // 🔧 修复状态丢失：stepStatuses 空数组不覆盖
+      if (Array.isArray(data.stepStatuses) && data.stepStatuses.length > 0) {
+        metadata.stepStatuses = data.stepStatuses;
+      }
+      // 🔧 修复状态丢失：stepCompleted 空数组不覆盖
+      if (Array.isArray(data.stepCompleted) && data.stepCompleted.length > 0) {
+        metadata.stepCompleted = data.stepCompleted;
+      }
       /** 💥 持久化当前步骤，确保重进后能继续下一步 */
       if (data.currentStep) metadata.currentStep = data.currentStep;
       if (data.storyboardMode) metadata.storyboardMode = data.storyboardMode;

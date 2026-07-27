@@ -40,15 +40,12 @@ export const useEditorHydration = (id: string | undefined) => {
     usePipelineStore.getState().setPipelineProgress?.(0, '');
     usePipelineStore.getState().setPipelineError?.(null);
     usePipelineStore.getState().setExtractionConfig?.(null);
-    useStep1Store.getState().setAsrLines?.([]);
-    useStep1Store.getState().setFrameCount?.(0);
-    useStep1Store.getState().setAudioSeparated?.(false);
-    // 🔧 修复 P0：删除 extractionConfig 硬编码覆盖
-    //   旧版 bug：每次进入项目都 setState 覆盖 extractionConfig，把 audio.engine 写成非法值 'mdx-net'
-    //   （合法值为 'demucs' | 'mdx' | 'auto'），导致 AudioSeparationConfig 的 deriveStrategy 返回
-    //   'mdx-net'，而 STRATEGY_OPTIONS 里没有此值 → 所有按钮都不被选中
-    //   修复后：useStep1Store 已有 persist 中间件，配置由用户首次选择后持久化，进场时自动恢复
-    //          仅重置运行时进度数据（subStepProgresses）
+    // 🔧 修复状态丢失：进场时不硬重置 step1 数据状态
+    // 旧版 bug：每次进场都 setAsrLines([]) setFrameCount(0) setAudioSeparated(false)
+    //   → hydrate 异步加载项目数据前的瞬间，store 已被清空
+    //   → 如果 hydrate 失败或数据为空，之前成功状态永久丢失
+    // 修复：只重置运行时进度（subStepProgresses），数据状态由 hydrate 负责
+    //   hydrate 时从 DB 读取成功状态恢复；DB 中已有保护：空数组/false 不覆盖
     useStep1Store.setState({
       subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 },
     });
@@ -107,7 +104,10 @@ export const useEditorHydration = (id: string | undefined) => {
           // 🔧 修复 P0：loadFullProjectData 已将 metadata 展开到顶层，不再有 metadata 字段
           //   旧版 bug：`projectSnapshot.metadata` 永远 undefined → asrLines 恢复逻辑（含 extracted_text 兜底）永不执行
           //   修复后：直接从顶层读 asrLines，仍保留 extracted_text 兜底
-          if (projectSnapshot.asrLines) {
+          // 🔧 修复状态丢失：空数组判断改为 length > 0
+          //   旧版 bug：`if (projectSnapshot.asrLines)` 空数组 [] 是 truthy → setAsrLines([]) 清空 store
+          //   修复：只有非空数组才 setAsrLines，空数组走 extractedText 兜底
+          if (Array.isArray(projectSnapshot.asrLines) && projectSnapshot.asrLines.length > 0) {
             useStep1Store.getState().setAsrLines(projectSnapshot.asrLines);
           } else {
             // 🔧 Fallback：asrLines 为空时，从 media_assets.extracted_text 恢复
@@ -123,6 +123,14 @@ export const useEditorHydration = (id: string | undefined) => {
                 }
               } catch { /* extractedText 解析失败，静默跳过 */ }
             }
+          }
+          // 🔧 修复状态丢失：frameCount 和 audioSeparated 也从 DB 恢复
+          // 旧版 bug：进场时硬重置为 0/false，hydrate 未恢复 → 状态丢失
+          if (typeof projectSnapshot.frameCount === 'number' && projectSnapshot.frameCount > 0) {
+            useStep1Store.getState().setFrameCount(projectSnapshot.frameCount);
+          }
+          if (projectSnapshot.audioSeparated === true) {
+            useStep1Store.getState().setAudioSeparated(true);
           }
 
           // 💥 崩溃恢复：检查 IndexedDB 中是否有未同步的 PENDING 草稿
