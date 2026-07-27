@@ -17,14 +17,42 @@ function formatSeconds(seconds: number): string {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
+/** 步骤1 的 4 个子任务 key（cluster/semantic 属于步骤2，不参与步骤1状态推导） */
+const STEP1_SUBSTEPS = ['frames', 'audio', 'whisper', 'faces'] as const;
+
+/**
+ * 根据子任务状态推导步骤1总状态
+ * - 全 completed → 'completed' + stepCompleted=true
+ * - 任一 failed → 'failed' + stepCompleted=false
+ * - 部分完成无失败 → 'idle' + stepCompleted=false（用户应手动重试未完成子任务）
+ * - 全 idle → 'idle' + stepCompleted=false
+ */
+function deriveStep1Status(subStepStatuses: Record<string, string>): {
+  stepStatus: 'completed' | 'failed' | 'idle';
+  stepCompleted: boolean;
+} {
+  const step1Values = STEP1_SUBSTEPS
+    .map(k => subStepStatuses[k])
+    .filter(v => v !== undefined && v !== null);
+
+  if (step1Values.length === 0) {
+    return { stepStatus: 'idle', stepCompleted: false };
+  }
+  const hasFailed = step1Values.some(v => v === 'failed');
+  const allCompleted = step1Values.length === STEP1_SUBSTEPS.length
+    && step1Values.every(v => v === 'completed');
+
+  if (allCompleted) return { stepStatus: 'completed', stepCompleted: true };
+  if (hasFailed) return { stepStatus: 'failed', stepCompleted: false };
+  return { stepStatus: 'idle', stepCompleted: false };
+}
+
 export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Promise<void>) => {
   useEffect(() => {
     API.events.onExtractionSuccess(async (payload: any) => {
       const projectState = useProjectStore.getState();
       const navState = useEditorNavStore.getState();
       const pipelineState = usePipelineStore.getState();
-      pipelineState.setStepCompleted(1, true);
-      pipelineState.setStepStatus(1, 'completed');
       pipelineState.setPipelineRunning(false);
 
       const shots = payload.shots || [];
@@ -37,8 +65,7 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
       console.log('[DEBUG ASR] shots count:', shots.length, 'hasAsrLines:', hasAsrLines,
         'sample originalTexts:', shots.slice(0, 3).map((s: any) => s.originalText?.substring(0, 20)));
 
-      // 重新取最新状态：setStepCompleted/setStepStatus 是异步生效，上方 pipelineState 是调用前快照
-      // 不重新取会导致下方降级判断用旧值，且 saveData 保存的是过期状态
+      // 重新取最新状态：上方 pipelineState 是注册时的快照，需用最新值做降级判断
       const latestPipeline = usePipelineStore.getState();
       pipelineState.setSubStepStatus('frames', hasFrames ? 'completed' : (latestPipeline.subStepStatuses.frames || 'idle'));
       pipelineState.setSubStepStatus('audio', hasAudio ? 'completed' : (latestPipeline.subStepStatuses.audio || 'idle'));
@@ -49,6 +76,18 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
       const currentFaces = latestPipeline.subStepStatuses.faces;
       pipelineState.setSubStepStatus('faces',
         hasRoles ? 'completed' : (currentFaces === 'running' ? 'failed' : currentFaces));
+
+      /** 💥 关键修复：根据子任务结果推导 step1 总状态，替代旧版无条件 setStepStatus(1, 'completed')
+       *  旧版 bug：faces/whisper 失败时 stepStatuses[0] 仍被置为 completed，与 subStepStatuses 不一致
+       *  导致用户重进项目看到"步骤1已完成"但实际有子任务失败，无法重试 */
+      const freshPipeline = usePipelineStore.getState();
+      const derived = deriveStep1Status(freshPipeline.subStepStatuses);
+      pipelineState.setStepCompleted(1, derived.stepCompleted);
+      pipelineState.setStepStatus(1, derived.stepStatus);
+      console.log('[Step1 状态推导]', {
+        subStepStatuses: freshPipeline.subStepStatuses,
+        derived,
+      });
 
       let updatedMediaItems = [...projectState.mediaItems];
       const mediaId: string | null = payload.mediaId || payload.media?.id;

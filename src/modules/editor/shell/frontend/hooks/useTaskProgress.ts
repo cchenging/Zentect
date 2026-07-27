@@ -37,6 +37,29 @@ const SUBSTEP_PROGRESS_RANGE: Record<string, [number, number]> = {
   faces: [70, 80],
 };
 
+/** 步骤1 的 4 个子任务 key（cluster/semantic 属于步骤2，不参与步骤1状态推导） */
+const STEP1_SUBSTEPS = ['frames', 'audio', 'whisper', 'faces'] as const;
+
+/**
+ * 根据子任务状态推导步骤1总状态（与 useExtractionHandler 保持一致）
+ * - 全 completed → 'completed'
+ * - 任一 failed → 'failed'
+ * - 部分完成无失败 → 'idle'
+ * - 全 idle → 'idle'
+ */
+function deriveStep1Status(subStepStatuses: Record<string, string>): 'completed' | 'failed' | 'idle' {
+  const step1Values = STEP1_SUBSTEPS
+    .map(k => subStepStatuses[k])
+    .filter(v => v !== undefined && v !== null);
+  if (step1Values.length === 0) return 'idle';
+  const hasFailed = step1Values.some(v => v === 'failed');
+  const allCompleted = step1Values.length === STEP1_SUBSTEPS.length
+    && step1Values.every(v => v === 'completed');
+  if (allCompleted) return 'completed';
+  if (hasFailed) return 'failed';
+  return 'idle';
+}
+
 function toLocalProgress(subStepKey: string, globalPercent: number): number {
   const range = SUBSTEP_PROGRESS_RANGE[subStepKey];
   if (!range) return globalPercent;
@@ -78,7 +101,19 @@ export const useTaskProgress = () => {
           }
         });
         if (hasChanges) {
-          usePipelineStore.setState({ subStepStatuses: newSubStepStatuses });
+          /** 💥 关键修复：同步推导 step1 总状态，替代旧版只更新 subStepStatuses 的 bug
+           *  旧版 bug：TASK_FAILED 时 subStepStatuses 有 failed 但 stepStatuses[0] 仍为 running/idle，
+           *  导致步骤1状态与子任务状态长期不一致 */
+          const derivedStep1Status = deriveStep1Status(newSubStepStatuses);
+          const newStepStatuses = [...state.stepStatuses];
+          newStepStatuses[0] = derivedStep1Status;
+          const newStepCompleted = [...state.stepCompleted];
+          newStepCompleted[0] = derivedStep1Status === 'completed';
+          usePipelineStore.setState({
+            subStepStatuses: newSubStepStatuses,
+            stepStatuses: newStepStatuses,
+            stepCompleted: newStepCompleted,
+          });
         }
         return;
       }

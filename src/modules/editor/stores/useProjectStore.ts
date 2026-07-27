@@ -20,6 +20,37 @@ import { useStep4Store } from '../../pipeline/stores/useStep4Store';
 import { useStep5Store } from '../../pipeline/stores/useStep5Store';
 import { useEditorNavStore } from './useEditorNavStore';
 
+/** 步骤1 的 4 个子任务 key（cluster/semantic 属于步骤2，不参与步骤1状态推导） */
+const STEP1_SUBSTEPS = ['frames', 'audio', 'whisper', 'faces'] as const;
+
+/**
+ * 根据子任务状态推导步骤1总状态（统一逻辑，供 hydrate 自动修正使用）
+ * - 全 completed → 'completed' + stepCompleted=true
+ * - 任一 failed → 'failed' + stepCompleted=false
+ * - 部分完成无失败 → 'idle' + stepCompleted=false
+ * - 全 idle / 无数据 → 'idle' + stepCompleted=false
+ */
+function deriveStep1Status(subStepStatuses: Record<string, string> | undefined): {
+  stepStatus: 'completed' | 'failed' | 'idle';
+  stepCompleted: boolean;
+} {
+  if (!subStepStatuses || typeof subStepStatuses !== 'object') {
+    return { stepStatus: 'idle', stepCompleted: false };
+  }
+  const step1Values = STEP1_SUBSTEPS
+    .map(k => subStepStatuses[k])
+    .filter(v => v !== undefined && v !== null);
+  if (step1Values.length === 0) {
+    return { stepStatus: 'idle', stepCompleted: false };
+  }
+  const hasFailed = step1Values.some(v => v === 'failed');
+  const allCompleted = step1Values.length === STEP1_SUBSTEPS.length
+    && step1Values.every(v => v === 'completed');
+  if (allCompleted) return { stepStatus: 'completed', stepCompleted: true };
+  if (hasFailed) return { stepStatus: 'failed', stepCompleted: false };
+  return { stepStatus: 'idle', stepCompleted: false };
+}
+
 /** 💥 工业级减法：防抖影子保存器，防止主进程磁盘 I/O 被高频更新锁死 */
 let shadowSaveTimer: any = null;
 const debouncedShadowSave = (projectId: string, getShots: () => any, getAiShots: () => any) => {
@@ -726,23 +757,45 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       } catch {}
     }
 
-    /** 💥 自动修正状态不一致：如果 subStepStatuses 全是 completed 但 stepStatuses[0] 还是 running 且 stepCompleted[0] 是 false */
+    /** 💥 统一自动修正：根据 subStepStatuses 推导 step1 总状态，覆盖所有不一致场景
+     *  替代旧版分散的两处修正（running→completed / running→idle），统一用 deriveStep1Status 推导
+     *  覆盖场景：
+     *    1. step1='running' 但子任务全 completed → 升级为 completed
+     *    2. step1='running' 但子任务有 failed → 降级为 failed
+     *    3. step1='idle' 但子任务有 completed/failed → 推导为正确状态（修复历史脏数据）
+     *    4. step1='completed' 但子任务有 failed → 降级为 failed（修复 useExtractionHandler 旧 bug 残留）
+     *    5. step1='completed' 但子任务全 idle → 降级为 idle（修复脏数据）
+     *  注意：cluster/semantic 属于步骤2子任务，不参与步骤1状态推导
+     */
     if (
       subStepStatuses &&
       typeof subStepStatuses === 'object' &&
-      subStepStatuses.frames === 'completed' &&
-      subStepStatuses.audio === 'completed' &&
-      subStepStatuses.whisper === 'completed' &&
-      subStepStatuses.faces === 'completed' &&
-      Array.isArray(stepStatuses) &&
-      stepStatuses[0] === 'running' &&
-      Array.isArray(stepCompleted) &&
-      stepCompleted[0] === false
+      Array.isArray(stepStatuses)
     ) {
-      stepStatuses = [...stepStatuses];
-      stepStatuses[0] = 'completed';
-      stepCompleted = [...stepCompleted];
-      stepCompleted[0] = true;
+      const derived = deriveStep1Status(subStepStatuses as Record<string, string>);
+      const currentStep0 = stepStatuses[0];
+      const currentCompleted0 = Array.isArray(stepCompleted) ? stepCompleted[0] : undefined;
+      // 仅在推导结果与当前值不一致时修正，避免无谓变更
+      if (currentStep0 !== derived.stepStatus || currentCompleted0 !== derived.stepCompleted) {
+        // 仅当存在子任务已开始（completed/failed）或当前 step1 为 running/completed/failed 时才修正
+        // 全 idle 时不强制覆盖（避免清掉用户刚进入项目尚未开始的状态）
+        const step1Values = STEP1_SUBSTEPS
+          .map(k => (subStepStatuses as any)[k])
+          .filter(v => v !== undefined && v !== null);
+        const hasStarted = step1Values.some(v => v === 'completed' || v === 'failed');
+        const step1Active = currentStep0 === 'running' || currentStep0 === 'completed' || currentStep0 === 'failed';
+        if (hasStarted || step1Active) {
+          console.log('[hydrate 自动修正] step1:', currentStep0, '→', derived.stepStatus,
+            'completed:', currentCompleted0, '→', derived.stepCompleted,
+            'sub:', JSON.stringify(subStepStatuses));
+          stepStatuses = [...stepStatuses];
+          stepStatuses[0] = derived.stepStatus;
+          if (Array.isArray(stepCompleted)) {
+            stepCompleted = [...stepCompleted];
+            stepCompleted[0] = derived.stepCompleted;
+          }
+        }
+      }
     }
 
     /** 💥 自动修正：将 DB 中所有残留的 'running' 子步骤重置为 idle
@@ -761,25 +814,6 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
         }
       }
       if (changed) subStepStatuses = normalized;
-    }
-
-    /** 💥 自动修正：stepStatuses[0] === 'running' 但子步骤并非全部 completed
-     *  覆盖上述归一化后仍有 stepStatuses 残留 running 的场景
-     *  （Block1 处理了全 completed → completed 的升级，此处处理未正常完工的"卡住"状态 → idle） */
-    if (
-      Array.isArray(stepStatuses) &&
-      stepStatuses[0] === 'running' &&
-      !(
-        subStepStatuses &&
-        typeof subStepStatuses === 'object' &&
-        subStepStatuses.frames === 'completed' &&
-        subStepStatuses.audio === 'completed' &&
-        subStepStatuses.whisper === 'completed' &&
-        subStepStatuses.faces === 'completed'
-      )
-    ) {
-      stepStatuses = [...stepStatuses];
-      stepStatuses[0] = 'idle';
     }
 
     /** 推算当前步骤 */
