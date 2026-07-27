@@ -89,10 +89,6 @@ export class AIController {
       return await this.aiService.searchBrollLocally(payload);
     });
 
-    IpcRouter.handle(IPC_CHANNELS.AI_ISOLATE_VOCALS, async (_, projectId, shotId) => {
-      return await this.aiService.isolateVocalsLocally(projectId, shotId);
-    });
-
     IpcRouter.handle(IPC_CHANNELS.AI_EXTRACT_FRAMES, async (_, mediaId, strategy = 'keyframe', fps = 1) => {
       return await this.aiService.extractFramesLocally(mediaId, strategy, fps);
     });

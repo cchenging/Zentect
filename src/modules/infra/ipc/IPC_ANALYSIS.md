@@ -199,7 +199,6 @@ SystemController → ApiProfileController → ProjectController → MediaControl
 | `AI_SEARCH_SEMANTICS` | `ai:searchSemantics` | invoke | AIController | API.ai.searchSemantics |
 | `AI_CHAT_REQUEST` | `ai:chatRequest` | invoke | AIController | — |
 | `AI_SEARCH_BROLL` | `ai:searchBroll` | invoke | AIController | API.engine.searchBroll |
-| `AI_ISOLATE_VOCALS` | `ai:isolateVocals` | invoke | AIController | — |
 | `AI_EXTRACT_FRAMES` | `ai:extractFrames` | invoke | AIController | API.engine.extractFrames |
 
 ### 2.8 AI Agent 流式域

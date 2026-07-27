@@ -263,10 +263,6 @@ export class AIService {
     return await AIEngine.searchBrollLocally(payload);
   }
 
-  public async isolateVocalsLocally(projectId: string, shotId: string) {
-    return await AIEngine.isolateVocalsLocally(projectId, shotId);
-  }
-
   public async extractFramesLocally(mediaId: string, strategy: 'keyframe' | 'fps' | 'uniform' = 'keyframe', fps: number = 1) {
     const mediaRepo = new MediaRepository();
     const media = await mediaRepo.findById(mediaId);

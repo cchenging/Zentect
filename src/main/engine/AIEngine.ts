@@ -144,7 +144,6 @@ export class AIEngine {
         { type: "function", function: { name: "update_shot_text", description: "修改台词", parameters: { type: "object", properties: { shotId: { type: "string" }, newText: { type: "string" } }, required: ["shotId", "newText"] } } },
         { type: "function", function: { name: "delete_shot", description: "删除镜头", parameters: { type: "object", properties: { shotId: { type: "string" } }, required: ["shotId"] } } },
         { type: "function", function: { name: "search_broll", description: "搜索素材库", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } },
-        { type: "function", function: { name: "isolate_vocals", description: "人声提取", parameters: { type: "object", properties: { shotId: { type: "string" } }, required: ["shotId"] } } },
         {
           type: "function",
           function: {
@@ -203,12 +202,6 @@ export class AIEngine {
   public static async searchBrollLocally(payload: any): Promise<any[]> {
     const { VisionProcessor } = await import('./media/VisionProcessor');
     return (VisionProcessor as any).searchBrollLocally(payload);
-  }
-
-  /** 本地人声分离（已迁移至 AudioProcessor） */
-  public static async isolateVocalsLocally(projectId: string, shotId: string): Promise<any> {
-    const { AudioProcessor } = await import('./media/AudioProcessor');
-    return (AudioProcessor as any).isolateVocals(projectId, shotId);
   }
 
   /** 本地抽帧（已迁移至 FrameExtractor） */

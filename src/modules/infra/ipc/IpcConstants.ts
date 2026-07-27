@@ -100,7 +100,6 @@ export const IPC_CHANNELS = {
   AI_SEARCH_SEMANTICS: 'ai:searchSemantics',
   AI_CHAT_REQUEST: 'ai:chatRequest',
   AI_SEARCH_BROLL: 'ai:searchBroll',
-  AI_ISOLATE_VOCALS: 'ai:isolateVocals',
   AI_EXTRACT_FRAMES: 'ai:extractFrames',
 
   // --- AI 智能体流式域 ---

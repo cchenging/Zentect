@@ -87,30 +87,6 @@ export class MediaProcessingService {
     } catch (error: any) { return { success: false, error: error.message }; }
   }
 
-  public async isolateVocalsLocally(_projectId: string, shotId: string) {
-    try {
-      const db = SQLiteConnection.getInstance().getDB();
-      const shot = db.prepare('SELECT media_id, audio_path FROM shots WHERE id = ?').get(shotId) as any;
-      if (!shot) throw new Error('未找到镜头');
-      
-      let sourcePath = shot.audio_path;
-      if (!sourcePath) {
-        const media = db.prepare('SELECT file_path FROM media_assets WHERE id = ?').get(shot.media_id) as any;
-        if (!media) throw new Error('未找到物理素材');
-        sourcePath = media.file_path;
-      }
-      
-      const cleanPath = sourcePath.replace(/^file:{2,3}/, '');
-      const res = await AIDaemon.getInstance().post('/api/isolate_vocals', { audio_path: cleanPath });
-      if (!res.success) throw new Error(res.error || '提取失败');
-      
-      const audioPath = res.vocal_path || res.vocals_path || '';
-      const newAudioUrl = audioPath ? `file://${audioPath.split('\\').join('/')}` : '';
-      db.prepare('UPDATE shots SET audio_path = ? WHERE id = ?').run(newAudioUrl, shotId);
-      return { success: true, audioPath: newAudioUrl };
-    } catch (error: any) { return { success: false, error: error.message }; }
-  }
-
   /**
    * 💥 工业级 L2 改造：彻底剥离数据库，纯函数化抽帧引擎
    * @param sourcePath 源视频绝对物理路径
