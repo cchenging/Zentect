@@ -12,6 +12,15 @@ import io
 import argparse
 import warnings
 
+# 🔧 修复 P0：embeddable Python（ai-env）的 ._pth 文件会完全覆盖默认 sys.path，
+#   且忽略 PYTHONPATH 环境变量，导致 sys.path 不含脚本所在目录。
+#   后果：__import__('audio_pipeline') 等子模块全部 ModuleNotFoundError
+#   → 业务路由全部未注册 → /api/separate、/api/transcribe、/api/vision 全部 404。
+#   修复：显式将脚本目录加入 sys.path 首位，确保子模块可被查找。
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
 # 🔧 修复循环导入导致的"双 app 实例"问题（音频分离 404/fetch failed 的终极根因）：
 #   当 python ai_daemon.py 运行时，__name__ == '__main__'，sys.modules 中
 #   只有 '__main__' 没有 'ai_daemon'。子模块 from ai_daemon import AIModels
@@ -95,6 +104,7 @@ class AIModels:
     clip_processor = None
     sensevoice_model = None
     _funasr_model = None
+    _faster_whisper_model = None  # faster-whisper 懒加载单例（英文/欧洲语言 ASR）
 
     @classmethod
     def _ensure_device(cls):
@@ -145,12 +155,21 @@ class AIModels:
             cls._gc_collect()
 
     @classmethod
+    def release_faster_whisper(cls):
+        """释放 faster-whisper 模型内存"""
+        if cls._faster_whisper_model is not None:
+            del cls._faster_whisper_model
+            cls._faster_whisper_model = None
+            cls._gc_collect()
+
+    @classmethod
     def release_all_models(cls):
         """释放所有已加载模型，回收内存"""
         cls.release_face_app()
         cls.release_clip()
         cls.release_sensevoice()
         cls.release_funasr_sensevoice()
+        cls.release_faster_whisper()
         print('[AI Daemon] 🧹 所有模型已释放，内存已回收', file=sys.stderr)
 
     @staticmethod
@@ -254,6 +273,42 @@ class AIModels:
                 disable_update=True,
             )
         return cls._funasr_model
+
+    @classmethod
+    def get_faster_whisper(cls, model_size='large-v3'):
+        """获取 faster-whisper 模型（懒加载，英文/欧洲语言 ASR）
+
+        基于 CTranslate2，比 whisper.cpp 快 4-8 倍。
+        模型首次使用时自动从 HuggingFace 下载到本地缓存目录（~/.cache/huggingface/hub）。
+        如需手动放置，可下载 CTranslate2 格式模型到 resources/models/faster_whisper/large-v3/
+
+        参数：
+            model_size: 模型大小，可选 tiny/base/small/medium/large-v3，默认 large-v3
+        返回：
+            faster_whisper.WhisperModel 实例
+        """
+        if cls._faster_whisper_model is None:
+            from faster_whisper import WhisperModel
+            device = cls._ensure_device()
+            compute_type = 'float16' if device == 'cuda' else 'int8'
+            print(f'[AI Daemon] 🧠 Faster-Whisper 启动… (model={model_size}, device={device}, compute_type={compute_type})',
+                  file=sys.stderr)
+
+            # 优先使用本地 models 目录下的预下载模型，否则自动从 HuggingFace 下载
+            local_model_dir = os.path.join(MODELS_DIR, 'faster_whisper', model_size)
+            if os.path.isdir(local_model_dir) and os.path.exists(os.path.join(local_model_dir, 'model.bin')):
+                model_path = local_model_dir
+                print(f'[AI Daemon]    使用本地模型: {model_path}', file=sys.stderr)
+            else:
+                model_path = model_size
+                print(f'[AI Daemon]    从 HuggingFace 自动下载: {model_size}', file=sys.stderr)
+
+            cls._faster_whisper_model = WhisperModel(
+                model_path,
+                device=device,
+                compute_type=compute_type,
+            )
+        return cls._faster_whisper_model
 
     @staticmethod
     def get_batches(items, batch_size):
