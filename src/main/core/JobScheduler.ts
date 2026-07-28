@@ -7,6 +7,7 @@ import { PipelineEngine } from '../engine/PipelineEngine';
 import { PathManager } from '../utils/pathManager';
 import { ProjectService } from '../services/ProjectService';
 import { PipelineRecoveryService } from '../pipeline/PipelineRecoveryService';
+import { PipelineResultWriter } from '../pipeline/PipelineResultWriter';
 import { DICT } from '../../modules/infra/i18n/dictionary';
 import { AppLogger } from './AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
@@ -208,7 +209,6 @@ export class JobScheduler {
         };
 
         try {
-          const { PipelineResultWriter } = require('../pipeline/PipelineResultWriter');
           const { updatedMedia, finalRoles } = await PipelineResultWriter.writeStep1Results({
             projectId: job.projectId,
             mediaId: job.targetId,
