@@ -14,9 +14,16 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from ai_daemon import AIModels, FFMPEG_PATH
+from ai_config import AIModels, FFMPEG_PATH, INFERENCE_LOCK
 
 router = APIRouter()
+
+
+# ==========================================
+# 辅助：统一错误响应格式（含 errorCode，便于 Node 端按错误类型分流处理）
+# ==========================================
+def _error(msg: str, code: str = "AI_PROCESS_FAILED") -> dict:
+    return {"success": False, "error": msg, "errorCode": code}
 
 
 # ==========================================
@@ -408,25 +415,27 @@ def _asr_extract_emotion(raw_text):
 # ==========================================
 @router.post("/api/emotion")
 def api_emotion(req: EmotionReq):
+    """音频情绪检测（带全局推理锁保护，防止并发原生库崩溃）"""
     import librosa
     import numpy as np
     try:
-        if not os.path.exists(req.audio_path):
-            return {"success": False, "error": "Audio file not found"}
+        with INFERENCE_LOCK:
+            if not os.path.exists(req.audio_path):
+                return _error("Audio file not found", "FS_PATH_INVALID")
 
-        y, sr = librosa.load(req.audio_path, sr=16000)
-        rms = librosa.feature.rms(y=y)[0]
-        mean_rms = float(np.mean(rms))
-        pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
-        mean_pitch = float(np.mean(pitches[magnitudes > np.median(magnitudes)]))
+            y, sr = librosa.load(req.audio_path, sr=16000)
+            rms = librosa.feature.rms(y=y)[0]
+            mean_rms = float(np.mean(rms))
+            pitches, magnitudes = librosa.piptrack(y=y, sr=sr)
+            mean_pitch = float(np.mean(pitches[magnitudes > np.median(magnitudes)]))
 
-        emotion = "neutral"
-        if mean_rms > 0.05 and mean_pitch > 200:
-            emotion = "excited"
-        elif mean_rms < 0.01:
-            emotion = "calm"
+            emotion = "neutral"
+            if mean_rms > 0.05 and mean_pitch > 200:
+                emotion = "excited"
+            elif mean_rms < 0.01:
+                emotion = "calm"
 
-        return {"success": True, "data": {"emotion": emotion, "rms": mean_rms, "pitch": mean_pitch}}
+            return {"success": True, "data": {"emotion": emotion, "rms": mean_rms, "pitch": mean_pitch}}
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -491,9 +500,14 @@ async def api_transcribe_stream(task_id: str):
 
 
 def _transcribe_sync_safe(req: TranscribeReq, task_id: str):
-    """_transcribe_sync 的安全包装：捕获异常并写入进度，确保 SSE 流一定能终止"""
+    """_transcribe_sync 的安全包装：捕获异常并写入进度，确保 SSE 流一定能终止
+
+    🔧 修复：在全局 INFERENCE_LOCK 内执行推理，防止与 Vision/InsightFace 等其他
+       原生推理任务并发执行导致 0xC0000005 ACCESS_VIOLATION 崩溃
+    """
     try:
-        result = _transcribe_sync(req, task_id)
+        with INFERENCE_LOCK:
+            result = _transcribe_sync(req, task_id)
         _set_progress(task_id, done=True, pct=100, msg="ASR 完成", result=result)
         if isinstance(result, dict):
             result["task_id"] = task_id
@@ -611,7 +625,7 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
         traceback.print_exc()
         # 🔧 内存释放：异常时释放 faster-whisper 模型，避免 CTranslate2 session 残留导致 OOM
         AIModels.release_faster_whisper()
-        return {"success": False, "error": f"{type(e).__name__}: {str(e)}"}
+        return _error(f"{type(e).__name__}: {str(e)}")
 
 
 def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
@@ -623,7 +637,7 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
     """
     try:
         if not os.path.exists(req.audio_path):
-            return {"success": False, "error": "Audio file not found"}
+            return _error("Audio file not found", "FS_PATH_INVALID")
 
         # ── 引擎自动选择：CJK 语言用 sensevoice，其他用 faster-whisper ──
         CJK_LANGS = ['zh', 'ja', 'ko', 'yue']
@@ -730,7 +744,7 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
                 print("[ASR] funasr AutoModel 返回空结果", file=sys.stderr)
                 # 🔧 内存释放：失败时调用 release 而非仅置 None，触发 gc_collect 回收内存
                 AIModels.release_funasr_sensevoice()
-                return {"success": False, "error": "ASR returned empty result"}
+                return _error("ASR returned empty result")
 
             from collections import Counter
             dominant_emotion = Counter(emotions).most_common(1)[0][0] if emotions else "neutral"
@@ -767,7 +781,7 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
             traceback.print_exc()
             # 🔧 内存释放：异常时释放 funasr 模型，避免损坏的模型实例残留导致后续 OOM
             AIModels.release_funasr_sensevoice()
-            return {"success": False, "error": f"{type(e).__name__}: {str(e)}"}
+            return _error(f"{type(e).__name__}: {str(e)}")
 
     except Exception as e:
         print(f"[ASR FATAL] Error Type: {type(e).__name__}, Detail: {str(e)}", file=sys.stderr)
@@ -875,9 +889,12 @@ def _separate_sync_safe(req, task_id: str):
     🔧 修复：原 api_separate 的 try/except 在 await 层，线程池异常会被吞掉。
        现在线程池内部捕获，确保 _set_progress(done=True, error=...) 被调用，
        Node 端 SSE 能收到错误信号而非无限等待。
+    🔧 修复：在全局 INFERENCE_LOCK 内执行推理，防止与 ASR/Vision 等其他
+       原生推理任务并发执行导致 0xC0000005 ACCESS_VIOLATION 崩溃
     """
     try:
-        result = _separate_sync(req, task_id)
+        with INFERENCE_LOCK:
+            result = _separate_sync(req, task_id)
         _set_progress(task_id, done=True, pct=100, msg="分离完成", result=result)
         # 补充 task_id 便于 Node 端关联
         if isinstance(result, dict):
@@ -929,7 +946,7 @@ def _separate_sync(req: SeparateReq, task_id: str):
 
         if not os.path.exists(req.audio_path):
             _set_progress(task_id, error="Audio file not found", done=True)
-            return {"success": False, "error": "Audio file not found"}
+            return _error("Audio file not found", "FS_PATH_INVALID")
 
         if not os.path.exists(req.output_dir):
             os.makedirs(req.output_dir, exist_ok=True)
@@ -1135,91 +1152,94 @@ async def detect_beats(req: BeatDetectReq):
 
 
 def _detect_beats_sync(req: BeatDetectReq) -> dict:
+    """节拍检测同步逻辑（带全局推理锁保护，防止并发原生库崩溃）"""
     import numpy as np
     import librosa
     try:
-        if not os.path.exists(req.file_path):
-            return {"success": False, "error": "Audio file not found"}
+        with INFERENCE_LOCK:
+            if not os.path.exists(req.file_path):
+                return _error("Audio file not found", "FS_PATH_INVALID")
 
-        import soundfile as sf
+            import soundfile as sf
 
-        CHUNK_SAMPLES = 22050 * 30
-        sr = 22050
-        all_onset_env = []
-        frame_positions = []
+            CHUNK_SAMPLES = 22050 * 30
+            sr = 22050
+            all_onset_env = []
+            frame_positions = []
 
-        info = sf.info(req.file_path)
-        total_frames = info.frames
-        original_sr = info.samplerate
+            info = sf.info(req.file_path)
+            total_frames = info.frames
+            original_sr = info.samplerate
 
-        with sf.SoundFile(req.file_path) as f:
-            current_frame = 0
-            while current_frame < total_frames:
-                chunk = f.read(CHUNK_SAMPLES, dtype='float32')
-                if len(chunk.shape) > 1:
-                    chunk = chunk.mean(axis=1)
+            with sf.SoundFile(req.file_path) as f:
+                current_frame = 0
+                while current_frame < total_frames:
+                    chunk = f.read(CHUNK_SAMPLES, dtype='float32')
+                    if len(chunk.shape) > 1:
+                        chunk = chunk.mean(axis=1)
 
-                if original_sr != sr:
-                    chunk = librosa.resample(chunk, orig_sr=original_sr, target_sr=sr)
+                    if original_sr != sr:
+                        chunk = librosa.resample(chunk, orig_sr=original_sr, target_sr=sr)
 
-                stft = np.abs(librosa.stft(chunk))
-                low_freq_energy = np.sum(stft[0:15, :], axis=0)
-                chunk_onset = librosa.onset.onset_strength(onset_envelope=low_freq_energy, sr=sr)
+                    stft = np.abs(librosa.stft(chunk))
+                    low_freq_energy = np.sum(stft[0:15, :], axis=0)
+                    chunk_onset = librosa.onset.onset_strength(onset_envelope=low_freq_energy, sr=sr)
 
-                frame_positions.append(len(all_onset_env))
-                all_onset_env.append(chunk_onset)
+                    frame_positions.append(len(all_onset_env))
+                    all_onset_env.append(chunk_onset)
 
-                current_frame += CHUNK_SAMPLES
-                del chunk, stft, low_freq_energy, chunk_onset
+                    current_frame += CHUNK_SAMPLES
+                    del chunk, stft, low_freq_energy, chunk_onset
 
-        if not all_onset_env:
-            return {"success": True, "data": {"onsetMs": [], "beatGridMs": [], "tempo": 120.0, "totalDurationMs": 0}}
+            if not all_onset_env:
+                return {"success": True, "data": {"onsetMs": [], "beatGridMs": [], "tempo": 120.0, "totalDurationMs": 0}}
 
-        full_onset_env = np.concatenate(all_onset_env)
-        del all_onset_env
+            full_onset_env = np.concatenate(all_onset_env)
+            del all_onset_env
 
-        onset_frames = librosa.onset.onset_detect(
-            onset_envelope=full_onset_env, sr=sr,
-            wait=10, pre_avg=1, post_avg=1, pre_max=1, post_max=1
-        )
-        onset_times_sec = librosa.frames_to_time(onset_frames, sr=sr)
-        beat_ms = [round(t * 1000, 1) for t in onset_times_sec]
-
-        tempo, beat_frames = librosa.beat.beat_track(onset_envelope=full_onset_env, sr=sr)
-        if isinstance(tempo, np.ndarray):
-            tempo = float(tempo[0]) if len(tempo) > 0 else 120.0
-        else:
-            tempo = float(tempo)
-        beat_times_sec = librosa.frames_to_time(beat_frames, sr=sr)
-        beat_grid_ms = [round(t * 1000, 1) for t in beat_times_sec]
-
-        del full_onset_env
-
-        return {
-            "success": True,
-            "data": {
-                "onsetMs": beat_ms,
-                "beatGridMs": beat_grid_ms,
-                "tempo": round(tempo, 1),
-                "totalDurationMs": round(total_frames / original_sr * 1000, 1)
-            }
-        }
-    except ImportError:
-        try:
-            y, sr = librosa.load(req.file_path, sr=22050)
-            stft = np.abs(librosa.stft(y))
-            low_freq_energy = np.sum(stft[0:15, :], axis=0)
-            onset_env = librosa.onset.onset_strength(onset_envelope=low_freq_energy, sr=sr)
-            onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, wait=10, pre_avg=1, post_avg=1, pre_max=1, post_max=1)
+            onset_frames = librosa.onset.onset_detect(
+                onset_envelope=full_onset_env, sr=sr,
+                wait=10, pre_avg=1, post_avg=1, pre_max=1, post_max=1
+            )
             onset_times_sec = librosa.frames_to_time(onset_frames, sr=sr)
             beat_ms = [round(t * 1000, 1) for t in onset_times_sec]
-            tempo, beat_frames = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
-            if isinstance(tempo, np.ndarray): tempo = float(tempo[0]) if len(tempo) > 0 else 120.0
-            else: tempo = float(tempo)
+
+            tempo, beat_frames = librosa.beat.beat_track(onset_envelope=full_onset_env, sr=sr)
+            if isinstance(tempo, np.ndarray):
+                tempo = float(tempo[0]) if len(tempo) > 0 else 120.0
+            else:
+                tempo = float(tempo)
             beat_times_sec = librosa.frames_to_time(beat_frames, sr=sr)
             beat_grid_ms = [round(t * 1000, 1) for t in beat_times_sec]
-            del y, stft, onset_env
-            return {"success": True, "data": {"onsetMs": beat_ms, "beatGridMs": beat_grid_ms, "tempo": round(tempo, 1), "totalDurationMs": round(len(beat_ms) / sr * 1000, 1)}}
+
+            del full_onset_env
+
+            return {
+                "success": True,
+                "data": {
+                    "onsetMs": beat_ms,
+                    "beatGridMs": beat_grid_ms,
+                    "tempo": round(tempo, 1),
+                    "totalDurationMs": round(total_frames / original_sr * 1000, 1)
+                }
+            }
+    except ImportError:
+        try:
+            with INFERENCE_LOCK:
+                y, sr = librosa.load(req.file_path, sr=22050)
+                stft = np.abs(librosa.stft(y))
+                low_freq_energy = np.sum(stft[0:15, :], axis=0)
+                onset_env = librosa.onset.onset_strength(onset_envelope=low_freq_energy, sr=sr)
+                onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, sr=sr, wait=10, pre_avg=1, post_avg=1, pre_max=1, post_max=1)
+                onset_times_sec = librosa.frames_to_time(onset_frames, sr=sr)
+                beat_ms = [round(t * 1000, 1) for t in onset_times_sec]
+                tempo, beat_frames = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr)
+                if isinstance(tempo, np.ndarray): tempo = float(tempo[0]) if len(tempo) > 0 else 120.0
+                else: tempo = float(tempo)
+                beat_times_sec = librosa.frames_to_time(beat_frames, sr=sr)
+                beat_grid_ms = [round(t * 1000, 1) for t in beat_times_sec]
+                del y, stft, onset_env
+                return {"success": True, "data": {"onsetMs": beat_ms, "beatGridMs": beat_grid_ms, "tempo": round(tempo, 1), "totalDurationMs": round(len(beat_ms) / sr * 1000, 1)}}
         except Exception as e2:
             raise HTTPException(status_code=500, detail=str(e2))
     except Exception as e:

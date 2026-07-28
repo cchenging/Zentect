@@ -2,6 +2,7 @@
 import path from 'path';
 import fs from 'fs';
 import { spawn } from 'child_process';
+import { PythonClient } from '../PythonClient';
 import { PathManager } from '../../utils/pathManager';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
@@ -143,70 +144,22 @@ export class AudioProcessor {
     const outBaseDir = path.join(outputDir, 'separated');
     if (!fs.existsSync(outBaseDir)) fs.mkdirSync(outBaseDir, { recursive: true });
 
-    // 先检查信号是否已中止，避免无用调用
     if (signal?.aborted) return null;
 
-    // 生成 task_id：Python 端按 task_id 隔离并发任务的进度状态
-    const taskId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-
     try {
-      const { AIDaemon } = await import('../../core/AIDaemon');
-      const { HttpClient } = await import('../../core/HttpClient');
-      const { PythonProgressSubscriber } = await import('./PythonProgressSubscriber');
-      // 🔧 修复 fetch failed：请求前必须等待 daemon 就绪，否则端口无监听 → ECONNREFUSED
-      const daemon = AIDaemon.getInstance();
-      await daemon.waitForReady();
-      const pythonPort = daemon.getPort();
-      const separateUrl = `http://127.0.0.1:${pythonPort}/api/separate`;
-
-      // 🔧 修复 P0 竞态：必须先 await POST 确认任务已启动，再订阅 SSE
-      //   旧版 bug：POST fire-and-forget 不 await → SSE 先连接 →
-      //   Python _get_progress() 创建 started=False 占位条目 →
-      //   POST 到达时去重检查误判为"已在执行"→ 返回 deduplicated=true → 任务根本没启动 →
-      //   SSE 永远等不到 done=True → 10 分钟超时
-      //   修复：await POST 返回（POST 立即返回，不等 Demucs 执行，10s 超时足够），
-      //   确认 started=True 后再订阅 SSE，彻底消除竞态
-      const triggerClient = new HttpClient({ timeoutMs: 10000, maxRetries: 0 });
-      let postOk = false;
-      try {
-        const postRes = await triggerClient.post(separateUrl, {
-          audio_path: inputAudioPath,
-          output_dir: outBaseDir,
-          engine,
-          task_id: taskId,
-        }, { signal });
-        postOk = !!(postRes && (postRes.success || postRes.deduplicated));
-      } catch (err: any) {
-        AppLogger.warn('AudioProcessor', `POST 触发分离失败 (task=${taskId}): ${err?.message || err}`);
-        return null;
-      }
-
-      if (!postOk) {
-        AppLogger.warn('AudioProcessor', `POST 触发分离返回失败 (task=${taskId})`);
-        return null;
-      }
-
-      // SSE 订阅：实时推送 pct/msg，任务结束时携带 result 返回
-      // 此时 POST 已确认任务启动（started=True），SSE 不会再创建占位条目导致去重误判
-      const sseController = new AbortController();
-      const onExternalAbort = () => sseController.abort();
-      signal?.addEventListener('abort', onExternalAbort);
-      const sseResult = await PythonProgressSubscriber.subscribe(
-        taskId,
+      const sseResult = await PythonClient.getInstance().callAsync(
+        '/api/separate',
+        { audio_path: inputAudioPath, output_dir: outBaseDir, engine },
         (pct, msg) => { if (onProgress) onProgress(pct, msg); },
-        600000,
-        sseController.signal
+        { signal, timeoutMs: 600000 }
       );
-      signal?.removeEventListener('abort', onExternalAbort);
 
-      // 从 SSE 携带的 result 取分离产物（Python 端 _set_progress(done=True, result=result) 已存入）
       if (sseResult.result?.vocals) {
         return {
           vocals: sseResult.result.vocals,
           bgm: sseResult.result.bgm || undefined,
         };
       }
-      // SSE 流异常结束（超时/取消/Python 内部错误）
       if (sseResult.error) {
         AppLogger.warn('AudioProcessor', `SSE 订阅异常结束: ${sseResult.error}`);
       }

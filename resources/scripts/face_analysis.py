@@ -12,9 +12,16 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
 
-from ai_daemon import AIModels
+from ai_config import AIModels, INFERENCE_LOCK
 
 router = APIRouter()
+
+
+# ==========================================
+# 辅助：统一错误响应格式（含 errorCode，便于 Node 端按错误类型分流处理）
+# ==========================================
+def _error(msg: str, code: str = "AI_PROCESS_FAILED") -> dict:
+    return {"success": False, "error": msg, "errorCode": code}
 
 
 # ==========================================
@@ -44,42 +51,44 @@ class LoadClustersRequest(BaseModel):
 # ==========================================
 @router.post("/api/vision")
 def api_vision(req: VisionReq):
+    """人脸检测 + 特征提取（带全局推理锁保护，防止并发原生库崩溃）"""
     import cv2
     import numpy as np
     try:
-        app_face = AIModels.get_face_app()
-        results = []
-        for img_path in req.image_paths:
-            if not os.path.exists(img_path):
-                continue
-            img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
-            if img is None: continue
-            faces = app_face.get(img)
-            face_data = []
-            for i, face in enumerate(faces):
-                box = face.bbox.astype(int).tolist()
-                face_img = img[max(0, box[1]):box[3], max(0, box[0]):box[2]]
-                if face_img.size > 0:
-                    face_filename = f"{os.path.splitext(os.path.basename(img_path))[0]}_{i}.jpg"
-                    face_save_path = os.path.join(req.output_dir, face_filename)
-                    cv2.imencode('.jpg', face_img)[1].tofile(face_save_path)
+        with INFERENCE_LOCK:
+            app_face = AIModels.get_face_app()
+            results = []
+            for img_path in req.image_paths:
+                if not os.path.exists(img_path):
+                    continue
+                img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+                if img is None: continue
+                faces = app_face.get(img)
+                face_data = []
+                for i, face in enumerate(faces):
+                    box = face.bbox.astype(int).tolist()
+                    face_img = img[max(0, box[1]):box[3], max(0, box[0]):box[2]]
+                    if face_img.size > 0:
+                        face_filename = f"{os.path.splitext(os.path.basename(img_path))[0]}_{i}.jpg"
+                        face_save_path = os.path.join(req.output_dir, face_filename)
+                        cv2.imencode('.jpg', face_img)[1].tofile(face_save_path)
 
-                    gender_val = 1
-                    if isinstance(face.sex, str):
-                        gender_val = 1 if face.sex.upper() == 'M' else 0
-                    elif face.sex is not None:
-                        gender_val = int(face.sex)
+                        gender_val = 1
+                        if isinstance(face.sex, str):
+                            gender_val = 1 if face.sex.upper() == 'M' else 0
+                        elif face.sex is not None:
+                            gender_val = int(face.sex)
 
-                    age_val = int(float(face.age)) if face.age is not None else 0
+                        age_val = int(float(face.age)) if face.age is not None else 0
 
-                    face_data.append({
-                        "id": face_filename,
-                        "bbox": box,
-                        "gender": gender_val,
-                        "age": age_val,
-                        "embedding": face.embedding.tolist()
-                    })
-            results.append({"frame": img_path, "faces": face_data})
+                        face_data.append({
+                            "id": face_filename,
+                            "bbox": box,
+                            "gender": gender_val,
+                            "age": age_val,
+                            "embedding": face.embedding.tolist()
+                        })
+                results.append({"frame": img_path, "faces": face_data})
         return {"success": True, "data": results}
     except Exception as e:
         traceback.print_exc()
@@ -129,7 +138,9 @@ async def cluster_faces(req: ClusterRequest):
         return {"success": True, "clusters": clusters_map}
     except Exception as e:
         print(f"ERROR: 聚类引擎崩溃 - {str(e)}", file=sys.stderr)
-        return {"success": False, "error": str(e), "clusters": {f.face_id: "role_unknown" for f in req.faces}}
+        err = _error(str(e))
+        err["clusters"] = {f.face_id: "role_unknown" for f in req.faces}
+        return err
 
 
 # ==========================================
@@ -139,10 +150,10 @@ async def cluster_faces(req: ClusterRequest):
 def load_clusters(req: LoadClustersRequest):
     try:
         if not req.persist_dir:
-            return {"success": False, "error": "persist_dir required"}
+            return _error("persist_dir required", "FS_PATH_INVALID")
         persist_path = os.path.join(req.persist_dir, f"clusters_{req.media_id}.json")
         if not os.path.exists(persist_path):
-            return {"success": False, "error": "No persisted clusters found"}
+            return _error("No persisted clusters found", "FS_PATH_INVALID")
 
         with open(persist_path, 'r', encoding='utf-8') as pf:
             data = json.load(pf)
@@ -152,4 +163,4 @@ def load_clusters(req: LoadClustersRequest):
             "embeddings": data.get("embeddings", {})
         }
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return _error(str(e))

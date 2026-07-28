@@ -600,269 +600,43 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     const state = get();
     if (!projectData) return;
 
-    const raw = projectData as any;
-    let parsed: any = {};
-    if (typeof raw.metadata === 'string' && raw.metadata.trim().length > 0) {
-      try { parsed = JSON.parse(raw.metadata); } catch { parsed = {}; }
-    } else if (raw.metadata && typeof raw.metadata === 'object') {
-      parsed = raw.metadata;
-    }
+    const d = projectData as any;
 
-    const video = raw.videoPath || raw.video_path || parsed.videoPath || '';
-    const vocal = raw.vocalPath || parsed.vocalPath || '';
-    const background = raw.backgroundPath || parsed.backgroundPath || '';
-    const asr = raw.asrLines || parsed.asrLines || [];
-    const frameCount = raw.frameCount || parsed.frameCount || 0;
+    // 后端 assembleFullPayload 已将所有数据解析、归一化、推导完毕，前端仅做分发
+    const mediaItems = Array.isArray(d.mediaItems) ? d.mediaItems : state.mediaItems;
+    const asrLines = Array.isArray(d.asrLines) ? d.asrLines : [];
+    const framePaths = Array.isArray(d.framePaths) ? d.framePaths : [];
+    const frameCount = d.frameCount || framePaths.length || 0;
 
-    // 如果有视频路径但 mediaItems 为空，自动构建媒体项确保播放器能识别
-    let mediaItems = raw.mediaItems || state.mediaItems;
-    if (video && (!mediaItems || mediaItems.length === 0)) {
-      mediaItems = [{
-        id: 'main-video-source',
-        name: '原始导入多媒体文件',
-        filePath: video,
-        path: video,
-        type: 'video'
-      }];
-    }
-
-    // === 从 mediaItems 的视频项或元数据中提取关键帧路径给帧预览网格！ ===
-    let framePaths: string[] = [];
-    const videoItems = mediaItems.filter((m: any) => m.type === 'video');
-
-    /** 💥 关键修复：始终优先从 mediaItems.frames（DB 最新数据）提取帧路径，
-     *  metadata.framePaths 可能是旧策略的残留（如 211 帧），而 DB 已更新为新值（如 13 帧） */
-    videoItems.forEach((media: any) => {
-      if (media.frames && Array.isArray(media.frames) && media.frames.length > 0) {
-        const frames = media.frames.map((frame: any) =>
-          typeof frame === 'string' ? frame : (frame.path || frame.filePath || frame.thumbnail || '')
-        ).filter(Boolean);
-        framePaths = [...framePaths, ...frames];
-      }
-    });
-
-    console.log('====== [HYDRATE 帧路径诊断] ======', {
-      videoItemsCount: videoItems.length,
-      firstVideoFrames: videoItems[0]?.frames?.slice?.(0, 3),
-      framePathsCount: framePaths.length,
-      framePathsSample: framePaths.slice(0, 3),
-      metaFramePaths: (raw.framePaths || parsed.framePaths)?.slice?.(0, 3),
-    });
-
-    /** 降级：如果 DB 中没有 frames，再从 metadata.framePaths 恢复 */
-    if (framePaths.length === 0) {
-      const metaFramePaths = raw.framePaths || parsed.framePaths;
-      if (metaFramePaths && Array.isArray(metaFramePaths) && metaFramePaths.length > 0) {
-        framePaths = metaFramePaths;
-      }
-    }
-
-    const existingAudioTypes = new Set(
-      mediaItems
-        .filter((m: any) => m.type === 'audio')
-        .map((m: any) => m.sourceType)
-    );
-    const newItems: any[] = [];
-
-    videoItems.forEach((media: any) => {
-      // 生成音频项
-      if (media.extractedVocals && !existingAudioTypes.has('vocals')) {
-        newItems.push({
-          id: crypto.randomUUID ? crypto.randomUUID() : `${media.id}_vocals_${Date.now()}`,
-          type: 'audio',
-          sourceType: 'vocals',
-          fileName: '分离人声',
-          name: '分离人声',
-          filePath: media.extractedVocals,
-          projectId: raw.id || state.projectId,
-          mediaId: media.id,
-          createdAt: new Date().toISOString(),
-        });
-      }
-
-      if (media.extractedBgm && !existingAudioTypes.has('bgm')) {
-        newItems.push({
-          id: crypto.randomUUID ? crypto.randomUUID() : `${media.id}_bgm_${Date.now()}`,
-          type: 'audio',
-          sourceType: 'bgm',
-          fileName: '分离背景音',
-          name: '分离背景音',
-          filePath: media.extractedBgm,
-          projectId: raw.id || state.projectId,
-          mediaId: media.id,
-          createdAt: new Date().toISOString(),
-        });
-      }
-
-      if (media.extractedAudio && !media.extractedVocals && !media.extractedBgm && !existingAudioTypes.has('extracted')) {
-        newItems.push({
-          id: crypto.randomUUID ? crypto.randomUUID() : `${media.id}_extracted_${Date.now()}`,
-          type: 'audio',
-          sourceType: 'extracted',
-          fileName: '提取音频',
-          name: '提取音频',
-          filePath: media.extractedAudio,
-          projectId: raw.id || state.projectId,
-          mediaId: media.id,
-          createdAt: new Date().toISOString(),
-        });
-      }
-    });
-
-    // 添加新生成的音频项
-    if (newItems.length > 0) {
-      mediaItems = [...mediaItems, ...newItems];
-    }
-
-    // 从 metadata 恢复子步骤状态
-    /** 💥 关键修复：raw 顶层已包含 metadata 展开的字段，优先从 raw 读取 */
-    let subStepStatuses: Record<string, string> = state.subStepStatuses || {};
-    let subStepProgresses: Record<string, number> = state.subStepProgresses || {};
-    let stepStatuses: string[] = state.stepStatuses || ['idle', 'idle', 'idle', 'idle', 'idle'];
-    let stepCompleted: boolean[] = state.stepCompleted || [false, false, false, false, false];
-
-    const rawSubStepStatuses = raw.subStepStatuses || parsed.subStepStatuses;
-    if (rawSubStepStatuses) {
-      try {
-        subStepStatuses = typeof rawSubStepStatuses === 'string'
-          ? JSON.parse(rawSubStepStatuses)
-          : rawSubStepStatuses;
-      } catch {}
-    }
-
-    const rawSubStepProgresses = raw.subStepProgresses || parsed.subStepProgresses;
-    if (rawSubStepProgresses) {
-      try {
-        subStepProgresses = typeof rawSubStepProgresses === 'string'
-          ? JSON.parse(rawSubStepProgresses)
-          : rawSubStepProgresses;
-      } catch {}
-    }
-
-    const rawStepStatuses = raw.stepStatuses || parsed.stepStatuses;
-    if (rawStepStatuses) {
-      try {
-        stepStatuses = typeof rawStepStatuses === 'string'
-          ? JSON.parse(rawStepStatuses)
-          : rawStepStatuses;
-      } catch {}
-    }
-
-    const rawStepCompleted = raw.stepCompleted || parsed.stepCompleted;
-    if (rawStepCompleted) {
-      try {
-        stepCompleted = typeof rawStepCompleted === 'string'
-          ? JSON.parse(rawStepCompleted)
-          : rawStepCompleted;
-      } catch {}
-    }
-
-    /** 💥 统一自动修正：根据 subStepStatuses 推导 step1 总状态，覆盖所有不一致场景
-     *  替代旧版分散的两处修正（running→completed / running→idle），统一用 deriveStep1Status 推导
-     *  覆盖场景：
-     *    1. step1='running' 但子任务全 completed → 升级为 completed
-     *    2. step1='running' 但子任务有 failed → 降级为 failed
-     *    3. step1='idle' 但子任务有 completed/failed → 推导为正确状态（修复历史脏数据）
-     *    4. step1='completed' 但子任务有 failed → 降级为 failed（修复 useExtractionHandler 旧 bug 残留）
-     *    5. step1='completed' 但子任务全 idle → 降级为 idle（修复脏数据）
-     *  注意：cluster/semantic 属于步骤2子任务，不参与步骤1状态推导
-     */
-    if (
-      subStepStatuses &&
-      typeof subStepStatuses === 'object' &&
-      Array.isArray(stepStatuses)
-    ) {
-      const derived = deriveStep1Status(subStepStatuses as Record<string, string>);
-      const currentStep0 = stepStatuses[0];
-      const currentCompleted0 = Array.isArray(stepCompleted) ? stepCompleted[0] : undefined;
-      // 仅在推导结果与当前值不一致时修正，避免无谓变更
-      if (currentStep0 !== derived.stepStatus || currentCompleted0 !== derived.stepCompleted) {
-        // 仅当存在子任务已开始（completed/failed）或当前 step1 为 running/completed/failed 时才修正
-        // 全 idle 时不强制覆盖（避免清掉用户刚进入项目尚未开始的状态）
-        const step1Values = STEP1_SUBSTEPS
-          .map(k => (subStepStatuses as any)[k])
-          .filter(v => v !== undefined && v !== null);
-        const hasStarted = step1Values.some(v => v === 'completed' || v === 'failed');
-        const step1Active = currentStep0 === 'running' || currentStep0 === 'completed' || currentStep0 === 'failed';
-        if (hasStarted || step1Active) {
-          console.log('[hydrate 自动修正] step1:', currentStep0, '→', derived.stepStatus,
-            'completed:', currentCompleted0, '→', derived.stepCompleted,
-            'sub:', JSON.stringify(subStepStatuses));
-          stepStatuses = [...stepStatuses];
-          stepStatuses[0] = derived.stepStatus;
-          if (Array.isArray(stepCompleted)) {
-            stepCompleted = [...stepCompleted];
-            stepCompleted[0] = derived.stepCompleted;
-          }
-        }
-      }
-    }
-
-    /** 💥 自动修正：将 DB 中所有残留的 'running' 子步骤重置为 idle
-     *  场景：管线执行中被中断（崩溃/刷新），DB 残留了瞬态 running 状态。
-     *  管线上一次已结束则 stepStatuses 为 completed/idle/failed，本次加载无活跃管线，残留 running 一律视为过期 */
-    if (
-      subStepStatuses &&
-      typeof subStepStatuses === 'object'
-    ) {
-      const normalized: Record<string, string> = { ...subStepStatuses };
-      let changed = false;
-      for (const key of Object.keys(normalized)) {
-        if (normalized[key] === 'running') {
-          normalized[key] = 'idle';
-          changed = true;
-        }
-      }
-      if (changed) subStepStatuses = normalized;
-    }
-
-    /** 推算当前步骤 */
-    const calculatedCurrentStep = (() => {
-      const saved = raw.currentStep || parsed.currentStep;
-      if (saved && typeof saved === 'number') return saved;
-      const completed = stepCompleted || state.stepCompleted;
-      if (Array.isArray(completed)) {
-        const lastCompletedIdx = completed.lastIndexOf(true);
-        if (lastCompletedIdx >= 0 && lastCompletedIdx < completed.length - 1) return lastCompletedIdx + 2;
-        if (lastCompletedIdx === completed.length - 1) return completed.length;
-      }
-      return state.currentStep || 1;
-    })();
-
-    // ============ 直写局部 Store ============
-
-    // ── PipelineStore：步骤状态 ──
+    // ── PipelineStore ──
     const ps = usePipelineStore.getState();
+    const stepStatuses: string[] = d.stepStatuses || ['idle', 'idle', 'idle', 'idle', 'idle'];
+    const stepCompleted: boolean[] = d.stepCompleted || [false, false, false, false, false];
     for (let i = 1; i <= 5; i++) {
       if (typeof ps.setStepStatus === 'function') ps.setStepStatus(i, (stepStatuses[i - 1] as any) || 'idle');
-    }
-    for (let i = 1; i <= 5; i++) {
       if (typeof ps.setStepCompleted === 'function') ps.setStepCompleted(i, !!stepCompleted[i - 1]);
     }
+    const subStepStatuses: Record<string, string> = d.subStepStatuses || {};
     if (typeof ps.setSubStepStatus === 'function') {
       for (const [key, status] of Object.entries(subStepStatuses)) {
-        // 🔧 修复 TS2345：subStepStatuses 值类型是 string，setSubStepStatus 期望 StepStatus
         ps.setSubStepStatus(key, (status || 'idle') as any);
       }
     }
+    const subStepProgresses: Record<string, number> = d.subStepProgresses || {};
     if (typeof ps.setSubStepProgress === 'function') {
       for (const [key, progress] of Object.entries(subStepProgresses)) {
         ps.setSubStepProgress(key, typeof progress === 'number' ? progress : 0);
       }
     }
-    if (raw.pipelineParams && typeof ps.setPipelineParams === 'function') ps.setPipelineParams(raw.pipelineParams as any);
-    if (raw.extractionConfig !== undefined && typeof ps.setExtractionConfig === 'function') ps.setExtractionConfig(raw.extractionConfig as any);
+    if (d.pipelineParams && typeof ps.setPipelineParams === 'function') ps.setPipelineParams(d.pipelineParams as any);
+    if (d.extractionConfig !== undefined && typeof ps.setExtractionConfig === 'function') ps.setExtractionConfig(d.extractionConfig as any);
 
     // ── Step1Store ──
     const s1 = useStep1Store.getState();
-    if (typeof s1.setAsrLines === 'function' && Array.isArray(asr) && asr.length > 0) s1.setAsrLines(asr);
-    if (typeof s1.setFrameCount === 'function' && (raw.frameCount || parsed.frameCount)) s1.setFrameCount(Number(raw.frameCount || parsed.frameCount));
-    if (typeof s1.setAudioSeparated === 'function' && raw.audioSeparated !== undefined) s1.setAudioSeparated(!!raw.audioSeparated);
-    // 🔧 修复 R3：从 mediaItems 视频项的 vocalsIsFallback 字段恢复降级标记
-    // 旧版 bug：DB 中 vocals_is_fallback=1，但 hydrate 漏写 → UI 永远读 false，降级提示不显示
-    const videoMedia = Array.isArray(mediaItems)
-      ? mediaItems.find((m: any) => m.type === 'video')
-      : undefined;
+    if (typeof s1.setAsrLines === 'function' && asrLines.length > 0) s1.setAsrLines(asrLines);
+    if (typeof s1.setFrameCount === 'function' && frameCount) s1.setFrameCount(frameCount);
+    if (typeof s1.setAudioSeparated === 'function' && d.audioSeparated !== undefined) s1.setAudioSeparated(!!d.audioSeparated);
+    const videoMedia = mediaItems.find((m: any) => m.type === 'video');
     if (typeof s1.setVocalsIsFallback === 'function' && videoMedia?.vocalsIsFallback !== undefined) {
       s1.setVocalsIsFallback(!!videoMedia.vocalsIsFallback);
     }
@@ -871,50 +645,49 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
         s1.setSubStepProgress(key, typeof progress === 'number' ? progress : 0);
       }
     }
-    if (raw.extractionConfig && typeof s1.updateExtractionConfig === 'function') s1.updateExtractionConfig(raw.extractionConfig as any);
+    if (d.extractionConfig && typeof s1.updateExtractionConfig === 'function') s1.updateExtractionConfig(d.extractionConfig as any);
 
     // ── Step2Store ──
     const s2 = useStep2Store.getState();
-    if (typeof s2.setVlmFrames === 'function') s2.setVlmFrames(Array.isArray(raw.vlmFrames) ? raw.vlmFrames : []);
+    if (typeof s2.setVlmFrames === 'function') s2.setVlmFrames(Array.isArray(d.vlmFrames) ? d.vlmFrames : []);
 
     // ── Step3Store ──
     const s3 = useStep3Store.getState();
-    if (typeof s3.setScriptParagraphs === 'function') s3.setScriptParagraphs(Array.isArray(raw.scriptParagraphs) ? raw.scriptParagraphs : []);
-    if (raw.scriptStyle && typeof s3.setScriptStyle === 'function') s3.setScriptStyle(raw.scriptStyle as string);
-    if (raw.speechRate !== undefined && typeof s3.setSpeechRate === 'function') s3.setSpeechRate(Number(raw.speechRate) || 4.5);
-    if (raw.pipelineParams && typeof s3.setPipelineParams === 'function') s3.setPipelineParams(raw.pipelineParams as any);
+    if (typeof s3.setScriptParagraphs === 'function') s3.setScriptParagraphs(Array.isArray(d.scriptParagraphs) ? d.scriptParagraphs : []);
+    if (d.scriptStyle && typeof s3.setScriptStyle === 'function') s3.setScriptStyle(d.scriptStyle as string);
+    if (d.speechRate !== undefined && typeof s3.setSpeechRate === 'function') s3.setSpeechRate(Number(d.speechRate) || 4.5);
+    if (d.pipelineParams && typeof s3.setPipelineParams === 'function') s3.setPipelineParams(d.pipelineParams as any);
 
     // ── Step4Store ──
     const s4 = useStep4Store.getState();
-    if (typeof s4.setTtsResults === 'function') s4.setTtsResults(Array.isArray(raw.ttsResults) ? raw.ttsResults : []);
-    if (raw.ttsEngine && typeof s4.setTtsEngine === 'function') s4.setTtsEngine(raw.ttsEngine as string);
-    if (raw.ttsVoiceId !== undefined && typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((raw.ttsVoiceId as string) || '');
+    if (typeof s4.setTtsResults === 'function') s4.setTtsResults(Array.isArray(d.ttsResults) ? d.ttsResults : []);
+    if (d.ttsEngine && typeof s4.setTtsEngine === 'function') s4.setTtsEngine(d.ttsEngine as string);
+    if (d.ttsVoiceId !== undefined && typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((d.ttsVoiceId as string) || '');
 
     // ── Step5Store ──
     const s5 = useStep5Store.getState();
-    if (typeof s5.setVideoChunks === 'function') s5.setVideoChunks(Array.isArray(raw.videoChunks) ? raw.videoChunks : []);
+    if (typeof s5.setVideoChunks === 'function') s5.setVideoChunks(Array.isArray(d.videoChunks) ? d.videoChunks : []);
 
     // ── EditorNavStore ──
     const nav = useEditorNavStore.getState();
-    if (typeof nav.setCurrentStep === 'function') nav.setCurrentStep(calculatedCurrentStep);
+    if (typeof nav.setCurrentStep === 'function') nav.setCurrentStep(d.currentStep || 1);
 
-    // ============ 写回独立 Store（仅保留项目核心字段） ============
+    // ── ProjectStore 核心字段 ──
     set(() => ({
-      projectId: raw.id || state.projectId,
-      projectName: raw.name || state.projectName,
+      projectId: d.id || state.projectId,
+      projectName: d.name || state.projectName,
       mediaItems,
-      shots: raw.shots || parsed.shots || state.shots,
-      aiShots: raw.aiShots || parsed.aiShots || state.aiShots,
-      roles: raw.roles || parsed.roles || state.roles,
+      shots: d.shots || state.shots,
+      aiShots: d.aiShots || state.aiShots,
+      roles: d.roles || state.roles,
+      canvasData: d.canvasData !== undefined ? d.canvasData : state.canvasData,
       extractedData: {
-        videoPath: video,
-        vocalPath: vocal,
-        backgroundPath: background,
-        asrLines: (Array.isArray(asr) && asr.length > 0) ? asr : state.extractedData.asrLines,
-        /** 💥 关键修复：如果本次从 mediaItems 提取不到帧路径，保留 store 中已有的 framePaths，
-         *  防止第一次 hydrate（DB 原始数据无 frames）清空第二次 hydrate（metadata 含 frames）的结果 */
-        framePaths: framePaths.length > 0 ? framePaths : (state.extractedData?.framePaths || []),
-        frameCount: frameCount || framePaths.length || (state.extractedData?.framePaths?.length || 0)
+        videoPath: d.videoPath || '',
+        vocalPath: d.vocalPath || '',
+        backgroundPath: d.backgroundPath || '',
+        asrLines: asrLines.length > 0 ? asrLines : state.extractedData.asrLines,
+        framePaths: framePaths.length > 0 ? framePaths : state.extractedData.framePaths,
+        frameCount: frameCount || state.extractedData.frameCount,
       }
     }));
   },

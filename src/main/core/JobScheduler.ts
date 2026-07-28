@@ -1,6 +1,7 @@
 // — 路径: src/main/core/JobScheduler.ts
 import { JobRepository } from '../database/repositories/JobRepository';
 import { MediaRepository } from '../database/repositories/MediaRepository';
+import { RoleRepository } from '../database/repositories/RoleRepository';
 import { MainNotifier } from './MainNotifier';
 import { PipelineEngine } from '../engine/PipelineEngine';
 import { PathManager } from '../utils/pathManager';
@@ -119,7 +120,19 @@ export class JobScheduler {
     try {
       if (job.taskType === 'extract') {
         AppLogger.info(LOG_TAGS.SCHEDULER, `⚙️ 开始执行提取管线 [JobId: ${job.id}]`);
-        
+
+        const mediaRepo = new MediaRepository();
+        const existingMedia = await mediaRepo.findById(job.targetId);
+        if (existingMedia) {
+          AppLogger.info(LOG_TAGS.SCHEDULER, `[JobScheduler] 检测到已有媒体数据，将启用增量执行模式`, {
+            mediaId: job.targetId,
+            hasFrames: Array.isArray(existingMedia.frames) && existingMedia.frames.length > 0,
+            hasVocals: !!existingMedia.extractedVocals,
+            hasBgm: !!existingMedia.extractedBgm,
+            hasAsr: !!existingMedia.extractedText,
+          });
+        }
+
         const engine = new PipelineEngine();
         const busResult = await engine.executePipeline(
           {
@@ -136,6 +149,7 @@ export class JobScheduler {
                 mediaPath: payload.filePath,
                 mediaId: job.targetId,
                 config: payload.config,
+                existingMedia: existingMedia || null,
               },
             }],
           },
@@ -148,107 +162,79 @@ export class JobScheduler {
           }
         );
 
-        // 将 PipelineEngine bus 结果映射为旧版兼容格式
         const step1Data = busResult['step1-result'] || {};
+        const framesSkipped = !!step1Data.frames?._skipped;
+        const audioSkipped = !!step1Data.audio?._skipped;
+        const asrSkipped = !!step1Data.asr?._skipped;
+        const facesSkipped = !!step1Data.faces?._skipped;
+
+        AppLogger.info(LOG_TAGS.SCHEDULER, `[JobScheduler] 管线执行结果统计`, {
+          mediaId: job.targetId,
+          framesSkipped, audioSkipped, asrSkipped, facesSkipped,
+          frameCount: step1Data.frames?.count || 0,
+          asrCount: step1Data.asr?.lines?.length || 0,
+          roleCount: step1Data.faces?.count || 0,
+        });
+
         const result = {
           frames: step1Data.frames?.paths || [],
           audioPath: step1Data.audio?.audioPath || null,
           vocalsPath: step1Data.audio?.vocalsPath || null,
           bgmPath: step1Data.audio?.bgmPath || null,
-          // 人声分离降级标记：true=分离失败降级到原始音轨，需提示用户
           vocalsIsFallback: !!step1Data.audio?.vocalsIsFallback,
-          // 分离配置：从入参 config 透传，用于落盘与下游消费
           separationMode: payload.config?.audio?.separationMode || 'quality',
           separationEngine: payload.config?.audio?.engine || 'auto',
-          shots: (step1Data.asr?.lines || []).map((line: any) => ({
-            originalText: line.text || line.originalText || '',
-            start: (() => {
-              const parts = (line.start || '00:00').split(':');
-              return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
-            })(),
-            end: (() => {
-              const parts = (line.end || '00:00').split(':');
-              return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
-            })(),
-          })),
+          shots: (step1Data.asr?.lines || []).map((line: any) => {
+            if (typeof line.start === 'number') {
+              return {
+                originalText: line.text || line.originalText || '',
+                start: line.start,
+                end: line.end,
+              };
+            }
+            return {
+              originalText: line.text || line.originalText || '',
+              start: (() => {
+                const parts = (line.start || '00:00').split(':');
+                return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+              })(),
+              end: (() => {
+                const parts = (line.end || '00:00').split(':');
+                return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+              })(),
+            };
+          }),
           roles: step1Data.faces?.roles || [],
         };
 
         try {
-          const mediaRepo = new MediaRepository();
-          const updatedMedia = await mediaRepo.findById(job.targetId);
-          if (updatedMedia) {
-            updatedMedia.status = 'parsed';
-            
-            // 💥 把绝对路径转换成相对于项目根目录的相对路径
-            const projectDir = PathManager.getProjectDir(job.projectId);
-            
-            // 转换 frames 数组
-            /** 💥 关键修复：只有本次管线实际执行了抽帧时才更新 frames，
-             *  否则会用空数组覆盖 DB 中已有的帧数据 */
-            if (result.frames && Array.isArray(result.frames) && result.frames.length > 0) {
-              updatedMedia.frames = result.frames.map((framePath: string) => {
-                if (path.isAbsolute(framePath)) {
-                  return path.relative(projectDir, framePath).replace(/\\/g, '/');
-                }
-                return framePath;
-              });
-            }
-            
-            // 转换音频路径（只有本次管线实际产出了音频才更新，避免覆盖已有数据）
-            if (result.audioPath) {
-              updatedMedia.extractedAudio = path.isAbsolute(result.audioPath)
-                ? path.relative(projectDir, result.audioPath).replace(/\\/g, '/')
-                : result.audioPath;
-            }
-            if (result.vocalsPath) {
-              updatedMedia.extractedVocals = path.isAbsolute(result.vocalsPath)
-                ? path.relative(projectDir, result.vocalsPath).replace(/\\/g, '/')
-                : result.vocalsPath;
-            }
-            if (result.bgmPath) {
-              updatedMedia.extractedBgm = path.isAbsolute(result.bgmPath)
-                ? path.relative(projectDir, result.bgmPath).replace(/\\/g, '/')
-                : result.bgmPath;
-            }
+          const { PipelineResultWriter } = require('../pipeline/PipelineResultWriter');
+          const { updatedMedia, finalRoles } = await PipelineResultWriter.writeStep1Results({
+            projectId: job.projectId,
+            mediaId: job.targetId,
+            result,
+            framesSkipped,
+            audioSkipped,
+            asrSkipped,
+            facesSkipped,
+            step1Data,
+          });
 
-            // 落盘音频分离配置：模式、引擎、降级标记（供前端展示与下游消费）
-            updatedMedia.separationMode = result.separationMode;
-            updatedMedia.separationEngine = result.separationEngine;
-            updatedMedia.vocalsIsFallback = result.vocalsIsFallback;
+          const hydratedPayload = this.projectService.hydratePaths({
+            media: updatedMedia,
+            shots: result.shots || [],
+            roles: finalRoles
+          }, job.projectId);
 
-            // 🔧 修复：把 ASR 台词序列化落盘到 media_assets.extracted_text
-            // 旧版 bug：ASR 文本只通过前端 IPC 写入 projects.metadata.asrLines，
-            //          后端不主动落库 → 前端崩溃/用户关窗时 asrLines 丢失
-            // 现在后端主动写入 extracted_text，前端重进时可作为 fallback 恢复
-            if (result.shots && result.shots.length > 0) {
-              updatedMedia.extractedText = JSON.stringify(
-                result.shots.map((s: any) => ({
-                  start: s.start,
-                  end: s.end,
-                  text: s.originalText || '',
-                }))
-              );
-            }
+          MainNotifier.notify(IPC_CHANNELS.EVENT_EXTRACTION_SUCCESS, {
+            mediaId: job.targetId,
+            projectId: job.projectId,
+            media: hydratedPayload.media,
+            shots: hydratedPayload.shots,
+            roles: hydratedPayload.roles
+          });
 
-            mediaRepo.updateMedia(updatedMedia.id, updatedMedia);
-
-            const hydratedPayload = this.projectService.hydratePaths({
-              media: updatedMedia,
-              shots: result.shots || [],
-              roles: result.roles || []
-            }, job.projectId);
-
-            MainNotifier.notify(IPC_CHANNELS.EVENT_EXTRACTION_SUCCESS, {
-              mediaId: job.targetId,
-              projectId: job.projectId,
-              media: hydratedPayload.media,
-              shots: hydratedPayload.shots,
-              roles: hydratedPayload.roles
-            });
-            
-            AppLogger.info(LOG_TAGS.SCHEDULER, `[JobScheduler] 素材分离完毕，已向前端发送注水后广播`);
-          }
+          AppLogger.info(LOG_TAGS.SCHEDULER, `[JobScheduler] 素材分析完毕，增量结果已合并并广播`);
 
           this.repo.updateJobStatus(job.id, DICT.TASK_STATUS.COMPLETED, 100, 'TASK_SUCCESS');
           MainNotifier.notifyTaskCompleted(job.targetId, job.projectId, result);
@@ -283,16 +269,6 @@ export class JobScheduler {
       AppLogger.info(LOG_TAGS.SCHEDULER, `[线性向导中枢] 开始激活极速提取分析流. 项目: ${projectId}`);
       
       window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 5, status: 'processing' });
-
-      const { AIDaemon } = require('./AIDaemon');
-      // 🔧 修复 fetch failed：请求前等待 daemon 就绪，避免端口无监听 → ECONNREFUSED
-      const daemon = AIDaemon.getInstance?.();
-      if (daemon && !daemon.isOnline()) {
-        try { await daemon.waitForReady(); } catch (e: any) {
-          AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] AI daemon 未就绪`, { error: e?.message });
-        }
-      }
-      const pythonPort = daemon?.getPort?.() || 34567;
 
       // 1. 抽帧（FFmpeg 本地执行，不依赖 Python）
       window.webContents.send('QUICK_PIPELINE_PROGRESS', { progress: 10, status: 'processing', nodeName: '正在提取关键帧...' });
@@ -332,11 +308,8 @@ export class JobScheduler {
       let vocalsIsFallback = false;
 
       if (extractedAudioPath) {
-        const httpClient = require('./HttpClient').HttpClient;
-        const { PythonProgressSubscriber } = require('../engine/media/PythonProgressSubscriber');
+        const { PythonClient } = require('../engine/PythonClient');
 
-        // 生成 task_id：与 Python 端 _task_progress 字典 key 对齐，支持并发分离
-        const taskId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         // SSE 进度回调：把 Python 端 0-100 的 pct 映射到前端进度条 30-50 区间
         let lastPct = 30;
         const onSseProgress = (pct: number, msg: string) => {
@@ -347,26 +320,19 @@ export class JobScheduler {
           }
         };
 
-        // POST fire-and-forget：只触发 Python 任务，不等待
-        // 结果通过 SSE 流回传（progress.result），规避 HttpClient 90s 超时
-        httpClient.post(`http://127.0.0.1:${pythonPort}/api/separate`, {
-          audio_path: extractedAudioPath,
-          output_dir: audioDir,
-          engine: 'auto',
-          task_id: taskId,
-        }).catch((err: any) => {
-          AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] POST 触发分离失败 (task=${taskId})`, { error: err?.message });
-        });
-
         try {
-          // SSE 订阅：推送进度，任务结束时携带 result
-          const sseResult = await PythonProgressSubscriber.subscribe(taskId, onSseProgress, 600000);
+          // PythonClient.callAsync 内部处理 POST 触发 + SSE 订阅
+          const sseResult = await PythonClient.getInstance().callAsync(
+            '/api/separate',
+            { audio_path: extractedAudioPath, output_dir: audioDir, engine: 'auto' },
+            onSseProgress,
+            { timeoutMs: 600000 }
+          );
           if (sseResult.result?.vocals) {
-            // Python 契约返回 { success, vocals, bgm }
             vocalPath = sseResult.result.vocals || null;
             backgroundPath = sseResult.result.bgm || null;
-          } else if (sseResult.result?.success === false || sseResult.error) {
-            throw new Error(sseResult.result?.error || sseResult.error || 'Python 音频分离失败');
+          } else if (sseResult.error) {
+            throw new Error(sseResult.error || 'Python 音频分离失败');
           }
         } catch (separateErr: any) {
           AppLogger.warn(LOG_TAGS.SCHEDULER, `[线性向导] 分离失败，降级使用原始音轨`, { error: separateErr.message });

@@ -1,5 +1,6 @@
 import type { ITextExtractor, TextExtractResult } from './IExtractor';
 import { AIDaemon } from '../../core/AIDaemon';
+import { PythonClient } from '../PythonClient';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
@@ -45,15 +46,15 @@ export class LocalWhisperStrategy implements ITextExtractor {
     }
 
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，使用 ${engine} 推理`);
-    return await this.transcribeViaDaemon(daemon, audioPath, whisperOutPath, language, engine, signal, onProgress);
+    return await this.transcribeViaDaemon(audioPath, whisperOutPath, language, engine, signal, onProgress);
   }
 
   /**
-   * 通过 Python Daemon 调用 ASR（HTTP POST 触发 + SSE 流式进度）
+   * 通过 Python Daemon 调用 ASR（统一使用 PythonClient.callAsync）
    * SenseVoice 和 faster-whisper 共用此路径，通过 engine 参数区分
    */
   private async transcribeViaDaemon(
-    daemon: AIDaemon, audioPath: string, whisperOutPath: string,
+    audioPath: string, whisperOutPath: string,
     language: string, engine: string,
     signal?: AbortSignal, onProgress?: (pct: number, msg: string) => void
   ): Promise<TextExtractResult> {
@@ -64,53 +65,15 @@ export class LocalWhisperStrategy implements ITextExtractor {
 
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] ${engine} 超时设置: ${Math.round(timeoutMs / 1000)}s (音频估算 ${Math.round(estimatedDurationSec)}s)`);
 
-    // 生成 task_id：Python 端按 task_id 隔离并发 ASR 任务的进度状态
-    const taskId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     // 语言代码映射：BCP-47 (zh-CN/en-US/id-ID) → Whisper 语言代码 (zh/en/id)
-    //   修复: 旧版只映射 zh-CN/en-US，其他语言都被映射成 'auto'，导致 faster-whisper
-    //   自动检测可能误判（如印尼语被识别为马来语）。现在支持所有 Whisper 支持的语言。
     const langCode = LocalWhisperStrategy.normalizeLangCode(language);
 
-    // 🔧 修复 P0 竞态：必须先 await POST 确认任务已启动，再订阅 SSE
-    //   旧版 bug：POST fire-and-forget 不 await → SSE 先连接 →
-    //   Python _get_progress() 创建 started=False 占位条目 →
-    //   POST 到达时去重检查误判为"已在执行"→ 返回 deduplicated=true → 任务根本没启动 →
-    //   SSE 永远等不到 done=True → 超时
-    //   修复：await POST 返回（POST 立即返回，不等 ASR 执行，10s 超时足够），
-    //   确认 started=True 后再订阅 SSE，彻底消除竞态
-    const { HttpClient } = await import('../../core/HttpClient');
-    const { PythonProgressSubscriber } = await import('../media/PythonProgressSubscriber');
-    const pythonPort = daemon.getPort();
-    const transcribeUrl = `http://127.0.0.1:${pythonPort}/api/transcribe`;
-
-    const triggerClient = new HttpClient({ timeoutMs: 10000, maxRetries: 0 });
-    let postOk = false;
-    try {
-      const postRes = await triggerClient.post(transcribeUrl, {
-        audio_path: audioPath,
-        output_json_path: whisperOutPath,
-        language: langCode,
-        engine,
-        task_id: taskId,
-      }, { signal });
-      postOk = !!(postRes && (postRes.success || postRes.deduplicated));
-    } catch (err: any) {
-      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] POST 触发转写失败 (task=${taskId}): ${err?.message || err}`);
-      throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, `ASR 服务触发失败: ${err?.message || err}`);
-    }
-
-    if (!postOk) {
-      throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'ASR 服务触发失败');
-    }
-
-    // SSE 订阅：实时推送 pct/msg，任务结束时携带 result 返回
-    // 此时 POST 已确认任务启动（started=True），SSE 不会创建占位条目导致去重误判
-    const sseResult = await PythonProgressSubscriber.subscribe(
-      taskId,
+    // PythonClient.callAsync 内部处理 POST 触发 + SSE 订阅，消除竞态
+    const sseResult = await PythonClient.getInstance().callAsync(
+      '/api/transcribe',
+      { audio_path: audioPath, output_json_path: whisperOutPath, language: langCode, engine },
       (pct, msg) => { if (onProgress) onProgress(pct, msg); },
-      timeoutMs,
-      signal,
-      '/api/transcribe/stream/'  // ASR 专用 SSE 路径
+      { signal, timeoutMs, streamPath: '/api/transcribe/stream/' }
     );
 
     // 从 SSE 携带的 result 取 ASR 产物

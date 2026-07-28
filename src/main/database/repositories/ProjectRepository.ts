@@ -175,8 +175,20 @@ export class ProjectRepository {
         console.error('[Repo] 解析 canvas_data 失败:', e);
       }
     }
-    // canvas_data 中的值覆盖 metadata（排除画布结构专用字段和独立表已有字段）
-    const CANVAS_SKIP_KEYS = new Set(['nodes', 'edges', 'mediaItems', 'viewport', 'shots', 'aiShots', 'roles']);
+    // canvas_data 中的值覆盖 metadata（排除画布结构专用字段、独立表已有字段、以及**管线状态字段**）
+    // 💥 关键修复：状态字段（subStepStatuses/stepStatuses/stepCompleted 等）必须以 metadata 为准！
+    //   根因：canvas_data 由 SyncDaemon 每5秒写入，包含瞬态 running 状态；
+    //         metadata 仅在管线步骤真正完成时通过 saveFullProjectData 更新，代表持久化的确认状态。
+    //         若用户关闭应用时管线正在执行，canvas_data 中 running 会覆盖 metadata 中 completed，
+    //         前端 hydrate 把 running→idle → 已完成的子步骤状态全部丢失！
+    const CANVAS_SKIP_KEYS = new Set([
+      'nodes', 'edges', 'mediaItems', 'viewport', 'shots', 'aiShots', 'roles',
+      // 🔧 状态字段：以 metadata（步骤完成时持久化）为准，不让 canvas_data（瞬态快照）覆盖
+      'subStepStatuses', 'subStepProgresses', 'stepStatuses', 'stepCompleted',
+      'currentStep', 'pipelineRunning', 'pipelineError', 'pipelineProgress',
+      'audioConfig', 'extractedVocals', 'extractedBgm', 'extractedAudio',
+      'audioSeparationMode', 'asrEngine', 'vocalsIsFallback'
+    ]);
     for (const [key, val] of Object.entries(canvasObj)) {
       if (CANVAS_SKIP_KEYS.has(key)) continue;
       if (val !== undefined && val !== null) {

@@ -9,6 +9,7 @@ import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { SQLiteConnection } from '../database/core/SQLiteConnection';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
+import { assembleProjectPayload } from './ProjectPayloadAssembler';
 import * as fsSync from 'fs';
 
 export class ProjectService {
@@ -165,7 +166,8 @@ export class ProjectService {
 
   public loadData(id: string) { 
     const rawData = this.repo.loadFullProjectData(id); 
-    return this.hydratePaths(rawData, id);
+    const hydrated = this.hydratePaths(rawData, id);
+    return assembleProjectPayload(hydrated, id);
   }
 
   public saveData(id: string, data: any) { 

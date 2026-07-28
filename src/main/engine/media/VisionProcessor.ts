@@ -4,8 +4,7 @@ import fs from 'fs';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
-import { AIDaemon } from '../../core/AIDaemon';
-import { HttpClient } from '../../core/HttpClient';
+import { PythonClient } from '../PythonClient';
 
 export class VisionProcessor {
   /**
@@ -85,7 +84,7 @@ export class VisionProcessor {
     }
 
     try {
-      const pythonPort = AIDaemon.getInstance?.().getPort?.() || 34567;
+      const pythonClient = PythonClient.getInstance();
       const BATCH_SIZE = 100; // 每批最多 100 帧，避免 HTTP 请求过大
       const allFaces: any[] = [];
 
@@ -100,11 +99,10 @@ export class VisionProcessor {
         AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: 批次 ${batchNum}/${totalBatches} (${batch.length} 帧)`);
 
         try {
-          // 🔧 修复 P0-1+P0-2：路径 /face/detect → /api/vision，DTO {frames} → {image_paths, output_dir}
-          const response = await HttpClient.post(`http://127.0.0.1:${pythonPort}/api/vision`, {
+          const response = await pythonClient.call('/api/vision', {
             image_paths: batch,
             output_dir: facesDir
-          });
+          }, signal);
           // 🔧 修复 P0-3：Python 返回 {success, data: [{frame, faces: [...]}, ...]}
           //   data 是数组而非对象，需 flatMap 展平所有帧的人脸
           const batchFaces = Array.isArray(response?.data)
@@ -138,11 +136,7 @@ export class VisionProcessor {
     }
 
     try {
-      const daemon = AIDaemon.getInstance();
-      // 🔧 修复 P0-4：字段名对齐 Python ClusterRequest
-      //   Python 期望 { media_id, faces: [{face_id, embedding}], persist_dir }
-      //   旧版传 { mediaId, faces }（camelCase + 字段名不匹配）→ 422
-      const result = await daemon.post('/api/cluster_faces', {
+      const result = await PythonClient.getInstance().call('/api/cluster_faces', {
         media_id: mediaId,
         faces: faces.map((f: any) => ({
           face_id: f.id || f.face_id || '',
@@ -179,9 +173,7 @@ export class VisionProcessor {
 
     // 💥【核心修复】：修正 RPC 通信函数签名，将真实数据喂给 Python 侧的 Faiss 和 CLIP
     try {
-      const pythonPort = AIDaemon.getInstance?.().getPort?.() || 34567;
-
-      const response = await HttpClient.post(`http://127.0.0.1:${pythonPort}/semantic/extract`, {
+      const response = await PythonClient.getInstance().call('/semantic/extract', {
         mediaId,
         shots
       });

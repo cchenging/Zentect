@@ -10,8 +10,41 @@ import { LocalWhisperStrategy } from '../../../../main/engine/strategies/LocalWh
 import { AppLogger } from '../../../../main/core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
+import { MediaRepository } from '@modules/media/import/data/MediaRepository';
+import { RoleRepository } from '../../../../main/database/repositories/RoleRepository';
 import * as path from 'path';
 import * as fs from 'fs';
+
+/**
+ * 清理 magic:// 协议 URL 为本地文件系统绝对路径
+ *
+ * DB 中可能存储了三种格式的路径：
+ * 1. magic://{projectId}/relative/path  → projectDir/relative/path
+ * 2. magic://local/F:/absolute/path      → F:\absolute\path（跨盘符）
+ * 3. 普通相对路径 nodes/xxx/audio.wav     → projectDir/nodes/xxx/audio.wav
+ */
+function resolveDbPath(dbValue: string | undefined | null, projectDir: string): string | undefined {
+  if (!dbValue) return undefined;
+  const val = dbValue.replace(/\\/g, '/');
+
+  // 格式2: magic://local/F:/absolute/path → 直接提取绝对路径
+  if (val.startsWith('magic://local/')) {
+    const raw = val.replace(/^magic:\/\/local\//, '');
+    return raw.replace(/\//g, '\\');
+  }
+
+  // 格式1: magic://{projectId}/nodes/... → 提取 relative 部分，拼 projectDir
+  const magicMatch = val.match(/^magic:\/\/(?:[^\/]+)\/(.+)/);
+  if (magicMatch) {
+    return path.join(projectDir, magicMatch[1].replace(/\//g, '\\'));
+  }
+
+  // 格式3: 普通相对路径（新代码写入的干净数据）
+  if (path.isAbsolute(val)) {
+    return val.replace(/\//g, '\\');
+  }
+  return path.join(projectDir, val.replace(/\//g, '\\'));
+}
 
 /**
  * Step1 素材分析管线策略
@@ -19,6 +52,8 @@ import * as fs from 'fs';
  *
  * 双子星并行调度：抽帧与音频分离同时启动（Promise.all），
  * 之后串行执行 ASR 和人脸检测，每个步骤失败时降级跳过不阻断管线。
+ *
+ * V1.2: 支持增量执行 - 检测已有产出并跳过对应子步骤
  */
 export class Step1MaterialStrategy extends BaseNodeStrategy {
   readonly nodeType = 'step1-material';
@@ -33,17 +68,17 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     const mediaPath = input.mediaPath;
     const config = input.config || {};
     const separationMode = config.audio?.separationMode || 'quality';
-    // 引擎选择：quality 模式下可指定 'demucs' | 'mdx' | 'auto'，默认 'auto'（Python 端 Demucs→MDX 顺序）
     const engine = config.audio?.engine || 'auto';
     const mediaId = input.mediaId || `media_${Date.now()}`;
-    const signal = context.signal; // Fix 10: 取消信号，透传给所有异步子操作
+    const signal = context.signal;
+    // 🔧 修复重试：forceRetryStep 表示用户点击了单个子步骤的重试按钮，该子步骤必须强制执行不跳过
+    const forceRetryStep: string | null = input.forceRetryStep || config._forceRetry || null;
 
     if (!mediaPath) {
       AppLogger.warn(LOG_TAGS.SCHEDULER, '[Step1] 未提供媒体文件路径');
       throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, '未找到媒体文件路径');
     }
 
-    // 子步骤开关：兼容布尔值和 { enabled: true/false } 两种配置格式
     const runFrames = config.frames !== false &&
       (typeof config.frames === 'boolean' ? config.frames : (config.frames?.enabled ?? true));
     const runAudio = config.audio !== false &&
@@ -55,7 +90,266 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
 
     onProgress(0, '素材分析开始...');
 
-    // 创建子目录
+    const projectDir = PathManager.getProjectDir(context.projectId);
+
+    const existingMedia = input.existingMedia || null;
+    const mediaRepo = new MediaRepository();
+    const roleRepo = new RoleRepository();
+
+    let existingFrames: string[] = [];
+    let existingAudioPath: string | undefined;
+    let existingVocalsPath: string | undefined;
+    let existingBgmPath: string | undefined;
+    let existingVocalsIsFallback = false;
+    let existingAsrLines: any[] = [];
+    let existingRoles: any[] = [];
+
+    // 🔧 修复重试：初始化跳过标志
+    // - forceRetryStep 指定的子步骤：强制重新执行，不跳过
+    // - 其他子步骤：默认不跳过（后续检查已有数据时再决定是否跳过）
+    let skipFrames = false;
+    let skipAudio = false;
+    let skipAsr = false;
+    let skipFaces = false;
+
+    const dbMedia = existingMedia || (mediaId ? mediaRepo.findById(mediaId) : null);
+    if (dbMedia && !forceRetryStep) {
+      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 检测到已有媒体数据，开始检查可跳过的子步骤`, { mediaId });
+
+      if (Array.isArray(dbMedia.frames) && dbMedia.frames.length > 0) {
+        const absoluteFrames = dbMedia.frames
+          .map((f: string) => resolveDbPath(f, projectDir))
+          .filter((f: string | undefined): f is string => !!f && fs.existsSync(f));
+        if (absoluteFrames.length > 0) {
+          existingFrames = absoluteFrames;
+          skipFrames = true;
+          AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有帧数据 (${absoluteFrames.length}帧)，跳过抽帧`, { mediaId });
+        }
+      }
+
+      const vocalsAbs = dbMedia.extractedVocals ? resolveDbPath(dbMedia.extractedVocals, projectDir) : undefined;
+      const bgmAbs = dbMedia.extractedBgm ? resolveDbPath(dbMedia.extractedBgm, projectDir) : undefined;
+      const audioAbs = dbMedia.extractedAudio ? resolveDbPath(dbMedia.extractedAudio, projectDir) : undefined;
+      if (vocalsAbs && fs.existsSync(vocalsAbs) && bgmAbs && fs.existsSync(bgmAbs)) {
+        existingVocalsPath = vocalsAbs;
+        existingBgmPath = bgmAbs;
+        existingAudioPath = audioAbs || vocalsAbs;
+        existingVocalsIsFallback = !!dbMedia.vocalsIsFallback;
+        skipAudio = true;
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有音频分离产物，跳过音频分离`, { mediaId });
+      } else if (separationMode === 'fast' && audioAbs && fs.existsSync(audioAbs)) {
+        existingAudioPath = audioAbs;
+        existingVocalsIsFallback = true;
+        skipAudio = true;
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 极速模式：检测到已有音频，跳过提取`, { mediaId });
+      }
+
+      if (dbMedia.extractedText) {
+        try {
+          const parsed = JSON.parse(dbMedia.extractedText);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            existingAsrLines = parsed.map((s: any) => {
+              let startSec: number;
+              let endSec: number;
+              let startMs: number;
+              let endMs: number;
+              let startMmss: string;
+              let endMmss: string;
+
+              if (typeof s.start === 'string' && s.start.includes(':')) {
+                const parts = s.start.split(':');
+                startSec = (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0);
+                startMs = startSec * 1000;
+                startMmss = s.start;
+              } else {
+                startSec = typeof s.start === 'number' ? s.start : (s.startMs ? s.startMs / 1000 : 0);
+                startMs = s.startMs || startSec * 1000;
+                const m = Math.floor(startSec / 60);
+                const sec = Math.floor(startSec % 60);
+                startMmss = `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+              }
+
+              if (typeof s.end === 'string' && s.end.includes(':')) {
+                const parts = s.end.split(':');
+                endSec = (parseInt(parts[0], 10) || 0) * 60 + (parseInt(parts[1], 10) || 0);
+                endMs = endSec * 1000;
+                endMmss = s.end;
+              } else {
+                endSec = typeof s.end === 'number' ? s.end : (s.endMs ? s.endMs / 1000 : 0);
+                endMs = s.endMs || endSec * 1000;
+                const m = Math.floor(endSec / 60);
+                const sec = Math.floor(endSec % 60);
+                endMmss = `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+              }
+
+              return {
+                start: startMmss,
+                startMs,
+                end: endMmss,
+                endMs,
+                text: s.text || '',
+                originalText: s.text || s.originalText || '',
+                editing: false,
+              };
+            });
+            skipAsr = true;
+            AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有ASR结果 (${existingAsrLines.length}段)，跳过语音识别`, { mediaId });
+          }
+        } catch (e) {
+          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[Step1] 解析已有ASR结果失败，将重新识别`, { mediaId });
+        }
+      }
+
+      try {
+        const dbRoles = roleRepo.findByProjectId(context.projectId);
+        if (dbRoles.length > 0) {
+          existingRoles = dbRoles.map((r: any) => {
+            const avatarAbs = r.avatar ? resolveDbPath(r.avatar, projectDir) : null;
+            return {
+              id: r.id,
+              name: r.name,
+              faceCount: 0,
+              representative: avatarAbs ? { facePath: avatarAbs } : null,
+              faces: [],
+              avatar: r.avatar,
+              avatarPath: avatarAbs,
+              pronoun: r.pronoun,
+              description: r.description,
+              voiceId: r.voice_id,
+              mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
+            };
+          });
+          skipFaces = existingFrames.length > 0;
+          if (skipFaces) {
+            AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有角色数据 (${existingRoles.length}个)，跳过人脸检测`, { mediaId });
+          }
+        }
+      } catch (e) {
+        AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[Step1] 查询已有角色失败，将重新检测`, { mediaId });
+      }
+    } else if (forceRetryStep) {
+      // 🔧 强制重试单个子步骤时，其他子步骤尝试从 DB 加载已有结果（即使被禁用也加载已有数据）
+      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🔄 强制重试子步骤: ${forceRetryStep}，将加载其他子步骤的已有结果`, { mediaId });
+
+      // 🔧 加载已有帧数据
+      if (forceRetryStep !== 'frames' && dbMedia) {
+        if (Array.isArray(dbMedia.frames) && dbMedia.frames.length > 0) {
+          const absoluteFrames = dbMedia.frames
+            .map((f: string) => resolveDbPath(f, projectDir))
+            .filter((f: string | undefined): f is string => !!f && fs.existsSync(f));
+          AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] [诊断] 帧路径加载: DB中${dbMedia.frames.length}个, 文件存在${absoluteFrames.length}个`, {
+            mediaId,
+            sampleDbPath: dbMedia.frames[0],
+            sampleAbsPath: absoluteFrames[0],
+            projectDir,
+          });
+          if (absoluteFrames.length > 0) {
+            existingFrames = absoluteFrames;
+            skipFrames = true; // 🔧 修复：加载成功后标记为跳过，不重复抽帧
+          }
+        }
+      }
+
+      // 🔧 加载已有音频数据（修复：只要有任何可用音频就加载，不需要vocals+bgm同时存在）
+      if (forceRetryStep !== 'audio' && dbMedia) {
+        const vocalsAbs = dbMedia.extractedVocals ? resolveDbPath(dbMedia.extractedVocals, projectDir) : undefined;
+        const bgmAbs = dbMedia.extractedBgm ? resolveDbPath(dbMedia.extractedBgm, projectDir) : undefined;
+        const audioAbs = dbMedia.extractedAudio ? resolveDbPath(dbMedia.extractedAudio, projectDir) : undefined;
+
+        const vocalsExists = vocalsAbs && fs.existsSync(vocalsAbs);
+        const bgmExists = bgmAbs && fs.existsSync(bgmAbs);
+        const audioExists = audioAbs && fs.existsSync(audioAbs);
+
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] [诊断] 音频路径加载`, {
+          mediaId,
+          vocalsAbs: vocalsAbs ? { path: vocalsAbs, exists: vocalsExists } : null,
+          bgmAbs: bgmAbs ? { path: bgmAbs, exists: bgmExists } : null,
+          audioAbs: audioAbs ? { path: audioAbs, exists: audioExists } : null,
+          projectDir,
+        });
+
+        // 优先使用vocals（人声分离结果，ASR识别质量最好）
+        if (vocalsExists) {
+          existingVocalsPath = vocalsAbs;
+          existingBgmPath = bgmExists ? bgmAbs : undefined;
+          existingAudioPath = vocalsAbs; // ASR用人声音轨
+          existingVocalsIsFallback = false;
+          skipAudio = true; // 🔧 修复：加载成功后标记为跳过
+          AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有人声分离产物，跳过音频分离（ASR将使用人声音轨）`, { mediaId });
+        } else if (audioExists) {
+          // 回退到原始音轨（极速模式或分离失败后的降级）
+          existingAudioPath = audioAbs;
+          existingVocalsIsFallback = true;
+          skipAudio = true; // 🔧 修复：加载成功后标记为跳过
+          AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有音频，跳过音频分离（ASR将使用原始音轨）`, { mediaId });
+        } else {
+          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[Step1] ⚠️ 未找到可用音频文件，ASR可能无法执行`, { mediaId });
+        }
+      }
+
+      // 🔧 加载已有ASR结果（重试whisper时不加载，需要重新识别）
+      if (forceRetryStep !== 'whisper' && dbMedia?.extractedText) {
+        try {
+          const parsed = JSON.parse(dbMedia.extractedText);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            existingAsrLines = parsed.map((s: any) => ({
+              start: typeof s.start === 'string' ? s.start : '00:00',
+              startMs: s.startMs || 0,
+              end: typeof s.end === 'string' ? s.end : '00:00',
+              endMs: s.endMs || 0,
+              text: s.text || '',
+              originalText: s.originalText || s.text || '',
+              editing: false,
+            }));
+            skipAsr = true; // 🔧 修复：加载成功后标记为跳过
+          }
+        } catch {}
+      }
+
+      // 🔧 加载已有角色数据
+      if (forceRetryStep !== 'faces') {
+        try {
+          const dbRoles = roleRepo.findByProjectId(context.projectId);
+          if (dbRoles.length > 0) {
+            existingRoles = dbRoles.map((r: any) => {
+              const avatarAbs = r.avatar ? resolveDbPath(r.avatar, projectDir) : null;
+              return {
+                id: r.id, name: r.name, faceCount: 0,
+                representative: avatarAbs ? { facePath: avatarAbs } : null,
+                faces: [], avatar: r.avatar, avatarPath: avatarAbs,
+                pronoun: r.pronoun, description: r.description, voiceId: r.voice_id,
+                mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
+              };
+            });
+            skipFaces = existingFrames.length > 0; // 🔧 修复：只有帧数据存在时才跳过人脸检测
+            if (skipFaces) {
+              AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有角色数据 (${existingRoles.length}个)，跳过人脸检测`, { mediaId });
+            }
+          }
+        } catch {}
+      }
+    }
+
+    // 🔧 修复：重试单个子步骤时，自动检查并修复依赖
+    // 如果重试的子步骤依赖的前置产物不存在（文件丢失或之前因MODULE_NOT_FOUND等bug未写入），
+    // 则自动启用前置子步骤，确保依赖链路完整
+    if (forceRetryStep) {
+      // ASR(whisper) 依赖音频：如果音频文件不存在，强制启用音频分离
+      if (forceRetryStep === 'whisper' && !existingAudioPath) {
+        AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+          `[Step1] ⚠️ 重试ASR但音频文件不存在，将自动先执行音频分离`, { mediaId });
+        skipAudio = false;
+        // 注意：不能直接改runAudio（它是const），需要通过其他方式让音频执行
+        // 我们在下面needRunAudio判断中处理这个情况
+      }
+      // 人脸检测依赖关键帧：如果帧不存在，强制启用抽帧
+      if (forceRetryStep === 'faces' && existingFrames.length === 0) {
+        AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+          `[Step1] ⚠️ 重试人脸检测但关键帧不存在，将自动先执行抽帧`, { mediaId });
+        skipFrames = false;
+      }
+    }
+
     const framesDir = path.join(cacheDir, 'frames');
     const audioDir = path.join(cacheDir, 'audio');
     const facesDir = path.join(cacheDir, 'faces');
@@ -63,135 +357,156 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     if (!fs.existsSync(audioDir)) fs.mkdirSync(audioDir, { recursive: true });
     if (!fs.existsSync(facesDir)) fs.mkdirSync(facesDir, { recursive: true });
 
-    let validFrames: string[] = [];
-    let audioPath: string | undefined;
-    let vocalsPath: string | undefined;
-    let bgmPath: string | undefined;
-    let vocalsIsFallback = false;
+    let validFrames: string[] = skipFrames ? [...existingFrames] : (forceRetryStep && forceRetryStep !== 'frames' ? [...existingFrames] : []);
+    let audioPath: string | undefined = existingAudioPath;
+    let vocalsPath: string | undefined = existingVocalsPath;
+    let bgmPath: string | undefined = existingBgmPath;
+    let vocalsIsFallback = existingVocalsIsFallback;
+    let asrLines: any[] = skipAsr ? [...existingAsrLines] : (forceRetryStep && forceRetryStep !== 'whisper' ? [...existingAsrLines] : []);
+    let roles: any[] = skipFaces ? [...existingRoles] : (forceRetryStep && forceRetryStep !== 'faces' ? [...existingRoles] : []);
 
-    // 子步骤失败标记（Repair 2）
+    let whisperResult: any = skipAsr ? { _skipped: true, whisperJsonPath: '' } : (forceRetryStep && forceRetryStep !== 'whisper' ? { _skipped: true, whisperJsonPath: '' } : null);
+
     let framesFailed = false;
     let audioFailed = false;
     let asrFailed = false;
     let facesFailed = false;
 
-    // === 双子星并行：抽帧 ∥ 音频分离 ===
     let lastProgress = 0;
-    try {
-      const [_frameResult, _audioResult] = await Promise.all([
-        // 轨道 A：视频抽帧
-        (async () => {
-          if (!runFrames) return { files: [] };
 
-          lastProgress = Math.max(lastProgress, 5); onProgress(lastProgress, '正在提取关键帧...');
-          try {
-            const framesConfig = typeof config.frames === 'object' ? config.frames : {};
-            const strategy = framesConfig.mode || config.frameStrategy || 'VLM_OPTIMIZED';
-            const frameService = new FrameExtractionService({
-              getFfmpegPath: () => PathManager.getBinPath('ffmpeg.exe'),
-              getFfprobePath: () => PathManager.getBinPath('ffprobe.exe'),
-            });
-            let telemetryResult = await frameService.extractFrames(mediaPath, framesDir, mediaId, {
-              strategy,
-              fps: framesConfig.fps || config.frameFps || 2,
-              sceneThreshold: framesConfig.sceneThreshold || 0.28,
-              minFrameInterval: framesConfig.minFrameInterval || 4,
-              scale: framesConfig.scale || 1024,
-              quality: framesConfig.quality || 3,
-              timePoint: framesConfig.timePoint,
-              abortSignal: signal,
-            });
-
-            // 抽帧降级回退：VLM/scene 模式帧数 <3 时自动切到 UNIFORM_FPS
-            const needsFallback = (strategy === 'VLM_OPTIMIZED' || strategy === 'scene')
-              && telemetryResult.files.length < 3;
-            if (needsFallback) {
-              AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
-                '[Step1] VLM/Scene 帧数过少，自动降级到 UNIFORM_FPS', {
-                mediaId, frameCount: telemetryResult.metrics.frameCount
-              });
-              telemetryResult = await frameService.extractFrames(mediaPath, framesDir, mediaId, {
-                strategy: 'UNIFORM_FPS',
-                fps: framesConfig.fps || config.frameFps || 2,
-                scale: framesConfig.scale || 1024,
-                quality: framesConfig.quality || 3,
-                abortSignal: signal,
-              });
-            }
-
-            validFrames = telemetryResult.files;
-            lastProgress = Math.max(lastProgress, 20); onProgress(lastProgress, `关键帧提取完成 (${validFrames.length}帧)`);
-            return telemetryResult;
-          } catch (e: any) {
-            AppLogger.error(LOG_TAGS.MEDIA_ENGINE, '[Step1] 抽帧失败', { mediaId, error: e });
-            framesFailed = true;
-            return { files: [] };
-          }
-        })(),
-
-        // 轨道 B：单流音频提取 + 人声分离（44.1k stereo 提取 → 分离 → vocals 降采样 16k 供 ASR）
-        (async () => {
-          if (!runAudio) return null;
-
-          // fast 模式跳过分离引擎，只提 16k 供 ASR
-          const skipSeparation = separationMode === 'fast';
-          if (skipSeparation) {
-            AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
-              '[Step1] 极速模式：跳过人声分离，使用原始音轨', { mediaId });
-          }
-
-          // 子进度回调：将分离引擎的 0-100 pct 映射到管线总进度的 15-30 区间
-          const onSubProgress = (pct: number, msg: string) => {
-            // pct 0-100 → 管线 15-30
-            const mapped = 15 + Math.floor(pct * 0.15);
-            lastProgress = Math.max(lastProgress, mapped);
-            onProgress(lastProgress, msg || '正在分离人声...');
-          };
-
-          const result = await AudioProcessor.extractAndSeparate(
-            mediaPath, audioDir, mediaId, signal,
-            { skipSeparation, engine, onProgress: onSubProgress }
-          );
-
-          if (!result.hasAudio) {
-            AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
-              '[Step1] 无有效音轨，静默运行', { mediaId });
-            audioFailed = true;
-            return null;
-          }
-
-          audioPath = result.asrAudioPath;
-          vocalsPath = result.vocalsPath;
-          bgmPath = result.bgmPath;
-          vocalsIsFallback = result.isFallback;
-
-          // 🔧 修复 P0-B：降级音轨仍可用于 ASR，不应阻断后续语音识别
-          // 旧版 bug：isFallback 时误设 audioFailed=true → 第 189 行 !audioFailed 条件跳过整个 ASR 块
-          //          → asrLines=[] → JobScheduler 组装 shots=[] → 前端 shots count: 0
-          // 设计意图（见第 192 行注释）：降级模式仍跑 ASR，只是质量可能下降
-          // 现在仅记录警告，audioFailed 保持 false，让降级音轨流入 ASR 块
-          if (result.isFallback && !skipSeparation) {
-            AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
-              '[Step1] 人声分离失败，降级到原始音轨（ASR 仍将执行）', { mediaId });
-          }
-
-          if (vocalsPath && !result.isFallback) {
-            lastProgress = Math.max(lastProgress, 30); onProgress(lastProgress, '人声分离完成');
-          } else if (skipSeparation) {
-            lastProgress = Math.max(lastProgress, 30); onProgress(lastProgress, '极速模式：跳过人声分离');
-          }
-          return result;
-        })(),
-      ]);
-    } catch (error: any) {
-      AppLogger.error(LOG_TAGS.MEDIA_ENGINE, '[Step1] 双子星并行执行失败', { mediaId, error });
+    if (skipFrames) {
+      lastProgress = Math.max(lastProgress, 20);
+      onProgress(lastProgress, `关键帧已存在 (${validFrames.length}帧)，跳过抽帧`);
+    }
+    if (skipAudio) {
+      lastProgress = Math.max(lastProgress, 30);
+      onProgress(lastProgress, vocalsIsFallback ? '极速模式：音频已存在，跳过分离' : '音频分离产物已存在，跳过分离');
+    }
+    if (skipAsr) {
+      lastProgress = Math.max(lastProgress, 65);
+      onProgress(lastProgress, `ASR结果已存在 (${asrLines.length}段)，跳过识别`);
+    }
+    if (skipFaces) {
+      lastProgress = Math.max(lastProgress, 85);
+      onProgress(lastProgress, `角色数据已存在 (${roles.length}个)，跳过人脸检测`);
     }
 
-    // === ASR 语音识别 ===
-    // targetAudio = extractAndSeparate 返回的 16k mono（分离成功= vocals 降采样版；失败= 原始降采样版；fast= 原始降采样版）
-    let whisperResult: any = null;
+    // 🔧 修复：forceRetryStep模式下，如果依赖产物不存在，即使config中该子步骤被禁用也要自动执行
+    // 例如：重试ASR但音频文件丢失 → 自动先做音频分离；重试人脸但帧不存在 → 自动先抽帧
+    const forceRunFrames = forceRetryStep === 'faces' && existingFrames.length === 0;
+    const forceRunAudio = forceRetryStep === 'whisper' && !existingAudioPath;
+    const needRunFrames = (runFrames || forceRunFrames) && !skipFrames;
+    const needRunAudio = (runAudio || forceRunAudio) && !skipAudio;
+
+    const tasks: Promise<any>[] = [];
+
+    if (needRunFrames) {
+      tasks.push((async () => {
+        lastProgress = Math.max(lastProgress, 5);
+        onProgress(lastProgress, '正在提取关键帧...');
+        try {
+          const framesConfig = typeof config.frames === 'object' ? config.frames : {};
+          const strategy = framesConfig.mode || config.frameStrategy || 'VLM_OPTIMIZED';
+          const frameService = new FrameExtractionService({
+            getFfmpegPath: () => PathManager.getBinPath('ffmpeg.exe'),
+            getFfprobePath: () => PathManager.getBinPath('ffprobe.exe'),
+          });
+          let telemetryResult = await frameService.extractFrames(mediaPath, framesDir, mediaId, {
+            strategy,
+            fps: framesConfig.fps || config.frameFps || 2,
+            sceneThreshold: framesConfig.sceneThreshold || 0.28,
+            minFrameInterval: framesConfig.minFrameInterval || 4,
+            scale: framesConfig.scale || 1024,
+            quality: framesConfig.quality || 3,
+            timePoint: framesConfig.timePoint,
+            abortSignal: signal,
+          });
+
+          const needsFallback = (strategy === 'VLM_OPTIMIZED' || strategy === 'scene')
+            && telemetryResult.files.length < 3;
+          if (needsFallback) {
+            AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+              '[Step1] VLM/Scene 帧数过少，自动降级到 UNIFORM_FPS', {
+              mediaId, frameCount: telemetryResult.metrics.frameCount
+            });
+            telemetryResult = await frameService.extractFrames(mediaPath, framesDir, mediaId, {
+              strategy: 'UNIFORM_FPS',
+              fps: framesConfig.fps || config.frameFps || 2,
+              scale: framesConfig.scale || 1024,
+              quality: framesConfig.quality || 3,
+              abortSignal: signal,
+            });
+          }
+
+          validFrames = telemetryResult.files;
+          lastProgress = Math.max(lastProgress, 20);
+          onProgress(lastProgress, `关键帧提取完成 (${validFrames.length}帧)`);
+          return telemetryResult;
+        } catch (e: any) {
+          AppLogger.error(LOG_TAGS.MEDIA_ENGINE, '[Step1] 抽帧失败', { mediaId, error: e });
+          framesFailed = true;
+          return { files: [] };
+        }
+      })());
+    }
+
+    if (needRunAudio) {
+      tasks.push((async () => {
+        const skipSeparation = separationMode === 'fast';
+        if (skipSeparation) {
+          AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+            '[Step1] 极速模式：跳过人声分离，使用原始音轨', { mediaId });
+        }
+
+        const onSubProgress = (pct: number, msg: string) => {
+          const mapped = 15 + Math.floor(pct * 0.15);
+          lastProgress = Math.max(lastProgress, mapped);
+          onProgress(lastProgress, msg || '正在分离人声...');
+        };
+
+        const result = await AudioProcessor.extractAndSeparate(
+          mediaPath, audioDir, mediaId, signal,
+          { skipSeparation, engine, onProgress: onSubProgress }
+        );
+
+        if (!result.hasAudio) {
+          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+            '[Step1] 无有效音轨，静默运行', { mediaId });
+          audioFailed = true;
+          return null;
+        }
+
+        audioPath = result.asrAudioPath;
+        vocalsPath = result.vocalsPath;
+        bgmPath = result.bgmPath;
+        vocalsIsFallback = result.isFallback;
+
+        if (result.isFallback && !skipSeparation) {
+          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+            '[Step1] 人声分离失败，降级到原始音轨（ASR 仍将执行）', { mediaId });
+        }
+
+        if (vocalsPath && !result.isFallback) {
+          lastProgress = Math.max(lastProgress, 30);
+          onProgress(lastProgress, '人声分离完成');
+        } else if (skipSeparation) {
+          lastProgress = Math.max(lastProgress, 30);
+          onProgress(lastProgress, '极速模式：跳过人声分离');
+        }
+        return result;
+      })());
+    }
+
+    if (tasks.length > 0) {
+      try {
+        await Promise.all(tasks);
+      } catch (error: any) {
+        AppLogger.error(LOG_TAGS.MEDIA_ENGINE, '[Step1] 双子星并行执行失败', { mediaId, error });
+      }
+    }
+
     const targetAudio = audioPath;
-    if (!audioFailed && runWhisper && targetAudio && fs.existsSync(targetAudio)) {
+    if (!skipAsr && !audioFailed && runWhisper && targetAudio && fs.existsSync(targetAudio)) {
       onProgress(Math.max(lastProgress, 50), '正在进行 ASR 识别...');
       if (vocalsIsFallback) {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[Step1] 人声分离降级模式，ASR 使用含 BGM 的原始音轨，识别质量可能下降', { mediaId });
@@ -199,22 +514,12 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       try {
         const whisperStrategy = new LocalWhisperStrategy();
         const whisperCfg = typeof config.whisper === 'object' ? config.whisper : { enabled: true, engine: 'sensevoice' as const };
-        // 🔧 修复：ASR 识别语言用 auto（自动检测视频实际语言），不再用 config.targetLanguage
-        //   旧版 bug：config.targetLanguage 是翻译目标语言（如 zh-CN），被误用为识别语言
-        //   → 英文视频被强制按中文识别 → 识别结果错误
-        //   正确逻辑：识别阶段用 auto（视频是什么语言就识别什么语言），翻译阶段才用 targetLanguage
-        //   config.whisper.language 可覆盖（用户在前端指定视频源语言时生效）
         const asrLang = whisperCfg.language || 'auto';
-        // 引擎选择：中日韩用 sensevoice（识别更好），英文/欧洲语言用 faster-whisper（WER 约 5%）
-        //   用户未指定 engine 时，auto 模式默认 sensevoice（支持多语言自动检测）
-        //   注：原 whisper.cpp + ggml-base.bin 已移除（WER 17-30%，识别率不达标）
         const CJK_LANGS = ['zh', 'ja', 'ko', 'yue'];
         let asrEngine = whisperCfg.engine || 'sensevoice';
         if (asrLang !== 'auto' && !CJK_LANGS.includes(asrLang) && !whisperCfg.engine) {
-          // 用户指定了非中日韩语言且未指定引擎 → 自动选 faster-whisper
           asrEngine = 'faster-whisper';
         }
-        // ASR 进度映射到 45-65 区间（Python 端 pct 0-100 → Step1 45-65）
         const asrOnProgress = (pct: number, msg: string) => {
           const mapped = 45 + Math.round(pct * 0.2);
           onProgress(Math.max(lastProgress, mapped), msg || 'ASR 识别中');
@@ -222,32 +527,28 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         whisperResult = await whisperStrategy.transcribe(
           targetAudio, audioDir, mediaId, asrLang, asrEngine, signal, asrOnProgress
         );
-        lastProgress = Math.max(lastProgress, 65); onProgress(lastProgress, 'ASR 识别完成');
+        lastProgress = Math.max(lastProgress, 65);
+        onProgress(lastProgress, 'ASR 识别完成');
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
           '[Step1] ASR 失败，降级跳过', { mediaId, error: e.message });
         asrFailed = true;
       }
     }
-    // 注：中间产物（44.1k 原始 WAV）由 extractAndSeparate 内部清理，此处无需再处理
 
-    // === 人脸检测 + 聚类 ===
-    let roles: any[] = [];
-    if (runFaces) {
+    if (!skipFaces && runFaces) {
       if (validFrames.length === 0) {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
           '[Step1] 无有效帧，自动跳过人脸检测');
       } else {
-        lastProgress = Math.max(lastProgress, 75); onProgress(lastProgress, '正在检测人脸...');
+        lastProgress = Math.max(lastProgress, 75);
+        onProgress(lastProgress, '正在检测人脸...');
         try {
-          // 🔧 修复 P0-6：scanFaces 得到的是 face 列表（含 embedding），需再调用 clusterFaces 聚类为角色
-          //   旧版直接把 face 列表当 roles 返回，无聚类、无角色归纳
           const detectedFaces = await VisionProcessor.scanFaces(validFrames, facesDir, signal);
           if (detectedFaces.length > 0) {
-            lastProgress = Math.max(lastProgress, 80); onProgress(lastProgress, `人脸检测完成 (${detectedFaces.length}张)，正在聚类...`);
-            // 调用 Python 端 HDBSCAN 聚类，得到 { faceId: "role_X" } 映射
+            lastProgress = Math.max(lastProgress, 80);
+            onProgress(lastProgress, `人脸检测完成 (${detectedFaces.length}张)，正在聚类...`);
             const clustersMap = await VisionProcessor.clusterFaces(mediaId, detectedFaces, facesDir);
-            // 按聚类 ID 分组，每组取首张人脸作为角色代表
             const roleGroups: Record<string, any[]> = {};
             for (const face of detectedFaces) {
               const faceId = face.id || face.face_id || '';
@@ -255,9 +556,12 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               if (!roleGroups[clusterId]) roleGroups[clusterId] = [];
               roleGroups[clusterId].push(face);
             }
-            // 构造 roles 数组：每个聚类一个角色，取首张人脸作为代表
+            /** 💥 关键修复：角色 ID 全局唯一化
+             * 旧版 bug：clusterId 是 "role_0"/"role_1"/"role_unknown"，跨项目会重复
+             *   → roles 表 id 是 PRIMARY KEY（全局唯一），第二个项目插入时 UNIQUE constraint failed
+             * 修复：id 前缀加上 mediaId，确保跨项目、跨媒体全局唯一 */
             roles = Object.entries(roleGroups).map(([clusterId, groupFaces]) => ({
-              id: clusterId,
+              id: `${mediaId}_${clusterId}`,
               name: `角色_${clusterId.replace('role_', '')}`,
               faceCount: groupFaces.length,
               representative: groupFaces[0],
@@ -268,7 +572,8 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           } else {
             AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[Step1] 人脸检测未返回结果', { mediaId });
           }
-          lastProgress = Math.max(lastProgress, 85); onProgress(lastProgress, `人脸识别完成 (${roles.length}个角色)`);
+          lastProgress = Math.max(lastProgress, 85);
+          onProgress(lastProgress, `人脸识别完成 (${roles.length}个角色)`);
         } catch (e: any) {
           AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
             '[Step1] 人脸检测失败，降级跳过', { mediaId, error: e.message });
@@ -277,9 +582,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       }
     }
 
-    // === 解析 Whisper JSON 生成 AsrLine[] ===
-    let asrLines: any[] = [];
-    if (whisperResult?.whisperJsonPath) {
+    if (whisperResult?.whisperJsonPath && !skipAsr) {
       try {
         const jsonPath = whisperResult.whisperJsonPath;
         if (fs.existsSync(jsonPath)) {
@@ -322,12 +625,16 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           '[Step1] 解析 Whisper JSON 失败', { error: e.message });
       }
     }
+
     const framePaths = validFrames;
     const frameCount = validFrames.length;
     const audioSeparated = !!vocalsPath;
 
+    // 🔧 修复：_skipped 标志需要同时考虑两种跳过情况：
+    // 1. skipXxx = true：增量执行时已有数据跳过
+    // 2. runXxx = false：配置中禁用了该子步骤（重试单个子步骤时其他子步骤被禁用）
     const results: Record<string, any> = {
-      frames: { count: frameCount, paths: framePaths, _failed: framesFailed },
+      frames: { count: frameCount, paths: framePaths, _failed: framesFailed, _skipped: skipFrames || !runFrames },
       audio: {
         separated: audioSeparated,
         audioPath,
@@ -335,21 +642,21 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         bgmPath,
         vocalsIsFallback,
         _failed: audioFailed,
+        _skipped: skipAudio || !runAudio,
       },
       asr: {
         lines: asrLines,
         whisperJsonPath: whisperResult?.whisperJsonPath || '',
         _failed: asrFailed,
+        _skipped: skipAsr || !runWhisper,
       },
-      faces: { roles, count: roles.length, _failed: facesFailed },
+      faces: { roles, count: roles.length, _failed: facesFailed, _skipped: skipFaces || !runFaces },
     };
 
-    // 写入 context.bus 供下游策略消费
     context.bus.set('step1-result', results);
     if (validFrames.length > 0) context.bus.set('step1-frames', validFrames);
     if (whisperResult) context.bus.set('asr-result', { ...whisperResult, asrLines });
 
-    // 返回扁平 ExtractionOutput 形状
     const output = { asrLines, framePaths, frameCount, audioSeparated, roles };
 
     onProgress(100, '素材分析完成');
