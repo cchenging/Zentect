@@ -16,7 +16,7 @@ export class ProjectService {
   private repo = new ProjectRepository();
   private taskRepo = new TaskRepository();
 
-  private readonly HYDRATE_FIELDS = ['coverPath', 'cover', 'audioPath', 'avatar', 'vocalsPath', 'bgmPath', 'filePath', 'extractedAudio', 'extractedVocals', 'extractedBgm', 'imagePath'];
+  private readonly HYDRATE_FIELDS = ['coverPath', 'cover', 'audioPath', 'avatar', 'avatarPath', 'vocalsPath', 'bgmPath', 'filePath', 'extractedAudio', 'extractedVocals', 'extractedBgm', 'imagePath'];
   private readonly HYDRATE_ARRAY_FIELDS = ['contextFrames', 'frames'];
 
   // 💥 内部工具 1：生成绝对安全的系统级 ID

@@ -246,6 +246,11 @@ export class ProjectRepository {
 
     const roles = this.db.prepare(PROJECT_SQL.GET_ALL_ROLES).all({ projectId }).map((r: any) => ({
       id: r.id, systemId: r.systemId, name: r.name, pronoun: r.pronoun, description: r.description,
+      /** 💥 修复黑头像：补全 avatar 和 avatarPath 字段
+       * DB 中 avatar 是相对路径，ProjectService.hydratePaths 会将其转为 magic:// URL
+       * 前端 View.tsx 读取 role.avatarPath 显示头像 */
+      avatar: r.avatar,
+      avatarPath: r.avatar,
       voiceId: r.voice_id, mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : []
     }));
 

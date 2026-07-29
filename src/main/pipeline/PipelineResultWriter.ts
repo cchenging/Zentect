@@ -12,6 +12,27 @@ import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import * as path from 'path';
 
+/**
+ * 清理 magic:// 协议 URL 为本地文件系统绝对路径（与 Strategy.ts 中 resolveDbPath 一致）
+ * 用于从 DB 读取的 avatar 字段（相对路径或 magic:// 格式）还原为绝对路径
+ */
+function resolveDbPath(dbValue: string | undefined | null, projectDir: string): string | undefined {
+  if (!dbValue) return undefined;
+  const val = dbValue.replace(/\\/g, '/');
+  if (val.startsWith('magic://local/')) {
+    const raw = val.replace(/^magic:\/\/local\//, '');
+    return raw.replace(/\//g, '\\');
+  }
+  const magicMatch = val.match(/^magic:\/\/(?:[^\/]+)\/(.+)/);
+  if (magicMatch) {
+    return path.join(projectDir, magicMatch[1].replace(/\//g, '\\'));
+  }
+  if (path.isAbsolute(val)) {
+    return val.replace(/\//g, '\\');
+  }
+  return path.join(projectDir, val.replace(/\//g, '\\'));
+}
+
 /** 管线执行结果（由调用方从 PipelineEngine 输出中提取） */
 export interface PipelineStep1Result {
   frames: string[];
@@ -140,16 +161,23 @@ export class PipelineResultWriter {
     const dbRoles = roleRepo.findByProjectId(projectId);
 
     if (facesSkipped && dbRoles.length > 0) {
-      finalRoles = dbRoles.map((r: any) => ({
-        id: r.id,
-        name: r.name,
-        faceCount: 0,
-        avatar: r.avatar,
-        pronoun: r.pronoun,
-        description: r.description,
-        voiceId: r.voice_id,
-        mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
-      }));
+      finalRoles = dbRoles.map((r: any) => {
+        /** 💥 修复黑头像：DB 中 avatar 是相对路径，需转为绝对路径赋给 avatarPath
+         * 前端 View.tsx 读取 role.avatarPath 显示头像，缺少此字段 → 黑头像 */
+        const avatarAbs = r.avatar ? resolveDbPath(r.avatar, projectDir) : null;
+        return {
+          id: r.id,
+          name: r.name,
+          faceCount: 0,
+          avatar: r.avatar,
+          avatarPath: avatarAbs,
+          representative: avatarAbs ? { facePath: avatarAbs } : null,
+          pronoun: r.pronoun,
+          description: r.description,
+          voiceId: r.voice_id,
+          mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
+        };
+      });
     } else if (!facesSkipped && finalRoles.length > 0) {
       const db = SQLiteConnection.getInstance().getDB();
       const roleTransaction = db.transaction(() => {

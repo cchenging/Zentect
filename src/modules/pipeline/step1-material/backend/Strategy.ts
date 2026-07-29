@@ -654,19 +654,25 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
              * 旧版 bug：clusterId 是 "role_0"/"role_1"/"role_unknown"，跨项目会重复
              *   → roles 表 id 是 PRIMARY KEY（全局唯一），第二个项目插入时 UNIQUE constraint failed
              * 修复：id 前缀加上 mediaId，确保跨项目、跨媒体全局唯一 */
-            roles = roleEntries.map(([clusterId, groupFaces]) => ({
-              id: `${mediaId}_${clusterId}`,
-              name: `角色_${clusterId.replace('role_', '')}`,
-              faceCount: groupFaces.length,
-              /** 💥 修复黑头像：representative 必须包含 facePath 字段
-               * Python 端 face_data 返回 face_path（绝对路径），此处提取为 facePath
-               * PipelineResultWriter 通过 role.representative?.facePath 读取 avatar */
-              representative: {
-                ...groupFaces[0],
-                facePath: groupFaces[0].face_path || groupFaces[0].facePath || '',
-              },
-              faces: groupFaces,
-            }));
+            roles = roleEntries.map(([clusterId, groupFaces]) => {
+              /** 💥 修复黑头像：统一提取 facePath（Python 返回 face_path 绝对路径）
+               * 同时设置 representative.facePath 和顶层 avatarPath，
+               * 确保三条下游路径（SSE 实时结果/线性向导/DB 重读）都能拿到头像路径 */
+              const facePath = groupFaces[0].face_path || groupFaces[0].facePath || '';
+              return {
+                id: `${mediaId}_${clusterId}`,
+                name: `角色_${clusterId.replace('role_', '')}`,
+                faceCount: groupFaces.length,
+                /** representative.facePath 供 PipelineResultWriter 读取并存入 DB avatar 字段 */
+                representative: {
+                  ...groupFaces[0],
+                  facePath,
+                },
+                /** avatarPath 供前端 View.tsx 直接读取显示头像（getSafeMediaUrl 可处理绝对路径） */
+                avatarPath: facePath,
+                faces: groupFaces,
+              };
+            });
             AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
               `[Step1] 人脸聚类完成: ${roles.length} 个角色 (${detectedFaces.length} 张人脸)`, { mediaId });
           } else {
