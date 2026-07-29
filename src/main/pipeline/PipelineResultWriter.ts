@@ -98,6 +98,7 @@ export class PipelineResultWriter {
 
     // --- 写入 ASR 台词 ---
     if (!asrSkipped && result.shots && result.shots.length > 0) {
+      // 1) 序列化写入 media_assets.extractedText（供增量执行检测已有数据）
       updatedMedia.extractedText = JSON.stringify(
         result.shots.map((s: any) => ({
           start: s.start,
@@ -105,6 +106,32 @@ export class PipelineResultWriter {
           text: s.originalText || '',
         }))
       );
+
+      // 2) 同步更新 shots 表（全量替换，保证重启后数据一致）
+      // 🔧 修复：之前只写 extractedText 不写 shots 表，导致重启后从 shots 表加载到旧数据
+      const db = SQLiteConnection.getInstance().getDB();
+      const shotTransaction = db.transaction(() => {
+        db.prepare(PROJECT_SQL.HARD_DELETE_SHOTS).run({ projectId });
+        const insertShot = db.prepare(PROJECT_SQL.INSERT_SHOT_FULL);
+        for (const shot of result.shots) {
+          // 跳过无 id 的 shot，避免 PRIMARY KEY 为 NULL 的脏数据
+          if (!shot.id || typeof shot.id !== 'string' || !shot.id.trim()) {
+            AppLogger.warn(LOG_TAGS.SCHEDULER, '[PipelineResultWriter] 跳过无 id 的 shot', { projectId });
+            continue;
+          }
+          insertShot.run({
+            id: shot.id, projectId, episodeNum: 1, timeCode: '', duration: '',
+            aiText: '', originalText: shot.originalText || '',
+            roleId: null, originalRoleId: null, coverPath: '',
+            reasoning: '', characters: '[]', camera: '',
+            audioPath: '', audioDuration: 0, alignStrategy: 'slow',
+            startTime: shot.start || 0, endTime: shot.end || 0, audioEmotion: '',
+            visionText: '', contextFrames: '[]',
+          });
+        }
+      });
+      shotTransaction();
+      AppLogger.info(LOG_TAGS.SCHEDULER, `[PipelineResultWriter] shots 表已同步更新 (${result.shots.length} 段)`, { projectId });
     }
 
     // --- 写入 roles ---
