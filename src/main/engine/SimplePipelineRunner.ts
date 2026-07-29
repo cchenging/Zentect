@@ -292,9 +292,12 @@ export class SimplePipelineRunner {
       }
 
       case 'face_detect': {
+        // 🔧 修复审计缺陷 §2.2：FaceDetectStrategy 改为从 context.bus 读取上游 extract_frames
+        //   节点产出的 framePaths，不再使用 mediaPath/framesDir（指向空目录）。
+        //   bus key 约定 = `${projectId}_${mediaId}_extract_frames`，value.framePaths 为帧路径数组。
         const strategy = new FaceDetectStrategy();
         await strategy.execute(
-          { ...baseTask, actionType: 'face-detect', label: '人脸检测', params: { mediaId, mediaPath, framesDir: PathManager.getNodeBaseDir(projectId, taskId, 'frames') } } as PipelineTask,
+          { ...baseTask, actionType: 'face-detect', label: '人脸检测', params: { mediaId } } as PipelineTask,
           context,
           () => {}
         );
