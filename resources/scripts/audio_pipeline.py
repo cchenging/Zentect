@@ -349,23 +349,21 @@ def _asr_postprocess_segments(segments):
 def _split_segment_by_words(words, detected_lang="en"):
     """基于 word 级时间戳的句子级断句算法（确定参数版）
 
-    faster-whisper 的 segment 是 VAD 段（基于静音切分），可能包含多个句子。
-    本函数利用 word_timestamps=True 返回的每个 word 的精确时间戳，按以下规则重新断句：
+    faster-whisper 的 segment 是 Whisper 30 秒窗口的自然分段（关闭 VAD 后）。
+    本函数利用 word_timestamps=True 返回的每个 word 的精确时间戳，按以下规则断句：
 
-    断句触发条件（任一满足即断）：
+    💥 断句触发条件（仅标点触发，移除停顿和长度触发）：
     1) 标点触发：word 末尾包含句末标点（. ! ? 。 ！ ？ ；）→ 立即断句
-    2) 停顿触发：相邻 word 间停顿 > 500ms → 断句
-    3) 长度触发：当前句达 CJK 20 字 / 西文 12 词 → 强制断句
 
-    参数确定依据（行业标准硬阈值）：
-    - PAUSE_THRESHOLD_SEC = 0.500s
-      依据：英语连续发音词间隔 < 300ms（参考：语速 150 词/分钟 = 400ms/词），
-            句间换气停顿 ≥ 500ms（参考：VAD 默认 min_silence_duration_ms=500），
-            500ms 是连续发音与换气停顿的明确分界。
-    - MAX_CHARS = 20（CJK）
-      依据：GB/T 28039-2011《中文字幕通用技术规范》单行字幕 ≤ 21 字，取 20 字为安全上限。
-    - MAX_WORDS = 12（西文）
-      依据：BBC Subtitle Guidelines 第 14 节规定单行字幕 ≤ 12 词。
+    旧版问题：
+    - 停顿触发（500ms）会把地道英语的换气停顿误判为句末，导致 2 个单词就断一段
+    - 长度触发（12 词）会切断未说完的长句
+    - Whisper 标点虽不完美，但比硬阈值更可靠（模型理解语义）
+
+    参数依据：
+    - 仅保留标点触发：Whisper 模型基于语义生成标点，是断句的最可靠信号
+    - 移除停顿触发：地道英语语速快，换气停顿 < 1s 不应断句
+    - 移除长度触发：超长段可由前端字幕换行处理，不应在 ASR 层强切
 
     Args:
         words: faster-whisper segment.words 列表，每个元素含 .word/.start/.end
@@ -380,18 +378,12 @@ def _split_segment_by_words(words, detected_lang="en"):
     lang_lower = (detected_lang or 'en').lower()
     is_cjk = any(k in lang_lower for k in ["zh", "ja", "ko", "cjk", "yue"])
 
-    # 断句参数（确定值，无模糊区间）
-    PAUSE_THRESHOLD_SEC = 0.500  # 停顿 ≥ 500ms 断句（连续发音 < 300ms，换气 ≥ 500ms）
-    MAX_CHARS = 20 if is_cjk else 999   # CJK 单句 ≤ 20 字（GB/T 28039-2011）
-    MAX_WORDS = 999 if is_cjk else 12   # 西文单句 ≤ 12 词（BBC Subtitle Guidelines）
-
     # 句末标点（触发断句）
     SENTENCE_END_PUNCT = set('.!?。！？;；')
 
     sentences = []
     current_words = []
     current_start = None
-    word_count = 0
 
     for idx, w in enumerate(words):
         word_text = getattr(w, 'word', '') or ''
@@ -406,32 +398,13 @@ def _split_segment_by_words(words, detected_lang="en"):
             current_start = word_start
 
         current_words.append(word_text)
-        if not is_cjk:
-            word_count += 1
 
         # 判断是否需要断句
         should_break = False
 
-        # 规则1：标点触发（word 末尾有句末标点）
+        # 规则1：标点触发（word 末尾有句末标点）—— 唯一断句规则
         if word_text and word_text.strip()[-1] in SENTENCE_END_PUNCT:
             should_break = True
-
-        # 规则2：停顿触发（与下一个 word 间停顿 > 500ms）
-        if not should_break and idx < len(words) - 1:
-            next_start = getattr(words[idx + 1], 'start', word_end) or word_end
-            pause = next_start - word_end
-            if pause > PAUSE_THRESHOLD_SEC:
-                should_break = True
-
-        # 规则3：长度触发（CJK ≥ 20 字 / 西文 ≥ 12 词）
-        if not should_break:
-            if is_cjk:
-                joined = ''.join(current_words)
-                if len(joined) >= MAX_CHARS:
-                    should_break = True
-            else:
-                if word_count >= MAX_WORDS:
-                    should_break = True
 
         # 最后一个 word 强制断句
         if idx == len(words) - 1:
@@ -707,11 +680,13 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
         #
         # 删除 best_of: beam_size > 0 时 best_of 被 faster-whisper 忽略（官方文档明确）
         #
-        # vad_filter=True + min_silence_duration_ms=500 + speech_pad_ms=200: VAD 预过滤静音段
-        #   min_silence_duration_ms=500: Silero VAD 默认值，与断句阈值对齐
-        #   speech_pad_ms=200: 语音边界填充 200ms（默认 30ms 太短）
-        #     依据：实测 speech_pad_ms=30 时 VAD 裁剪了第一句台词开头的关键语音，
-        #           导致 "gonna" 被误识别为 "and"；speech_pad_ms=200 正确识别
+        # 💥 关闭 VAD filter（vad_filter=False）：
+        #   旧版 vad_filter=True + min_silence_duration_ms=500 会把地道英语的换气停顿
+        #   误判为句末，导致 segment 过短（2 个单词就断一段）。
+        #   Whisper 模型本身按 30 秒窗口自然分段，关闭 VAD 后：
+        #   - 精度提高（不切断连续语音，模型有完整上下文）
+        #   - 断句自然（segment 边界由模型决定，不是 VAD）
+        #   - 速度慢 20-30%（需处理静音段，可接受）
         #
         # no_speech_threshold=0.6: 恢复默认值
         #   依据：faster-whisper 官方默认 0.6；0.4 过低会误判有声音段为静音，漏识别台词
@@ -720,8 +695,7 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
         #   依据：faster-whisper 官方默认 -1.0；-1.5 过宽会让低质量段进入高温度重试，放大幻觉
         #
         # condition_on_previous_text=False: 关闭上下文条件
-        #   依据：VAD filter 已将音频切分为独立段，关闭上下文避免长视频幻觉扩散
-        #         （OpenAI Whisper 论文第 4.4 节：长视频开启上下文会导致重复幻觉）
+        #   依据：长视频开启上下文会导致重复幻觉（OpenAI Whisper 论文第 4.4 节）
         #
         # initial_prompt: 英文场景注入口语缩写提示词，引导模型正确识别 gonna/wanna/sorry to hear that 等
         #   依据：faster-whisper 官方文档，initial_prompt 作为前缀上下文注入解码器，
@@ -737,8 +711,7 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
             language=fw_lang,
             beam_size=10,
             temperature=[0.0, 0.2],
-            vad_filter=True,
-            vad_parameters={'min_silence_duration_ms': 500, 'speech_pad_ms': 200},
+            vad_filter=False,
             word_timestamps=True,
             no_speech_threshold=0.6,
             log_prob_threshold=-1.0,
