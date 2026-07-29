@@ -244,15 +244,28 @@ export class ProjectRepository {
       });
     }
 
-    const roles = this.db.prepare(PROJECT_SQL.GET_ALL_ROLES).all({ projectId }).map((r: any) => ({
-      id: r.id, systemId: r.systemId, name: r.name, pronoun: r.pronoun, description: r.description,
-      /** 💥 修复黑头像：补全 avatar 和 avatarPath 字段
-       * DB 中 avatar 是相对路径，ProjectService.hydratePaths 会将其转为 magic:// URL
-       * 前端 View.tsx 读取 role.avatarPath 显示头像 */
-      avatar: r.avatar,
-      avatarPath: r.avatar,
-      voiceId: r.voice_id, mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : []
-    }));
+    const roles = this.db.prepare(PROJECT_SQL.GET_ALL_ROLES).all({ projectId }).map((r: any) => {
+      /** 💥 从 faces_json 恢复详细信息（性别/年龄/多张人脸缩略图） */
+      let facesData: any = null;
+      if (r.faces_json) {
+        try { facesData = JSON.parse(r.faces_json); } catch {}
+      }
+      const restoredFaces = facesData?.faces || [];
+      const rep = facesData?.representative || null;
+      return {
+        id: r.id, systemId: r.systemId, name: r.name, pronoun: r.pronoun, description: r.description,
+        /** 💥 修复黑头像：补全 avatar 和 avatarPath 字段
+         * DB 中 avatar 是相对路径，ProjectService.hydratePaths 会将其转为 magic:// URL
+         * 前端 View.tsx 读取 role.avatarPath 显示头像 */
+        avatar: r.avatar,
+        avatarPath: r.avatar,
+        /** 详细信息：representative（含 gender/age）和 faces（多张人脸路径） */
+        representative: rep,
+        faces: restoredFaces,
+        faceCount: facesData?.faceCount ?? restoredFaces.length,
+        voiceId: r.voice_id, mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : []
+      };
+    });
 
     const allShots = this.db.prepare(PROJECT_SQL.GET_ALL_SHOTS).all({ projectId }).map((s: any) => ({
       id: s.id, time: s.time_code, duration: s.duration, start: s.start_time || 0, end: s.end_time || 0,

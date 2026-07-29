@@ -88,6 +88,8 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
     frames: true, audio: false, whisper: false, faces: false,
   });
   const toggleSubStep = (key: string) => setExpandedSubSteps((prev) => ({ ...prev, [key]: !prev[key] }));
+  /** 展开的角色卡片 ID（null 表示全部收起），点击卡片头部切换 */
+  const [expandedRole, setExpandedRole] = useState<string | null>(null);
 
   const parseTime = (timeStr: string): number => {
     if (!timeStr) return 0;
@@ -228,16 +230,61 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         </>}
         borderColor={facesStatus === "failed" ? "var(--accent-rose)" : undefined}>
         {facesStatus === "completed" && roles.length > 0 && (
-          <div className="grid grid-cols-3 gap-2">
-            {roles.map((role) => (
-              <div key={role.id} className="flex flex-col items-center gap-1 p-2 rounded-md bg-bg-secondary border border-border/20">
-                <div className="w-12 h-12 rounded-full bg-bg-primary overflow-hidden">
-                  {role.avatarPath && <img src={getSafeMediaUrl(role.avatarPath)} className="w-full h-full object-cover" />}
+          <div className="grid grid-cols-2 gap-2">
+            {roles.map((role) => {
+              /** 提取角色属性：gender(1=男/0=女)、age、出现次数 */
+              const rep = role.representative || {};
+              const gender = rep.gender ?? role.gender;
+              const age = rep.age ?? role.age;
+              const faceCount = role.faceCount ?? (role.faces?.length || 0);
+              const isExpanded = expandedRole === role.id;
+              /** 多张人脸缩略图（最多展示 6 张） */
+              const allFaces = (role.faces || []).slice(0, 6);
+              return (
+                <div key={role.id} className="rounded-md bg-bg-secondary border border-border/20 overflow-hidden">
+                  {/* 卡片头部：方形头像 + 名称 + 属性，点击展开/收起 */}
+                  <div
+                    className="flex items-center gap-2 p-2 cursor-pointer hover:bg-bg-tertiary/30 transition-colors"
+                    onClick={() => setExpandedRole(isExpanded ? null : role.id)}
+                  >
+                    {/* 方形头像（带轻微圆角），48x48 比旧版 12x12 更大 */}
+                    <div className="w-12 h-12 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
+                      {role.avatarPath && <img src={getSafeMediaUrl(role.avatarPath)} className="w-full h-full object-cover" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <input
+                        value={role.name}
+                        onChange={(e) => onUpdateRole(role.id, { name: e.target.value })}
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-[13px] font-medium bg-transparent outline-none border-b border-transparent focus:border-accent/30 w-full"
+                      />
+                      <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground">
+                        {faceCount > 0 && <span>出现 {faceCount} 次</span>}
+                        {gender !== undefined && gender !== null && <span>{gender === 1 ? '男' : '女'}</span>}
+                        {age > 0 && <span>约 {age} 岁</span>}
+                      </div>
+                    </div>
+                    <span className={`text-muted-foreground text-[10px] transition-transform ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+                  </div>
+                  {/* 展开区域：多张人脸缩略图 */}
+                  {isExpanded && allFaces.length > 0 && (
+                    <div className="px-2 pb-2 pt-1 border-t border-border/10">
+                      <div className="text-[10px] text-muted-foreground mb-1">检测到的人脸 ({role.faces?.length || 0})</div>
+                      <div className="grid grid-cols-6 gap-1">
+                        {allFaces.map((face: any, idx: number) => {
+                          const faceUrl = face.face_path || face.facePath;
+                          return faceUrl ? (
+                            <div key={idx} className="aspect-square rounded bg-bg-primary overflow-hidden border border-border/20">
+                              <img src={getSafeMediaUrl(faceUrl)} className="w-full h-full object-cover" />
+                            </div>
+                          ) : null;
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <input value={role.name} onChange={(e) => onUpdateRole(role.id, { name: e.target.value })} className="text-[13px] font-medium bg-transparent text-center outline-none border-b border-transparent focus:border-accent/30" />
-                {role.appearances && <span className="text-[9px] text-muted-foreground">出现 {role.appearances} 次</span>}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
         {facesStatus === "completed" && roles.length === 0 && (

@@ -93,12 +93,32 @@ export class ProjectService {
         if (!item) return;
         this.HYDRATE_FIELDS.forEach(field => { if (item[field]) item[field] = transform(item[field]); });
         this.HYDRATE_ARRAY_FIELDS.forEach(field => { if (Array.isArray(item[field])) item[field] = item[field].map(transform); });
-        
+
         // 处理 mediaItem 内部的 extractedAudio、extractedVocals、extractedBgm 和 frames
         if (item.extractedAudio) item.extractedAudio = transform(item.extractedAudio);
         if (item.extractedVocals) item.extractedVocals = transform(item.extractedVocals);
         if (item.extractedBgm) item.extractedBgm = transform(item.extractedBgm);
         if (Array.isArray(item.frames)) item.frames = item.frames.map(transform);
+        /** 💥 处理 roles 的 faces 数组中的 face_path/facePath 字段
+         * faces 是对象数组，需逐个 transform 路径字段 */
+        if (Array.isArray(item.faces)) {
+          item.faces = item.faces.map((f: any) => {
+            if (!f) return f;
+            const facePath = f.face_path || f.facePath;
+            if (facePath) {
+              const transformed = transform(facePath);
+              return { ...f, face_path: transformed, facePath: transformed };
+            }
+            return f;
+          });
+        }
+        /** 处理 representative 中的 facePath */
+        if (item.representative?.facePath) {
+          item.representative.facePath = transform(item.representative.facePath);
+        }
+        if (item.representative?.face_path) {
+          item.representative.face_path = transform(item.representative.face_path);
+        }
     };
     if (data.mediaItems) data.mediaItems.forEach(processItem);
     if (data.media) processItem(data.media);

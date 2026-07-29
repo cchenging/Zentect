@@ -50,9 +50,9 @@ export const PROJECT_SQL = {
   `,
   INSERT_ROLE_FULL: `
     INSERT INTO roles (
-      id, project_id, system_id, name, pronoun, avatar, description, voice_id, merged_roles, create_time, update_time, is_deleted
+      id, project_id, system_id, name, pronoun, avatar, description, voice_id, merged_roles, faces_json, create_time, update_time, is_deleted
     ) VALUES (
-      @id, @projectId, @systemId, @name, @pronoun, @avatar, @description, @voiceId, @mergedRoles, datetime('now', 'localtime'), datetime('now', 'localtime'), 0
+      @id, @projectId, @systemId, @name, @pronoun, @avatar, @description, @voiceId, @mergedRoles, @facesJson, datetime('now', 'localtime'), datetime('now', 'localtime'), 0
     )
   `,
   INSERT_SHOT_FULL: `

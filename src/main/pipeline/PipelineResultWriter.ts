@@ -165,13 +165,32 @@ export class PipelineResultWriter {
         /** 💥 修复黑头像：DB 中 avatar 是相对路径，需转为绝对路径赋给 avatarPath
          * 前端 View.tsx 读取 role.avatarPath 显示头像，缺少此字段 → 黑头像 */
         const avatarAbs = r.avatar ? resolveDbPath(r.avatar, projectDir) : null;
+        /** 💥 从 faces_json 恢复详细信息（性别/年龄/多张人脸） */
+        let facesData: any = null;
+        if (r.faces_json) {
+          try {
+            facesData = JSON.parse(r.faces_json);
+          } catch {}
+        }
+        /** faces 中的 face_path 也转为绝对路径 */
+        const restoredFaces = facesData?.faces?.map((f: any) => {
+          const facePath = f.face_path || f.facePath || '';
+          const absPath = facePath ? resolveDbPath(facePath, projectDir) : '';
+          return { ...f, face_path: absPath, facePath: absPath };
+        }) || [];
+        const repFace = facesData?.representative ? {
+          ...facesData.representative,
+          facePath: avatarAbs,
+          face_path: avatarAbs,
+        } : (avatarAbs ? { facePath: avatarAbs } : null);
         return {
           id: r.id,
           name: r.name,
-          faceCount: 0,
+          faceCount: facesData?.faceCount ?? restoredFaces.length,
           avatar: r.avatar,
           avatarPath: avatarAbs,
-          representative: avatarAbs ? { facePath: avatarAbs } : null,
+          representative: repFace,
+          faces: restoredFaces,
           pronoun: r.pronoun,
           description: r.description,
           voiceId: r.voice_id,
@@ -192,6 +211,25 @@ export class PipelineResultWriter {
           const roleAvatar = rawAvatar && path.isAbsolute(rawAvatar)
             ? path.relative(projectDir, rawAvatar).replace(/\\/g, '/')
             : rawAvatar;
+          /** 💥 序列化 faces 数据到 faces_json，重进项目后恢复详细信息（性别/年龄/多张人脸）
+           * faces 中的 face_path 也转为相对路径，与 avatar 一致 */
+          const facesForDb = (role.faces || []).map((f: any) => {
+            const facePath = f.face_path || f.facePath || '';
+            const relPath = facePath && path.isAbsolute(facePath)
+              ? path.relative(projectDir, facePath).replace(/\\/g, '/')
+              : facePath;
+            return { ...f, face_path: relPath, facePath: relPath };
+          });
+          const repForDb = role.representative ? {
+            ...role.representative,
+            facePath: roleAvatar,
+            face_path: roleAvatar,
+          } : null;
+          const facesJson = JSON.stringify({
+            representative: repForDb,
+            faces: facesForDb,
+            faceCount: role.faceCount ?? facesForDb.length,
+          });
           insertRole.run({
             id: role.id || `role_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
             projectId,
@@ -202,6 +240,7 @@ export class PipelineResultWriter {
             description: role.description || role.label || roleName,
             voiceId: role.voiceId || null,
             mergedRoles: JSON.stringify(role.mergedRoles || []),
+            facesJson,
           });
         }
       });
