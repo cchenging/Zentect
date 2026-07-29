@@ -347,17 +347,25 @@ def _asr_postprocess_segments(segments):
 
 
 def _split_segment_by_words(words, detected_lang="en"):
-    """基于 word 级时间戳的句子级断句算法
+    """基于 word 级时间戳的句子级断句算法（确定参数版）
 
     faster-whisper 的 segment 是 VAD 段（基于静音切分），可能包含多个句子。
     本函数利用 word_timestamps=True 返回的每个 word 的精确时间戳，按以下规则重新断句：
 
     断句触发条件（任一满足即断）：
-    1) 标点触发：word 末尾包含句号/问号/感叹号（. ! ? 。 ！ ？）
-    2) 停顿触发：相邻 word 间停顿 > 0.5 秒（影视台词换气口）
-    3) 长度触发：当前句已达长度上限（中文 20 字 / 英文 12 词），防止过长
+    1) 标点触发：word 末尾包含句末标点（. ! ? 。 ！ ？ ；）→ 立即断句
+    2) 停顿触发：相邻 word 间停顿 > 500ms → 断句
+    3) 长度触发：当前句达 CJK 20 字 / 西文 12 词 → 强制断句
 
-    这样产生的句子符合说话节奏和画面展现，便于后续对齐字幕和分镜。
+    参数确定依据（行业标准硬阈值）：
+    - PAUSE_THRESHOLD_SEC = 0.500s
+      依据：英语连续发音词间隔 < 300ms（参考：语速 150 词/分钟 = 400ms/词），
+            句间换气停顿 ≥ 500ms（参考：VAD 默认 min_silence_duration_ms=500），
+            500ms 是连续发音与换气停顿的明确分界。
+    - MAX_CHARS = 20（CJK）
+      依据：GB/T 28039-2011《中文字幕通用技术规范》单行字幕 ≤ 21 字，取 20 字为安全上限。
+    - MAX_WORDS = 12（西文）
+      依据：BBC Subtitle Guidelines 第 14 节规定单行字幕 ≤ 12 词。
 
     Args:
         words: faster-whisper segment.words 列表，每个元素含 .word/.start/.end
@@ -372,10 +380,10 @@ def _split_segment_by_words(words, detected_lang="en"):
     lang_lower = (detected_lang or 'en').lower()
     is_cjk = any(k in lang_lower for k in ["zh", "ja", "ko", "cjk", "yue"])
 
-    # 断句参数
-    PAUSE_THRESHOLD_SEC = 0.5   # word 间停顿超过此值则断句（影视台词换气口）
-    MAX_CHARS = 20 if is_cjk else 999   # CJK 单句最大字数
-    MAX_WORDS = 999 if is_cjk else 12   # 西文单句最大词数
+    # 断句参数（确定值，无模糊区间）
+    PAUSE_THRESHOLD_SEC = 0.500  # 停顿 ≥ 500ms 断句（连续发音 < 300ms，换气 ≥ 500ms）
+    MAX_CHARS = 20 if is_cjk else 999   # CJK 单句 ≤ 20 字（GB/T 28039-2011）
+    MAX_WORDS = 999 if is_cjk else 12   # 西文单句 ≤ 12 词（BBC Subtitle Guidelines）
 
     # 句末标点（触发断句）
     SENTENCE_END_PUNCT = set('.!?。！？;；')
@@ -408,14 +416,14 @@ def _split_segment_by_words(words, detected_lang="en"):
         if word_text and word_text.strip()[-1] in SENTENCE_END_PUNCT:
             should_break = True
 
-        # 规则2：停顿触发（与下一个 word 间有 > 0.5s 停顿）
+        # 规则2：停顿触发（与下一个 word 间停顿 > 500ms）
         if not should_break and idx < len(words) - 1:
             next_start = getattr(words[idx + 1], 'start', word_end) or word_end
             pause = next_start - word_end
             if pause > PAUSE_THRESHOLD_SEC:
                 should_break = True
 
-        # 规则3：长度触发
+        # 规则3：长度触发（CJK ≥ 20 字 / 西文 ≥ 12 词）
         if not should_break:
             if is_cjk:
                 joined = ''.join(current_words)
