@@ -130,14 +130,21 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       const vocalsAbs = dbMedia.extractedVocals ? resolveDbPath(dbMedia.extractedVocals, projectDir) : undefined;
       const bgmAbs = dbMedia.extractedBgm ? resolveDbPath(dbMedia.extractedBgm, projectDir) : undefined;
       const audioAbs = dbMedia.extractedAudio ? resolveDbPath(dbMedia.extractedAudio, projectDir) : undefined;
+      const audioExists = !!(audioAbs && fs.existsSync(audioAbs));
       if (vocalsAbs && fs.existsSync(vocalsAbs) && bgmAbs && fs.existsSync(bgmAbs)) {
         existingVocalsPath = vocalsAbs;
         existingBgmPath = bgmAbs;
-        existingAudioPath = audioAbs || vocalsAbs;
+        // 🔧 修复：ASR 只用原始音频降采样（extractedAudio），不复用分离后 vocals
+        // 原因：Demucs 分离损失高频细节，导致 faster-whisper 误识别（如 "I'm"→"Mom"）
+        // vocals/bgm 仍复用分离产物供 BGM 提取、TTS 等其他用途
+        existingAudioPath = audioExists ? audioAbs : undefined;
         existingVocalsIsFallback = !!dbMedia.vocalsIsFallback;
-        skipAudio = true;
-        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有音频分离产物，跳过音频分离`, { mediaId });
-      } else if (separationMode === 'fast' && audioAbs && fs.existsSync(audioAbs)) {
+        // 仅当 16k ASR 音频存在时才跳过音频处理；否则需重新生成
+        skipAudio = !!existingAudioPath;
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+          `[Step1] 🟢 检测到已有音频分离产物，跳过音频分离${existingAudioPath ? '（ASR用原始音轨降采样）' : '（需重新生成 ASR 音频）'}`,
+          { mediaId });
+      } else if (separationMode === 'fast' && audioExists) {
         existingAudioPath = audioAbs;
         existingVocalsIsFallback = true;
         skipAudio = true;
@@ -268,14 +275,19 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           projectDir,
         });
 
-        // 优先使用vocals（人声分离结果，ASR识别质量最好）
+        // 🔧 修复：ASR 只用原始音频降采样（extractedAudio），不使用分离后 vocals
+        // 原因：Demucs 分离损失高频细节，导致 faster-whisper 误识别（如 "I'm"→"Mom"）
+        // vocals/bgm 仅复用分离产物供其他用途（BGM 提取、TTS 等），不作为 ASR 音频源
         if (vocalsExists) {
           existingVocalsPath = vocalsAbs;
           existingBgmPath = bgmExists ? bgmAbs : undefined;
-          existingAudioPath = vocalsAbs; // ASR用人声音轨
           existingVocalsIsFallback = false;
-          skipAudio = true; // 🔧 修复：加载成功后标记为跳过
-          AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有人声分离产物，跳过音频分离（ASR将使用人声音轨）`, { mediaId });
+          // 仅当 16k ASR 音频存在时才跳过音频处理；否则需重新跑 extractAndSeparate 生成
+          existingAudioPath = audioExists ? audioAbs : undefined;
+          skipAudio = !!existingAudioPath;
+          AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+            `[Step1] 🟢 检测到已有人声分离产物，跳过音频分离${existingAudioPath ? '（ASR用原始音轨降采样）' : '（需重新生成 ASR 音频）'}`,
+            { mediaId });
         } else if (audioExists) {
           // 回退到原始音轨（极速模式或分离失败后的降级）
           existingAudioPath = audioAbs;
