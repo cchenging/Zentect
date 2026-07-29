@@ -23,6 +23,25 @@ os.environ['TORCH_HOME'] = os.path.join(MODELS_DIR, 'demucs')
 os.environ['HF_HOME'] = os.path.join(MODELS_DIR, 'huggingface')
 os.environ['XDG_CACHE_HOME'] = os.path.join(MODELS_DIR, '.cache')
 os.environ['INSIGHTFACE_HOME'] = os.path.join(MODELS_DIR, 'insightface')
+# 禁用 modelscope 联网下载，防止 .lock 残留文件触发下载导致进程崩溃
+os.environ['MODELSCOPE_CACHE'] = os.path.join(MODELS_DIR, 'modelscope_cache')
+os.environ['MODELSCOPE_DOWNLOAD_PARALLELS'] = '0'
+
+# 清理 modelscope 下载中断残留的 .lock 和临时文件，防止下次加载时触发异常下载
+import glob as _glob
+for _lock_file in _glob.glob(os.path.join(MODELS_DIR, '**', '.lock'), recursive=True):
+    try:
+        os.remove(_lock_file)
+        print(f'[AI Config] 清理残留锁文件: {_lock_file}', file=sys.stderr)
+    except OSError:
+        pass
+for _tmp_dir in _glob.glob(os.path.join(MODELS_DIR, '**', '._____temp'), recursive=True):
+    try:
+        import shutil as _shutil
+        _shutil.rmtree(_tmp_dir, ignore_errors=True)
+        print(f'[AI Config] 清理残留临时目录: {_tmp_dir}', file=sys.stderr)
+    except OSError:
+        pass
 
 
 INFERENCE_LOCK = threading.RLock()
@@ -42,7 +61,6 @@ class AIModels:
     face_app = None
     clip_model = None
     clip_processor = None
-    sensevoice_model = None
     _funasr_model = None
     _faster_whisper_model = None
 
@@ -84,14 +102,6 @@ class AIModels:
             cls._gc_collect()
 
     @classmethod
-    def release_sensevoice(cls):
-        """释放 SenseVoice ONNX 模型内存"""
-        if cls.sensevoice_model is not None:
-            del cls.sensevoice_model
-            cls.sensevoice_model = None
-            cls._gc_collect()
-
-    @classmethod
     def release_funasr_sensevoice(cls):
         """释放 FunASR SenseVoice + VAD 模型内存"""
         if cls._funasr_model is not None:
@@ -112,7 +122,6 @@ class AIModels:
         """释放所有已加载模型，回收内存"""
         cls.release_face_app()
         cls.release_clip()
-        cls.release_sensevoice()
         cls.release_funasr_sensevoice()
         cls.release_faster_whisper()
         print('[AI Daemon] 🧹 所有模型已释放，内存已回收', file=sys.stderr)
@@ -177,21 +186,6 @@ class AIModels:
         return (cls.clip_model, cls.clip_processor)
 
     @classmethod
-    def get_sensevoice(cls):
-        """获取 SenseVoice ONNX 模型（懒加载，带锁保护）"""
-        if cls.sensevoice_model is None:
-            with INFERENCE_LOCK:
-                if cls.sensevoice_model is None:
-                    from funasr_onnx import SenseVoiceSmall
-                    print('[AI Daemon] 🧠 首次按需加载：SenseVoice (ONNX)...',
-                          file=sys.stderr)
-                    model_dir = os.path.join(MODELS_DIR, 'sensevoice_onnx')
-                    cls.sensevoice_model = SenseVoiceSmall(
-                        model_dir, batch_size=1, quantize=True
-                    )
-        return cls.sensevoice_model
-
-    @classmethod
     def get_funasr_sensevoice(cls):
         """获取 funasr AutoModel（SenseVoiceSmall + fsmn-vad，本地目录加载，带锁保护）
 
@@ -223,6 +217,8 @@ class AIModels:
                         vad_kwargs={'max_single_segment_time': 30000},
                         device=cls._ensure_device(),
                         disable_update=True,
+                        trust_remote_code=True,  # SenseVoice 有自定义 model.py，必须信任远程代码
+                        hub='ms',  # 明确指定 ModelScope hub，避免自动探测触发联网
                     )
         return cls._funasr_model
 

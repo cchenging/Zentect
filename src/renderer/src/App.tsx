@@ -17,14 +17,14 @@ import { useUserStore } from './store/useUserStore';
 import { useNotificationCenter } from './services/NotificationCenter';
 
 // ==========================================================
-// — S-Tier 优化：路由懒加载 (Code Splitting)
-// 将工作台和重型剪辑器的 JS 物理分卷，极大提升首屏解析速度！
+// — 路由懒加载 (Code Splitting)
+// 将重型剪辑器/设置页的 JS 物理分卷，极大提升首屏解析速度！
+// 注意：Home 是默认首页，同步导入以消除 Suspense fallback 闪烁。
 // ==========================================================
-const Home = React.lazy(() => import('@modules/home').then(m => ({ default: m.HomeContainer })));
+import { HomeContainer } from '@modules/home';
 const Editor = React.lazy(() => import('@modules/editor'));
 const ModelsPage = React.lazy(() => import('@modules/models'));
 const UserSettingsPage = React.lazy(() => import('@modules/user-settings'));
-// 🔧 修复：SettingsPage 也改为懒加载，与其它页面保持一致
 const SettingsPage = React.lazy(() => import('@modules/settings/frontend').then(m => ({ default: m.Settings })));
 
 function App() {
@@ -147,7 +147,7 @@ function App() {
         }>
           <Routes>
             <Route path="/" element={<AppLayout />}>
-              <Route index element={<Home />} />
+              <Route index element={<HomeContainer />} />
               <Route path="models" element={<ModelsPage />} />
             </Route>
             <Route path="/editor/:id" element={<Editor />} />

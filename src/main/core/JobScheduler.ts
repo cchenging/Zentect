@@ -185,15 +185,19 @@ export class JobScheduler {
           vocalsIsFallback: !!step1Data.audio?.vocalsIsFallback,
           separationMode: payload.config?.audio?.separationMode || 'quality',
           separationEngine: payload.config?.audio?.engine || 'auto',
-          shots: (step1Data.asr?.lines || []).map((line: any) => {
+          shots: (step1Data.asr?.lines || []).map((line: any, idx: number) => {
+            // 🔧 修复：为每个 shot 生成全局唯一 id，避免 ProjectRepository 跳过无 id 的 shot
+            const shotId = `shot_${Date.now()}_${idx}`;
             if (typeof line.start === 'number') {
               return {
+                id: shotId,
                 originalText: line.text || line.originalText || '',
                 start: line.start,
                 end: line.end,
               };
             }
             return {
+              id: shotId,
               originalText: line.text || line.originalText || '',
               start: (() => {
                 const parts = (line.start || '00:00').split(':');
@@ -349,7 +353,9 @@ export class JobScheduler {
         try {
           const { LocalWhisperStrategy } = require('../engine/strategies/LocalWhisperStrategy');
           const whisperStrategy = new LocalWhisperStrategy();
-          const whisperResult = await whisperStrategy.transcribe(vocalPath, audioDir, projectId, 'zh');
+          // 🔧 修复：language='auto' + engine='auto'，让 Python 端自动检测语言并选择引擎
+          // 旧版硬编码 'zh' → 英文视频被 SenseVoice 识别导致字幕不一致
+          const whisperResult = await whisperStrategy.transcribe(vocalPath, audioDir, projectId, 'auto', 'auto');
 
           if (whisperResult?.whisperJsonPath) {
             const whisperJson = JSON.parse(fs.readFileSync(whisperResult.whisperJsonPath, 'utf-8'));
@@ -468,7 +474,9 @@ export class JobScheduler {
               vocalsIsFallback: targetMedia.vocalsIsFallback,
               status: 'parsed',
             },
-            shots: asrLines.map((line: any) => ({
+            shots: asrLines.map((line: any, idx: number) => ({
+              // 🔧 修复：为每个 shot 生成全局唯一 id，避免 ProjectRepository 跳过无 id 的 shot
+              id: `shot_${Date.now()}_${idx}`,
               originalText: line.text || line.originalText || '',
               start: (() => {
                 const parts = (line.start || '00:00').split(':');

@@ -259,10 +259,35 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
         ps.setPipelineRunning(false);
         return;
       }
+      // 🔧 修复重复执行：只将未完成（非 completed）的启用子步骤设为 running
+      // 旧版 bug：不检查当前 subStepStatuses，直接把所有启用子步骤设为 running
+      //          → 已 completed 的抽帧/音频/ASR/人脸全部重新跑一遍，浪费时间且覆盖成功状态
+      const currentSubStatuses = ps.subStepStatuses;
       const enabledKeys = ['frames', 'audio', 'whisper', 'faces'] as const;
+      const keysToRun: string[] = [];
       enabledKeys.forEach(key => {
-        if (config[key]?.enabled) ps.setSubStepStatus(key, 'running');
+        if (!config[key]?.enabled) return;
+        // 子步骤配置键映射（frames 配置在 config.frames，audio 在 config.audio，whisper 在 config.whisper，faces 在 config.faces）
+        const alreadyCompleted = currentSubStatuses[key] === 'completed';
+        if (!alreadyCompleted) {
+          ps.setSubStepStatus(key, 'running');
+          keysToRun.push(key);
+        }
       });
+      // 如果所有子步骤都已完成，直接标记 step1 完成，不发请求
+      if (keysToRun.length === 0) {
+        ps.setStepCompleted(1, true);
+        ps.setStepStatus(1, 'completed');
+        ps.setPipelineRunning(false);
+        AppNotifier.success('所有子任务已完成，无需重新执行');
+        // 跳转到下一步
+        if (useEditorNavStore.getState().isAutoMode) {
+          useEditorNavStore.getState().setCurrentStep(2);
+        }
+        return;
+      }
+      console.log('[Step1 增量执行] 需执行子步骤:', keysToRun, '已跳过(completed):',
+        enabledKeys.filter(k => config[k]?.enabled && currentSubStatuses[k] === 'completed'));
       ps.setStepStatus(1, 'running');
       ps.setPipelineRunning(true);
       ps.setPipelineProgress(0, '准备中');
@@ -286,8 +311,10 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
         });
         AppNotifier.info('素材提取任务已加入队列');
       } catch (err: any) {
-        enabledKeys.forEach(key => {
-          if (config[key]?.enabled) ps.setSubStepStatus(key, 'idle');
+        // 🔧 修复状态覆盖：只重置本次要执行的子步骤（keysToRun），不能碰已 completed 的子步骤
+        // 旧版 bug：enabledKeys.forEach 把所有启用的子步骤都设回 idle → 之前已完成的抽帧/音频/人脸状态被清空
+        keysToRun.forEach(key => {
+          ps.setSubStepStatus(key, 'idle');
         });
         ps.setStepStatus(1, 'failed');
         ps.setPipelineError(err?.message || '素材提取启动失败');

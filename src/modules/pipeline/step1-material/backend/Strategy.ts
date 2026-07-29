@@ -513,11 +513,20 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       }
       try {
         const whisperStrategy = new LocalWhisperStrategy();
-        const whisperCfg = typeof config.whisper === 'object' ? config.whisper : { enabled: true, engine: 'sensevoice' as const };
+        const whisperCfg = typeof config.whisper === 'object' ? config.whisper : { enabled: true, engine: 'auto' as const };
         const asrLang = whisperCfg.language || 'auto';
         const CJK_LANGS = ['zh', 'ja', 'ko', 'yue'];
-        let asrEngine = whisperCfg.engine || 'sensevoice';
-        if (asrLang !== 'auto' && !CJK_LANGS.includes(asrLang) && !whisperCfg.engine) {
+        // 🔧 修复：language='auto' 时强制 engine='auto'，让 Python 端根据 faster-whisper 检测结果自动选择引擎
+        // 旧版 bug：前端默认 engine='sensevoice' 是 truthy → 走第一分支 → 英文视频被 SenseVoice 识别导致字幕不一致
+        // 且 zustand persist 持久化了旧默认值，仅改默认值对老数据无效，故此处强制覆盖
+        let asrEngine: 'sensevoice' | 'faster-whisper' | 'auto';
+        if (asrLang === 'auto') {
+          asrEngine = 'auto';
+        } else if (whisperCfg.engine && whisperCfg.engine !== 'auto') {
+          asrEngine = whisperCfg.engine;
+        } else if (CJK_LANGS.includes(asrLang)) {
+          asrEngine = 'sensevoice';
+        } else {
           asrEngine = 'faster-whisper';
         }
         const asrOnProgress = (pct: number, msg: string) => {

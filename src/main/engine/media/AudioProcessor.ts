@@ -275,12 +275,13 @@ export class AudioProcessor {
     );
 
     if (separated && separated.vocals) {
-      // 分离成功：vocals 降采样到 16k mono 供 ASR，bgm 保留 44.1k 给渲染
+      // 🔧 修复：ASR 用原始 44.1k 降采样到 16k，不用分离后 vocals
+      // 原因：Demucs 分离会损失高频细节，导致 faster-whisper 把 "I'm" 误识别成 "Mom"
+      // 分离产物 vocals.wav/bgm.wav 仍保留，供 BGM 提取、TTS 等其他用途使用
       onProgress?.(95, '正在准备 ASR 音频...');
-      const ok = await AudioProcessor.downsampleTo16k(separated.vocals, asrPath, signal);
-      // 降采样失败时直接用原 vocals（44.1k）作为 fallback，ASR 内部也能转
-      const finalAsr = ok ? asrPath : separated.vocals;
-      // 清理中间产物：44.1k 原始提取文件（分离已完成，不再需要）
+      const ok = await AudioProcessor.downsampleTo16k(hqPath, asrPath, signal);
+      const finalAsr = ok ? asrPath : hqPath;
+      // 清理中间产物：44.1k 原始提取文件（降采样已完成，不再需要）
       fs.unlink(hqPath, () => {});
       onProgress?.(100, '人声分离完成');
       return {

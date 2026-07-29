@@ -10,11 +10,25 @@
 #      python.exe -m pip install torch==2.7.0 torchaudio==2.7.0 \
 #        --index-url https://download.pytorch.org/whl/cpu --force-reinstall --no-deps
 #
-# ⚠️ embeddable Python 3.12 DLL 限制（2026-07 验证）：
+# ⚠️ embeddable Python 3.12 DLL 限制（2026-07-28 验证）：
 #    - torch > 2.7.0 在 embeddable Python 下 c10.dll 初始化失败
 #    - onnxruntime > 1.20.1 在 embeddable Python 下 pybind DLL 失败
-#    - sentencepiece 0.2.x 在 Python 3.12 下 _sentencepiece.pyd 内存访问冲突
+#    - sentencepiece 0.1.99 在 Python 3.12 embeddable 下加载 bpe.model 时 ACCESS_VIOLATION
+#    - sentencepiece 0.2.2 在 Python 3.12 下 _sentencepiece.pyd 内存访问冲突
+#    - sentencepiece 0.2.0 在 Python 3.12 embeddable 下验证通过（SenseVoice bpe.model 加载成功）
 #    如改用完整 Python 安装，可尝试升级上述包
+#
+# ⚠️ 2026-07-28 修复记录：
+#    ai-env 中 sentencepiece 被意外升级到 0.2.2，导致 SenseVoice 分词器加载崩溃
+#    (exit code: 3221225477 ACCESS_VIOLATION)。
+#    修复过程：
+#      1. 先降级到 0.1.99 → 仍然崩溃（0.1.99 的 C 扩展在 Python 3.12 embeddable 下加载 bpe.model 失败）
+#      2. 改用 0.2.0 → 加载成功，SenseVoice 模型完整加载通过
+#    验证：torch 2.7.0+cpu + sentencepiece 0.2.0 + funasr 1.3.29 三者导入和模型加载均正常。
+#    根因：某次 pip install 时依赖解析将 sentencepiece 拉到 0.2.2，
+#          0.2.2 的 C 扩展 _sentencepiece.pyd 在 Python 3.12 下有内存访问冲突 bug。
+#          0.1.99 在完整 Python 3.12 下可工作，但在 embeddable 环境下加载 bpe.model 崩溃。
+#          0.2.0 是 Python 3.12 embeddable 下唯一验证通过的版本。
 
 # === PyTorch 系（CPU 版本，从 PyTorch 官方 CPU 索引安装）===
 # 锁定 2.7.0：embeddable Python 3.12 下唯一稳定版本
@@ -34,11 +48,13 @@ sse-starlette>=3.4.0
 funasr==1.3.29
 modelscope>=1.38.0
 huggingface_hub>=1.24.0
-# sentencepiece 锁定 0.1.99：0.2.x 的 C 扩展在 Python 3.12 下内存访问冲突
-sentencepiece==0.1.99
+# sentencepiece 锁定 0.2.0：0.1.99 在 embeddable Python 3.12 下加载 bpe.model 崩溃，0.2.2 内存冲突，0.2.0 验证通过
+sentencepiece==0.2.0
 # faster-whisper：英文/欧洲语言 ASR 引擎，基于 CTranslate2，比 whisper.cpp 快 4-8 倍
-# 自动依赖 ctranslate2、onnxruntime、tokenizers 等
 faster-whisper>=1.0.3
+# ctranslate2 锁定 4.5.0：4.8.1 在 Windows embeddable Python 3.12 下加载模型时 ACCESS_VIOLATION (exit 3221225477)
+# 4.5.0 验证通过：large-v3 模型加载 10.5s，int8 推理正常
+ctranslate2==4.5.0
 
 # === 音频分离 ===
 # demucs 4.1.0：项目代码已适配 4.1 API（多字段进度回调 fallback）

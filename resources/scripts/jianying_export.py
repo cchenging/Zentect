@@ -16,8 +16,18 @@ import traceback
 import asyncio
 import concurrent.futures
 
-import pyJianYingDraft as draft
-from pyJianYingDraft import trange, TrackType
+# 剪映导出是可选功能，pyJianYingDraft 未安装时路由返回友好提示而非503崩溃
+try:
+    import pyJianYingDraft as draft
+    from pyJianYingDraft import trange, TrackType
+    _JY_AVAILABLE = True
+except ImportError:
+    draft = None
+    trange = None
+    TrackType = None
+    _JY_AVAILABLE = False
+    print("[JianYing Export] ⚠️ pyJianYingDraft 未安装，剪映导出功能不可用", file=__import__('sys').stderr)
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
@@ -71,6 +81,8 @@ class JianyingExportReq(BaseModel):
 @router.post("/api/jianying/export")
 async def export_endpoint(req: JianyingExportReq):
     """接收前端 matchResults + scripts + tts 数据，构建加密剪映草稿"""
+    if not _JY_AVAILABLE:
+        raise HTTPException(status_code=501, detail="pyJianYingDraft 未安装，剪映导出功能不可用")
     loop = asyncio.get_running_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         try:

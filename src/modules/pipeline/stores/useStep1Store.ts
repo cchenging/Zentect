@@ -36,7 +36,7 @@ export interface ExtractionConfig {
     timePoint?: number;
   };
   audio: AudioConfig;
-  whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' };
+  whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'auto' };
   faces: { enabled: boolean; engine: 'insightface' | 'mediapipe' };
 }
 
@@ -82,7 +82,7 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
     minFrameInterval: 4,
   },
   audio: { enabled: true, separationMode: 'quality', engine: 'auto' },
-  whisper: { enabled: true, engine: 'sensevoice' },
+  whisper: { enabled: true, engine: 'auto' },
   faces: { enabled: true, engine: 'insightface' },
 };
 

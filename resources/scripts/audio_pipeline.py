@@ -27,6 +27,48 @@ def _error(msg: str, code: str = "AI_PROCESS_FAILED") -> dict:
 
 
 # ==========================================
+# 辅助：Demucs 模型内存强制释放（修复 SR 崩溃 exit code: 3221225477）
+# ==========================================
+def _cleanup_demucs_memory():
+    """强制释放 Demucs 模型占用的 PyTorch 内存，防止后续 SenseVoice 加载时触发 ACCESS_VIOLATION
+    
+    🔧 修复 SR 崩溃根因：
+    del + gc.collect() 只释放 Python 层引用，PyTorch C++ 内存分配器可能仍持有缓存。
+    需要：
+    1. 多次 gc.collect() 回收 Python 对象
+    2. torch.cuda.empty_cache() 清理 PyTorch 内存分配器缓存
+    3. 短暂 sleep 让 OS 回收物理内存页
+    注意：调用方需要在 finally 块中将外部变量显式置 None，确保引用断开。
+    """
+    import gc
+    import time
+    
+    # 步骤1：第一次 gc 回收 Python 对象
+    gc.collect()
+    
+    # 步骤2：清理 PyTorch C++ 内存分配器缓存
+    # 即使 CPU 模式也调用 empty_cache()，它会释放 PyTorch 内部缓存的 tensor 存储
+    try:
+        import torch
+        if hasattr(torch, 'cuda') and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        # CPU 模式：PyTorch 1.x+ 有 cpu_allocator 但无公开 API 清理
+        # 通过 gc.collect() + sleep 组合让 OS 自然回收
+    except ImportError:
+        pass
+    
+    # 步骤3：第二次 gc 回收（torch 清理后可能释放新的 Python 对象）
+    gc.collect()
+    
+    # 步骤4：等待 OS 回收物理内存页（500ms）
+    # 避免 SenseVoice 紧接着加载时访问尚未完全回收的内存区域
+    time.sleep(0.5)
+    
+    print("[AI Daemon] 🧹 Demucs 模型内存已强制释放", file=sys.stderr)
+
+
+# ==========================================
 # DTOs
 # ==========================================
 class EmotionReq(BaseModel):
@@ -588,12 +630,14 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
                 pct = min(90, 15 + int(seg_idx / total_segments_est * 75))
                 _set_progress(task_id, pct=pct, msg=f"已识别 {seg_idx} 段...")
 
-        # 后处理：复用现有的断句和去重逻辑
+        # 后处理：faster-whisper 已自带 segment 级断句和标点，无需再走 word 级断句器
+        # 🔧 修复：旧版把 faster-whisper 的 segment（完整句子）当作 word 传入 clean_and_merge_to_sentences，
+        #   导致多个句子被错误合并、标点被清除、时间戳被重算，与字幕完全不一致
+        #   现在只做 _asr_postprocess_segments（去重 + 重叠合并），保留 faster-whisper 原生断句和标点
         if task_id:
-            _set_progress(task_id, pct=90, msg="后处理：断句与去重...")
+            _set_progress(task_id, pct=90, msg="后处理：去重与重叠合并...")
 
-        merged_segments = clean_and_merge_to_sentences(all_segments, detected_lang)
-        merged_segments = _asr_postprocess_segments(merged_segments)
+        merged_segments = _asr_postprocess_segments(all_segments)
 
         formatted_segments = []
         for s in merged_segments:
@@ -958,6 +1002,17 @@ def _separate_sync(req: SeparateReq, task_id: str):
         # --- Phase 0: Demucs (highest quality, 4-stem hybrid) ---
         # demucs 4.1.0+ 官方 API：demucs.api.Separator
         if run_demucs:
+            # 🔧 修复 SR 崩溃 (exit code: 3221225477 = ACCESS_VIOLATION)：
+            # Demucs 加载 ~2GB 模型后，SenseVoice 紧接着加载 ~1.5GB 模型，
+            # 仅靠 del + gc.collect() 无法确保 PyTorch C++ 内存分配器释放干净，
+            # 导致后续模型加载时访问已释放/碎片化的内存区域 → 进程崩溃。
+            # 修复策略：
+            #   1. try-finally 确保 Demucs 清理一定执行（即使 FFmpeg 合并失败）
+            #   2. del 大型对象 + gc.collect() + torch 缓存清理 + 再次 gc.collect()
+            #   3. 500ms 延迟让 OS 回收内存页，稳定后再释放 INFERENCE_LOCK
+            demucs_sep = None
+            origin = None
+            separated = None
             try:
                 import demucs
                 from demucs.api import Separator as DemucsSeparator
@@ -1007,11 +1062,6 @@ def _separate_sync(req: SeparateReq, task_id: str):
                         wavfile.write(stem_path, sr, audio_int16)
 
                     stem_paths[stem_name.lower()] = stem_path
-
-                # 🔧 内存释放：分离完成后立即释放大型 tensor 和 separator 对象
-                # 避免长生命周期 daemon 进程中 demucs 模型缓存导致内存溢出
-                del origin, separated, demucs_sep
-                AIModels._gc_collect()
 
                 demucs_vocals = stem_paths.get("vocals", "")
                 demucs_drums = stem_paths.get("drums", "")
@@ -1071,6 +1121,14 @@ def _separate_sync(req: SeparateReq, task_id: str):
             except Exception as demucs_err:
                 print(f"[AI Daemon] Demucs 分离失败，降级到 MDX-Net: {demucs_err}", file=sys.stderr)
                 _set_progress(task_id, pct=5, msg="Demucs 失败，降级到 MDX-Net...")
+            finally:
+                # 🔧 修复 SR 崩溃：finally 确保 Demucs 模型资源一定被释放
+                # 即使 FFmpeg 合并失败或中途异常，也要清理 PyTorch 内存
+                # 关键顺序：先断开引用，再 gc.collect()，否则 GC 无法回收仍被引用的 tensor
+                origin = None
+                separated = None
+                demucs_sep = None
+                _cleanup_demucs_memory()
 
             # engine='demucs' 时不降级到 MDX-Net，直接抛失败
             if engine == "demucs":

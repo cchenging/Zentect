@@ -11,9 +11,36 @@ import asyncio
 import concurrent.futures
 
 from fastapi import APIRouter, HTTPException
-from ai_daemon import AIModels, KMMatchReq, PROJECT_MATERIAL_POOL
+from pydantic import BaseModel
+from typing import List
+from ai_config import AIModels, PROJECT_MATERIAL_POOL, INFERENCE_LOCK
 
 router = APIRouter()
+
+
+# ==========================================
+# DTOs
+# ==========================================
+class KMMatchQuery(BaseModel):
+    """卡点匹配查询"""
+    shotId: str
+    text: str
+    audioDurationMs: float = 0
+
+
+class KMMatchReq(BaseModel):
+    """卡点匹配请求"""
+    queries: List[KMMatchQuery]
+    videoChunks: List[dict]
+    bgmBeats: List[float] = []
+    mediaId: str = 'default'
+    translateToEnglish: bool = False
+    llmApiKey: str = ''
+    llmApiBase: str = ''
+    llmApiModel: str = ''
+    vlmApiKey: str = ''
+    vlmApiBase: str = ''
+    vlmApiModel: str = ''
 
 
 @router.post("/api/solver/kuhn_munkres_match")
@@ -291,6 +318,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     - 优先使用切片中预提取的 CLIP 512维视觉特征（省去重复编码）
     - 代价矩阵：semantic_score * 0.8 + time_penalty * 0.2
     - 5分钟时序块级联分治，将 O(n³) 复杂度压制在可控范围内
+    带全局推理锁保护，防止并发原生库崩溃
     """
     import numpy as np
     from scipy.optimize import linear_sum_assignment
@@ -391,21 +419,22 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
         import torch
         import torch.nn.functional as F
 
-        text_inputs = processor(text=enhanced_texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
-        with torch.no_grad():
-            text_features = model.get_text_features(**text_inputs)
-        text_features = F.normalize(text_features, p=2, dim=-1).cpu().numpy()
+        with INFERENCE_LOCK:
+            text_inputs = processor(text=enhanced_texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
+            with torch.no_grad():
+                text_features = model.get_text_features(**text_inputs)
+            text_features = F.normalize(text_features, p=2, dim=-1).cpu().numpy()
 
-        final_image_features = np.zeros((len(valid_chunk_indices), text_features.shape[1]), dtype=np.float32)
-        for idx, (ci, pre_emb) in enumerate(zip(valid_chunk_indices, pre_embeddings)):
-            if pre_emb is not None and pre_emb.shape[0] == text_features.shape[1]:
-                final_image_features[idx] = pre_emb
-            elif pre_emb is not None and len(pre_emb) > 0:
-                norm = np.linalg.norm(pre_emb)
-                if norm > 0:
-                    final_image_features[idx] = pre_emb / norm
+            final_image_features = np.zeros((len(valid_chunk_indices), text_features.shape[1]), dtype=np.float32)
+            for idx, (ci, pre_emb) in enumerate(zip(valid_chunk_indices, pre_embeddings)):
+                if pre_emb is not None and pre_emb.shape[0] == text_features.shape[1]:
+                    final_image_features[idx] = pre_emb
+                elif pre_emb is not None and len(pre_emb) > 0:
+                    norm = np.linalg.norm(pre_emb)
+                    if norm > 0:
+                        final_image_features[idx] = pre_emb / norm
 
-        semantic_sim = text_features @ final_image_features.T
+            semantic_sim = text_features @ final_image_features.T
 
         print(f"[KM] 使用预提取 CLIP 特征，匹配维度: {text_features.shape[1]}", file=sys.stderr)
         del text_features, final_image_features
@@ -415,37 +444,38 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
         import torch.nn.functional as F
         from PIL import Image
 
-        text_inputs = processor(text=enhanced_texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
-        with torch.no_grad():
-            text_features = model.get_text_features(**text_inputs)
-        text_features = F.normalize(text_features, p=2, dim=-1)
-
-        IMAGE_ENCODE_BATCH = 64
-        all_image_features = []
-        for batch_start in range(0, len(valid_chunk_indices), IMAGE_ENCODE_BATCH):
-            batch_imgs = []
-            for ci in valid_chunk_indices[batch_start:batch_start + IMAGE_ENCODE_BATCH]:
-                cover = video_chunks[ci].get("coverPath", "")
-                if cover and os.path.exists(cover):
-                    try:
-                        with Image.open(cover) as img:
-                            batch_imgs.append(img.convert("RGB"))
-                    except Exception:
-                        batch_imgs.append(Image.new('RGB', (224, 224), color=(128, 128, 128)))
-                else:
-                    batch_imgs.append(Image.new('RGB', (224, 224), color=(128, 128, 128)))
-
-            image_inputs = processor(images=batch_imgs, return_tensors="pt", padding=True).to(AIModels.device)
+        with INFERENCE_LOCK:
+            text_inputs = processor(text=enhanced_texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
             with torch.no_grad():
-                batch_features = model.get_image_features(**image_inputs)
-            all_image_features.append(F.normalize(batch_features, p=2, dim=-1))
-            del image_inputs, batch_features, batch_imgs
+                text_features = model.get_text_features(**text_inputs)
+            text_features = F.normalize(text_features, p=2, dim=-1)
 
-        image_features = torch.cat(all_image_features, dim=0)
-        del all_image_features
+            IMAGE_ENCODE_BATCH = 64
+            all_image_features = []
+            for batch_start in range(0, len(valid_chunk_indices), IMAGE_ENCODE_BATCH):
+                batch_imgs = []
+                for ci in valid_chunk_indices[batch_start:batch_start + IMAGE_ENCODE_BATCH]:
+                    cover = video_chunks[ci].get("coverPath", "")
+                    if cover and os.path.exists(cover):
+                        try:
+                            with Image.open(cover) as img:
+                                batch_imgs.append(img.convert("RGB"))
+                        except Exception:
+                            batch_imgs.append(Image.new('RGB', (224, 224), color=(128, 128, 128)))
+                    else:
+                        batch_imgs.append(Image.new('RGB', (224, 224), color=(128, 128, 128)))
 
-        semantic_sim = torch.matmul(text_features, image_features.T).cpu().numpy()
-        del text_features, image_features
+                image_inputs = processor(images=batch_imgs, return_tensors="pt", padding=True).to(AIModels.device)
+                with torch.no_grad():
+                    batch_features = model.get_image_features(**image_inputs)
+                all_image_features.append(F.normalize(batch_features, p=2, dim=-1))
+                del image_inputs, batch_features, batch_imgs
+
+            image_features = torch.cat(all_image_features, dim=0)
+            del all_image_features
+
+            semantic_sim = torch.matmul(text_features, image_features.T).cpu().numpy()
+            del text_features, image_features
         print(f"[KM] 使用封面图重新编码，完成 {len(valid_chunk_indices)} 个切片", file=sys.stderr)
 
     else:
@@ -518,7 +548,8 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
             padding = np.zeros((local_n_queries, local_n_queries - local_n_chunks), dtype=np.float64)
             local_cost = np.hstack([local_cost, padding])
 
-        row_ind, col_ind = linear_sum_assignment(local_cost)
+        with INFERENCE_LOCK:
+            row_ind, col_ind = linear_sum_assignment(local_cost)
 
         for ri, ci in zip(row_ind, col_ind):
             if ri >= local_n_queries or ci >= local_n_chunks:

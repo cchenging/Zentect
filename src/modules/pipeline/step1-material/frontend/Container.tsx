@@ -7,7 +7,8 @@ import { useProjectStore } from "@modules/editor/stores/useProjectStore";
 import { usePlayerStore } from "@modules/editor/stores/usePlayerStore";
 import { usePipelineStore } from "@renderer/store/usePipelineStore";
 import { usePipelineOrchestrator } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
-import { IPC_CHANNELS } from "@modules/infra/ipc/IpcConstants";
+import { API } from "@renderer/api";
+import { AppNotifier } from "@renderer/core/AppNotifier";
 import type { Step1Config } from "../types";
 import { StepMaterialAnalysisView } from "./View";
 
@@ -55,38 +56,41 @@ export const StepMaterialAnalysis: React.FC = () => {
       const step1State = useStep1Store.getState();
       if (!projectState.projectId) return;
 
-      const mediaItem = projectState.mediaItems[0];
+      const mediaItem = projectState.mediaItems.find((m: any) => m.type === 'video') || projectState.mediaItems[0];
       if (!mediaItem?.filePath) return;
 
-      const currentConfig = step1State.extractionConfig;
+      // 🔧 修复重试无反应：currentConfig 可能为 null（首次加载未初始化），提供默认配置
+      const currentConfig = step1State.extractionConfig || {
+        frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, minFrameInterval: 4, fps: 2, scale: 1024, quality: 3 },
+        audio: { enabled: true, separationMode: 'quality', engine: 'auto' },
+        whisper: { enabled: true, engine: 'sensevoice', language: 'auto' },
+        faces: { enabled: true, engine: 'insightface' },
+        targetLanguage: 'zh-CN',
+      };
+      // 🔧 修复重试：只启用被点击的子步骤，禁用其他，同时传递 _forceRetry 让后端强制执行（不跳过）
+      // 注意：enabled=false 的子步骤会被完全禁用，而 forceRetryStep 指定的子步骤即使文件存在也会重新生成
       const retryConfig = {
-        ...currentConfig,
-        frames: stepKey === 'frames' ? { ...currentConfig.frames, enabled: true } : { ...currentConfig.frames, enabled: false },
-        audio: stepKey === 'audio' ? { ...currentConfig.audio, enabled: true } : { ...currentConfig.audio, enabled: false },
-        whisper: stepKey === 'whisper' ? { ...currentConfig.whisper, enabled: true } : { ...currentConfig.whisper, enabled: false },
-        faces: stepKey === 'faces' ? { ...currentConfig.faces, enabled: true } : { ...currentConfig.faces, enabled: false },
+        targetLanguage: currentConfig.targetLanguage || 'zh-CN',
+        frames: { ...(currentConfig.frames || {}), enabled: stepKey === 'frames' },
+        audio: { ...(currentConfig.audio || {}), enabled: stepKey === 'audio' },
+        whisper: { ...(currentConfig.whisper || {}), enabled: stepKey === 'whisper' },
+        faces: { ...(currentConfig.faces || {}), enabled: stepKey === 'faces' },
+        /** 💥 强制重试标志：告诉后端不要跳过该子步骤，即使文件已存在也要重新生成 */
+        _forceRetry: stepKey,
       };
 
       pipelineState.setPipelineRunning?.(true);
 
       try {
-        await window.api.ipc.invoke(IPC_CHANNELS.ENGINE_RUN_PIPELINE, {
-          projectId: projectState.projectId,
-          sequence: [{
-            nodeId: `step1-retry-${stepKey}-${Date.now()}`,
-            actionType: 'step1-material',
-            label: `重试: ${stepKey}`,
-            dependsOn: [],
-            params: {
-              mediaPath: mediaItem.filePath,
-              mediaId: mediaItem.id,
-              config: retryConfig,
-            },
-          }],
-        });
+        // 🔧 关键修复：使用 API.media.process 走 JobScheduler 路径（有DB回写+前端通知），
+        // 而不是直接调用 ENGINE_RUN_PIPELINE（直接调用不会回写DB也不会通知前端更新状态）
+        await API.media.process(projectState.projectId, mediaItem, retryConfig);
+        AppNotifier.info(`正在重新${stepKey === 'frames' ? '提取关键帧' : stepKey === 'audio' ? '分离音频' : stepKey === 'whisper' ? '识别台词' : '识别人物'}...`);
       } catch (err: any) {
+        console.error('[RetrySubStep] 失败:', err);
         setSubStepStatus(stepKey, "failed");
         pipelineState.setPipelineRunning?.(false);
+        AppNotifier.error(`重试失败: ${err?.message || '未知错误'}`);
       }
     },
     [setSubStepStatus, setSubStepProgress]

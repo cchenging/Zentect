@@ -9,9 +9,22 @@ import asyncio
 import re
 
 from fastapi import APIRouter, HTTPException
-from ai_daemon import AIModels, SceneChunkReq, PROJECT_MATERIAL_POOL, FFMPEG_PATH
+from pydantic import BaseModel
+from ai_config import AIModels, PROJECT_MATERIAL_POOL, FFMPEG_PATH, INFERENCE_LOCK
 
 router = APIRouter()
+
+
+# ==========================================
+# DTOs
+# ==========================================
+class SceneChunkReq(BaseModel):
+    """场景切割请求"""
+    file_path: str
+    output_dir: str
+    threshold: float = 0.3
+    min_chunk_duration_sec: float = 1.0
+    mediaId: str = 'default'
 
 
 @router.post("/api/video/detect_scene_chunks")
@@ -88,17 +101,21 @@ async def detect_scene_chunks(req: SceneChunkReq):
 
 
 def _get_video_info(file_path: str) -> dict:
-    """获取视频基本信息（时长、帧率）"""
+    """
+    获取视频基本信息（时长、帧率）
+    带全局推理锁保护，防止并发原生库崩溃
+    """
     import cv2
     try:
-        cap = cv2.VideoCapture(file_path)
-        if not cap.isOpened():
-            return None
-        fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-        duration_ms = total_frames / fps * 1000 if fps > 0 else 0
-        cap.release()
-        return {'duration_ms': duration_ms, 'fps': fps}
+        with INFERENCE_LOCK:
+            cap = cv2.VideoCapture(file_path)
+            if not cap.isOpened():
+                return None
+            fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+            duration_ms = total_frames / fps * 1000 if fps > 0 else 0
+            cap.release()
+            return {'duration_ms': duration_ms, 'fps': fps}
     except Exception:
         return None
 
@@ -154,44 +171,46 @@ def _detect_scenes_opencv_concurrent(file_path: str, blocks: list, threshold: fl
     """
     🚀 OpenCV 并发回退检测：按时间段并发执行直方图对比
     仅在 FFmpeg 不可用时使用
+    带全局推理锁保护，防止并发原生库崩溃
     """
     import cv2
     import numpy as np
     from concurrent.futures import ThreadPoolExecutor
     def _detect_block_opencv(start_ms: int, end_ms: int, block_idx: int) -> list:
-        """检测单个时间段的场景切换点（OpenCV 实现）"""
+        """检测单个时间段的场景切换点（OpenCV 实现），带全局推理锁保护"""
         scene_changes = []
         try:
-            cap = cv2.VideoCapture(file_path)
-            if not cap.isOpened():
-                return []
-            fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-            start_frame = int((start_ms / 1000.0) * fps)
-            end_frame = int((end_ms / 1000.0) * fps)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            with INFERENCE_LOCK:
+                cap = cv2.VideoCapture(file_path)
+                if not cap.isOpened():
+                    return []
+                fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+                start_frame = int((start_ms / 1000.0) * fps)
+                end_frame = int((end_ms / 1000.0) * fps)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-            prev_hist = None
-            min_gap_frames = int(min_chunk_duration_sec * fps)
-            last_change = start_frame - min_gap_frames
-            frame_idx = start_frame
+                prev_hist = None
+                min_gap_frames = int(min_chunk_duration_sec * fps)
+                last_change = start_frame - min_gap_frames
+                frame_idx = start_frame
 
-            while frame_idx < end_frame:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                """ 🚀 每 5 帧做快速步长跳跃采样 """
-                if frame_idx % 5 == 0:
-                    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-                    hist = cv2.calcHist([hsv], [0], None, [50], [0, 180])
-                    cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
-                    if prev_hist is not None:
-                        diff = 1.0 - float(np.sum(np.minimum(prev_hist, hist)))
-                        if diff > threshold and (frame_idx - last_change) >= min_gap_frames:
-                            scene_changes.append(frame_idx / fps)
-                            last_change = frame_idx
-                    prev_hist = hist
-                frame_idx += 1
-            cap.release()
+                while frame_idx < end_frame:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    """ 🚀 每 5 帧做快速步长跳跃采样 """
+                    if frame_idx % 5 == 0:
+                        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                        hist = cv2.calcHist([hsv], [0], None, [50], [0, 180])
+                        cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
+                        if prev_hist is not None:
+                            diff = 1.0 - float(np.sum(np.minimum(prev_hist, hist)))
+                            if diff > threshold and (frame_idx - last_change) >= min_gap_frames:
+                                scene_changes.append(frame_idx / fps)
+                                last_change = frame_idx
+                        prev_hist = hist
+                    frame_idx += 1
+                cap.release()
         except Exception:
             pass
         return scene_changes
@@ -213,13 +232,15 @@ def _detect_scenes_opencv_concurrent(file_path: str, blocks: list, threshold: fl
 def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec: list, min_chunk_duration_sec: float, media_id: str = "default") -> dict:
     """
     🚀 根据场景切换时间点构建视频切片列表，批量提取封面图 + CLIP 512维视觉语义特征
+    带全局推理锁保护，防止并发原生库崩溃
     """
     import cv2
-    cap = cv2.VideoCapture(file_path)
-    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-    duration_ms = total_frames / fps * 1000 if fps > 0 else 0
-    cap.release()
+    with INFERENCE_LOCK:
+        cap = cv2.VideoCapture(file_path)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        duration_ms = total_frames / fps * 1000 if fps > 0 else 0
+        cap.release()
 
     filtered_changes = []
     last_time = -min_chunk_duration_sec
@@ -247,20 +268,21 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
     cover_frames_for_clip = []
     if cover_times:
         try:
-            cap = cv2.VideoCapture(file_path)
-            for chunk_i, mid_sec in cover_times:
-                try:
-                    cap.set(cv2.CAP_PROP_POS_MSEC, mid_sec * 1000)
-                    ret, frame = cap.read()
-                    if ret:
-                        cover_name = f"chunk_{chunk_i:03d}_cover.jpg"
-                        cpath = os.path.join(output_dir, cover_name)
-                        cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tofile(cpath)
-                        cover_paths[chunk_i] = cpath
-                        cover_frames_for_clip.append((chunk_i, frame[:, :, ::-1]))
-                except Exception:
-                    pass
-            cap.release()
+            with INFERENCE_LOCK:
+                cap = cv2.VideoCapture(file_path)
+                for chunk_i, mid_sec in cover_times:
+                    try:
+                        cap.set(cv2.CAP_PROP_POS_MSEC, mid_sec * 1000)
+                        ret, frame = cap.read()
+                        if ret:
+                            cover_name = f"chunk_{chunk_i:03d}_cover.jpg"
+                            cpath = os.path.join(output_dir, cover_name)
+                            cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tofile(cpath)
+                            cover_paths[chunk_i] = cpath
+                            cover_frames_for_clip.append((chunk_i, frame[:, :, ::-1]))
+                    except Exception:
+                        pass
+                cap.release()
         except Exception:
             pass
 
@@ -271,6 +293,7 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
             if model is not None and processor is not None:
                 import torch
                 import torch.nn.functional as F
+                import numpy as np
                 from PIL import Image
 
                 pil_images = []
@@ -285,14 +308,15 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
                 if pil_images:
                     IMAGE_BATCH = 32
                     all_features = []
-                    for batch_start in range(0, len(pil_images), IMAGE_BATCH):
-                        batch_imgs = pil_images[batch_start:batch_start + IMAGE_BATCH]
-                        image_inputs = processor(images=batch_imgs, return_tensors="pt", padding=True).to(AIModels.device)
-                        with torch.no_grad():
-                            batch_features = model.get_image_features(**image_inputs)
-                        batch_features = F.normalize(batch_features, p=2, dim=-1)
-                        all_features.append(batch_features.cpu().numpy())
-                        del image_inputs, batch_features
+                    with INFERENCE_LOCK:
+                        for batch_start in range(0, len(pil_images), IMAGE_BATCH):
+                            batch_imgs = pil_images[batch_start:batch_start + IMAGE_BATCH]
+                            image_inputs = processor(images=batch_imgs, return_tensors="pt", padding=True).to(AIModels.device)
+                            with torch.no_grad():
+                                batch_features = model.get_image_features(**image_inputs)
+                            batch_features = F.normalize(batch_features, p=2, dim=-1)
+                            all_features.append(batch_features.cpu().numpy())
+                            del image_inputs, batch_features
 
                     image_features = np.vstack(all_features)
 

@@ -21,7 +21,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
 
   public async transcribe(
     audioPath: string, outDir: string, mediaId: string,
-    language: string = 'zh', engine: 'sensevoice' | 'faster-whisper' = 'sensevoice',
+    language: string = 'zh', engine: 'sensevoice' | 'faster-whisper' | 'auto' = 'sensevoice',
     signal?: AbortSignal,
     onProgress?: (pct: number, msg: string) => void
   ): Promise<TextExtractResult> {

@@ -80,7 +80,11 @@ export class MediaRepository {
       extractedAudio: media.extractedAudio || null,
       extractedVocals: media.extractedVocals || null,
       extractedBgm: media.extractedBgm || null,
-      extractedText: media.extractedText || null,
+      extractedText: media.extractedText
+        ? (typeof media.extractedText === 'string'
+          ? media.extractedText
+          : JSON.stringify(media.extractedText))
+        : null,
       extractDuration: media.extractDuration || null,
       narrationScript: media.narrationScript
         ? JSON.stringify(media.narrationScript)

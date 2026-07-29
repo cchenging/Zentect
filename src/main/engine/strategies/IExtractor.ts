@@ -17,7 +17,7 @@ export interface IAudioExtractor {
 }
 
 export interface ITextExtractor {
-    transcribe(audioPath: string, outDir: string, mediaId: string, language?: string, engine?: 'sensevoice' | 'faster-whisper'): Promise<TextExtractResult>;
+    transcribe(audioPath: string, outDir: string, mediaId: string, language?: string, engine?: 'sensevoice' | 'faster-whisper' | 'auto'): Promise<TextExtractResult>;
 }
 
 export interface IVisionExtractor {

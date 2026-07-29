@@ -9,6 +9,7 @@ import { ParticleEngine } from '@renderer/components/ParticleEngine';
 import type { ParticlePreset } from '@renderer/components/particles/types';
 
 export interface HomeViewProps {
+  loading: boolean;
   filteredProjects: ProjectRecord[];
   searchText: string;
   onSearchChange: (text: string) => void;
@@ -38,6 +39,7 @@ export interface HomeViewProps {
 }
 
 export const HomeView: React.FC<HomeViewProps> = ({
+  loading,
   filteredProjects, searchText, onSearchChange,
   onCreateProject, onImportWorkflow, isImporting,
   onProjectClick, onRenameClick, onDuplicateProject, onDeleteClick, onExportClick,
@@ -132,7 +134,18 @@ export const HomeView: React.FC<HomeViewProps> = ({
               </div>
             </div>
 
-            {filteredProjects.length === 0 ? (
+            {loading ? (
+              /* 加载中骨架屏：避免空状态"还没有项目"闪烁后变成项目列表 */
+              <div className="grid grid-cols-5 gap-x-4 gap-y-8">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="glass-card-sm p-3 animate-pulse">
+                    <div className="aspect-video bg-muted/30 rounded-lg mb-3" />
+                    <div className="h-3.5 bg-muted/30 rounded w-3/4 mb-2" />
+                    <div className="h-2.5 bg-muted/30 rounded w-1/2" />
+                  </div>
+                ))}
+              </div>
+            ) : filteredProjects.length === 0 ? (
               <div className="text-center py-12">
                 <div className="w-16 h-16 mx-auto mb-4 bg-bg-secondary rounded-full flex items-center justify-center">
                   <FolderOpen size={28} className="text-muted-foreground" />

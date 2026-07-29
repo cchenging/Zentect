@@ -247,7 +247,7 @@ class AppBootstrap {
       center: true,
       show: false,
       title: 'Zentect',
-      backgroundColor: '#16161a',
+      backgroundColor: '#0f0f20',
       frame: false,
       titleBarStyle: 'hidden',
       autoHideMenuBar: true,

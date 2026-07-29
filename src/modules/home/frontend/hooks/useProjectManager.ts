@@ -13,6 +13,7 @@ import { FrontendLogger } from '@renderer/utils/logger';
 export const useProjectManager = () => {
   const { t } = useI18n();
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
 
   /** 获取工程列表 */
@@ -35,6 +36,8 @@ export const useProjectManager = () => {
       }
     } catch (e: any) {
       console.error('获取项目列表失败', e);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -142,6 +145,7 @@ export const useProjectManager = () => {
 
   return {
     filteredProjects,
+    loading,
     searchText,
     setSearchText,
     createProject,

@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List
 
-from ai_daemon import AIModels
+from ai_config import AIModels, INFERENCE_LOCK
 
 router = APIRouter()
 
@@ -48,7 +48,10 @@ class SemanticSearchRequest(BaseModel):
 # ==========================================
 @router.post("/api/match")
 def api_match(req: MatchReq):
-    """CLIP 语义帧匹配，模型不可用时降级为直方图匹配"""
+    """
+    CLIP 语义帧匹配，模型不可用时降级为直方图匹配
+    带全局推理锁保护，防止并发原生库崩溃
+    """
     from PIL import Image
     try:
         model, processor = AIModels.get_clip()
@@ -66,21 +69,24 @@ def api_match(req: MatchReq):
                 with Image.open(img_path) as img:
                     images.append(img.convert("RGB"))
 
-            inputs = processor(images=images, return_tensors="pt").to(AIModels.device)
-            with torch.no_grad():
-                image_features = model.get_image_features(**inputs)
-            image_features = F.normalize(image_features, p=2, dim=-1)
+            with INFERENCE_LOCK:
+                inputs = processor(images=images, return_tensors="pt").to(AIModels.device)
+                with torch.no_grad():
+                    image_features = model.get_image_features(**inputs)
+                image_features = F.normalize(image_features, p=2, dim=-1)
 
-            texts = [q.text for q in req.queries]
-            text_inputs = processor(text=texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
-            with torch.no_grad():
-                text_features = model.get_text_features(**text_inputs)
-            text_features = F.normalize(text_features, p=2, dim=-1)
+                texts = [q.text for q in req.queries]
+                text_inputs = processor(text=texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
+                with torch.no_grad():
+                    text_features = model.get_text_features(**text_inputs)
+                text_features = F.normalize(text_features, p=2, dim=-1)
 
-            similarity = torch.matmul(text_features, image_features.T)
+                similarity = torch.matmul(text_features, image_features.T)
+                similarity_np = similarity.cpu().numpy()
+
             results = []
             for i, query in enumerate(req.queries):
-                best_idx = similarity[i].argmax().item()
+                best_idx = int(similarity_np[i].argmax())
                 best_frame_name = valid_frame_files[best_idx]
                 start_sec = max(0, int(''.join(filter(str.isdigit, best_frame_name)) or 1) - 1)
                 results.append({
@@ -96,16 +102,17 @@ def api_match(req: MatchReq):
             print("[AI Daemon] ⚠️ CLIP 不可用，/api/match 降级为直方图匹配", file=sys.stderr)
 
             frame_hists = []
-            for f in valid_frame_files:
-                img_path = os.path.join(req.frames_dir, f)
-                img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
-                if img is not None:
-                    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-                    hist = cv2.calcHist([hsv], [0], None, [50], [0, 180])
-                    cv2.normalize(hist, hist)
-                    frame_hists.append(hist)
-                else:
-                    frame_hists.append(None)
+            with INFERENCE_LOCK:
+                for f in valid_frame_files:
+                    img_path = os.path.join(req.frames_dir, f)
+                    img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
+                    if img is not None:
+                        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+                        hist = cv2.calcHist([hsv], [0], None, [50], [0, 180])
+                        cv2.normalize(hist, hist)
+                        frame_hists.append(hist)
+                    else:
+                        frame_hists.append(None)
 
             results = []
             for i, query in enumerate(req.queries):
@@ -130,6 +137,10 @@ def api_match(req: MatchReq):
 # ==========================================
 @router.post("/api/extract_semantics")
 async def extract_semantics(req: SemanticExtractRequest):
+    """
+    CLIP 特征批量提取 + Faiss 建库
+    带全局推理锁保护，防止并发原生库崩溃
+    """
     try:
         model, processor = AIModels.get_clip()
         if model is None or processor is None:
@@ -146,26 +157,27 @@ async def extract_semantics(req: SemanticExtractRequest):
 
         BATCH_SIZE = 16
 
-        with torch.no_grad():
-            for batch in AIModels.get_batches(req.shots, BATCH_SIZE):
-                valid_images = []
-                valid_ids = []
+        with INFERENCE_LOCK:
+            with torch.no_grad():
+                for batch in AIModels.get_batches(req.shots, BATCH_SIZE):
+                    valid_images = []
+                    valid_ids = []
 
-                for shot in batch:
-                    if os.path.exists(shot.image_path):
-                        with Image.open(shot.image_path) as img:
-                            valid_images.append(img.convert("RGB"))
-                            valid_ids.append(shot.shot_id)
+                    for shot in batch:
+                        if os.path.exists(shot.image_path):
+                            with Image.open(shot.image_path) as img:
+                                valid_images.append(img.convert("RGB"))
+                                valid_ids.append(shot.shot_id)
 
-                if not valid_images:
-                    continue
+                    if not valid_images:
+                        continue
 
-                inputs = processor(images=valid_images, return_tensors="pt", padding=True).to(AIModels.device)
-                features = model.get_image_features(**inputs)
-                features = F.normalize(features, p=2, dim=-1)
+                    inputs = processor(images=valid_images, return_tensors="pt", padding=True).to(AIModels.device)
+                    features = model.get_image_features(**inputs)
+                    features = F.normalize(features, p=2, dim=-1)
 
-                image_features_list.append(features.cpu().numpy().astype(np.float32))
-                shot_ids.extend(valid_ids)
+                    image_features_list.append(features.cpu().numpy().astype(np.float32))
+                    shot_ids.extend(valid_ids)
 
         if not shot_ids:
             return {"success": True, "message": "No valid images found."}
@@ -173,14 +185,15 @@ async def extract_semantics(req: SemanticExtractRequest):
         dimension = 512
         embeddings_matrix = np.vstack(image_features_list)
 
-        index = faiss.IndexFlatIP(dimension)
-        index.add(embeddings_matrix)
+        with INFERENCE_LOCK:
+            index = faiss.IndexFlatIP(dimension)
+            index.add(embeddings_matrix)
 
-        faiss_dir = os.path.join(AIModels.MODELS_DIR, "vector_dbs")
-        os.makedirs(faiss_dir, exist_ok=True)
+            faiss_dir = os.path.join(AIModels.MODELS_DIR, "vector_dbs")
+            os.makedirs(faiss_dir, exist_ok=True)
 
-        index_path = os.path.join(faiss_dir, f"{req.media_id}.index")
-        faiss.write_index(index, index_path)
+            index_path = os.path.join(faiss_dir, f"{req.media_id}.index")
+            faiss.write_index(index, index_path)
 
         map_path = os.path.join(faiss_dir, f"{req.media_id}_map.json")
         with open(map_path, 'w', encoding='utf-8') as f:
@@ -199,6 +212,10 @@ async def extract_semantics(req: SemanticExtractRequest):
 # ==========================================
 @router.post("/api/search_semantics")
 async def search_semantics(req: SemanticSearchRequest):
+    """
+    文本搜画面
+    带全局推理锁保护，防止并发原生库崩溃
+    """
     try:
         faiss_dir = os.path.join(AIModels.MODELS_DIR, "vector_dbs")
         index_path = os.path.join(faiss_dir, f"{req.media_id}.index")
@@ -215,17 +232,19 @@ async def search_semantics(req: SemanticSearchRequest):
         import torch.nn.functional as F
         import numpy as np
         import faiss
-        text_inputs = processor(text=[req.query], return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
-        with torch.no_grad():
-            text_features = model.get_text_features(**text_inputs)
-            text_features = F.normalize(text_features, p=2, dim=-1)
-            text_vec = text_features.cpu().numpy().astype(np.float32)
 
-        index = faiss.read_index(index_path)
+        with INFERENCE_LOCK:
+            text_inputs = processor(text=[req.query], return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
+            with torch.no_grad():
+                text_features = model.get_text_features(**text_inputs)
+                text_features = F.normalize(text_features, p=2, dim=-1)
+                text_vec = text_features.cpu().numpy().astype(np.float32)
+
+            index = faiss.read_index(index_path)
+            distances, indices = index.search(text_vec, req.top_k)
+
         with open(map_path, 'r', encoding='utf-8') as f:
             shot_ids = json.load(f)
-
-        distances, indices = index.search(text_vec, req.top_k)
 
         results = []
         for dist, idx in zip(distances[0], indices[0]):

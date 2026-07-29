@@ -34,8 +34,12 @@ export const useEditorHydration = (id: string | undefined) => {
     // 逐个重置局部 Store
     usePlayerStore.getState().resetState();
     useProjectStore.getState().resetProjectState?.();
-    usePipelineStore.getState().resetAllStepStatuses?.();
-    usePipelineStore.setState({ stepCompleted: [false, false, false, false, false] });
+    // 🔧 修复状态丢失：不重置 subStepStatuses/stepCompleted/stepStatuses
+    // 旧版 bug：每次进场都 resetAllStepStatuses() 把所有子步骤置为 idle → hydrate 从 DB 恢复之前
+    //          React 组件已经读到 idle 状态重新渲染；更严重的是，如果 hydrate 因时序问题延迟，
+    //          UI 会短暂显示"未开始"然后又跳回"已完成"，用户误以为状态丢失
+    // 修复：subStepStatuses/stepCompleted/stepStatuses 由 hydrateProjectData 从 DB 恢复，
+    //       进场时只重置瞬态运行状态（pipelineRunning/progress/error）
     usePipelineStore.getState().setPipelineRunning?.(false);
     usePipelineStore.getState().setPipelineProgress?.(0, '');
     usePipelineStore.getState().setPipelineError?.(null);

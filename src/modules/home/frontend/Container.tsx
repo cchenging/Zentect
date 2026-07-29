@@ -16,7 +16,7 @@ export const HomeContainer: React.FC = () => {
   const navigate = useNavigate();
 
   const {
-    filteredProjects, searchText, setSearchText,
+    filteredProjects, loading, searchText, setSearchText,
     createProject, deleteProject, renameProject, duplicateProject
   } = useProjectManager();
 
@@ -117,6 +117,7 @@ export const HomeContainer: React.FC = () => {
 
   return (
     <HomeView
+      loading={loading}
       particlePreset={resolvedParticlePreset}
       particleColors={resolvedColors}
       filteredProjects={filteredProjects}
