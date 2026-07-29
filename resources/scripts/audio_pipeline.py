@@ -707,8 +707,11 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
         #
         # 删除 best_of: beam_size > 0 时 best_of 被 faster-whisper 忽略（官方文档明确）
         #
-        # vad_filter=True + min_silence_duration_ms=500: VAD 预过滤静音段
-        #   依据：Silero VAD 默认 min_silence_duration_ms=500，与断句阈值对齐
+        # vad_filter=True + min_silence_duration_ms=500 + speech_pad_ms=200: VAD 预过滤静音段
+        #   min_silence_duration_ms=500: Silero VAD 默认值，与断句阈值对齐
+        #   speech_pad_ms=200: 语音边界填充 200ms（默认 30ms 太短）
+        #     依据：实测 speech_pad_ms=30 时 VAD 裁剪了第一句台词开头的关键语音，
+        #           导致 "gonna" 被误识别为 "and"；speech_pad_ms=200 正确识别
         #
         # no_speech_threshold=0.6: 恢复默认值
         #   依据：faster-whisper 官方默认 0.6；0.4 过低会误判有声音段为静音，漏识别台词
@@ -725,7 +728,7 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
             beam_size=10,
             temperature=[0.0, 0.2],
             vad_filter=True,
-            vad_parameters={'min_silence_duration_ms': 500},
+            vad_parameters={'min_silence_duration_ms': 500, 'speech_pad_ms': 200},
             word_timestamps=True,
             no_speech_threshold=0.6,
             log_prob_threshold=-1.0,
