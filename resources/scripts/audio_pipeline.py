@@ -346,6 +346,110 @@ def _asr_postprocess_segments(segments):
     return merged
 
 
+def _split_segment_by_words(words, detected_lang="en"):
+    """基于 word 级时间戳的句子级断句算法
+
+    faster-whisper 的 segment 是 VAD 段（基于静音切分），可能包含多个句子。
+    本函数利用 word_timestamps=True 返回的每个 word 的精确时间戳，按以下规则重新断句：
+
+    断句触发条件（任一满足即断）：
+    1) 标点触发：word 末尾包含句号/问号/感叹号（. ! ? 。 ！ ？）
+    2) 停顿触发：相邻 word 间停顿 > 0.5 秒（影视台词换气口）
+    3) 长度触发：当前句已达长度上限（中文 20 字 / 英文 12 词），防止过长
+
+    这样产生的句子符合说话节奏和画面展现，便于后续对齐字幕和分镜。
+
+    Args:
+        words: faster-whisper segment.words 列表，每个元素含 .word/.start/.end
+        detected_lang: 检测到的语言代码（zh/ja/ko 等 CJK 或 en 等西文）
+
+    Returns:
+        list[dict]: 每个元素 {start, end, text}，代表一个句子
+    """
+    if not words:
+        return []
+
+    lang_lower = (detected_lang or 'en').lower()
+    is_cjk = any(k in lang_lower for k in ["zh", "ja", "ko", "cjk", "yue"])
+
+    # 断句参数
+    PAUSE_THRESHOLD_SEC = 0.5   # word 间停顿超过此值则断句（影视台词换气口）
+    MAX_CHARS = 20 if is_cjk else 999   # CJK 单句最大字数
+    MAX_WORDS = 999 if is_cjk else 12   # 西文单句最大词数
+
+    # 句末标点（触发断句）
+    SENTENCE_END_PUNCT = set('.!?。！？;；')
+
+    sentences = []
+    current_words = []
+    current_start = None
+    word_count = 0
+
+    for idx, w in enumerate(words):
+        word_text = getattr(w, 'word', '') or ''
+        word_start = getattr(w, 'start', 0) or 0
+        word_end = getattr(w, 'end', 0) or 0
+
+        if not word_text.strip() and not current_words:
+            # 跳过前导空白
+            continue
+
+        if current_start is None:
+            current_start = word_start
+
+        current_words.append(word_text)
+        if not is_cjk:
+            word_count += 1
+
+        # 判断是否需要断句
+        should_break = False
+
+        # 规则1：标点触发（word 末尾有句末标点）
+        if word_text and word_text.strip()[-1] in SENTENCE_END_PUNCT:
+            should_break = True
+
+        # 规则2：停顿触发（与下一个 word 间有 > 0.5s 停顿）
+        if not should_break and idx < len(words) - 1:
+            next_start = getattr(words[idx + 1], 'start', word_end) or word_end
+            pause = next_start - word_end
+            if pause > PAUSE_THRESHOLD_SEC:
+                should_break = True
+
+        # 规则3：长度触发
+        if not should_break:
+            if is_cjk:
+                joined = ''.join(current_words)
+                if len(joined) >= MAX_CHARS:
+                    should_break = True
+            else:
+                if word_count >= MAX_WORDS:
+                    should_break = True
+
+        # 最后一个 word 强制断句
+        if idx == len(words) - 1:
+            should_break = True
+
+        if should_break and current_words:
+            sentence_text = ' '.join(current_words) if not is_cjk else ''.join(current_words)
+            sentence_text = sentence_text.strip()
+            # 清理多余空格
+            while '  ' in sentence_text:
+                sentence_text = sentence_text.replace('  ', ' ')
+
+            if sentence_text:
+                sentences.append({
+                    'start': round(current_start, 3),
+                    'end': round(word_end, 3),
+                    'text': sentence_text,
+                })
+
+            current_words = []
+            current_start = None
+            word_count = 0
+
+    return sentences
+
+
 def _levenshtein_dedup(segments, threshold=0.92):
     """基于文本重合度的滑动窗口去重：
     比对相邻句子的文本相似度，如果 > threshold（默认 92%），
@@ -618,12 +722,22 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
         for seg in segments_iter:
             seg_idx += 1
             text = (seg.text or '').strip()
-            all_segments.append({
-                'start': round(seg.start, 3),
-                'end': round(seg.end, 3),
-                'text': text,
-            })
-            all_text_parts.append(text)
+            # 🔧 修复断句：faster-whisper 的 segment 是 VAD 段（可能含多句），
+            #   利用 word_timestamps=True 返回的 word 级时间戳做真正的句子级断句
+            words = getattr(seg, 'words', None)
+            if words:
+                word_segments = _split_segment_by_words(words, detected_lang)
+                for ws in word_segments:
+                    all_segments.append(ws)
+                    all_text_parts.append(ws['text'])
+            else:
+                # 无 word 时间戳时回退到 segment 级
+                all_segments.append({
+                    'start': round(seg.start, 3),
+                    'end': round(seg.end, 3),
+                    'text': text,
+                })
+                all_text_parts.append(text)
 
             # 推送进度（15-90 区间）
             if task_id and seg_idx % 5 == 0:
