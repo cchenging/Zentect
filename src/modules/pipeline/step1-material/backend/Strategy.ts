@@ -226,7 +226,10 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
             };
           });
-          skipFaces = existingFrames.length > 0;
+          /** 💥 修复：skipFaces 应判断 existingRoles.length > 0（有角色才跳过），而非 existingFrames.length > 0
+           * 旧版 bug：用 existingFrames 判断 → 只要有帧就跳过人脸检测 → 重试 faces 永远被跳过
+           * 修复：只有 DB 中已有角色数据时才跳过，否则即使有帧也重新检测 */
+          skipFaces = existingRoles.length > 0;
           if (skipFaces) {
             AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有角色数据 (${existingRoles.length}个)，跳过人脸检测`, { mediaId });
           }
@@ -333,7 +336,9 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
                 mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
               };
             });
-            skipFaces = existingFrames.length > 0; // 🔧 修复：只有帧数据存在时才跳过人脸检测
+            /** 💥 修复：skipFaces 应判断 existingRoles.length > 0，而非 existingFrames.length > 0
+             * 旧版 bug：用 existingFrames 判断 → 有帧就跳过 → 非 faces 重试时人脸永远不更新 */
+            skipFaces = existingRoles.length > 0;
             if (skipFaces) {
               AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有角色数据 (${existingRoles.length}个)，跳过人脸检测`, { mediaId });
             }
@@ -562,10 +567,65 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
           '[Step1] 无有效帧，自动跳过人脸检测');
       } else {
-        lastProgress = Math.max(lastProgress, 75);
-        onProgress(lastProgress, '正在检测人脸...');
+        // 重试人脸检测时清理旧的人脸图片，避免旧数据干扰聚类结果
+        if (forceRetryStep === 'faces' && fs.existsSync(facesDir)) {
+          try {
+            const oldFiles = fs.readdirSync(facesDir).filter(f => f.endsWith('.jpg') || f.endsWith('.json'));
+            for (const f of oldFiles) {
+              fs.unlinkSync(path.join(facesDir, f));
+            }
+            AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 重试人脸检测：已清理 ${oldFiles.length} 个旧文件`, { mediaId });
+          } catch (e: any) {
+            AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[Step1] 清理旧人脸文件失败（非致命）: ${e.message}`);
+          }
+        }
+        lastProgress = Math.max(lastProgress, 72);
+        onProgress(lastProgress, '正在为人脸识别单独抽帧...');
+
+        /** 💥 关键修复：为人脸识别单独抽帧（不复用 VLM 场景切换帧）
+         * 旧版 bug：复用 VLM_OPTIMIZED 抽的帧（场景切换 + 4秒最小间隔），
+         *   抽帧数量少且按场景切换抽取，远景/侧脸/快速镜头中的人物漏检，
+         *   某些角色从未在抽出的帧中正面清晰出现 → 只识别2个角色。
+         * 修复：用 UNIFORM_FPS 模式独立抽帧（每秒1帧），保证视频中
+         *   所有出现的人物都有机会被检测到。抽完后均匀采样至最多120帧，
+         *   避免长视频耗时过长。失败时回退到 VLM 帧。 */
+        let faceFrames: string[] = [...validFrames];
         try {
-          const detectedFaces = await VisionProcessor.scanFaces(validFrames, facesDir, signal);
+          const faceFramesDir = path.join(facesDir, 'face_frames');
+          if (!fs.existsSync(faceFramesDir)) fs.mkdirSync(faceFramesDir, { recursive: true });
+          const frameService = new FrameExtractionService({
+            getFfmpegPath: () => PathManager.getBinPath('ffmpeg.exe'),
+            getFfprobePath: () => PathManager.getBinPath('ffprobe.exe'),
+          });
+          const faceFramesResult = await frameService.extractFrames(mediaPath, faceFramesDir, mediaId, {
+            strategy: 'UNIFORM_FPS',
+            fps: 1,
+            scale: 1280,
+            quality: 3,
+            abortSignal: signal,
+          });
+          if (faceFramesResult.files.length > 0) {
+            const MAX_FACE_FRAMES = 120;
+            const allFrames = faceFramesResult.files;
+            faceFrames = allFrames.length > MAX_FACE_FRAMES
+              ? allFrames
+                  .filter((_, idx) => Math.floor(idx * MAX_FACE_FRAMES / allFrames.length) !== Math.floor((idx + 1) * MAX_FACE_FRAMES / allFrames.length))
+              : allFrames;
+            AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+              `[Step1] 人脸识别专用抽帧完成: ${allFrames.length} 帧 → 采样 ${faceFrames.length} 帧 (UNIFORM_FPS@1fps)`, { mediaId });
+          } else {
+            AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+              `[Step1] 人脸识别专用抽帧失败，回退到 VLM 帧 (${validFrames.length}帧)`, { mediaId });
+          }
+        } catch (e: any) {
+          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+            `[Step1] 人脸识别专用抽帧异常，回退到 VLM 帧: ${e.message}`, { mediaId });
+        }
+
+        lastProgress = Math.max(lastProgress, 75);
+        onProgress(lastProgress, `正在检测人脸 (${faceFrames.length}帧)...`);
+        try {
+          const detectedFaces = await VisionProcessor.scanFaces(faceFrames, facesDir, signal);
           if (detectedFaces.length > 0) {
             lastProgress = Math.max(lastProgress, 80);
             onProgress(lastProgress, `人脸检测完成 (${detectedFaces.length}张)，正在聚类...`);
@@ -577,15 +637,34 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               if (!roleGroups[clusterId]) roleGroups[clusterId] = [];
               roleGroups[clusterId].push(face);
             }
+            /** 💥 修复：过滤 role_unknown（HDBSCAN 噪声点 label=-1）
+             * 噪声点是无法归类的低质量人脸检测（模糊/侧脸/远距离），
+             * 作为独立角色展示无意义，反而干扰用户识别真实角色。
+             * 只有当 unknown 是唯一结果时才保留（避免完全无角色）。 */
+            const roleEntries = Object.entries(roleGroups).filter(([clusterId]) => {
+              if (clusterId === 'role_unknown' && Object.keys(roleGroups).length > 1) {
+                AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+                  `[Step1] 过滤 role_unknown 噪声点 (${roleGroups[clusterId].length}张人脸)，保留 ${Object.keys(roleGroups).length - 1} 个有效角色`,
+                  { mediaId });
+                return false;
+              }
+              return true;
+            });
             /** 💥 关键修复：角色 ID 全局唯一化
              * 旧版 bug：clusterId 是 "role_0"/"role_1"/"role_unknown"，跨项目会重复
              *   → roles 表 id 是 PRIMARY KEY（全局唯一），第二个项目插入时 UNIQUE constraint failed
              * 修复：id 前缀加上 mediaId，确保跨项目、跨媒体全局唯一 */
-            roles = Object.entries(roleGroups).map(([clusterId, groupFaces]) => ({
+            roles = roleEntries.map(([clusterId, groupFaces]) => ({
               id: `${mediaId}_${clusterId}`,
               name: `角色_${clusterId.replace('role_', '')}`,
               faceCount: groupFaces.length,
-              representative: groupFaces[0],
+              /** 💥 修复黑头像：representative 必须包含 facePath 字段
+               * Python 端 face_data 返回 face_path（绝对路径），此处提取为 facePath
+               * PipelineResultWriter 通过 role.representative?.facePath 读取 avatar */
+              representative: {
+                ...groupFaces[0],
+                facePath: groupFaces[0].face_path || groupFaces[0].facePath || '',
+              },
               faces: groupFaces,
             }));
             AppLogger.info(LOG_TAGS.MEDIA_ENGINE,

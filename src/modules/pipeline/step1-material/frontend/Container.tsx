@@ -22,6 +22,7 @@ export const StepMaterialAnalysis: React.FC = () => {
   /** subStepStatuses 已收敛为 PipelineStore 单一数据源 */
   const subStepStatuses = usePipelineStore((s) => s.subStepStatuses);
   const pipelineSubStepProgresses = usePipelineStore((s) => s.subStepProgresses);
+  const subStepTimings = usePipelineStore((s) => s.subStepTimings);
 
   const subStepProgresses = useMemo(() => {
     const merged = { ...step1SubStepProgresses };
@@ -50,6 +51,7 @@ export const StepMaterialAnalysis: React.FC = () => {
     async (stepKey: string) => {
       setSubStepStatus(stepKey, "running");
       setSubStepProgress(stepKey, 0);
+      usePipelineStore.getState().setSubStepStarted(stepKey);
 
       const projectState = useProjectStore.getState();
       const pipelineState = usePipelineStore.getState();
@@ -127,6 +129,7 @@ export const StepMaterialAnalysis: React.FC = () => {
       roles={roles}
       subStepStatuses={subStepStatuses}
       subStepProgresses={subStepProgresses}
+      subStepTimings={subStepTimings}
       extractionConfig={extractionConfig as Step1Config | null}
       extractedData={extractedData}
       onUpdateAsrLine={updateAsrLine}

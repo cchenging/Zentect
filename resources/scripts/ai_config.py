@@ -155,7 +155,10 @@ class AIModels:
                         root=insightface_root,
                         providers=['CPUExecutionProvider']
                     )
-                    cls.face_app.prepare(ctx_id=0, det_size=(640, 640))
+                    # 💥 修复：det_size 从 (640, 640) 提升到 (1280, 1280)
+                    # 旧版 640 对远景小脸/侧脸漏检严重，导致视频中远景人物完全识别不到
+                    # 1280 显著提升小脸检测能力（耗时约4倍，但人脸识别子步骤不频繁，可接受）
+                    cls.face_app.prepare(ctx_id=0, det_size=(1280, 1280))
         return cls.face_app
 
     @classmethod

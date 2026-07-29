@@ -1,6 +1,6 @@
 // Module: pipeline/step1-material - View
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Edit3, Music, Play, UndoDot, RotateCcw, Square, AlertTriangle } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "@renderer/components/shared";
@@ -8,13 +8,78 @@ import { FrameExtractConfig } from "./components/FrameExtractConfig";
 import { AudioSeparationConfig } from "./components/AudioSeparationConfig";
 import { useI18n } from "@renderer/store/useI18n";
 import type { AsrLine } from "../../../../shared/types/entities/editor";
+import type { SubStepTiming } from "../../../../renderer/src/store/usePipelineStore";
 import type { StepMaterialAnalysisViewProps } from "../types";
+
+/**
+ * 格式化毫秒为简洁文本
+ * - <1s: 显示毫秒
+ * - <60s: 显示秒（保留1位小数）
+ * - >=60s: 显示分秒
+ */
+function formatMs(ms: number): string {
+  if (!ms || ms <= 0) return '';
+  if (ms < 1000) return `${ms}ms`;
+  const sec = ms / 1000;
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return `${m}m${s}s`;
+}
+
+/**
+ * 子步骤耗时徽标
+ * - completed 状态：显示「实际耗时 Xs」（事后对比，判断是否切换引擎）
+ * - running 状态：显示「预计剩余 Xs」倒计时（缓解焦虑）
+ *   估算公式：剩余 = 已耗时 / 进度% × (100% - 进度%)
+ *   进度 < 5% 时显示「准备中...」（避免初期估算失真）
+ */
+const DurationBadge: React.FC<{
+  status: string;
+  timing: SubStepTiming | null | undefined;
+  progress: number;
+  durationLabel: string;
+  remainingLabel: string;
+  preparingLabel: string;
+}> = ({ status, timing, progress, durationLabel, remainingLabel, preparingLabel }) => {
+  // running 状态下每秒触发重渲染，让倒计时实时跳动
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (status !== 'running') return;
+    const timer = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(timer);
+  }, [status]);
+
+  // completed：显示实际耗时
+  if (status === 'completed') {
+    const text = formatMs(timing?.durationMs || 0);
+    if (!text) return null;
+    return <span className="text-[12px] text-muted-foreground/80 ml-1.5" title={durationLabel}>{`${durationLabel} ${text}`}</span>;
+  }
+
+  // running：显示预计剩余时间
+  if (status === 'running' && timing?.startedAt) {
+    // 进度过低时不估算，避免初期失真
+    if (progress < 5) {
+      return <span className="text-[12px] text-muted-foreground/70 ml-1.5">{preparingLabel}</span>;
+    }
+    const elapsed = Date.now() - timing.startedAt;
+    // 估算总耗时 = 已耗时 / (进度 / 100)
+    const totalEst = elapsed / (progress / 100);
+    const remaining = Math.max(0, totalEst - elapsed);
+    const text = formatMs(remaining);
+    if (!text) return null;
+    return <span className="text-[12px] text-accent/80 ml-1.5" title={remainingLabel}>{`${remainingLabel} ${text}`}</span>;
+  }
+
+  return null;
+};
 
 export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> = (props) => {
   const { t } = useI18n();
   const {
     asrLines, frameCount, vocalsIsFallback, mediaItems, roles,
-    subStepStatuses, subStepProgresses,
+    subStepStatuses, subStepProgresses, subStepTimings,
     onUpdateAsrLine, onSetAsrLines, onSetCurrentTime, onSetActivePlaySource,
     onUpdateRole, onRetrySubStep, onAbortSubStep,
   } = props;
@@ -66,6 +131,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         title={<><StatusIcon status={framesStatus === "idle" ? "pending" : framesStatus} /><span className={`text-[13px] font-semibold ${framesStatus === "completed" ? "text-accent-green" : framesStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.frames.title"]}</span></>}
         extra={<>
           <span className="text-[13px] text-muted-foreground">{framesStatus === "completed" ? (t["editor.step1.frames.statusDone"]?.replace("{count}", String(frameCount)) || '') : statusText(framesStatus, "editor.step1.frames.statusRunning", "frames", "editor.step1.frames.statusFail", "editor.step1.frames.statusIdle")}</span>
+          <DurationBadge status={framesStatus} timing={subStepTimings.frames} progress={subStepProgresses.frames || 0} durationLabel={t["editor.step1.durationLabel"]} remainingLabel={t["editor.step1.remainingLabel"]} preparingLabel={t["editor.step1.preparingLabel"]} />
           {framesStatus === "running"
             ? <button onClick={(e) => { e.stopPropagation(); onAbortSubStep("frames"); }} className="ml-auto text-accent-rose hover:text-accent-rose/80 transition-colors cursor-pointer" title="停止"><Square size={13} /></button>
             : <button onClick={(e) => { e.stopPropagation(); onRetrySubStep("frames"); }} className="ml-auto text-muted-foreground hover:text-primary transition-colors cursor-pointer" title={t["editor.step1.frames.title"]}><RotateCcw size={13} /></button>}
@@ -79,6 +145,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         title={<><StatusIcon status={audioStatus === "idle" ? "pending" : audioStatus} /><span className={`text-[13px] font-semibold ${audioStatus === "completed" ? "text-accent-green" : audioStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.audio.title"]}</span></>}
         extra={<>
           <span className="text-[13px] text-muted-foreground">{audioStatus === "completed" ? t["editor.step1.audio.separated"] : statusText(audioStatus, "editor.step1.audio.statusRunning", "audio", "editor.step1.audio.statusFailed", "editor.step1.audio.statusIdle")}</span>
+          <DurationBadge status={audioStatus} timing={subStepTimings.audio} progress={subStepProgresses.audio || 0} durationLabel={t["editor.step1.durationLabel"]} remainingLabel={t["editor.step1.remainingLabel"]} preparingLabel={t["editor.step1.preparingLabel"]} />
           {audioStatus === "running"
             ? <button onClick={(e) => { e.stopPropagation(); onAbortSubStep("audio"); }} className="ml-auto text-accent-rose hover:text-accent-rose/80 transition-colors cursor-pointer" title="停止"><Square size={13} /></button>
             : <button onClick={(e) => { e.stopPropagation(); onRetrySubStep("audio"); }} className="ml-auto text-muted-foreground hover:text-primary transition-colors cursor-pointer" title={t["editor.step1.audio.title"]}><RotateCcw size={13} /></button>}
@@ -118,6 +185,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         title={<><StatusIcon status={whisperStatus === "idle" ? "pending" : whisperStatus} /><span className={`text-[13px] font-semibold ${whisperStatus === "completed" ? "text-accent-green" : whisperStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.asr.title"]}</span></>}
         extra={<>
           {whisperStatus === "completed" ? <StatHeader value={asrLines.length} unit={t["editor.step1.asr.sentenceCount"]?.replace("{count}", String(asrLines.length)) || ''} secondary={t["editor.step1.asr.confirmedCount"]?.replace("{count}", String(confirmed)) || ''} /> : <span className="text-[13px] text-muted-foreground">{statusText(whisperStatus, "editor.step1.asr.statusRunning", "whisper", "editor.step1.asr.statusFailed", "editor.step1.asr.statusIdle")}</span>}
+          <DurationBadge status={whisperStatus} timing={subStepTimings.whisper} progress={subStepProgresses.whisper || 0} durationLabel={t["editor.step1.durationLabel"]} remainingLabel={t["editor.step1.remainingLabel"]} preparingLabel={t["editor.step1.preparingLabel"]} />
           {whisperStatus === "running"
             ? <button onClick={(e) => { e.stopPropagation(); onAbortSubStep("whisper"); }} className="ml-auto text-accent-rose hover:text-accent-rose/80 transition-colors cursor-pointer" title="停止"><Square size={13} /></button>
             : <button onClick={(e) => { e.stopPropagation(); onRetrySubStep("whisper"); }} className="ml-auto text-muted-foreground hover:text-primary transition-colors cursor-pointer" title={t["editor.step1.asr.title"]}><RotateCcw size={13} /></button>}
@@ -153,6 +221,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         title={<><StatusIcon status={facesStatus === "idle" ? "pending" : facesStatus} /><span className={`text-[13px] font-semibold ${facesStatus === "completed" ? "text-accent-purple" : facesStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.faces.title"]}</span></>}
         extra={<>
           <span className="text-[13px] text-muted-foreground">{facesStatus === "completed" ? (t["editor.step1.faces.statusDone"]?.replace("{count}", String(roles.length)) || '') : statusText(facesStatus, "editor.step1.faces.statusRunning", "faces", "editor.step1.faces.statusFailed", "editor.step1.faces.statusIdle")}</span>
+          <DurationBadge status={facesStatus} timing={subStepTimings.faces} progress={subStepProgresses.faces || 0} durationLabel={t["editor.step1.durationLabel"]} remainingLabel={t["editor.step1.remainingLabel"]} preparingLabel={t["editor.step1.preparingLabel"]} />
           {facesStatus === "running"
             ? <button onClick={(e) => { e.stopPropagation(); onAbortSubStep("faces"); }} className="ml-auto text-accent-rose hover:text-accent-rose/80 transition-colors cursor-pointer" title="停止"><Square size={13} /></button>
             : <button onClick={(e) => { e.stopPropagation(); onRetrySubStep("faces"); }} className="ml-auto text-muted-foreground hover:text-primary transition-colors cursor-pointer" title={t["editor.step1.faces.title"]}><RotateCcw size={13} /></button>}

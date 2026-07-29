@@ -194,6 +194,7 @@ describe('Step1 Types', () => {
         roles: [],
         subStepStatuses: {},
         subStepProgresses: {},
+        subStepTimings: {},
         extractionConfig: null,
         extractedData: null,
         onUpdateAsrLine: () => {},
@@ -222,6 +223,7 @@ describe('Step1 Types', () => {
         roles: [],
         subStepStatuses: {},
         subStepProgresses: {},
+        subStepTimings: {},
         extractionConfig: {
           targetLanguage: 'zh-CN',
           frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, scale: 1024, fps: 2 },

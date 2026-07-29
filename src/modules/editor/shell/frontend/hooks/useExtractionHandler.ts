@@ -67,15 +67,18 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
 
       // 重新取最新状态：上方 pipelineState 是注册时的快照，需用最新值做降级判断
       const latestPipeline = usePipelineStore.getState();
-      pipelineState.setSubStepStatus('frames', hasFrames ? 'completed' : (latestPipeline.subStepStatuses.frames || 'idle'));
-      pipelineState.setSubStepStatus('audio', hasAudio ? 'completed' : (latestPipeline.subStepStatuses.audio || 'idle'));
-      /** 子步骤为 running 但无产出数据 → 后端执行失败降级 → 标记为 failed；其余保持原状（idle/completed 等） */
-      const currentWhisper = latestPipeline.subStepStatuses.whisper;
-      pipelineState.setSubStepStatus('whisper',
-        hasAsrLines ? 'completed' : (currentWhisper === 'running' ? 'failed' : currentWhisper));
-      const currentFaces = latestPipeline.subStepStatuses.faces;
-      pipelineState.setSubStepStatus('faces',
-        hasRoles ? 'completed' : (currentFaces === 'running' ? 'failed' : currentFaces));
+      // 记录子步骤结束时间（仅在状态从 running → completed/failed 时）
+      const finishSubStep = (key: string, hasData: boolean) => {
+        const prev = latestPipeline.subStepStatuses[key];
+        if (prev === 'running') {
+          pipelineState.setSubStepFinished(key);
+        }
+        pipelineState.setSubStepStatus(key, hasData ? 'completed' : (prev === 'running' ? 'failed' : prev));
+      };
+      finishSubStep('frames', hasFrames);
+      finishSubStep('audio', hasAudio);
+      finishSubStep('whisper', hasAsrLines);
+      finishSubStep('faces', hasRoles);
 
       /** 💥 关键修复：根据子任务结果推导 step1 总状态，替代旧版无条件 setStepStatus(1, 'completed')
        *  旧版 bug：faces/whisper 失败时 stepStatuses[0] 仍被置为 completed，与 subStepStatuses 不一致
@@ -252,6 +255,7 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             audioSeparated: useStep1Store.getState().audioSeparated,
             subStepStatuses: freshPipelineState.subStepStatuses,
             subStepProgresses: freshPipelineState.subStepProgresses,
+            subStepTimings: freshPipelineState.subStepTimings,
             stepStatuses: freshPipelineState.stepStatuses,
             stepCompleted: freshPipelineState.stepCompleted,
             currentStep: latestNavState.currentStep,

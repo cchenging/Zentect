@@ -209,6 +209,7 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
             audioSeparated: step1State.audioSeparated,
             subStepStatuses: ps.subStepStatuses,
             subStepProgresses: ps.subStepProgresses,
+            subStepTimings: ps.subStepTimings,
             stepStatuses: ps.stepStatuses,
             stepCompleted: ps.stepCompleted,
             currentStep: navState.currentStep,
@@ -267,10 +268,10 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
       const keysToRun: string[] = [];
       enabledKeys.forEach(key => {
         if (!config[key]?.enabled) return;
-        // 子步骤配置键映射（frames 配置在 config.frames，audio 在 config.audio，whisper 在 config.whisper，faces 在 config.faces）
         const alreadyCompleted = currentSubStatuses[key] === 'completed';
         if (!alreadyCompleted) {
           ps.setSubStepStatus(key, 'running');
+          ps.setSubStepStarted(key);
           keysToRun.push(key);
         }
       });

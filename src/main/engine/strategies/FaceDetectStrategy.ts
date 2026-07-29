@@ -74,6 +74,13 @@ export class FaceDetectStrategy extends BaseNodeStrategy {
       id: `${mediaId}_${clusterId}`,
       name: `角色_${clusterId}`,
       faceCount: roleGroups[clusterId].length,
+      /** 修复黑头像：representative 包含 facePath，供 PipelineResultWriter 读取 avatar */
+      representative: (() => {
+        const firstFace = roleGroups[clusterId]
+          .map(fid => faces.find(f => (f.id || f.face_id) === fid))
+          .filter(Boolean)[0];
+        return firstFace ? { ...firstFace, facePath: firstFace.face_path || firstFace.facePath || '' } : null;
+      })(),
       faces: roleGroups[clusterId]
         .map(fid => faces.find(f => (f.id || f.face_id) === fid))
         .filter(Boolean),

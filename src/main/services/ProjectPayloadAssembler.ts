@@ -24,6 +24,8 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
 
   const subStepStatuses: Record<string, string> = parseJson(rawData.subStepStatuses) || {};
   const subStepProgresses: Record<string, number> = parseJson(rawData.subStepProgresses) || {};
+  // 读取子步骤耗时记录（重进项目后仍可展示上次执行耗时）
+  const subStepTimings: Record<string, any> = parseJson(rawData.subStepTimings) || {};
   const stepStatuses: string[] = parseJson(rawData.stepStatuses) || ['idle', 'idle', 'idle', 'idle', 'idle'];
   const stepCompleted: boolean[] = parseJson(rawData.stepCompleted) || [false, false, false, false, false];
 
@@ -155,6 +157,7 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
     // 管线状态（已解析、已归一化、已推导）
     subStepStatuses: normalizedSubSteps,
     subStepProgresses,
+    subStepTimings,
     stepStatuses,
     stepCompleted,
     currentStep,

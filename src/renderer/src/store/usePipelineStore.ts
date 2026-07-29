@@ -1,4 +1,4 @@
-﻿/**
+/**
  * usePipelineStore — 管线状态独立 Store
  * 从 editorSlice 中分拆出来的管线相关状态
  * 包括：步骤执行状态、子步骤状态、管线运行状态、参数配置
@@ -14,6 +14,22 @@ const INITIAL_SUB_STEP_STATUSES: Record<string, StepStatus> = {
 const INITIAL_SUB_STEP_PROGRESSES: Record<string, number> = {
   frames: 0, audio: 0, whisper: 0, faces: 0,
 };
+/** 子步骤耗时初始值（null 表示未记录） */
+const INITIAL_SUB_STEP_TIMINGS: Record<string, SubStepTiming | null> = {
+  frames: null, audio: null, whisper: null, faces: null,
+};
+
+/**
+ * 子步骤耗时数据结构
+ * - startedAt: 开始时间戳（ms）
+ * - finishedAt: 结束时间戳（ms）
+ * - durationMs: 耗时（ms），finishedAt - startedAt
+ */
+export interface SubStepTiming {
+  startedAt: number;
+  finishedAt: number;
+  durationMs: number;
+}
 
 export interface PipelineStore {
   // 编辑器加载/水合状态
@@ -24,6 +40,8 @@ export interface PipelineStore {
   stepCompleted: boolean[];
   subStepStatuses: Record<string, StepStatus>;
   subStepProgresses: Record<string, number>;
+  /** 子步骤耗时记录（key: frames/audio/whisper/faces） */
+  subStepTimings: Record<string, SubStepTiming | null>;
 
   // 管线运行状态
   pipelineRunning: boolean;
@@ -44,6 +62,12 @@ export interface PipelineStore {
   setStepCompleted: (step: number, completed: boolean) => void;
   setSubStepStatus: (key: string, status: StepStatus) => void;
   setSubStepProgress: (key: string, progress: number) => void;
+  /** 记录子步骤开始时间 */
+  setSubStepStarted: (key: string) => void;
+  /** 记录子步骤结束时间并计算耗时 */
+  setSubStepFinished: (key: string) => void;
+  /** 批量恢复子步骤耗时（水合时使用） */
+  setSubStepTimings: (timings: Record<string, SubStepTiming | null>) => void;
   setAllSubStepsCompleted: () => void;
   resetAllStepStatuses: () => void;
 
@@ -65,6 +89,7 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
   stepCompleted: [false, false, false, false, false],
   subStepStatuses: { ...INITIAL_SUB_STEP_STATUSES },
   subStepProgresses: { ...INITIAL_SUB_STEP_PROGRESSES },
+  subStepTimings: { ...INITIAL_SUB_STEP_TIMINGS },
 
   pipelineRunning: false,
   pipelineProgress: 0,
@@ -91,6 +116,26 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
     set((s) => ({ subStepStatuses: { ...s.subStepStatuses, [key]: status } })),
   setSubStepProgress: (key, progress) =>
     set((s) => ({ subStepProgresses: { ...s.subStepProgresses, [key]: progress } })),
+  setSubStepStarted: (key) =>
+    set((s) => ({
+      subStepTimings: {
+        ...s.subStepTimings,
+        [key]: { startedAt: Date.now(), finishedAt: 0, durationMs: 0 },
+      },
+    })),
+  setSubStepFinished: (key) =>
+    set((s) => {
+      const timing = s.subStepTimings[key];
+      if (!timing || !timing.startedAt) return s;
+      const finishedAt = Date.now();
+      return {
+        subStepTimings: {
+          ...s.subStepTimings,
+          [key]: { ...timing, finishedAt, durationMs: finishedAt - timing.startedAt },
+        },
+      };
+    }),
+  setSubStepTimings: (timings) => set({ subStepTimings: timings }),
   setAllSubStepsCompleted: () =>
     set({
       subStepStatuses: { frames: 'completed', audio: 'completed', whisper: 'completed', faces: 'completed' },
@@ -101,6 +146,8 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
       stepStatuses: [...INITIAL_STEP_STATUSES],
       subStepStatuses: { ...INITIAL_SUB_STEP_STATUSES },
       subStepProgresses: { ...INITIAL_SUB_STEP_PROGRESSES },
+      // 同步重置子步骤耗时，避免残留旧耗时与新状态不一致
+      subStepTimings: { ...INITIAL_SUB_STEP_TIMINGS },
     }),
 
   setHydrationStatus: (status) => set({ hydrationStatus: status }),

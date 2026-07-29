@@ -178,16 +178,25 @@ export class ProjectRepository {
     // canvas_data 中的值覆盖 metadata（排除画布结构专用字段、独立表已有字段、以及**管线状态字段**）
     // 💥 关键修复：状态字段（subStepStatuses/stepStatuses/stepCompleted 等）必须以 metadata 为准！
     //   根因：canvas_data 由 SyncDaemon 每5秒写入，包含瞬态 running 状态；
-    //         metadata 仅在管线步骤真正完成时通过 saveFullProjectData 更新，代表持久化的确认状态。
+    //         metadata 仅在管线步骤完成时通过 saveFullProjectData 更新，代表持久化的确认状态。
     //         若用户关闭应用时管线正在执行，canvas_data 中 running 会覆盖 metadata 中 completed，
     //         前端 hydrate 把 running→idle → 已完成的子步骤状态全部丢失！
+    // 💥 关键修复：数据字段（asrLines/shots/mediaItems 等）也必须以 metadata 为准！
+    //   根因：canvas_data 中的 asrLines 是 beforeunload 时的瞬态快照，
+    //         重试 ASR 后 metadata 已更新为新数据，但 canvas_data 仍是旧数据。
+    //         若 canvas_data 覆盖 metadata，重启后会恢复旧的 ASR 结果。
     const CANVAS_SKIP_KEYS = new Set([
       'nodes', 'edges', 'mediaItems', 'viewport', 'shots', 'aiShots', 'roles',
       // 🔧 状态字段：以 metadata（步骤完成时持久化）为准，不让 canvas_data（瞬态快照）覆盖
       'subStepStatuses', 'subStepProgresses', 'stepStatuses', 'stepCompleted',
       'currentStep', 'pipelineRunning', 'pipelineError', 'pipelineProgress',
       'audioConfig', 'extractedVocals', 'extractedBgm', 'extractedAudio',
-      'audioSeparationMode', 'asrEngine', 'vocalsIsFallback'
+      'audioSeparationMode', 'asrEngine', 'vocalsIsFallback',
+      // 🔧 数据字段：以 metadata（管线结果持久化）为准，避免 canvas_data 旧快照覆盖新结果
+      'asrLines', 'frameCount', 'framePaths', 'audioSeparated',
+      'extractionConfig', 'vlmFrames', 'scriptParagraphs', 'scriptStyle',
+      'speechRate', 'pipelineParams', 'ttsResults', 'ttsEngine', 'ttsVoiceId',
+      'videoChunks', 'storyboardMode',
     ]);
     for (const [key, val] of Object.entries(canvasObj)) {
       if (CANVAS_SKIP_KEYS.has(key)) continue;
@@ -311,6 +320,11 @@ export class ProjectRepository {
       if (data.subStepProgresses && typeof data.subStepProgresses === 'object'
           && Object.keys(data.subStepProgresses).length > 0) {
         metadata.subStepProgresses = data.subStepProgresses;
+      }
+      // 持久化子步骤耗时记录，确保重进项目后仍可查看上次执行耗时
+      if (data.subStepTimings && typeof data.subStepTimings === 'object'
+          && Object.keys(data.subStepTimings).length > 0) {
+        metadata.subStepTimings = data.subStepTimings;
       }
       // 🔧 修复状态丢失：stepStatuses 空数组不覆盖
       if (Array.isArray(data.stepStatuses) && data.stepStatuses.length > 0) {

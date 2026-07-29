@@ -741,6 +741,10 @@ export const zhCN = {
   'editor.step1.frames.statusRunning': '提取中 {progress}%',
   'editor.step1.frames.statusFail': '提取失败',
   'editor.step1.frames.statusIdle': '等待管线执行',
+  // 子步骤耗时展示：completed 时显示「实际耗时 Xs」，running 时显示「预计剩余 Xs」倒计时
+  'editor.step1.durationLabel': '实际耗时',
+  'editor.step1.remainingLabel': '预计剩余',
+  'editor.step1.preparingLabel': '准备中...',
   'editor.step1.audio.title': '音频分离',
   'editor.step1.audio.separated': '人声台词 + 背景音乐',
   'editor.step1.audio.statusRunning': '执行中 {progress}%',

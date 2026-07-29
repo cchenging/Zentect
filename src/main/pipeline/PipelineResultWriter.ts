@@ -157,7 +157,13 @@ export class PipelineResultWriter {
         const insertRole = db.prepare(PROJECT_SQL.INSERT_ROLE_FULL);
         for (const role of finalRoles) {
           const roleName = role.name || role.label || `角色_${Date.now().toString(36).slice(-4)}`;
-          const roleAvatar = role.avatar || role.representative?.facePath || '';
+          /** 💥 修复黑头像：avatar 转为相对路径（与 frames/audio 一致）
+           * 旧版 bug：直接写入绝对路径，resolveDbPath 无法正确解析 → 头像加载失败显示黑色
+           * 修复：绝对路径转为 projectDir 相对路径，统一用 '/' 分隔 */
+          const rawAvatar = role.avatar || role.representative?.facePath || '';
+          const roleAvatar = rawAvatar && path.isAbsolute(rawAvatar)
+            ? path.relative(projectDir, rawAvatar).replace(/\\/g, '/')
+            : rawAvatar;
           insertRole.run({
             id: role.id || `role_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
             projectId,

@@ -628,6 +628,11 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
         ps.setSubStepProgress(key, typeof progress === 'number' ? progress : 0);
       }
     }
+    // 恢复子步骤耗时记录（重进项目后仍可查看上次执行耗时）
+    if (d.subStepTimings && typeof d.subStepTimings === 'object'
+        && typeof ps.setSubStepTimings === 'function') {
+      ps.setSubStepTimings(d.subStepTimings as Record<string, any>);
+    }
     if (d.pipelineParams && typeof ps.setPipelineParams === 'function') ps.setPipelineParams(d.pipelineParams as any);
     if (d.extractionConfig !== undefined && typeof ps.setExtractionConfig === 'function') ps.setExtractionConfig(d.extractionConfig as any);
 

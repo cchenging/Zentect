@@ -58,15 +58,26 @@ def api_vision(req: VisionReq):
         with INFERENCE_LOCK:
             app_face = AIModels.get_face_app()
             results = []
+            # 💥 诊断日志：统计检测总数与过滤数
+            total_detected = 0
+            total_kept = 0
             for img_path in req.image_paths:
                 if not os.path.exists(img_path):
                     continue
                 img = cv2.imdecode(np.fromfile(img_path, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if img is None: continue
                 faces = app_face.get(img)
+                total_detected += len(faces)
                 face_data = []
                 for i, face in enumerate(faces):
                     box = face.bbox.astype(int).tolist()
+                    # 💥 过滤过小的人脸：边长 < 40 像素的低质量检测
+                    # 过小人脸通常是远景/模糊/侧脸，embedding 质量差，
+                    # 进入聚类后会拉扯簇心或形成噪声点，反而降低角色识别准确率
+                    box_w = max(0, box[2] - box[0])
+                    box_h = max(0, box[3] - box[1])
+                    if box_w < 40 or box_h < 40:
+                        continue
                     face_img = img[max(0, box[1]):box[3], max(0, box[0]):box[2]]
                     if face_img.size > 0:
                         face_filename = f"{os.path.splitext(os.path.basename(img_path))[0]}_{i}.jpg"
@@ -83,12 +94,15 @@ def api_vision(req: VisionReq):
 
                         face_data.append({
                             "id": face_filename,
+                            "face_path": face_save_path,
                             "bbox": box,
                             "gender": gender_val,
                             "age": age_val,
                             "embedding": face.embedding.tolist()
                         })
+                total_kept += len(face_data)
                 results.append({"frame": img_path, "faces": face_data})
+            print(f"[vision] 本批 {len(req.image_paths)} 帧: 检测 {total_detected} 张, 保留 {total_kept} 张 (过滤小脸 {total_detected - total_kept})", file=sys.stdout)
         return {"success": True, "data": results}
     except Exception as e:
         traceback.print_exc()
@@ -111,8 +125,27 @@ async def cluster_faces(req: ClusterRequest):
 
         clusters_map = {}
         if len(embeddings) >= 3:
-            clusterer = hdbscan.HDBSCAN(min_cluster_size=2, metric='euclidean')
+            # 💥 优化聚类参数，解决"只识别2个角色"的问题：
+            # 1. min_cluster_size=2：最小簇大小（至少2张相似人脸才能成簇）
+            # 2. min_samples=1：降低核心点阈值，让更多边界点被吸收到簇中（默认等于 min_cluster_size，过严格）
+            # 3. cluster_selection_method='leaf'：leaf 方法保留更多小簇，适合人物识别（EOM 会合并相似簇）
+            # 4. 移除 cluster_selection_epsilon：旧版 0.3 会合并距离 <0.3 的簇，
+            #    但 InsightFace 512维归一化 embedding 在 euclidean 下 0.3 对应 cosine similarity ≈ 0.955，
+            #    在数据少时可能误合并不同人 → 移除让算法自动决定
+            clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=2,
+                min_samples=1,
+                metric='euclidean',
+                cluster_selection_method='leaf',
+            )
             cluster_labels = clusterer.fit_predict(embeddings)
+
+            # 统计聚类结果用于日志
+            unique_labels = set(cluster_labels)
+            label_counts = {label: list(cluster_labels).count(label) for label in unique_labels}
+            n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
+            n_noise = label_counts.get(-1, 0)
+            print(f"[cluster] 总人脸: {len(face_ids)}, 聚类数: {n_clusters}, 噪声点: {n_noise}, 分布: {label_counts}", file=sys.stdout)
 
             for f_id, label in zip(face_ids, cluster_labels):
                 clusters_map[f_id] = f"role_{label}" if label != -1 else "role_unknown"

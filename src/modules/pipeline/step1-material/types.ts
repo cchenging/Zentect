@@ -2,6 +2,7 @@
 
 import type { AsrLine, Role, StepStatus } from '../../../shared/types/entities/editor';
 import type { MediaItem } from '../../../shared/types';
+import type { SubStepTiming } from '../../../renderer/src/store/usePipelineStore';
 
 /** Step1 输入接口 (§3.3.2) */
 export interface Step1Input {
@@ -88,6 +89,8 @@ export interface StepMaterialAnalysisViewProps {
   roles: Role[];
   subStepStatuses: Record<string, StepStatus>;
   subStepProgresses: Record<string, number>;
+  /** 子步骤耗时记录（key: frames/audio/whisper/faces），用于展示「耗时 Xs」 */
+  subStepTimings: Record<string, SubStepTiming | null>;
   extractionConfig: Step1Config | null;
   extractedData: {
     videoPath?: string;
