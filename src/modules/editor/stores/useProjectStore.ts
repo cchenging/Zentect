@@ -612,11 +612,34 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     const ps = usePipelineStore.getState();
     const stepStatuses: string[] = d.stepStatuses || ['idle', 'idle', 'idle', 'idle', 'idle'];
     const stepCompleted: boolean[] = d.stepCompleted || [false, false, false, false, false];
+    const subStepStatuses: Record<string, string> = d.subStepStatuses || {};
+
+    /** 💥 修复步骤1卡死：根据 subStepStatuses 重新推导 stepStatuses[0]
+     *  根因：useExtractionHandler 中 setStepStatus 和 saveData 时序问题，
+     *        导致 DB 中 subStepStatuses 全 completed 但 stepStatuses[0] 仍为 idle。
+     *        StepPanel 要求 stepStatuses[0]==='completed' 才能进入步骤2，导致卡死。
+     *  修复：hydrate 时根据子步骤状态推导步骤1总状态，不盲信 DB 的 stepStatuses。 */
+    const STEP1_KEYS = ['frames', 'audio', 'whisper', 'faces'];
+    const step1Values = STEP1_KEYS.map(k => subStepStatuses[k]).filter(v => v !== undefined && v !== null);
+    if (step1Values.length > 0) {
+      const allCompleted = step1Values.length === STEP1_KEYS.length && step1Values.every(v => v === 'completed');
+      const hasFailed = step1Values.some(v => v === 'failed');
+      if (allCompleted) {
+        stepStatuses[0] = 'completed';
+        stepCompleted[0] = true;
+      } else if (hasFailed) {
+        stepStatuses[0] = 'failed';
+        stepCompleted[0] = false;
+      } else {
+        stepStatuses[0] = 'idle';
+        stepCompleted[0] = false;
+      }
+    }
+
     for (let i = 1; i <= 5; i++) {
       if (typeof ps.setStepStatus === 'function') ps.setStepStatus(i, (stepStatuses[i - 1] as any) || 'idle');
       if (typeof ps.setStepCompleted === 'function') ps.setStepCompleted(i, !!stepCompleted[i - 1]);
     }
-    const subStepStatuses: Record<string, string> = d.subStepStatuses || {};
     if (typeof ps.setSubStepStatus === 'function') {
       for (const [key, status] of Object.entries(subStepStatuses)) {
         ps.setSubStepStatus(key, (status || 'idle') as any);
