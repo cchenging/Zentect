@@ -1,6 +1,6 @@
 // StepIndicator - 步骤导航指示器
 import React from 'react';
-import { StatusIcon } from './StatusIcon';
+import { StatusIcon } from './status-icon';
 
 interface Step {
   id: string | number;
