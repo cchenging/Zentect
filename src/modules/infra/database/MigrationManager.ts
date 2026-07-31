@@ -115,6 +115,15 @@ export class MigrationManager implements IMigrationManager {
 
     addCol('chat_history', 'action_payload', 'TEXT');
 
+    // 🔧 修复 Bug：补齐 api_profiles 扩展字段（alias/enabled/is_preset/preset_type）
+    // 原 migration 020/021 文件名与 020_audio_separation_config / 021_backfill_project_cover 冲突
+    // 导致 alias 列未添加，apiProfile:update 报 "no such column: alias"
+    // 此处作为双保险，确保字段存在
+    addCol('api_profiles', 'alias', 'TEXT');
+    addCol('api_profiles', 'enabled', 'INTEGER NOT NULL DEFAULT 1');
+    addCol('api_profiles', 'is_preset', 'INTEGER NOT NULL DEFAULT 0');
+    addCol('api_profiles', 'preset_type', 'TEXT');
+
     AppLogger.info(LOG_TAGS.BOOTSTRAP, '数据库治理字段补齐完成');
   }
 

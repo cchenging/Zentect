@@ -17,6 +17,10 @@ export interface ApiProfile {
   extraConfig?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
+  alias?: string | null;
+  enabled?: number;
+  isPreset?: number;
+  presetType?: string | null;
 }
 
 interface RawRow {
@@ -24,6 +28,7 @@ interface RawRow {
   base_url: string | null; models: string | null; is_active: number;
   sort_order: number; extra_config: string | null;
   created_at: string; updated_at: string;
+  alias: string | null; enabled: number; is_preset: number; preset_type: string | null;
 }
 
 const credentialManager = CredentialManager.getInstance();
@@ -38,6 +43,9 @@ function rowToProfile(row: RawRow): ApiProfile {
     sortOrder: row.sort_order,
     extraConfig: row.extra_config ? JSON.parse(row.extra_config) : undefined,
     createdAt: row.created_at, updatedAt: row.updated_at,
+    alias: row.alias,
+    enabled: row.enabled,
+    isPreset: row.is_preset,  // 保持 number 类型，与接口定义一致
   };
 }
 
@@ -64,14 +72,18 @@ export class ApiProfileRepository {
     const db = SQLiteConnection.getInstance().getDB();
     const id = uuidv4();
     const now = new Date().toISOString();
-    db.prepare(`INSERT INTO api_profiles (id, name, provider, api_key, base_url, models, is_active, sort_order, extra_config, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    db.prepare(`INSERT INTO api_profiles (id, name, provider, api_key, base_url, models, is_active, sort_order, extra_config, alias, enabled, is_preset, preset_type, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       id, profile.name, profile.provider,
       profile.apiKey ? credentialManager.encrypt(profile.apiKey) : null,
       profile.baseUrl || null,
       JSON.stringify(profile.models || []),
       profile.isActive ? 1 : 0, profile.sortOrder || 0,
       profile.extraConfig ? JSON.stringify(profile.extraConfig) : null,
+      profile.alias || null,
+      profile.enabled ?? 1,
+      profile.isPreset ?? 0,
+      profile.presetType || null,
       now, now
     );
     return this.getByProvider(profile.provider).find(p => p.id === id)!;
@@ -86,6 +98,10 @@ export class ApiProfileRepository {
     if (patch.models !== undefined) { sets.push('models = ?'); vals.push(JSON.stringify(patch.models)); }
     if (patch.isActive !== undefined) { sets.push('is_active = ?'); vals.push(patch.isActive ? 1 : 0); }
     if (patch.sortOrder !== undefined) { sets.push('sort_order = ?'); vals.push(patch.sortOrder); }
+    if (patch.alias !== undefined) { sets.push('alias = ?'); vals.push(patch.alias); }
+    if (patch.enabled !== undefined) { sets.push('enabled = ?'); vals.push(patch.enabled); }
+    if (patch.isPreset !== undefined) { sets.push('is_preset = ?'); vals.push(patch.isPreset); }
+    if (patch.presetType !== undefined) { sets.push('preset_type = ?'); vals.push(patch.presetType); }
     sets.push('updated_at = ?'); vals.push(new Date().toISOString());
     vals.push(id);
     db.prepare(`UPDATE api_profiles SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -104,6 +120,13 @@ export class ApiProfileRepository {
       db.prepare('UPDATE api_profiles SET is_active = 1 WHERE id = ?').run(id);
     });
     tx();
+    return true;
+  }
+
+  static toggleEnabled(id: string, enabled: boolean): boolean {
+    const db = SQLiteConnection.getInstance().getDB();
+    db.prepare('UPDATE api_profiles SET enabled = ?, updated_at = ? WHERE id = ?')
+      .run(enabled ? 1 : 0, new Date().toISOString(), id);
     return true;
   }
 }

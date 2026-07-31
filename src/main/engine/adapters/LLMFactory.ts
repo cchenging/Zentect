@@ -46,7 +46,7 @@ export class LLMFactory {
       try {
         const allProfiles = ApiProfileRepository.getAll();
         const matchedProfile = allProfiles.find((p) => p.id === binding.profileId);
-        if (matchedProfile && matchedProfile.apiKey) {
+        if (matchedProfile && matchedProfile.apiKey && matchedProfile.enabled !== 0) {
           let baseURL = matchedProfile.baseUrl || 'https://api.openai.com/v1';
           baseURL = baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
           const adapter = new OpenAICompatibleAdapter(baseURL, matchedProfile.apiKey);

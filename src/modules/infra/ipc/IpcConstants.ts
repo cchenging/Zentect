@@ -83,6 +83,8 @@ export const IPC_CHANNELS = {
 
   // --- AI 算力域 ---
   AI_TEST_NETWORK: 'ai:testNetwork',
+  // 拉取账户可用模型列表（OpenAI 兼容 /models 接口）
+  AI_FETCH_MODELS: 'ai:fetchModels',
   AI_TEST_TTS: 'ai:testTTS',
   AI_CHAT: 'ai:chat',
   AI_CHAT_STREAM: 'ai:chat-stream',
@@ -230,7 +232,12 @@ export const IPC_CHANNELS = {
   API_PROFILE_UPDATE: 'apiProfile:update',
   API_PROFILE_DELETE: 'apiProfile:delete',
   API_PROFILE_ACTIVATE: 'apiProfile:activate',
+  API_PROFILE_TOGGLE_ENABLED: 'apiProfile:toggleEnabled',
   BINDING_GET_ALL: 'profileBinding:getAll',
   BINDING_GET_BY_TASK: 'profileBinding:getByTask',
   BINDING_UPSERT: 'profileBinding:upsert',
+  // 🔧 修复 Bug3：删除 Profile 时清理关联绑定
+  BINDING_CLEAR_BY_PROFILE: 'profileBinding:clearByProfileId',
+  // 初始化配置：清理所有无效绑定（profileId 为空 / Profile 不存在 / modelName 已被删除）
+  BINDING_CLEANUP_INVALID: 'profileBinding:cleanupInvalid',
 } as const;

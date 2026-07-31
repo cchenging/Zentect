@@ -139,13 +139,93 @@ export class AIService {
 
   public async testNetwork(type: string, config: any) {
     if (type === 'openai_like') {
-      if (!config.apiKey) throw new Error("API Key 不能为空，请先填写");
-      const adapter = LLMFactory.create(config.provider, config.apiKey, config.baseURL);
-      await adapter.testConnection();
-      return '连接成功，通道握手正常';
+      // 🔧 修复：用 /models 接口同时完成测试和拉取，废弃用 gpt-3.5-turbo 测试的错误逻辑
+      const models = await this.fetchModels(config);
+      return `连接成功，共获取 ${models.length} 个可用模型`;
     }
 
     return await healthCheckService.testNetwork(type as 'doubao_tts' | 'openai_like', config);
+  }
+
+  /**
+   * 拉取账户可用模型列表（OpenAI 兼容 /models 接口）
+   *
+   * 主流厂商均支持：
+   * - 火山方舟：https://ark.cn-beijing.volces.com/api/v3/models
+   * - DeepSeek：https://api.deepseek.com/models
+   * - 通义千问：https://dashscope.aliyuncs.com/compatible-mode/v1/models
+   * - 腾讯混元：https://api.hunyuan.cloud.tencent.com/v1/models
+   * - 自定义：用户填写的 baseURL
+   *
+   * 失败时抛错（含 HTTP 状态码 + 响应片段），前端 catch 后展示错误
+   */
+  public async fetchModels(config: { provider?: string; apiKey?: string; baseURL?: string }): Promise<string[]> {
+    const apiKey = (config.apiKey || '').trim();
+    if (!apiKey) throw new Error('API Key 不能为空');
+
+    let baseURL = (config.baseURL || '').trim();
+    if (!baseURL) throw new Error('接口地址不能为空');
+
+    // 清理 baseURL：去掉末尾 /，去掉 /chat/completions 和 /models 后缀（容错）
+    baseURL = baseURL
+      .replace(/\/chat\/completions\/?$/, '')
+      .replace(/\/models\/?$/, '')
+      .replace(/\/$/, '');
+
+    const endpoint = `${baseURL}/models`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    let res: Response;
+    try {
+      res = await fetch(endpoint, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Accept': 'application/json',
+        },
+        signal: controller.signal,
+      });
+    } catch (e: any) {
+      if (e.name === 'AbortError') throw new Error('请求超时（15s），请检查网络或接口地址');
+      throw new Error(`网络请求失败：${e.message || e}`);
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    if (!res.ok) {
+      let detail = '';
+      try {
+        const errBody = await res.text();
+        detail = errBody.substring(0, 200);
+      } catch {}
+      if (res.status === 401) throw new Error(`API Key 鉴权失败（401）${detail ? '：' + detail : ''}`);
+      if (res.status === 403) throw new Error(`无访问权限（403）${detail ? '：' + detail : ''}`);
+      if (res.status === 404) throw new Error(`接口地址不存在（404），请检查 baseURL${detail ? '：' + detail : ''}`);
+      throw new Error(`HTTP ${res.status}${detail ? '：' + detail : ''}`);
+    }
+
+    let json: any;
+    try {
+      json = await res.json();
+    } catch {
+      throw new Error('响应不是有效 JSON，可能 baseURL 错误（如指向了 HTML 页面）');
+    }
+
+    // OpenAI 兼容格式：{ data: [{ id: 'model-name' }, ...] }
+    const rawList: any[] = Array.isArray(json?.data) ? json.data : (Array.isArray(json?.models) ? json.models : []);
+    if (rawList.length === 0) {
+      throw new Error('响应中没有 model 列表（data 数组为空或格式异常）');
+    }
+
+    // 提取 model id，去重 + 排序
+    const models = rawList
+      .map((m: any) => (typeof m === 'string' ? m : (m?.id || m?.name || m?.model)))
+      .filter((m: any): m is string => typeof m === 'string' && m.length > 0);
+    const unique = Array.from(new Set(models)).sort();
+    if (unique.length === 0) throw new Error('未能从响应中解析出任何模型 ID');
+
+    return unique;
   }
 
   public async testTTS(provider: string) {

@@ -42,6 +42,11 @@ export class AIController {
       return await this.aiService.testNetwork(type, config);
     });
 
+    // 拉取账户可用模型列表（OpenAI 兼容 /models 接口）
+    IpcRouter.handle(IPC_CHANNELS.AI_FETCH_MODELS, async (_, config) => {
+      return await this.aiService.fetchModels(config);
+    });
+
     // 修复 TTS 连通性测试通道
     IpcRouter.handle(IPC_CHANNELS.AI_TEST_TTS, async (_, provider) => {
       return await this.aiService.testTTS(provider);

@@ -1,4 +1,4 @@
-﻿// 📁 路径：src/preload/index.ts
+// 📁 路径：src/preload/index.ts
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHANNELS } from '../modules/infra/ipc/IpcConstants';
 
@@ -78,6 +78,8 @@ const api = {
   ai: {
     generateTTS: (text: string, roleId: string) => safeInvoke(IPC_CHANNELS.AI_GENERATE_TTS, text, roleId),
     testNetwork: (type: string, config: any) => safeInvoke(IPC_CHANNELS.AI_TEST_NETWORK, type, config),
+    // 拉取账户可用模型列表（OpenAI 兼容 /models 接口）
+    fetchModels: (config: { provider?: string; apiKey: string; baseURL: string }) => safeInvoke(IPC_CHANNELS.AI_FETCH_MODELS, config),
     testTTS: (provider: string) => safeInvoke(IPC_CHANNELS.AI_TEST_TTS, provider),
     runSingleTTS: (projectId: string, shot: any) => safeInvoke(IPC_CHANNELS.AI_RUN_SINGLE_TTS, projectId, shot),
     runGlobalTTS: (projectId: string, shots: any[]) => safeInvoke(IPC_CHANNELS.AI_RUN_GLOBAL_TTS, projectId, shots),
@@ -152,6 +154,10 @@ const api = {
     getAll: () => safeInvoke(IPC_CHANNELS.BINDING_GET_ALL),
     getByTask: (taskType: string) => safeInvoke(IPC_CHANNELS.BINDING_GET_BY_TASK, taskType),
     upsert: (taskType: string, profileId: string | null, modelName: string) => safeInvoke(IPC_CHANNELS.BINDING_UPSERT, taskType, profileId, modelName),
+    // 🔧 修复 Bug3：清理指定 Profile 的所有绑定
+    clearByProfileId: (profileId: string) => safeInvoke(IPC_CHANNELS.BINDING_CLEAR_BY_PROFILE, profileId),
+    // 初始化配置：清理所有无效绑定，返回删除行数
+    cleanupInvalid: () => safeInvoke(IPC_CHANNELS.BINDING_CLEANUP_INVALID),
   },
   apiProfile: {
     getAll: () => safeInvoke(IPC_CHANNELS.API_PROFILE_GET_ALL),
@@ -160,6 +166,7 @@ const api = {
     update: (id: string, patch: any) => safeInvoke(IPC_CHANNELS.API_PROFILE_UPDATE, id, patch),
     delete: (id: string) => safeInvoke(IPC_CHANNELS.API_PROFILE_DELETE, id),
     activate: (id: string, provider: string) => safeInvoke(IPC_CHANNELS.API_PROFILE_ACTIVATE, id, provider),
+    toggleEnabled: (id: string, enabled: boolean) => safeInvoke(IPC_CHANNELS.API_PROFILE_TOGGLE_ENABLED, id, enabled),
   },
   versions: process.versions,
 }

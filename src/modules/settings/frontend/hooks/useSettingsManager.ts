@@ -54,6 +54,8 @@ export const useSettingsManager = () => {
   const [isTesting, setIsTesting] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [modelPool, setModelPool] = useState<string[]>([]);
+  const [apiProfiles, setApiProfiles] = useState<any[]>([]);
+  const [profileBindings, setProfileBindings] = useState<any[]>([]);
 
   const rebuildModelPool = useCallback((values: any) => {
     const m1 = Array.isArray(values.deepseekModels) ? values.deepseekModels : [];
@@ -99,6 +101,22 @@ export const useSettingsManager = () => {
     };
     fetchConfig();
   }, [rebuildModelPool]);
+
+  // 加载 api_profiles 和 profile_bindings 数据（供 AITab 使用）
+  useEffect(() => {
+    (async () => {
+      try {
+        const rawP = await (window as any).api?.apiProfile?.getAll();
+        const pData = rawP?.data ?? rawP;
+        if (Array.isArray(pData)) setApiProfiles(pData);
+      } catch {}
+      try {
+        const rawB = await (window as any).api?.profileBinding?.getAll();
+        const bData = rawB?.data ?? rawB;
+        if (Array.isArray(bData)) setProfileBindings(bData);
+      } catch {}
+    })();
+  }, []);
 
   const updateConfig = useCallback((_section: string, key: string, value: any) => {
     setConfig((prev: any) => {
@@ -175,6 +193,7 @@ export const useSettingsManager = () => {
 
   return {
     config, activeTab, setActiveTab, updateConfig, saveConfig,
-    testAIConnection, testTTS, isTesting, isSaving, modelPool
+    testAIConnection, testTTS, isTesting, isSaving, modelPool,
+    apiProfiles, profileBindings,
   };
 };

@@ -37,6 +37,14 @@ export interface ApiProfile {
   models: string[];
   /** 是否为该供应商的当前生效配置 */
   isActive: boolean;
+  /** 用户自定义别名 */
+  alias?: string;
+  /** 启用开关（1启用/0禁用） */
+  enabled?: number;
+  /** 是否预设 Provider */
+  is_preset?: number;
+  /** 预设类型 */
+  preset_type?: string;
 }
 
 /** AI 配置输入 */
