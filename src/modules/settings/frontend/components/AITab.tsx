@@ -738,8 +738,8 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
 
       {/* ===== Add/Edit Modal ===== */}
       {modalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={closeModal}>
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[14px] w-[480px] max-h-[85vh] overflow-y-auto p-[26px]" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[14px] w-[480px] max-h-[85vh] overflow-y-auto p-[26px]">
             <div className="flex items-center justify-between mb-5">
               <span className="text-[15px] font-semibold text-foreground">{editingProfileId ? '编辑模型' : '添加模型'}</span>
               <button onClick={closeModal} className="w-[26px] h-[26px] flex items-center justify-center rounded-md text-muted-foreground hover:bg-[var(--bg-hover)] hover:text-white transition-colors cursor-pointer outline-none text-lg">&times;</button>
@@ -883,8 +883,8 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
 
       {/* ===== 删除确认 Modal ===== */}
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setDeleteTarget(null)}>
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[14px] w-[360px] p-[26px]" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[14px] w-[360px] p-[26px]">
             <div className="text-[15px] font-semibold text-foreground mb-3">确认删除</div>
             <div className="text-[13px] text-muted-foreground mb-4 leading-relaxed">
               确定删除「<strong className="text-foreground">{deleteTarget.alias || deleteTarget.name || deleteTarget.provider}</strong>」的配置？<br />

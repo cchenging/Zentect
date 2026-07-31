@@ -50,6 +50,8 @@ export interface VisionExtractOutput {
 
 /** VLM 并发路数 */
 const CONCURRENT_VLM = 5;
+/** 🔧 fail fast：连续失败达到此阈值时终止整批任务，避免无效 API 调用 */
+const FAIL_FAST_THRESHOLD = 3;
 
 export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, VisionExtractOutput> {
   public readonly nodeType = 'vision-extract';
@@ -183,6 +185,11 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     const frameDescriptions: string[] = new Array(totalFrameCount).fill('');
     const frameJsonItems: (any | null)[] = new Array(totalFrameCount).fill(null);
     let completedFrames = 0;
+    /** 🔧 fail fast：连续失败计数，成功时清零 */
+    let consecutiveFailures = 0;
+    /** fail fast 触发后的终止信号 */
+    let aborted = false;
+    let abortError = '';
     const framePathsOriginal = input.framePaths || physicalFrames;
 
     /** 每帧的时间戳数组（毫秒），用于滑动窗口构建 */
@@ -320,9 +327,19 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         }
 
         AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 帧 ${frameIdx + 1}/${totalFrameCount} 完成，JSON: ${parsedItem ? '成功' : '降级纯文本'}`);
+        // 🔧 成功时重置连续失败计数
+        consecutiveFailures = 0;
       } catch (err: any) {
         AppLogger.error(LOG_TAGS.AI_AGENT, `[画面描述] 帧 ${frameIdx + 1} 异常: ${err.message}`);
         frameDescriptions[frameIdx] = '';
+        // 🔧 fail fast：连续失败达到阈值时终止整批任务，避免 56 帧全部无效调用
+        consecutiveFailures++;
+        if (consecutiveFailures >= FAIL_FAST_THRESHOLD && !aborted) {
+          aborted = true;
+          abortError = err.message;
+          AppLogger.error(LOG_TAGS.AI_AGENT,
+            `[画面描述] 连续 ${consecutiveFailures} 帧失败，终止剩余任务。最后错误: ${err.message}`);
+        }
       }
 
       completedFrames++;
@@ -343,7 +360,9 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     const frameQueue: number[] = Array.from({ length: totalFrameCount }, (_, i) => i);
     const running: Promise<void>[] = [];
     while (frameQueue.length > 0 || running.length > 0) {
-      while (frameQueue.length > 0 && running.length < CONCURRENT_VLM) {
+      // 🔧 fail fast：已终止则不再投递新任务
+      if (aborted) break;
+      while (frameQueue.length > 0 && running.length < CONCURRENT_VLM && !aborted) {
         const frameIdx = frameQueue.shift()!;
         const promise = processFrame(frameIdx).then(() => {
           const idx = running.indexOf(promise);
@@ -354,6 +373,14 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       if (running.length > 0) {
         await Promise.race(running);
       }
+    }
+
+    /** 🔧 fail fast：等待已投递的并发任务完成后，若已终止则抛错 */
+    if (running.length > 0) {
+      await Promise.allSettled(running);
+    }
+    if (aborted) {
+      throw new Error(`画面描述失败：连续 ${FAIL_FAST_THRESHOLD} 帧 VLM 调用失败，已终止。请检查 VLM 配置（接口地址/模型名/API Key）。最后错误：${abortError}`);
     }
 
     /** 释放 LRU 缓存 */

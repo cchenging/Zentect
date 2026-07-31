@@ -24,8 +24,11 @@ export class OpenAICompatibleAdapter implements ILLMProvider {
         headers: { 'Authorization': `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'gpt-3.5-turbo', messages: [{ role: 'user', content: 'test' }], max_tokens: 5 })
       });
-      if (response.ok || response.status === 404 || response.status === 400) return true;
-      throw new Error(`HTTP ${response.status}`);
+      // 🔧 修复：只有 HTTP 200 才算成功，不再把 404/400 当成功（会导致配置测试通过但实际调用失败）
+      if (response.ok) return true;
+      let detail = '';
+      try { detail = (await response.text()).substring(0, 200); } catch {}
+      throw new Error(`HTTP ${response.status}${detail ? '：' + detail : ''}`);
     } catch (error: any) { throw error; }
   }
 
@@ -37,8 +40,22 @@ export class OpenAICompatibleAdapter implements ILLMProvider {
         headers: { 'Authorization': `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ model, messages, temperature })
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
+      // 🔧 修复：HTTP 错误时读取 body 详情，不再只抛 "HTTP 404"
+      if (!response.ok) {
+        let detail = '';
+        try { detail = (await response.text()).substring(0, 300); } catch {}
+        if (response.status === 401) throw new Error(`API Key 鉴权失败（401）${detail ? '：' + detail : ''}`);
+        if (response.status === 404) throw new Error(`接口地址不存在（404），请检查 baseURL：${this.baseURL}${detail ? ' 详情：' + detail : ''}`);
+        if (response.status === 429) throw new Error(`请求过于频繁被限流（429），请降低并发或稍后重试`);
+        throw new Error(`HTTP ${response.status}${detail ? '：' + detail : ''}`);
+      }
+      // 🔧 修复：状态码 200 但返回 HTML 时给出明确提示（而非 "Unexpected token '<'"）
+      const contentType = response.headers.get('content-type') || '';
+      const rawText = await response.text();
+      if (!contentType.includes('application/json') || rawText.trimStart().startsWith('<')) {
+        throw new Error(`接口返回了 HTML 而非 JSON（baseURL=${this.baseURL}），请检查接口地址是否正确。响应片段：${rawText.substring(0, 200)}`);
+      }
+      const data = JSON.parse(rawText);
       return { success: true, text: data.choices[0].message.content };
     } catch (error: any) { return { success: false, error: error.message }; }
   }

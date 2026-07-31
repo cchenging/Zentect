@@ -10,8 +10,17 @@ import { LogSanitizer } from './LogSanitizer';
 //       将 UTF-8 字符串转换为终端代码页编码
 // ============================================================
 
-log.transports.file.level = 'info';
 log.transports.console.level = 'debug';
+
+// ============================================================
+// 🔧 修复 EBADF：日志文件写入失败时静默降级，不再抛错+堆栈
+// 根因：旧进程持有文件句柄 / 文件描述符失效时，每次写日志都抛
+//       "EBADF: bad file descriptor, write" + 完整堆栈，
+//       严重拖慢主进程（每次 IPC 调用都触发）
+// 方案：直接关闭 file transport，仅保留 console transport
+//       文件日志在开发环境下非必需，console 已由下方自定义 writeFn 输出
+// ============================================================
+log.transports.file.level = false;
 
 (log.transports.console as unknown as { writeFn: (msg: { message: { level: string; data: any[]; date: Date } }) => void }).writeFn = ({ message }: { message: { level: string; data: any[]; date: Date } }) => {
   const level = message.level;
