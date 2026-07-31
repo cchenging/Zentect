@@ -77,6 +77,8 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
     try {
       const activeMedia = projectState.mediaItems?.[0];
 
+      // 🔧 修复：step2 不再走 AI_VISION_SINGLE（人脸检测端点），统一走 STEP_SEQUENCES → VisionExtractStrategy
+      // 仅保留 step2 前置校验：必须有 step1 抽出的关键帧 + 媒体文件路径
       if (step === 2) {
         const existingFrames = projectState.extractedData?.framePaths || [];
         if (existingFrames.length === 0) {
@@ -88,102 +90,76 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
         if (!activeMedia?.filePath) {
           throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, '未找到媒体文件路径');
         }
-        const result = await API.ai.visionExtract(
-          projectState.projectId,
-          activeMedia.filePath,
-          activeMedia.id || '',
-          existingFrames,
-        );
-        if (result) {
-          const vlmData = result as any;
-          if (vlmData.sceneDescriptions || vlmData.framePaths) {
-            const descriptions = vlmData.sceneDescriptions
-              ? vlmData.sceneDescriptions.split('\n').filter((s: string) => s.trim())
-              : [];
-            const framePaths: string[] = vlmData.framePaths || [];
-            const vlmFrames = framePaths.map((url: string, i: number) => ({
-              url,
-              description: descriptions[i] || '',
-              editing: false,
-              confirmed: !!(descriptions[i] && descriptions[i].trim()),
-            }));
-            if (vlmFrames.length > 0) {
-              useStep2Store.getState().setVlmFrames(vlmFrames);
-            }
-          } else if (Array.isArray(vlmData.frames) && vlmData.frames.length > 0) {
-            const vlmFrames = vlmData.frames.map((f: any) => ({
-              url: typeof f === 'string' ? f : (f.path || f.url || f.thumbnail || ''),
-              description: f.description || f.text || '',
-              editing: false,
-              confirmed: !!(f.description || f.text),
-            }));
-            if (vlmFrames.length > 0) {
-              useStep2Store.getState().setVlmFrames(vlmFrames);
-            }
-          }
-        }
-      } else {
-        const sequence = STEP_SEQUENCES[step];
-        if (!sequence) {
-          AppNotifier.error(`步骤 ${step} 未配置管线节点`);
-          return;
-        }
-        const step2State = useStep2Store.getState();
-        const step3State = useStep3Store.getState();
-        const step4State = useStep4Store.getState();
-        const step5State = useStep5Store.getState();
+      }
 
-        const enrichedSequence = sequence.map(node => ({
-          ...node,
-          params: {
-            ...(node.params || {}),
-            mediaPath: activeMedia?.filePath || '',
-            mediaId: activeMedia?.id || '',
-            ...(step === 3 ? {
-              scriptStyle: step3State.scriptStyle || '赛博现实主义',
-              speechRate: step3State.speechRate || 4.5,
-              pipelineParams: step3State.pipelineParams || { R: 50, S: 50, T: 50, P: 50 },
-              visionResult: {
-                sceneDescriptions: step2State.vlmFrames
-                  ?.map((f: any) => f.description || '')
-                  .filter(Boolean)
-                  .join('\n') || '',
-              },
-              audioResult: {
-                lines: useStep1Store.getState().asrLines || [],
-              },
-            } : {}),
-            ...(step === 4 ? {
-              ttsEngine: step4State.ttsEngine || 'edge',
-              ttsVoiceId: step4State.ttsVoiceId || '',
-              voiceId: step4State.ttsVoiceId || '',
-              scriptShots: step3State.scriptParagraphs || [],
-            } : {}),
-            ...(step === 5 ? {
-              scriptShots: step3State.scriptParagraphs || [],
-              visionResult: {
-                sceneDescriptions: step2State.vlmFrames
-                  ?.map((f: any) => f.description || '')
-                  .filter(Boolean)
-                  .join('\n') || '',
-                frames: step2State.vlmFrames || [],
-              },
-              ttsDurations: step4State.ttsResults || [],
-              bgmInfo: step5State.activeBgm ? {
-                id: step5State.activeBgm.id,
-                filePath: step5State.activeBgm.filePath,
-              } : null,
-            } : {}),
-          },
-        }));
-        const result = await API.engine.runPipeline({
-          projectId: projectState.projectId,
-          sequence: enrichedSequence,
-          sourceMedia: activeMedia?.filePath || '',
-        });
-        if (result) {
-          mapPipelineResultToState(result?.data || result, buildMappers());
-        }
+      const sequence = STEP_SEQUENCES[step];
+      if (!sequence) {
+        AppNotifier.error(`步骤 ${step} 未配置管线节点`);
+        return;
+      }
+      const step2State = useStep2Store.getState();
+      const step3State = useStep3Store.getState();
+      const step4State = useStep4Store.getState();
+      const step5State = useStep5Store.getState();
+
+      const enrichedSequence = sequence.map(node => ({
+        ...node,
+        params: {
+          ...(node.params || {}),
+          mediaPath: activeMedia?.filePath || '',
+          mediaId: activeMedia?.id || '',
+          // step2 注入 framePaths（复用 step1 已抽关键帧，避免重新抽帧）+ projectId + audioResult（ASR 台词对齐）
+          ...(step === 2 ? {
+            framePaths: projectState.extractedData?.framePaths || [],
+            projectId: projectState.projectId,
+            audioResult: {
+              lines: useStep1Store.getState().asrLines || [],
+            },
+          } : {}),
+          ...(step === 3 ? {
+            scriptStyle: step3State.scriptStyle || '赛博现实主义',
+            speechRate: step3State.speechRate || 4.5,
+            pipelineParams: step3State.pipelineParams || { R: 50, S: 50, T: 50, P: 50 },
+            visionResult: {
+              sceneDescriptions: step2State.vlmFrames
+                ?.map((f: any) => f.description || '')
+                .filter(Boolean)
+                .join('\n') || '',
+            },
+            audioResult: {
+              lines: useStep1Store.getState().asrLines || [],
+            },
+          } : {}),
+          ...(step === 4 ? {
+            ttsEngine: step4State.ttsEngine || 'edge',
+            ttsVoiceId: step4State.ttsVoiceId || '',
+            voiceId: step4State.ttsVoiceId || '',
+            scriptShots: step3State.scriptParagraphs || [],
+          } : {}),
+          ...(step === 5 ? {
+            scriptShots: step3State.scriptParagraphs || [],
+            visionResult: {
+              sceneDescriptions: step2State.vlmFrames
+                ?.map((f: any) => f.description || '')
+                .filter(Boolean)
+                .join('\n') || '',
+              frames: step2State.vlmFrames || [],
+            },
+            ttsDurations: step4State.ttsResults || [],
+            bgmInfo: step5State.activeBgm ? {
+              id: step5State.activeBgm.id,
+              filePath: step5State.activeBgm.filePath,
+            } : null,
+          } : {}),
+        },
+      }));
+      const result = await API.engine.runPipeline({
+        projectId: projectState.projectId,
+        sequence: enrichedSequence,
+        sourceMedia: activeMedia?.filePath || '',
+      });
+      if (result) {
+        mapPipelineResultToState(result?.data || result, buildMappers());
       }
 
       ps.setStepCompleted(step, true);

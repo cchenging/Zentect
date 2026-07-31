@@ -22,6 +22,8 @@ export interface VisionExtractInput {
   framePaths?: string[];
   /** 项目 ID，用于 context.bus 读取 ASR 数据 */
   projectId?: string;
+  /** 前端注入的 ASR 台词（step2 单独执行时 context.bus 无 asr-result，需从 input 读取） */
+  audioResult?: { lines: any[] };
 }
 
 export interface FrameDetail {
@@ -107,10 +109,11 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       onProgress(30, `抽取完成，共 ${physicalFrames.length} 个关键帧，启动逐帧 VLM 分析...`);
     }
 
-    /** 从 context.bus 读取 ASR 台词，用于帧-台词时间对齐 */
+    /** 从 input.audioResult 或 context.bus 读取 ASR 台词，用于帧-台词时间对齐 */
     let asrLines: { startTime: number; endTime: number; text: string }[] = [];
     try {
-      const asrResult = context.bus.get('asr-result');
+      // 🔧 修复：step2 单独执行时 context.bus 无 asr-result，优先从 input.audioResult 读取
+      const asrResult = input.audioResult || context.bus.get('asr-result');
       if (asrResult) {
         const rawLines = asrResult.lines || asrResult.asrLines || [];
         asrLines = rawLines.filter((l: any) => l.originalText || l.text).map((l: any) => {
