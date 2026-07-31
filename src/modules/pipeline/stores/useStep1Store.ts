@@ -34,6 +34,14 @@ export interface ExtractionConfig {
     fps: number;
     minFrameInterval?: number;
     timePoint?: number;
+    /**
+     * P2 视觉分析模式（VLM 矩阵策略）
+     * - 'auto': 智能自动，根据帧间隔自动选择 2x2/3x3
+     * - '2x2': 标准均衡（4帧拼图，省 Token，适合解说/影视/Vlog）
+     * - '3x3': 动作捕捉（9帧拼图，适合游戏/运动/快剪）
+     * - '1x1': 精细单帧（独立分析，不拼图）
+     */
+    matrixMode?: 'auto' | '2x2' | '3x3' | '1x1';
   };
   audio: AudioConfig;
   whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'auto' };

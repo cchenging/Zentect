@@ -1,5 +1,5 @@
 // 📁 路径：src/main/engine/adapters/OpenAICompatibleAdapter.ts
-import type { ILLMProvider, LLMResponse } from './ILLMProvider';
+import type { ILLMProvider, LLMResponse, ChatOptions } from './ILLMProvider';
 import type { WebContents } from 'electron';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
@@ -32,13 +32,21 @@ export class OpenAICompatibleAdapter implements ILLMProvider {
     } catch (error: any) { throw error; }
   }
 
-  async chat(messages: any[], model: string, temperature: number): Promise<LLMResponse> {
+  async chat(messages: any[], model: string, temperature: number, options?: ChatOptions): Promise<LLMResponse> {
     const endpoint = `${this.baseURL.replace(/\/$/, '')}/chat/completions`;
     try {
+      // P0-1：组装请求体，按需注入 response_format / max_tokens（兼容 OpenAI / Qwen JSON Mode）
+      const payload: any = { model, messages, temperature };
+      if (options?.response_format) {
+        payload.response_format = options.response_format;
+      }
+      if (options?.max_tokens) {
+        payload.max_tokens = options.max_tokens;
+      }
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, messages, temperature })
+        body: JSON.stringify(payload)
       });
       // 🔧 修复：HTTP 错误时读取 body 详情，不再只抛 "HTTP 404"
       if (!response.ok) {

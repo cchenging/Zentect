@@ -26,6 +26,12 @@ export interface AsrLine {
 /** VLM 帧描述 */
 export interface VlmFrame {
   url: string; description: string; editing: boolean; confirmed: boolean;
+  /** P0-3：下游瘦身上下文，供 step3 消费 */
+  downstream?: {
+    action: string;
+    emotion: string;
+    keywords: string[];
+  };
 }
 
 /** 解说文案段落 */

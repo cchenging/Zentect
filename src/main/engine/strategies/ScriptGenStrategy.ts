@@ -92,13 +92,20 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     const ttsCoverage = params.T / 100;      // TTS 覆盖比 (0-1)
     const paceFactor = params.P / 100;       // 节奏因子 (0-1)
 
-    // 收集上游视觉数据
+    // P0-3：优先消费下游瘦身上下文（极简结构化数据），减少 Input Token
     let sceneContext = '缺乏画面信息。';
     const upstreamNodeIds = Array.from(context.bus.keys()).filter(
       id => id !== 'source_root'
     );
     for (const nodeId of upstreamNodeIds) {
       const busData = context.bus.get(nodeId);
+      // P0-3：优先使用 downstreamContext（action/emotion/keywords），比长文本省 70% Token
+      if (busData?.downstreamContext?.shots?.length) {
+        sceneContext = busData.downstreamContext.shots.map((s: any, i: number) =>
+          `第${i + 1}镜: 动作[${s.action || '无'}] 情绪[${s.emotion || '无'}] 关键词[${(s.keywords || []).join('/')}]`
+        ).join('\n');
+        break;
+      }
       if (busData?.sceneDescriptions) {
         sceneContext = busData.sceneDescriptions;
         break;
@@ -108,7 +115,11 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       }
     }
     // 兼容 input 直接传入的视觉数据
-    if (input.visionResult?.sceneDescriptions) {
+    if (input.visionResult?.downstreamContext?.shots?.length) {
+      sceneContext = input.visionResult.downstreamContext.shots.map((s: any, i: number) =>
+        `第${i + 1}镜: 动作[${s.action || '无'}] 情绪[${s.emotion || '无'}] 关键词[${(s.keywords || []).join('/')}]`
+      ).join('\n');
+    } else if (input.visionResult?.sceneDescriptions) {
       sceneContext = input.visionResult.sceneDescriptions;
     }
 

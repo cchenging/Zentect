@@ -1,16 +1,22 @@
 // 📁 路径：src/main/engine/strategies/VisionExtractStrategy.ts
-// 🚀 画面描述策略：每帧独立VLM分析 + 高并发 + 流式推送
-// 核心理念：场景模式提取的关键帧本身就是场景边界，每帧独立分析最准确
+// 🚀 画面描述策略：批量发送所有帧给 VLM（按模型最大接收能力）+ 并发分块 + 流式推送
+// 核心理念：qwen3.7-plus 支持单次 2048 张图，flash/plus 系列支持 256 张
+//           76 帧视频应一次性全打包发送，而非逐帧 76 次调用
 import fs from 'fs';
 import path from 'path';
-import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
+import { BaseNodeStrategy } from './BaseNodeStrategy';
+import type { ExecutionContext } from './BaseNodeStrategy';
 import { VisionProcessor } from '../media/VisionProcessor';
 import { LLMFactory } from '../adapters/LLMFactory';
 import { PromptBuilder } from '../prompts/PromptBuilder';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { dehydrateMagicPath } from '../utils/pathUtils';
-import { buildFrameWindow } from '../media/FrameWindowBuilder';
+import { PerceptualHasher } from '../media/PerceptualHasher';
+import { VlmFrameCacheRepository } from '../../database/repositories/VlmFrameCacheRepository';
+import type { VlmCacheRecord } from '../../database/repositories/VlmFrameCacheRepository';
+import { ContactSheetBuilder } from '../media/ContactSheetBuilder';
+import type { MatrixLayout } from '../media/ContactSheetBuilder';
 
 export interface VisionExtractInput {
   mediaId: string;
@@ -24,6 +30,13 @@ export interface VisionExtractInput {
   projectId?: string;
   /** 前端注入的 ASR 台词（step2 单独执行时 context.bus 无 asr-result，需从 input 读取） */
   audioResult?: { lines: any[] };
+  /**
+   * P2 视觉分析模式（VLM 矩阵策略）
+   * - 'auto': 智能自动（默认），根据帧间隔自动选择 2x2/3x3
+   * - '2x2' / '3x3': 拼图为网格图后单张发送，节省 Token
+   * - '1x1': 独立发送（不拼图）
+   */
+  matrixMode?: 'auto' | '2x2' | '3x3' | '1x1';
 }
 
 export interface FrameDetail {
@@ -38,6 +51,28 @@ export interface FrameDetail {
   editing: boolean;
   confirmed: boolean;
   emotion: string;
+  /** P0-3：下游瘦身字段，供 step3 消费，避免 step3 重新解析长文本 */
+  downstream?: {
+    action: string;
+    emotion: string;
+    keywords: string[];
+  };
+}
+
+/**
+ * P3 分层两阶段分析 — 全局场景上下文
+ * Stage 1 提取的全局信息，注入到 Stage 2 每批次的 prompt 中
+ * 让 VLM 无需重复描述背景，只输出增量动作，Output Token 降低 60%+
+ */
+export interface GlobalSceneContext {
+  /** 场景地点（如"室内办公室"、"户外公园"） */
+  location: string;
+  /** 主体人物特征（如"穿黑西装的年轻男子"、"无人物"） */
+  subject: string;
+  /** 主色调与光影（如"暖色调、柔和光线"） */
+  colorTone: string;
+  /** 叙事基调（如"轻松日常"、"紧张严肃"） */
+  narrativeTone: string;
 }
 
 export interface VisionExtractOutput {
@@ -46,12 +81,19 @@ export interface VisionExtractOutput {
   framePaths?: string[];
   /** 每帧完整信息，含画面描述和关联台词 */
   frames?: FrameDetail[];
+  /** P0-3：下游瘦身上下文，极简结构化数据，供 step3 直接消费 */
+  downstreamContext?: {
+    shots: { action: string; emotion: string; keywords: string[] }[];
+  };
 }
 
-/** VLM 并发路数 */
-const CONCURRENT_VLM = 5;
+/** VLM 并发批次路数 */
+const CONCURRENT_VLM = 3;
 /** 🔧 fail fast：连续失败达到此阈值时终止整批任务，避免无效 API 调用 */
 const FAIL_FAST_THRESHOLD = 3;
+/** 单次 VLM 调用最大图片数（按 qwen3.7-plus 2048 / flash-plus 系列 256 取保守值 256） */
+// 🧪 测试阶段临时限制为 10 张/次，验证描述质量后再放开回 256
+const MAX_BATCH_IMAGES = 10;
 
 export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, VisionExtractOutput> {
   public readonly nodeType = 'vision-extract';
@@ -148,7 +190,13 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       AppLogger.warn(LOG_TAGS.AI_AGENT, `[画面描述] 从 context.bus 读取 ASR 失败: ${e.message}`);
     }
 
-    const allFrames = physicalFrames;
+    let allFrames = physicalFrames;
+    // 🧪 测试阶段：仅取前 10 帧验证 VLM 描述效果，调试完移除 .slice(0, 10) 放开
+    const TEST_FRAME_LIMIT = 10;
+    if (allFrames.length > TEST_FRAME_LIMIT) {
+      allFrames = allFrames.slice(0, TEST_FRAME_LIMIT);
+      AppLogger.warn(LOG_TAGS.AI_AGENT, `[画面描述] 🧪 测试模式：仅分析前 ${TEST_FRAME_LIMIT} 帧（实际抽取 ${physicalFrames.length} 帧）`);
+    }
     const totalFrameCount = allFrames.length;
 
     /** 计算每帧的估算时间点 */
@@ -161,6 +209,55 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     const { adapter, modelName: resolvedModel } = LLMFactory.createAdapter('visual');
     /** 💥 修复：优先使用用户在设置中配置的 VLM 模型，不再硬编码 qwen-vl-max */
     const model = input.modelName || resolvedModel;
+
+    /** 每帧的描述和JSON数据存储（提前声明，供 P1-1/P1-2 使用，避免 TDZ） */
+    const frameDescriptions: string[] = new Array(totalFrameCount).fill('');
+    const frameJsonItems: (any | null)[] = new Array(totalFrameCount).fill(null);
+
+    // ========== P1-1: pHash 视觉去重 ==========
+    // 计算相邻帧的感知哈希，静态镜头（Hamming 距离 < 5）跳过 VLM，复用前一帧描述
+    const pHashResults = PerceptualHasher.batchComputePHash(allFrames);
+    /** 需要跳过 VLM 的帧索引集合（静态镜头，复用前一帧描述） */
+    const skipFrameIndices = new Set<number>();
+    for (let i = 1; i < pHashResults.length; i++) {
+      if (PerceptualHasher.isStaticShot(pHashResults[i - 1].hash, pHashResults[i].hash)) {
+        skipFrameIndices.add(i);
+      }
+    }
+    if (skipFrameIndices.size > 0) {
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] P1-1 pHash 去重：${skipFrameIndices.size} 帧为静态镜头，将复用前一帧描述`);
+    }
+
+    // ========== P1-2: L2 SQLite 缓存查询 ==========
+    // 按 frame_hash + model_name + prompt_version 查询，命中的帧直接复用缓存结果
+    const vlmCache = new VlmFrameCacheRepository();
+    const contentHashMap = PerceptualHasher.batchComputeContentHash(allFrames);
+    /** framePath → 帧在 allFrames 中的索引 */
+    const framePathToIdx = new Map<string, number>();
+    allFrames.forEach((p, i) => framePathToIdx.set(p, i));
+    const allHashes = Array.from(contentHashMap.values());
+    const cachedRecords = vlmCache.batchGet(allHashes, model);
+    /** 命中缓存的帧索引集合 */
+    const cachedFrameIndices = new Set<number>();
+    for (const [framePath, contentHash] of contentHashMap) {
+      const idx = framePathToIdx.get(framePath);
+      if (idx === undefined) continue;
+      const cached = cachedRecords.get(contentHash);
+      if (cached) {
+        cachedFrameIndices.add(idx);
+        // 直接从缓存恢复描述
+        try {
+          const parsedItem = JSON.parse(cached.resultJson);
+          frameJsonItems[idx] = parsedItem;
+          frameDescriptions[idx] = cached.description;
+        } catch {
+          cachedFrameIndices.delete(idx);
+        }
+      }
+    }
+    if (cachedFrameIndices.size > 0) {
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] P1-2 L2 缓存命中：${cachedFrameIndices.size}/${totalFrameCount} 帧，跳过 VLM 调用`);
+    }
 
     /** LRU Base64 缓存 */
     const MAX_BASE64_IN_MEMORY = 60;
@@ -181,9 +278,6 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       return base64;
     };
 
-    /** 每帧的描述和JSON数据存储 */
-    const frameDescriptions: string[] = new Array(totalFrameCount).fill('');
-    const frameJsonItems: (any | null)[] = new Array(totalFrameCount).fill(null);
     let completedFrames = 0;
     /** 🔧 fail fast：连续失败计数，成功时清零 */
     let consecutiveFailures = 0;
@@ -191,9 +285,6 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     let aborted = false;
     let abortError = '';
     const framePathsOriginal = input.framePaths || physicalFrames;
-
-    /** 每帧的时间戳数组（毫秒），用于滑动窗口构建 */
-    const frameTimeMs: number[] = Array.from({ length: totalFrameCount }, (_, i) => Math.round(i * estimatedInterval * 1000));
 
     /** 秒 → MM:SS.mm 格式 */
     const formatTimeStr = (sec: number) => {
@@ -231,58 +322,199 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       return details;
     };
 
-    /** 执行单帧 VLM 分析（多帧滑动窗口模式） */
-    const processFrame = async (frameIdx: number): Promise<void> => {
-      const framePath = allFrames[frameIdx];
+    // ========== P3: 分层两阶段分析 ==========
+    /** Stage 1 全局场景上下文（初始 null，buildGlobalContext 完成后赋值） */
+    let globalContext: GlobalSceneContext | null = null;
 
-      /** 获取该帧对应的 ASR 台词 */
-      const frameTimeSec = frameIdx * estimatedInterval;
-      const frameEndSec = frameTimeSec + estimatedInterval;
+    /**
+     * P3 Stage 1: 构建全局场景摘要
+     * 从待分析帧中均匀采样 4 帧代表帧 → 直接发送 4 张图给 VLM 获取全局场景信息
+     * （不拼图，避免与 P2 批次拼图逻辑耦合；全局摘要仅 1 次调用 4 帧，拼图收益微小）
+     * 获取的全局上下文将注入到 Stage 2 每批次的 prompt，让 VLM 无需重复描述背景
+     * @param frames 待分析帧列表
+     * @returns 全局场景上下文；构建失败时返回 null（降级为无全局上下文）
+     */
+    const buildGlobalContext = async (
+      frames: { idx: number; path: string }[],
+    ): Promise<GlobalSceneContext | null> => {
+      if (frames.length === 0) return null;
+
+      try {
+        /** 均匀采样 4 帧作为代表帧（覆盖视频不同时间段） */
+        const indices = frames.length <= 4
+          ? frames.map((_, i) => i)
+          : [0, Math.floor(frames.length / 4), Math.floor(frames.length / 2), Math.floor(frames.length * 3 / 4)];
+        const sampleFrames = indices.map(i => frames[i]).filter(Boolean);
+
+        /** 全局摘要 prompt：要求返回结构化场景信息 */
+        const summaryPrompt = `你是专业的影视画面解析器。请分析以下4张代表帧（来自同一视频的不同时间段），给出全局场景摘要。\n\n请返回 JSON：{"location":"场景地点（如室内办公室/户外街道）","subject":"主体人物特征（如穿黑西装的男子/无人物）","colorTone":"主色调与光影（如暖色调柔和光线）","narrativeTone":"叙事基调（如轻松日常/紧张严肃）"}`;
+
+        /** 直接发送 4 张图（不拼图，与 P2 批次拼图解耦） */
+        const messages = [{
+          role: 'user' as const,
+          content: [
+            { type: 'text' as const, text: summaryPrompt },
+            ...sampleFrames.map(f => ({
+              type: 'image_url' as const,
+              image_url: { url: `data:image/jpeg;base64,${getBase64(f.path)}` },
+            })),
+          ],
+        }];
+
+        /** 全局摘要用低 temperature 确保稳定 */
+        const rawResult = await adapter.chat(messages, model, 0.3, {
+          response_format: {
+            type: 'json_object' as const,
+            json_schema: {
+              name: 'global_scene_summary',
+              schema: {
+                type: 'object',
+                properties: {
+                  location: { type: 'string', description: '场景地点' },
+                  subject: { type: 'string', description: '主体人物特征' },
+                  colorTone: { type: 'string', description: '主色调与光影' },
+                  narrativeTone: { type: 'string', description: '叙事基调' },
+                },
+                required: ['location', 'subject'],
+              },
+            },
+          },
+        });
+
+        /** 解析全局摘要响应 */
+        let resultText = '';
+        if (rawResult && typeof rawResult === 'object') {
+          if (rawResult.success === false) throw new Error(rawResult.error || '全局摘要调用失败');
+          resultText = rawResult.text || '';
+        } else if (typeof rawResult === 'string') {
+          resultText = rawResult;
+        }
+
+        const cleaned = resultText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+        const parsed = JSON.parse(cleaned);
+
+        const ctx: GlobalSceneContext = {
+          location: parsed.location || '',
+          subject: parsed.subject || '',
+          colorTone: parsed.colorTone || '',
+          narrativeTone: parsed.narrativeTone || '',
+        };
+
+        AppLogger.info(LOG_TAGS.AI_AGENT,
+          `[画面描述] P3 全局摘要: 场景=${ctx.location}, 主体=${ctx.subject}, 色调=${ctx.colorTone}`);
+        return ctx;
+      } catch (e: any) {
+        AppLogger.warn(LOG_TAGS.AI_AGENT,
+          `[画面描述] P3 全局摘要构建失败，降级为无全局上下文: ${e.message}`);
+        return null;
+      }
+    };
+
+    /**
+     * 🚀 批量分块 VLM 分析
+     * - P2 拼图模式（2x2/3x3）：先将本批帧拼成单张网格图再发送，节省 Vision Token
+     * - 1x1 模式：多图独立发送（按模型最大接收能力打包）
+     */
+    const processBatch = async (
+      batchIdx: number,
+      batchFrames: { idx: number; path: string }[],
+      layout: MatrixLayout,
+    ): Promise<void> => {
+      if (batchFrames.length === 0) return;
+
+      /** 获取该批次所有帧的时间区间和对应 ASR 台词 */
+      const startIdx = batchFrames[0].idx;
+      const endIdx = batchFrames[batchFrames.length - 1].idx;
+      const batchStartSec = startIdx * estimatedInterval;
+      const batchEndSec = (endIdx + 1) * estimatedInterval;
       const matchedAsr = asrLines.filter(line =>
-        line.startTime <= frameEndSec && line.endTime >= frameTimeSec
+        line.startTime <= batchEndSec && line.endTime >= batchStartSec
       );
       const asrText = matchedAsr.map(l => l.text).join(' ');
 
-      /** 将 framesMode 映射为 Prompt 策略类型 */
-      const promptStrategy: 'vlm_optimized' | 'uniform_fps' = input.framesMode === 'fps' ? 'uniform_fps' : 'vlm_optimized';
+      /** P0-1：构建精简提示词（防幻觉 + 结构化输出约束） */
+      const { systemPrompt } = PromptBuilder.buildVisionExtractPrompt(asrText, '', 'vlm_optimized');
 
-      /** 构建多帧滑动窗口 */
-      const frameWindow = buildFrameWindow(allFrames, frameTimeMs, frameIdx, 2);
+      /** 构建帧清单文本：让 VLM 知道每张图的序号和时间 */
+      const frameListText = batchFrames.map((f, i) =>
+        `第${i + 1}张（视频第${f.idx + 1}帧，时间约${formatTimeStr(f.idx * estimatedInterval)}）`
+      ).join('\n');
 
-      /** 使用 PromptBuilder 构造提示词（多帧模式传入窗口信息） */
-      const { systemPrompt, userPrompt } = PromptBuilder.buildVisionExtractPrompt(
-        asrText, '', promptStrategy,
-        frameWindow.length > 1 ? frameWindow : undefined,
-      );
+      // P3: 构建全局上下文注入段（有全局摘要时要求增量描述，减少 Output Token）
+      const globalContextPrompt = globalContext
+        ? `\n\n【全局场景上下文】\n- 场景: ${globalContext.location}\n- 主体: ${globalContext.subject}\n- 色调: ${globalContext.colorTone}\n- 基调: ${globalContext.narrativeTone}\n\n【增量描述要求】\n- 已知全局背景如上，无需在每帧描述中重复背景信息\n- 只需描述当前帧的具体动作、表情变化和视觉细节`
+        : '';
 
-      /** 构建 user content：多帧模式下包含所有窗口帧图片，单帧降级仅目标帧 */
-      const userContent: any[] = [
-        { type: 'text', text: `${userPrompt}\n\n这是视频第${frameIdx + 1}帧（时间约${formatTimeStr(frameTimeSec)}）。请精确描述这一帧的画面内容，返回一个JSON对象。` },
-      ];
+      // P2: 拼图模式 — 先构建网格图（失败则降级为 1x1 多图独立发送）
+      let gridResult: { gridPath: string; frameIndices: number[]; layout: MatrixLayout } | null = null;
+      if (layout !== '1x1') {
+        gridResult = await ContactSheetBuilder.build(batchFrames, layout, cacheDir);
+      }
 
-      if (frameWindow.length > 1) {
-        // 多帧模式：将所有窗口帧编码为 Base64 按序追加
-        for (const item of frameWindow) {
-          userContent.push({
-            type: 'image_url',
-            image_url: { url: `data:image/jpeg;base64,${getBase64(item.filePath)}` },
-          });
-        }
-      } else {
-        // 单帧降级模式：保持原有行为
+      /** 构建 user content：拼图模式发单张网格图，1x1 模式发多张独立图 */
+      const userContent: any[] = [];
+
+      if (gridResult) {
+        /** P2 拼图模式：单张网格图，Token 消耗降至 1/N */
+        const gridDesc = layout === '2x2'
+          ? '2×2 网格图（4 个子图，按 [1][2][3][4] 编号排列）'
+          : '3×3 网格图（9 个子图，按 [1]~[9] 编号排列）';
+        userContent.push({
+          type: 'text',
+          text: `${systemPrompt}${globalContextPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体动作","emotionalState":"情绪","visualAtmosphere":"光影色调","spatialRelation":"构图空间","keywords":["关键词1","关键词2"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
+        });
         userContent.push({
           type: 'image_url',
-          image_url: { url: `data:image/jpeg;base64,${getBase64(framePath)}` },
+          image_url: { url: `data:image/jpeg;base64,${getBase64(gridResult.gridPath)}` },
         });
+      } else {
+        /** 1x1 模式或拼图降级：多图独立发送 */
+        userContent.push({
+          type: 'text',
+          text: `${systemPrompt}${globalContextPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体动作","emotionalState":"情绪","visualAtmosphere":"光影色调","spatialRelation":"构图空间","keywords":["关键词1","关键词2"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
+        });
+        for (const f of batchFrames) {
+          userContent.push({
+            type: 'image_url',
+            image_url: { url: `data:image/jpeg;base64,${getBase64(f.path)}` },
+          });
+        }
       }
 
       const messages = [
-        { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent },
       ];
 
+      /** P0-1：JSON Schema 强制结构化输出，消除格式解析失败 */
+      const responseFormat = {
+        type: 'json_object' as const,
+        json_schema: {
+          name: 'vision_frame_analysis',
+          schema: {
+            type: 'object',
+            properties: {
+              frames: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    narrativeAction: { type: 'string', description: '主体核心动作/视觉变化' },
+                    emotionalState: { type: 'string', description: '主体的微表情/情绪' },
+                    visualAtmosphere: { type: 'string', description: '光影/色调/氛围' },
+                    spatialRelation: { type: 'string', description: '构图/镜头移动方式' },
+                    keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词' },
+                  },
+                  required: ['narrativeAction', 'emotionalState'],
+                },
+              },
+            },
+            required: ['frames'],
+          },
+        },
+      };
+
       try {
-        const rawResult = await adapter.chat(messages, model, 0.2);
+        const rawResult = await adapter.chat(messages, model, 0.2, { response_format: responseFormat });
         let resultText = '';
         if (rawResult && typeof rawResult === 'object') {
           if (rawResult.success === false) {
@@ -293,78 +525,175 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           resultText = rawResult;
         }
 
-        /** 解析 VLM 返回的 JSON 数据 */
-        let parsedItem: any = null;
+        /** P0-1：解析 { frames: [...] } 结构（兼容旧版裸数组降级） */
+        let parsedItems: any[] = [];
         try {
           const cleaned = resultText
             .replace(/```json\s*/gi, '')
             .replace(/```\s*/g, '')
             .trim();
           const parsed = JSON.parse(cleaned);
-          // 可能是数组（VLM有时返回单元素数组），也可能是对象
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            parsedItem = parsed[0];
-          } else if (typeof parsed === 'object' && !Array.isArray(parsed)) {
-            parsedItem = parsed;
+          if (Array.isArray(parsed)) {
+            parsedItems = parsed;
+          } else if (parsed?.frames && Array.isArray(parsed.frames)) {
+            parsedItems = parsed.frames;
+          } else if (typeof parsed === 'object') {
+            parsedItems = [parsed];
           }
         } catch {
           // JSON 解析失败，降级到纯文本
+          parsedItems = [];
         }
 
-        if (parsedItem) {
-          frameJsonItems[frameIdx] = parsedItem;
-          // 合并五维叙事描述
-          const parts = [
-            parsedItem.narrativeAction || '',
-            parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
-            parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
-            parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
-          ].filter(Boolean);
-          frameDescriptions[frameIdx] = parts.join(' ');
-        } else {
-          // 纯文本降级
-          frameDescriptions[frameIdx] = resultText.trim();
+        /** P0-2：响应式流 — 逐帧写入并立即推送，不等整个批次解析完 */
+        for (let i = 0; i < batchFrames.length; i++) {
+          const frameIdx = batchFrames[i].idx;
+          const parsedItem = parsedItems[i];
+
+          if (parsedItem && typeof parsedItem === 'object') {
+            frameJsonItems[frameIdx] = parsedItem;
+            /** P0-3：构建 UI 显示描述 */
+            const parts = [
+              parsedItem.narrativeAction || '',
+              parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
+              parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
+              parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
+            ].filter(Boolean);
+            frameDescriptions[frameIdx] = parts.join(' ');
+          } else {
+            frameDescriptions[frameIdx] = resultText.trim().split('\n')[i] || '';
+          }
+
+          completedFrames++;
+          /** P0-2：每帧解析完立即推送，前端实时渲染打字机效果 */
+          const frameProgressPct = 30 + Math.floor((completedFrames / totalFrameCount) * 65);
+          onProgress(frameProgressPct, `画面分析 ${completedFrames}/${totalFrameCount} 帧`, {
+            partialFrames: buildPartialFrames(),
+            completedCount: completedFrames,
+            totalCount: totalFrameCount,
+          });
         }
 
-        AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 帧 ${frameIdx + 1}/${totalFrameCount} 完成，JSON: ${parsedItem ? '成功' : '降级纯文本'}`);
-        // 🔧 成功时重置连续失败计数
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 批次 ${batchIdx + 1} 完成，覆盖帧 ${startIdx + 1}-${endIdx + 1}/${totalFrameCount}，JSON: ${parsedItems.length > 0 ? '成功' : '降级纯文本'}`);
+
+        // P1-2: 批次成功后写入 L2 缓存（异步非阻塞，不影响主流程）
+        try {
+          const cacheRecords: VlmCacheRecord[] = [];
+          for (let i = 0; i < batchFrames.length; i++) {
+            const parsedItem = parsedItems[i];
+            if (!parsedItem || typeof parsedItem !== 'object') continue;
+            const contentHash = contentHashMap.get(batchFrames[i].path);
+            if (!contentHash) continue;
+            const parts = [
+              parsedItem.narrativeAction || '',
+              parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
+              parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
+              parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
+            ].filter(Boolean);
+            cacheRecords.push({
+              frameHash: contentHash,
+              modelName: model,
+              promptVersion: 'v1',
+              resultJson: JSON.stringify(parsedItem),
+              description: parts.join(' '),
+            });
+          }
+          if (cacheRecords.length > 0) {
+            vlmCache.batchSet(cacheRecords);
+          }
+        } catch (e: any) {
+          AppLogger.warn(LOG_TAGS.AI_AGENT, `[画面描述] P1-2 缓存写入失败: ${e.message}`);
+        }
+
         consecutiveFailures = 0;
       } catch (err: any) {
-        AppLogger.error(LOG_TAGS.AI_AGENT, `[画面描述] 帧 ${frameIdx + 1} 异常: ${err.message}`);
-        frameDescriptions[frameIdx] = '';
-        // 🔧 fail fast：连续失败达到阈值时终止整批任务，避免 56 帧全部无效调用
+        AppLogger.error(LOG_TAGS.AI_AGENT, `[画面描述] 批次 ${batchIdx + 1} 异常: ${err.message}`);
         consecutiveFailures++;
         if (consecutiveFailures >= FAIL_FAST_THRESHOLD && !aborted) {
           aborted = true;
           abortError = err.message;
           AppLogger.error(LOG_TAGS.AI_AGENT,
-            `[画面描述] 连续 ${consecutiveFailures} 帧失败，终止剩余任务。最后错误: ${err.message}`);
+            `[画面描述] 连续 ${consecutiveFailures} 批失败，终止剩余任务。最后错误: ${err.message}`);
         }
+      } finally {
+        // P2: 清理本批次的拼图临时文件
+        if (gridResult) ContactSheetBuilder.cleanup(gridResult.gridPath);
       }
 
-      completedFrames++;
       const progressPct = 30 + Math.floor((completedFrames / totalFrameCount) * 65);
       onProgress(progressPct, `画面分析 ${completedFrames}/${totalFrameCount} 帧...`);
+    };
 
-      // 💥 流式推送：每完成5帧或最后一批，推送已有描述到前端
-      if (completedFrames % 5 === 0 || completedFrames === totalFrameCount) {
-        onProgress(progressPct, `画面分析 ${completedFrames}/${totalFrameCount} 帧`, {
+    /** 将所有帧分块（P1-1/P1-2：跳过静态帧和缓存命中帧；P2：按 matrixMode 决定批次大小） */
+    const framesToAnalyze: { idx: number; path: string }[] = [];
+    for (let i = 0; i < totalFrameCount; i++) {
+      // P1-1: pHash 判定为静态镜头的帧，跳过 VLM（描述在 VLM 完成后复用前一帧）
+      if (skipFrameIndices.has(i) && i > 0) {
+        continue;
+      }
+      // P1-2: 缓存命中的帧已恢复描述，跳过
+      if (cachedFrameIndices.has(i)) {
+        continue;
+      }
+      framesToAnalyze.push({ idx: i, path: allFrames[i] });
+    }
+
+    // P2: 解析 matrixMode → effectiveLayout
+    const rawMatrixMode = input.matrixMode || 'auto';
+    const effectiveLayout: MatrixLayout =
+      rawMatrixMode === 'auto'
+        ? ContactSheetBuilder.autoSelectLayout(estimatedInterval)
+        : rawMatrixMode;
+    const cellCount = ContactSheetBuilder.getCellCount(effectiveLayout);
+    /** 拼图模式下每批 cellCount 帧；1x1 模式下每批 MAX_BATCH_IMAGES 帧 */
+    const batchStep = effectiveLayout === '1x1' ? MAX_BATCH_IMAGES : cellCount;
+
+    /** 批次结构：frames + 该批次的布局（不足整除时降级为 1x1） */
+    interface Batch { frames: { idx: number; path: string }[]; layout: MatrixLayout; }
+    const batches: Batch[] = [];
+    for (let i = 0; i < framesToAnalyze.length; i += batchStep) {
+      const slice = framesToAnalyze.slice(i, i + batchStep);
+      // 拼图模式下，不足 cellCount 的最后一批降级为 1x1 独立发送
+      const layout: MatrixLayout =
+        effectiveLayout !== '1x1' && slice.length < cellCount ? '1x1' : effectiveLayout;
+      batches.push({ frames: slice, layout });
+    }
+
+    /** 静态帧 + 缓存命中帧提前计入完成数，确保进度计算正确 */
+    const skippedCount = totalFrameCount - framesToAnalyze.length;
+    completedFrames = skippedCount;
+    if (skippedCount > 0) {
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] P1 跳过 ${skippedCount} 帧（pHash 静态 ${skipFrameIndices.size} + L2 缓存 ${cachedFrameIndices.size}），实际需分析 ${framesToAnalyze.length} 帧`);
+      /** 推送已跳过帧的描述到前端 */
+      if (skippedCount > 0) {
+        const skipPct = 30 + Math.floor((completedFrames / totalFrameCount) * 65);
+        onProgress(skipPct, `画面分析 ${completedFrames}/${totalFrameCount} 帧（含缓存命中）`, {
           partialFrames: buildPartialFrames(),
           completedCount: completedFrames,
           totalCount: totalFrameCount,
         });
       }
-    };
+    }
 
-    /** 并发调度：同时运行 CONCURRENT_VLM 路帧分析 */
-    const frameQueue: number[] = Array.from({ length: totalFrameCount }, (_, i) => i);
+    AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 批量模式：${framesToAnalyze.length} 帧分为 ${batches.length} 批，布局 ${effectiveLayout}（cell=${cellCount}），并发 ${CONCURRENT_VLM}`);
+
+    // P3 Stage 1: 构建全局场景摘要（在批次分析前执行，注入到后续所有批次）
+    // 阈值：待分析帧数 >= 4（一个 2x2 批次）时才构建，帧数少时一次性分析即可
+    const GLOBAL_SUMMARY_MIN_FRAMES = 4;
+    if (framesToAnalyze.length >= GLOBAL_SUMMARY_MIN_FRAMES) {
+      onProgress(28, '正在构建全局场景摘要...');
+      globalContext = await buildGlobalContext(framesToAnalyze);
+    }
+
+    /** 并发调度批次 */
+    const batchQueue = batches.slice();
     const running: Promise<void>[] = [];
-    while (frameQueue.length > 0 || running.length > 0) {
-      // 🔧 fail fast：已终止则不再投递新任务
+    while (batchQueue.length > 0 || running.length > 0) {
       if (aborted) break;
-      while (frameQueue.length > 0 && running.length < CONCURRENT_VLM && !aborted) {
-        const frameIdx = frameQueue.shift()!;
-        const promise = processFrame(frameIdx).then(() => {
+      while (batchQueue.length > 0 && running.length < CONCURRENT_VLM && !aborted) {
+        const batchIdx = batches.length - batchQueue.length;
+        const batch = batchQueue.shift()!;
+        const promise = processBatch(batchIdx, batch.frames, batch.layout).then(() => {
           const idx = running.indexOf(promise);
           if (idx >= 0) running.splice(idx, 1);
         });
@@ -380,11 +709,19 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       await Promise.allSettled(running);
     }
     if (aborted) {
-      throw new Error(`画面描述失败：连续 ${FAIL_FAST_THRESHOLD} 帧 VLM 调用失败，已终止。请检查 VLM 配置（接口地址/模型名/API Key）。最后错误：${abortError}`);
+      throw new Error(`画面描述失败：连续 ${FAIL_FAST_THRESHOLD} 批 VLM 调用失败，已终止。请检查 VLM 配置（接口地址/模型名/API Key）。最后错误：${abortError}`);
     }
 
     /** 释放 LRU 缓存 */
     base64Cache.clear();
+
+    /** P1-1: VLM 完成后，对 pHash 静态镜头帧复用前一帧描述和 JSON 数据 */
+    for (let i = 1; i < totalFrameCount; i++) {
+      if (skipFrameIndices.has(i)) {
+        frameDescriptions[i] = frameDescriptions[i - 1] || '';
+        frameJsonItems[i] = frameJsonItems[i - 1] || null;
+      }
+    }
 
     const validCount = frameDescriptions.filter(d => d.trim()).length;
     AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 全部完成，总帧数: ${totalFrameCount}，有效描述: ${validCount}，覆盖率: ${((validCount / totalFrameCount) * 100).toFixed(1)}%`);
@@ -400,6 +737,13 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       const url = (framePathsOriginal.length > 0 && idx >= 0) ? framePathsOriginal[idx] : fp;
       const jsonItem = frameJsonItems[i];
 
+      /** P0-3：提取下游瘦身上下文（action/emotion/keywords），供 step3 直接消费 */
+      const downstream = jsonItem ? {
+        action: jsonItem.narrativeAction || '',
+        emotion: jsonItem.emotionalState || jsonItem.emotionTone || '',
+        keywords: Array.isArray(jsonItem.keywords) ? jsonItem.keywords : [],
+      } : undefined;
+
       return {
         url,
         description: frameDescriptions[i] || '',
@@ -411,17 +755,24 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         timeStr: formatTimeStr(frameTimeSec),
         editing: false,
         confirmed: !!(frameDescriptions[i] && frameDescriptions[i].trim()),
-        emotion: jsonItem?.emotionTone || '',
+        emotion: jsonItem?.emotionalState || jsonItem?.emotionTone || '',
+        downstream,
       };
     });
 
     onProgress(95, '画面感知完成，正在同步系统总线...');
+
+    /** P0-3：构建下游瘦身上下文，供 step3 直接消费，减少 step3 Input Token */
+    const downstreamContext = {
+      shots: frameDetails.map(f => f.downstream || { action: '', emotion: '', keywords: [] }),
+    };
 
     return {
       framesCount: totalFrameCount,
       sceneDescriptions: frameDescriptions.join('\n'),
       framePaths: frameDetails.map(f => f.url),
       frames: frameDetails,
+      downstreamContext,
     };
   }
 }

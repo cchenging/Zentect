@@ -5,6 +5,7 @@ import { useEffect, useCallback, useRef } from 'react';
 import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
+import { useStep2Store } from '@modules/pipeline/stores/useStep2Store';
 import { API } from '@renderer/api';
 import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 import { AppNotifier } from '@renderer/core/AppNotifier';
@@ -50,6 +51,12 @@ export const usePipelineExecutor = () => {
           vocalPath: results.vocalPath || storeState.extractedData.vocalPath,
           backgroundPath: results.backgroundPath || storeState.extractedData.backgroundPath
         });
+      }
+
+      // 🔧 修复：step2 画面描述流式推送 — 将 partialFrames 实时写入 useStep2Store
+      // 后端 VisionExtractStrategy 每完成 5 帧推送一次，前端需实时渲染打字机效果
+      if (Array.isArray(results.partialFrames) && results.partialFrames.length > 0) {
+        useStep2Store.getState().setVlmFrames(results.partialFrames);
       }
     }
 
