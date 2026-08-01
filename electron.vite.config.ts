@@ -43,8 +43,11 @@ export default defineConfig({
     cacheDir: resolve('node_modules/.vite'),
     server: {
       host: 'localhost',
-      port: 5173,
-      strictPort: true,
+      // 🔧 端口从 5173 改为 8173：Windows Hyper-V/WSL2 动态保留端口范围 5152-5251
+      //    覆盖了 5173 导致 EACCES 权限拒绝。8173 远离保留范围，避免冲突。
+      //    strictPort: false：端口被占时自动递增（8174/8175...），避免 TIME_WAIT 残留导致启动失败
+      port: 8173,
+      strictPort: false,
       fs: {
         strict: false
       },

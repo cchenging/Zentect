@@ -15,7 +15,14 @@ set NODE_FORCE_UTF8_STDOUT=1
 set PYTHONIOENCODING=utf-8
 set ELECTRON_ENABLE_LOGGING=1
 
-REM --- Change to project root and start dev server ---
+REM --- Change to project root ---
 cd /d "%~dp0.."
+
+REM --- Kill stale processes from previous run (matched by project path) ---
+echo [dev] Killing stale processes...
+node "scripts\kill-dev.js"
+
+REM --- Start dev server ---
+echo [dev] Starting electron-vite dev...
 node "node_modules\electron-vite\bin\electron-vite.js" dev
 exit /b %ERRORLEVEL%

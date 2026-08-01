@@ -4,7 +4,8 @@
   "description": "Zentect - AI-powered video editing tool",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "chcp 65001 >nul 2>&1 & set ELECTRON_ENABLE_LOGGING=1& electron-vite dev",
+    "kill": "node scripts/kill-dev.js",
+    "dev": "pnpm run kill && chcp 65001 >nul 2>&1 & set ELECTRON_ENABLE_LOGGING=1& electron-vite dev",
     "build": "electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir",
