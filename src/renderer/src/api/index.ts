@@ -241,6 +241,27 @@ export const API = {
     delete: (id: string, projectId: string) =>
       invokeSafe(IPC_CHANNELS.ROLE_DELETE, { id, projectId }),
   },
+  /** 🎭 P1 全局人物注册中心（跨集/跨项目人物复用） */
+  globalCharacters: {
+    /** 列出所有全局人物（按出现次数降序） */
+    list: () =>
+      invokeSafe(IPC_CHANNELS.GLOBAL_CHARACTER_LIST),
+    /** 更新全局人物信息（名称/头像/音色/代词/描述） */
+    update: (id: string, fields: { name?: string; avatar?: string; voiceId?: string; pronoun?: string; description?: string }) =>
+      invokeSafe(IPC_CHANNELS.GLOBAL_CHARACTER_UPDATE, { id, fields }),
+    /** 删除全局人物（同时解绑所有本地角色） */
+    delete: (id: string) =>
+      invokeSafe<{ success: boolean; unbindCount: number }>(IPC_CHANNELS.GLOBAL_CHARACTER_DELETE, { id }),
+    /** 绑定本地角色到全局人物 */
+    bind: (roleId: string, globalCharacterId: string) =>
+      invokeSafe(IPC_CHANNELS.GLOBAL_CHARACTER_BIND, { roleId, globalCharacterId }),
+    /** 解绑本地角色的全局人物关联 */
+    unbind: (roleId: string) =>
+      invokeSafe(IPC_CHANNELS.GLOBAL_CHARACTER_UNBIND, { roleId }),
+    /** 查询全局人物关联的所有本地角色（跨项目） */
+    findLocalRoles: (globalCharacterId: string) =>
+      invokeSafe(IPC_CHANNELS.GLOBAL_CHARACTER_FIND_LOCAL_ROLES, { globalCharacterId }),
+  },
   voice: {
     preview: (provider: string, voiceId?: string, text?: string) =>
       invokeSafe<{ audioPath: string }>(IPC_CHANNELS.VOICE_PREVIEW, { provider, voiceId, text }),

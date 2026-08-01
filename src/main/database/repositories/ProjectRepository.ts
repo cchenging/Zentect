@@ -126,7 +126,11 @@ export class ProjectRepository {
         insertRole.run({
           id: r.id + suffix, projectId: newId, systemId: r.system_id || null, name: r.name, pronoun: r.pronoun,
           avatar: r.avatar ? r.avatar.replace(oldId, newId) : null, description: r.description, voiceId: r.voice_id,
-          mergedRoles: r.merged_roles ? r.merged_roles.replace(new RegExp(oldId, 'g'), newId) : null
+          mergedRoles: r.merged_roles ? r.merged_roles.replace(new RegExp(oldId, 'g'), newId) : null,
+          // 🔧 补全 facesJson：复制工程时原样搬运（避免 INSERT_ROLE_FULL 缺参报错）
+          facesJson: r.faces_json || JSON.stringify({ representative: null, faces: [], faceCount: 0 }),
+          // 🎭 P1 全局人物注册中心：复制工程时保持 global_character_id 关联（同一人物跨项目复用）
+          globalCharacterId: r.global_character_id || null,
         });
       }
 
@@ -263,7 +267,9 @@ export class ProjectRepository {
         representative: rep,
         faces: restoredFaces,
         faceCount: facesData?.faceCount ?? restoredFaces.length,
-        voiceId: r.voice_id, mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : []
+        voiceId: r.voice_id, mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
+        /** 🎭 P1 全局人物注册中心：读回 global_character_id（可空） */
+        globalCharacterId: r.global_character_id || undefined,
       };
     });
 
@@ -412,7 +418,9 @@ export class ProjectRepository {
               representative: role.representative || null,
               faces: role.faces || [],
               faceCount: role.faceCount ?? (role.faces?.length || 0),
-            })
+            }),
+            // 🎭 P1 全局人物注册中心：持久化 global_character_id（可空）
+            globalCharacterId: role.globalCharacterId || null,
           });
         }
       }

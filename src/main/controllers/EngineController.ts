@@ -12,6 +12,7 @@ import { LocalAiGateway } from '../engine/LocalAiGateway';
 import { HealthService } from '../services/HealthService';
 import { WorkflowService } from '../services/WorkflowService';
 import { RoleRepository } from '../database/repositories/RoleRepository';
+import { GlobalCharacterRepository } from '../database/repositories/GlobalCharacterRepository';
 import { TTSProvider } from '../../modules/pipeline/step4-tts/backend/Service';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
@@ -354,6 +355,54 @@ export class EngineController {
       const repo = new RoleRepository();
       repo.deleteRole(payload.id, payload.projectId);
       return { success: true };
+    });
+
+    // 🎭 P1 全局人物注册中心 — 列表/更新/删除/绑定/解绑/查关联本地角色
+    IpcRouter.handle(IPC_CHANNELS.GLOBAL_CHARACTER_LIST, async () => {
+      const repo = new GlobalCharacterRepository();
+      return repo.findAll();
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.GLOBAL_CHARACTER_UPDATE, async (_, payload: {
+      id: string;
+      fields: { name?: string; avatar?: string; voiceId?: string; pronoun?: string; description?: string };
+    }) => {
+      const repo = new GlobalCharacterRepository();
+      repo.update(payload.id, payload.fields);
+      return { success: true };
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.GLOBAL_CHARACTER_DELETE, async (_, payload: { id: string }) => {
+      const repo = new GlobalCharacterRepository();
+      repo.delete(payload.id);
+      // 同时解绑所有关联的本地角色
+      const roleRepo = new RoleRepository();
+      const localRoles = roleRepo.findByGlobalCharacterId(payload.id);
+      for (const r of localRoles) {
+        roleRepo.unbindGlobalCharacter(r.id);
+      }
+      return { success: true, unbindCount: localRoles.length };
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.GLOBAL_CHARACTER_BIND, async (_, payload: {
+      roleId: string; globalCharacterId: string;
+    }) => {
+      const repo = new RoleRepository();
+      repo.bindGlobalCharacter(payload.roleId, payload.globalCharacterId);
+      return { success: true };
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.GLOBAL_CHARACTER_UNBIND, async (_, payload: { roleId: string }) => {
+      const repo = new RoleRepository();
+      repo.unbindGlobalCharacter(payload.roleId);
+      return { success: true };
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.GLOBAL_CHARACTER_FIND_LOCAL_ROLES, async (_, payload: {
+      globalCharacterId: string;
+    }) => {
+      const repo = new RoleRepository();
+      return repo.findByGlobalCharacterId(payload.globalCharacterId);
     });
 
     // V1.1: 音色试听 — 使用指定引擎/音色合成示例文本，返回音频路径

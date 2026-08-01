@@ -241,6 +241,8 @@ export class PipelineResultWriter {
             voiceId: role.voiceId || null,
             mergedRoles: JSON.stringify(role.mergedRoles || []),
             facesJson,
+            // 🎭 P1 全局人物注册中心：持久化 global_character_id（聚类后自动匹配写入）
+            globalCharacterId: role.globalCharacterId || null,
           });
         }
       });

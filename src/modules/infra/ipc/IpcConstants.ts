@@ -172,6 +172,13 @@ export const IPC_CHANNELS = {
   ROLE_MERGE: 'role:merge',
   ROLE_UNMERGE: 'role:unmerge',
   ROLE_DELETE: 'role:delete',
+  /** 🎭 P1 全局人物注册中心（跨集/跨项目人物复用） */
+  GLOBAL_CHARACTER_LIST: 'globalCharacter:list',
+  GLOBAL_CHARACTER_UPDATE: 'globalCharacter:update',
+  GLOBAL_CHARACTER_DELETE: 'globalCharacter:delete',
+  GLOBAL_CHARACTER_BIND: 'globalCharacter:bind',
+  GLOBAL_CHARACTER_UNBIND: 'globalCharacter:unbind',
+  GLOBAL_CHARACTER_FIND_LOCAL_ROLES: 'globalCharacter:findLocalRoles',
   VOICE_PREVIEW: 'voice:preview',
   VOICE_LIST_BY_ENGINE: 'voice:listByEngine',
 

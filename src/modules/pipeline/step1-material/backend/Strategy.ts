@@ -12,6 +12,7 @@ import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 import { MediaRepository } from '@modules/media/import/data/MediaRepository';
 import { RoleRepository } from '../../../../main/database/repositories/RoleRepository';
+import { GlobalCharacterRepository } from '../../../../main/database/repositories/GlobalCharacterRepository';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -683,6 +684,60 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             });
             AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
               `[Step1] 人脸聚类完成: ${roles.length} 个角色 (${detectedFaces.length} 张人脸)`, { mediaId });
+
+            /** 🎭 P1 全局人物注册中心：聚类后自动匹配全局人物
+             * 对每个本地角色计算代表 embedding（聚类中心 = 成员 embedding 平均后归一化），
+             * 与全局人物库比对：命中则绑定 + absorbEmbedding，未命中则新建全局人物。
+             * 异常不阻断主流程（降级为不绑定全局人物）。 */
+            try {
+              const globalCharRepo = new GlobalCharacterRepository();
+              let matchCount = 0;
+              let createCount = 0;
+              for (const role of roles) {
+                const groupFaces = (role as any).faces as any[];
+                if (!groupFaces || groupFaces.length === 0) continue;
+                // 收集有效 embedding
+                const embeddings: number[][] = groupFaces
+                  .map((f: any) => f.embedding)
+                  .filter((e: any): e is number[] => Array.isArray(e) && e.length > 0);
+                if (embeddings.length === 0) continue;
+
+                // 计算聚类中心（成员 embedding 平均后归一化）
+                const dim = embeddings[0].length;
+                const center: number[] = new Array(dim).fill(0);
+                for (const e of embeddings) {
+                  for (let i = 0; i < dim; i++) center[i] += e[i];
+                }
+                const norm = Math.sqrt(center.reduce((s, v) => s + v * v, 0));
+                const normalizedCenter = norm > 0 ? center.map((v) => v / norm) : center;
+
+                // 匹配或创建全局人物
+                const matchResult = globalCharRepo.matchOrCreate(
+                  normalizedCenter,
+                  (role as any).name,
+                  (role as any).avatarPath || (role as any).representative?.facePath,
+                  context.projectId,
+                );
+                (role as any).globalCharacterId = matchResult.character?.id;
+
+                if (matchResult.created) {
+                  createCount++;
+                } else if (matchResult.character) {
+                  // 命中现有人物：吸收新样本（更新中心向量 + 累加出现次数 + 追加项目 ID）
+                  globalCharRepo.absorbEmbedding(matchResult.character.id, normalizedCenter, context.projectId);
+                  matchCount++;
+                  // 如果全局人物有 voiceId 而本地角色没有，回填 voiceId
+                  if (matchResult.character.voiceId && !(role as any).voiceId) {
+                    (role as any).voiceId = matchResult.character.voiceId;
+                  }
+                }
+              }
+              AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+                `[Step1] 全局人物匹配完成: 新建 ${createCount} 个，绑定现有 ${matchCount} 个`, { mediaId, projectId: context.projectId });
+            } catch (e: any) {
+              AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+                `[Step1] 全局人物匹配失败，降级为不绑定: ${e.message}`, { mediaId });
+            }
           } else {
             AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[Step1] 人脸检测未返回结果', { mediaId });
           }

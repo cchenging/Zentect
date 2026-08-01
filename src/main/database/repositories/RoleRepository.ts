@@ -12,6 +12,8 @@ export interface RoleRecord {
   /** faces_json：完整人脸数据（gender/age/bbox/face_path/frame_index 等）JSON 字符串 */
   faces_json: string | null;
   merged_roles: string | null;
+  /** 🎭 P1 全局人物 ID（关联 global_characters.id，可空） */
+  global_character_id: string | null;
   create_time: string;
   update_time: string;
   is_deleted: number;
@@ -67,6 +69,40 @@ export class RoleRepository {
     return this.db.prepare(`
       SELECT * FROM roles WHERE is_deleted = 0 ORDER BY project_id, create_time ASC
     `).all() as RoleRecord[];
+  }
+
+  /**
+   * 🎭 P1 绑定本地角色到全局人物
+   * @param roleId 本地角色 ID
+   * @param globalCharacterId 全局人物 ID
+   */
+  bindGlobalCharacter(roleId: string, globalCharacterId: string): void {
+    this.db.prepare(`
+      UPDATE roles SET global_character_id = @globalCharacterId, update_time = datetime('now', 'localtime')
+      WHERE id = @roleId
+    `).run({ roleId, globalCharacterId });
+  }
+
+  /**
+   * 🎭 P1 解绑本地角色的全局人物关联
+   * @param roleId 本地角色 ID
+   */
+  unbindGlobalCharacter(roleId: string): void {
+    this.db.prepare(`
+      UPDATE roles SET global_character_id = NULL, update_time = datetime('now', 'localtime')
+      WHERE id = @roleId
+    `).run({ roleId });
+  }
+
+  /**
+   * 🎭 P1 按全局人物 ID 查所有关联的本地角色（跨项目）
+   * @param globalCharacterId 全局人物 ID
+   */
+  findByGlobalCharacterId(globalCharacterId: string): RoleRecord[] {
+    return this.db.prepare(`
+      SELECT * FROM roles WHERE global_character_id = @globalCharacterId AND is_deleted = 0
+      ORDER BY create_time ASC
+    `).all({ globalCharacterId }) as RoleRecord[];
   }
 
   /**
