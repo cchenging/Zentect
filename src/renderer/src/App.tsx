@@ -22,6 +22,8 @@ import { useNotificationCenter } from './services/NotificationCenter';
 // 注意：Home 是默认首页，同步导入以消除 Suspense fallback 闪烁。
 // ==========================================================
 import { HomeContainer } from '@modules/home';
+import { GlobalCharactersContainer } from '@modules/global-characters';
+import { ShowsContainer } from '@modules/shows';
 const Editor = React.lazy(() => import('@modules/editor'));
 const ModelsPage = React.lazy(() => import('@modules/models'));
 const UserSettingsPage = React.lazy(() => import('@modules/user-settings'));
@@ -149,6 +151,8 @@ function App() {
             <Route path="/" element={<AppLayout />}>
               <Route index element={<HomeContainer />} />
               <Route path="models" element={<ModelsPage />} />
+              <Route path="characters" element={<GlobalCharactersContainer />} />
+              <Route path="shows" element={<ShowsContainer />} />
             </Route>
             <Route path="/editor/:id" element={<Editor />} />
             <Route path="/editor/new" element={<Editor />} />

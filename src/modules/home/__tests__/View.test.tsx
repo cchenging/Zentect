@@ -40,6 +40,13 @@ vi.mock('../frontend/components/DeleteModal', () => ({
       : null,
 }));
 
+vi.mock('../frontend/components/BindShowModal', () => ({
+  BindShowModal: (props: any) =>
+    props.project
+      ? React.createElement('div', { 'data-testid': 'bind-show-modal' }, 'BindShowModal')
+      : null,
+}));
+
 vi.mock('lucide-react', () => ({
   Play: (props: any) => React.createElement('span', { 'data-testid': 'icon-play', ...props }),
   Search: (props: any) =>
@@ -82,6 +89,11 @@ const defaultProps = {
   searchOpen: false,
   onToggleSearch: vi.fn(),
   formatDate: (d: string) => d,
+  bindShowVisible: false,
+  currentBindShowProj: null as any,
+  onBindShowClick: vi.fn(),
+  onBindShowClose: vi.fn(),
+  onBindShowBound: vi.fn(),
 };
 
 function renderView(props: Record<string, unknown> = {}) {

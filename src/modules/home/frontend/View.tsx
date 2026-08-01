@@ -5,6 +5,7 @@ import type { ProjectRecord } from '../types';
 import { ProjectCard } from './components/ProjectCard';
 import { RenameModal } from './components/RenameModal';
 import { DeleteModal } from './components/DeleteModal';
+import { BindShowModal } from './components/BindShowModal';
 import { ParticleEngine } from '@renderer/components/ParticleEngine';
 import type { ParticlePreset } from '@renderer/components/particles/types';
 
@@ -34,6 +35,12 @@ export interface HomeViewProps {
   searchOpen: boolean;
   onToggleSearch: () => void;
   formatDate: (dateStr: string) => string;
+  /** 🎬 P3-3 关联剧集 */
+  bindShowVisible: boolean;
+  currentBindShowProj: ProjectRecord | null;
+  onBindShowClick: (proj: ProjectRecord) => void;
+  onBindShowClose: () => void;
+  onBindShowBound: () => void;
   particlePreset?: ParticlePreset;
   particleColors?: string[];
 }
@@ -46,6 +53,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
   renameVisible, currentEditProj, onRenameClose, onRenameConfirm,
   deleteVisible, currentDeleteProj, onDeleteClose, onDeleteConfirm,
   viewMode, onViewModeChange, searchOpen, onToggleSearch, formatDate,
+  bindShowVisible, currentBindShowProj, onBindShowClick, onBindShowClose, onBindShowBound,
   particlePreset, particleColors,
 }) => {
   return (
@@ -168,6 +176,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
                     onDuplicate={onDuplicateProject}
                     onDelete={onDeleteClick}
                     onExport={onExportClick}
+                    onBindShow={onBindShowClick}
                   />
                 ))}
               </div>
@@ -198,6 +207,14 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
       <RenameModal visible={renameVisible} project={currentEditProj} onClose={onRenameClose} onConfirm={onRenameConfirm} />
       <DeleteModal visible={deleteVisible} projectId={currentDeleteProj?.id || null} projectName={currentDeleteProj?.name || ''} onClose={onDeleteClose} onConfirm={onDeleteConfirm} />
+      {/* 🎬 P3-3 关联剧集对话框 */}
+      {bindShowVisible && currentBindShowProj && (
+        <BindShowModal
+          project={currentBindShowProj}
+          onClose={onBindShowClose}
+          onBound={onBindShowBound}
+        />
+      )}
     </div>
   );
 };

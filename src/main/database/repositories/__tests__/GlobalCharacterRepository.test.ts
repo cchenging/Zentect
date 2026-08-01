@@ -252,11 +252,11 @@ describe('🎭 P1 GlobalCharacterRepository', () => {
     it('匹配时返回现有人物（不新建）', () => {
       const baseEmb = makeEmbedding(100);
       // 第一次创建
-      const first = repo.matchOrCreate(baseEmb, '张三', null, 'proj_1');
+      const first = repo.matchOrCreate(baseEmb, '张三', undefined, 'proj_1');
       expect(first.created).toBe(true);
 
       // 第二次用相同向量应匹配到现有
-      const second = repo.matchOrCreate(baseEmb, '别名', null, 'proj_2');
+      const second = repo.matchOrCreate(baseEmb, '别名', undefined, 'proj_2');
       expect(second.created).toBe(false);
       expect(second.character!.id).toBe(first.character!.id);
       expect(second.character!.name).toBe('张三'); // 名字保持原样
@@ -264,7 +264,7 @@ describe('🎭 P1 GlobalCharacterRepository', () => {
     });
 
     it('新建的人物 ID 以 gc_ 前缀开头', () => {
-      const result = repo.matchOrCreate(makeEmbedding(1), 'test', null, 'p1');
+      const result = repo.matchOrCreate(makeEmbedding(1), 'test', undefined, 'p1');
       expect(result.character!.id).toMatch(/^gc_/);
     });
   });

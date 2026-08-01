@@ -17,7 +17,7 @@ export const HomeContainer: React.FC = () => {
 
   const {
     filteredProjects, loading, searchText, setSearchText,
-    createProject, deleteProject, renameProject, duplicateProject
+    createProject, deleteProject, renameProject, duplicateProject, refresh: refreshProjects
   } = useProjectManager();
 
   const { importWorkflow, isImporting } = useWorkflowImport();
@@ -28,6 +28,8 @@ export const HomeContainer: React.FC = () => {
   const [currentDeleteProj, setCurrentDeleteProj] = useState<{ id: string; name: string } | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchOpen, setSearchOpen] = useState(false);
+  const [bindShowVisible, setBindShowVisible] = useState(false);
+  const [currentBindShowProj, setCurrentBindShowProj] = useState<ProjectRecord | null>(null);
 
   useEffect(() => {
     API.system.switchView('home');
@@ -97,6 +99,17 @@ export const HomeContainer: React.FC = () => {
     }
   }, []);
 
+  /** 🎬 P3-3 打开关联剧集对话框 */
+  const handleBindShowClick = useCallback((proj: ProjectRecord) => {
+    setCurrentBindShowProj(proj);
+    setBindShowVisible(true);
+  }, []);
+
+  /** 🎬 P3-3 关联/解绑后刷新列表 */
+  const handleBindShowBound = useCallback(() => {
+    refreshProjects();
+  }, [refreshProjects]);
+
   const toggleSearch = () => {
     setSearchOpen(prev => !prev);
     if (searchOpen) setSearchText('');
@@ -144,6 +157,11 @@ export const HomeContainer: React.FC = () => {
       searchOpen={searchOpen}
       onToggleSearch={toggleSearch}
       formatDate={formatDate}
+      bindShowVisible={bindShowVisible}
+      currentBindShowProj={currentBindShowProj}
+      onBindShowClick={handleBindShowClick}
+      onBindShowClose={() => setBindShowVisible(false)}
+      onBindShowBound={handleBindShowBound}
     />
   );
 };

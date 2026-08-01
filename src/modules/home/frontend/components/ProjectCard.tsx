@@ -1,5 +1,6 @@
 // 📁 路径：src/modules/home/frontend/components/ProjectCard.tsx
 import React, { useState } from 'react';
+import { Film } from 'lucide-react';
 import type { ProjectRecord } from '../../types';
 import { AppIcon } from '@renderer/components/app-icon';
 import { useI18n } from '@renderer/store/useI18n';
@@ -14,6 +15,8 @@ interface ProjectCardProps {
   onDuplicate: (id: string) => void;
   onDelete: (id: string, name: string) => void;
   onExport: (id: string, name: string) => void;
+  /** 🎬 P3-3 关联剧集回调 */
+  onBindShow: (proj: ProjectRecord) => void;
 }
 
 /**
@@ -61,7 +64,7 @@ const formatBytes = (bytes?: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
 
-export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRename, onDuplicate, onDelete, onExport }) => {
+export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRename, onDuplicate, onDelete, onExport, onBindShow }) => {
   const { t } = useI18n();
   const [imgError, setImgError] = useState(false);
 
@@ -142,7 +145,13 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRe
                 <AppIcon name="Download" size={13} className="text-muted-foreground" />
                 导出备份
               </DropdownMenuItem>
-              
+
+              {/* 🎬 P3-3 关联剧集 */}
+              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onBindShow(project); }} className="text-xs gap-2.5 py-2 cursor-pointer rounded-md">
+                <Film size={13} className="text-muted-foreground" />
+                {project.showId ? `关联剧集（第 ${project.episodeNumber || '?'} 集）` : '关联剧集'}
+              </DropdownMenuItem>
+
               <DropdownMenuSeparator className="bg-border/50" />
               
               <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onDelete(project.id, project.name); }} className="text-xs text-destructive focus:text-destructive focus:bg-destructive/10 gap-2.5 py-2 cursor-pointer rounded-md">

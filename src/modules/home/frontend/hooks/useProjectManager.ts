@@ -28,6 +28,9 @@ export const useProjectManager = () => {
           coverPath: item.cover || item.coverPath || null,
           duration: item.duration || null,
           step5Status: item.step5Status || null,
+          /** 🎬 P3-3 透传剧集关联字段（后端 ProjectRepository.getList 已返回） */
+          showId: item.showId ?? item.show_id ?? null,
+          episodeNumber: item.episodeNumber ?? item.episode_number ?? null,
           createdAt: item.createdAt || item.created_at || '',
           updatedAt: item.updatedAt || item.updated_at || '',
           size: item.size || 0,
@@ -152,6 +155,8 @@ export const useProjectManager = () => {
     deleteProject: executeDeleteProject,
     duplicateProject,
     renameProject,
-    importProject
+    importProject,
+    /** 🎬 P3-3 手动刷新列表（关联/解绑剧集后调用） */
+    refresh: fetchProjects
   };
 };
