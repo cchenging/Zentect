@@ -43,6 +43,9 @@ export const StepMaterialAnalysis: React.FC = () => {
   const roles = useProjectStore((s) => s.roles);
   const extractedData = useProjectStore((s) => s.extractedData);
   const updateRole = useProjectStore((s) => s.updateRole);
+  const mergeRoles = useProjectStore((s) => s.mergeRoles);
+  const unmergeRole = useProjectStore((s) => s.unmergeRole);
+  const deleteRole = useProjectStore((s) => s.deleteRole);
 
   const setCurrentTime = usePlayerStore((s) => s.setCurrentTime);
   const setActivePlaySource = usePlayerStore((s) => s.setActivePlaySource);
@@ -137,6 +140,9 @@ export const StepMaterialAnalysis: React.FC = () => {
       onSetCurrentTime={setCurrentTime}
       onSetActivePlaySource={setActivePlaySource}
       onUpdateRole={updateRole}
+      onMergeRoles={mergeRoles}
+      onUnmergeRole={unmergeRole}
+      onDeleteRole={deleteRole}
       onSetSubStepStatus={setSubStepStatus}
       onRetrySubStep={handleRetrySubStep}
       onAbortSubStep={handleAbortSubStep}

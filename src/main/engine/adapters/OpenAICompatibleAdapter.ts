@@ -36,27 +36,8 @@ export class OpenAICompatibleAdapter implements ILLMProvider {
     const endpoint = `${this.baseURL.replace(/\/$/, '')}/chat/completions`;
     try {
       // P0-1：组装请求体，按需注入 response_format / max_tokens（兼容 OpenAI / Qwen JSON Mode）
-      const payload: any = { model, messages, temperature };
-      if (options?.response_format) {
-        payload.response_format = options.response_format;
-      }
-      if (options?.max_tokens) {
-        payload.max_tokens = options.max_tokens;
-      }
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      // 🔧 修复：HTTP 错误时读取 body 详情，不再只抛 "HTTP 404"
-      if (!response.ok) {
-        let detail = '';
-        try { detail = (await response.text()).substring(0, 300); } catch {}
-        if (response.status === 401) throw new Error(`API Key 鉴权失败（401）${detail ? '：' + detail : ''}`);
-        if (response.status === 404) throw new Error(`接口地址不存在（404），请检查 baseURL：${this.baseURL}${detail ? ' 详情：' + detail : ''}`);
-        if (response.status === 429) throw new Error(`请求过于频繁被限流（429），请降低并发或稍后重试`);
-        throw new Error(`HTTP ${response.status}${detail ? '：' + detail : ''}`);
-      }
+      // 🔧 兼容性降级：部分服务商不支持 json_schema，自动降级为 json_object 再降级为无
+      const response = await this.doChatRequest(endpoint, model, messages, temperature, options?.response_format, options?.max_tokens);
       // 🔧 修复：状态码 200 但返回 HTML 时给出明确提示（而非 "Unexpected token '<'"）
       const contentType = response.headers.get('content-type') || '';
       const rawText = await response.text();
@@ -66,6 +47,76 @@ export class OpenAICompatibleAdapter implements ILLMProvider {
       const data = JSON.parse(rawText);
       return { success: true, text: data.choices[0].message.content };
     } catch (error: any) { return { success: false, error: error.message }; }
+  }
+
+  /**
+   * 执行单次 VLM 请求，支持 response_format 三级降级
+   * 降级链：json_schema → json_object → 无 response_format
+   * 兼容 OpenAI 官方 / 阿里云 Qwen / 智谱等不同服务商
+   */
+  private async doChatRequest(
+    endpoint: string, model: string, messages: any[],
+    temperature: number, responseFormat: any, maxTokens?: number,
+  ): Promise<Response> {
+    const buildPayload = (rf: any) => {
+      const payload: any = { model, messages, temperature };
+      if (rf) payload.response_format = rf;
+      if (maxTokens) payload.max_tokens = maxTokens;
+      return payload;
+    };
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildPayload(responseFormat))
+    });
+
+    if (response.ok) return response;
+
+    // 读取错误详情用于判断降级
+    let detail = '';
+    try { detail = (await response.text()).substring(0, 300); } catch {}
+
+    // 🔧 兼容性降级1：json_schema 不支持时，降级为 json_object
+    if (response.status === 400 && responseFormat?.type === 'json_schema' && detail.includes('json_schema')) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT,
+        `[Adapter] VLM 不支持 json_schema，降级为 json_object 重试`);
+      const fallbackFormat = { type: 'json_object' as const };
+      const retry1 = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildPayload(fallbackFormat))
+      });
+      if (retry1.ok) return retry1;
+      let detail2 = '';
+      try { detail2 = (await retry1.text()).substring(0, 300); } catch {}
+      // 🔧 兼容性降级2：json_object 也不支持时，去掉 response_format
+      if (retry1.status === 400 && detail2.includes('response_format')) {
+        AppLogger.warn(LOG_TAGS.AI_AGENT,
+          `[Adapter] VLM 不支持 response_format，降级为无格式约束重试`);
+        const retry2 = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildPayload(null))
+        });
+        if (retry2.ok) return retry2;
+        let detail3 = '';
+        try { detail3 = (await retry2.text()).substring(0, 300); } catch {}
+        this.throwHttpError(retry2.status, detail3);
+      }
+      this.throwHttpError(retry1.status, detail2);
+    }
+
+    this.throwHttpError(response.status, detail);
+    throw new Error('unreachable'); // TS 类型收窄
+  }
+
+  /** 根据 HTTP 状态码抛出带诊断信息的错误 */
+  private throwHttpError(status: number, detail: string): never {
+    if (status === 401) throw new Error(`API Key 鉴权失败（401）${detail ? '：' + detail : ''}`);
+    if (status === 404) throw new Error(`接口地址不存在（404），请检查 baseURL：${this.baseURL}${detail ? ' 详情：' + detail : ''}`);
+    if (status === 429) throw new Error(`请求过于频繁被限流（429），请降低并发或稍后重试`);
+    throw new Error(`HTTP ${status}${detail ? '：' + detail : ''}`);
   }
 
   // 💥 真正干活的地方：拦截流、发给前端、解析动作

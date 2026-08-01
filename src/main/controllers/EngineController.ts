@@ -319,6 +319,43 @@ export class EngineController {
       return { success: true };
     });
 
+    // 🎭 P0.5+ 角色信息更新 — 名称/代词/描述/头像/faces_json
+    IpcRouter.handle(IPC_CHANNELS.ROLE_UPDATE, async (_, payload: {
+      id: string;
+      fields: { name?: string; pronoun?: string; description?: string; avatar?: string; faces_json?: string };
+    }) => {
+      const repo = new RoleRepository();
+      repo.update(payload.id, payload.fields);
+      return { success: true };
+    });
+
+    // 🎭 P0.5+ 角色合并 — source 合并到 target（source 软删除，shots 迁移）
+    IpcRouter.handle(IPC_CHANNELS.ROLE_MERGE, async (_, payload: {
+      sourceRoleId: string; targetRoleId: string; projectId: string;
+    }) => {
+      const repo = new RoleRepository();
+      repo.mergeRoles(payload.sourceRoleId, payload.targetRoleId, payload.projectId);
+      return { success: true };
+    });
+
+    // 🎭 P0.5+ 角色拆分 — 从 target 中恢复 source 为独立角色
+    IpcRouter.handle(IPC_CHANNELS.ROLE_UNMERGE, async (_, payload: {
+      sourceRoleId: string; targetRoleId: string;
+    }) => {
+      const repo = new RoleRepository();
+      repo.unmergeRole(payload.sourceRoleId, payload.targetRoleId);
+      return { success: true };
+    });
+
+    // 🎭 P0.5+ 角色删除 — 软删除并清理 shots 引用
+    IpcRouter.handle(IPC_CHANNELS.ROLE_DELETE, async (_, payload: {
+      id: string; projectId: string;
+    }) => {
+      const repo = new RoleRepository();
+      repo.deleteRole(payload.id, payload.projectId);
+      return { success: true };
+    });
+
     // V1.1: 音色试听 — 使用指定引擎/音色合成示例文本，返回音频路径
     IpcRouter.handle(IPC_CHANNELS.VOICE_PREVIEW, async (_, payload: { provider: string; voiceId?: string; text?: string }) => {
       const provider = new TTSProvider();

@@ -105,8 +105,18 @@ export class VisionProcessor {
           }, signal);
           // 🔧 修复 P0-3：Python 返回 {success, data: [{frame, faces: [...]}, ...]}
           //   data 是数组而非对象，需 flatMap 展平所有帧的人脸
+          // 🎭 P0.5 帧级锚定：把 item.frame / item.frame_index 注入到每个 face 对象
+          //   避免 flatMap 展平后丢失"该人脸来自哪一帧"的信息
           const batchFaces = Array.isArray(response?.data)
-            ? response.data.flatMap((item: any) => item?.faces || [])
+            ? response.data.flatMap((item: any) => {
+                const itemFrame = item?.frame;
+                const itemFrameIndex = typeof item?.frame_index === 'number' ? item.frame_index : undefined;
+                return (item?.faces || []).map((f: any) => ({
+                  ...f,
+                  frame: f.frame || itemFrame,
+                  frame_index: typeof f.frame_index === 'number' ? f.frame_index : itemFrameIndex,
+                }));
+              })
             : [];
           allFaces.push(...batchFaces);
         } catch (batchErr: any) {
@@ -126,10 +136,19 @@ export class VisionProcessor {
    * @param mediaId 媒体ID
    * @param faces 检测到的人脸列表（元素含 {id, embedding, ...}）
    * @param persistDir 可选，聚类持久化目录（Python 端写入 clusters_{media_id}.json）
+   * @param cosineThreshold 可选，余弦相似度阈值（默认 0.70），用于 HDBSCAN 后处理：
+   *   - 合并过拆簇：簇心余弦相似度 > threshold 的簇合并
+   *   - 分配噪声点：噪声点与某簇心余弦相似度 > threshold 时分配到该簇
+   *   经验值：0.65 宽松 / 0.70 平衡 / 0.75 严格 / 0.82 极严格
    * @returns 人脸到聚类ID的映射（{ faceId: "role_X" }）
    */
-  public static async clusterFaces(mediaId: string, faces: any[], persistDir?: string): Promise<Record<string, string>> {
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] clusterFaces: clustering ${faces.length} faces for ${mediaId}`);
+  public static async clusterFaces(
+    mediaId: string,
+    faces: any[],
+    persistDir?: string,
+    cosineThreshold?: number,
+  ): Promise<Record<string, string>> {
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] clusterFaces: clustering ${faces.length} faces for ${mediaId} (cosine_threshold=${cosineThreshold ?? 0.70})`);
 
     if (!faces || faces.length === 0) {
       return {};
@@ -142,7 +161,11 @@ export class VisionProcessor {
           face_id: f.id || f.face_id || '',
           embedding: f.embedding || []
         })),
-        persist_dir: persistDir || ''
+        persist_dir: persistDir || '',
+        // 🎭 P0.5+ 透传余弦相似度阈值，未传入时 Python 端使用默认值 0.70
+        cosine_threshold: typeof cosineThreshold === 'number' && cosineThreshold > 0 && cosineThreshold < 1
+          ? cosineThreshold
+          : 0.70,
       });
       // 🔧 修复 P0-5：Python 返回 { success, clusters }，旧版读 clustersMap → 永远空
       if (result && result.clusters) {

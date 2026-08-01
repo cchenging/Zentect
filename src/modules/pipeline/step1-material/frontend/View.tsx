@@ -1,7 +1,7 @@
 // Module: pipeline/step1-material - View
 
 import React, { useEffect, useState } from "react";
-import { Edit3, Music, Play, UndoDot, RotateCcw, Square, AlertTriangle } from "lucide-react";
+import { Edit3, Music, Play, UndoDot, RotateCcw, Square, AlertTriangle, GitMerge, Split, Trash2, X } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "@renderer/components/shared";
 import { FrameExtractConfig } from "./components/FrameExtractConfig";
@@ -81,7 +81,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
     asrLines, frameCount, vocalsIsFallback, mediaItems, roles,
     subStepStatuses, subStepProgresses, subStepTimings,
     onUpdateAsrLine, onSetAsrLines, onSetCurrentTime, onSetActivePlaySource,
-    onUpdateRole, onRetrySubStep, onAbortSubStep,
+    onUpdateRole, onMergeRoles, onUnmergeRole, onDeleteRole, onRetrySubStep, onAbortSubStep,
   } = props;
 
   const [expandedSubSteps, setExpandedSubSteps] = useState<Record<string, boolean>>({
@@ -90,6 +90,8 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
   const toggleSubStep = (key: string) => setExpandedSubSteps((prev) => ({ ...prev, [key]: !prev[key] }));
   /** 展开的角色卡片 ID（默认展开第一个角色，让用户一进来就能看到详情示例） */
   const [expandedRole, setExpandedRole] = useState<string | null>(roles[0]?.id ?? null);
+  /** 🎭 P0.5+ 合并模式：mergeSourceId 非 null 时进入"选择目标"模式，点击其他角色完成合并 */
+  const [mergeSourceId, setMergeSourceId] = useState<string | null>(null);
 
   const parseTime = (timeStr: string): number => {
     if (!timeStr) return 0;
@@ -230,61 +232,154 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         </>}
         borderColor={facesStatus === "failed" ? "var(--accent-rose)" : undefined}>
         {facesStatus === "completed" && roles.length > 0 && (
-          <div className="grid grid-cols-3 gap-3">
-            {roles.map((role) => {
-              /** 提取角色属性：gender(1=男/0=女)、age、出现次数 */
-              const rep = role.representative || {};
-              const gender = rep.gender ?? role.gender;
-              const age = rep.age ?? role.age;
-              const faceCount = role.faceCount ?? (role.faces?.length || 0);
-              const isExpanded = expandedRole === role.id;
-              /** 多张人脸缩略图（最多展示 9 张） */
-              const allFaces = (role.faces || []).slice(0, 9);
-              return (
-                <div key={role.id} className="rounded-lg bg-bg-secondary border border-border/20 overflow-hidden">
-                  {/* 卡片头部：大头像（80x80）+ 名称 + 属性，点击展开/收起 */}
+          <div className="flex flex-col gap-3">
+            {/* 🎭 P0.5+ 合并模式提示条 */}
+            {mergeSourceId && (
+              <div className="flex items-center gap-2 p-2 rounded-md bg-accent/10 border border-accent/30 text-[12px]">
+                <GitMerge size={14} className="text-accent shrink-0" />
+                <span className="flex-1">合并模式：请点击目标角色卡片完成合并（{roles.find(r => r.id === mergeSourceId)?.name} → ?）</span>
+                <button
+                  onClick={() => setMergeSourceId(null)}
+                  className="text-muted-foreground hover:text-primary transition-colors p-0.5"
+                  title="取消合并"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-3">
+              {roles.map((role) => {
+                /** 提取角色属性：gender(1=男/0=女)、age、出现次数 */
+                const rep = role.representative || {};
+                const gender = rep.gender ?? role.gender;
+                const age = rep.age ?? role.age;
+                const faceCount = role.faceCount ?? (role.faces?.length || 0);
+                const isExpanded = expandedRole === role.id;
+                /** 多张人脸缩略图（最多展示 9 张） */
+                const allFaces = (role.faces || []).slice(0, 9);
+                /** 🎭 P0.5+ 已合并的子角色列表（用于显示拆分按钮） */
+                const mergedRoles = (role as any).mergedRoles || [];
+                const isMergeSource = mergeSourceId === role.id;
+                /** 合并模式下的目标高亮：非源角色显示"点击合并"提示 */
+                const isMergeTarget = mergeSourceId && mergeSourceId !== role.id;
+                return (
                   <div
-                    className="flex items-center gap-2 p-2 cursor-pointer hover:bg-bg-tertiary/30 transition-colors"
-                    onClick={() => setExpandedRole(isExpanded ? null : role.id)}
+                    key={role.id}
+                    className={`rounded-lg bg-bg-secondary border overflow-hidden transition-colors ${
+                      isMergeSource ? 'border-accent/50 ring-1 ring-accent/30' :
+                      isMergeTarget ? 'border-accent-green/40 cursor-pointer hover:bg-accent-green/5' :
+                      'border-border/20'
+                    }`}
+                    /** 🎭 P0.5+ 合并模式下点击非源角色卡片触发合并 */
+                    onClick={() => {
+                      if (isMergeTarget && mergeSourceId) {
+                        onMergeRoles(mergeSourceId, role.id);
+                        setMergeSourceId(null);
+                      }
+                    }}
                   >
-                    {/* 方形大头像 80x80，比旧版 48x48 大 2.8 倍 */}
-                    <div className="w-20 h-20 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
-                      {role.avatarPath && <img src={getSafeMediaUrl(role.avatarPath)} className="w-full h-full object-cover" />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <input
-                        value={role.name}
-                        onChange={(e) => onUpdateRole(role.id, { name: e.target.value })}
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-[14px] font-medium bg-transparent outline-none border-b border-transparent focus:border-accent/30 w-full"
-                      />
-                      <div className="flex flex-col gap-0.5 mt-1 text-[11px] text-muted-foreground">
-                        {faceCount > 0 && <span>出现 {faceCount} 次</span>}
-                        {gender !== undefined && gender !== null && <span>{gender === 1 ? '男' : '女'}</span>}
-                        {age > 0 && <span>约 {age} 岁</span>}
+                    {/* 卡片头部：大头像（80x80）+ 名称 + 属性，点击展开/收起 */}
+                    <div
+                      className="flex items-center gap-2 p-2 cursor-pointer hover:bg-bg-tertiary/30 transition-colors"
+                      onClick={(e) => {
+                        if (isMergeTarget) return; // 合并模式下不展开
+                        e.stopPropagation();
+                        setExpandedRole(isExpanded ? null : role.id);
+                      }}
+                    >
+                      {/* 方形大头像 80x80，比旧版 48x48 大 2.8 倍 */}
+                      <div className="w-20 h-20 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
+                        {role.avatarPath && <img src={getSafeMediaUrl(role.avatarPath)} className="w-full h-full object-cover" />}
                       </div>
+                      <div className="flex-1 min-w-0">
+                        <input
+                          value={role.name}
+                          onChange={(e) => onUpdateRole(role.id, { name: e.target.value })}
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-[14px] font-medium bg-transparent outline-none border-b border-transparent focus:border-accent/30 w-full"
+                        />
+                        <div className="flex flex-col gap-0.5 mt-1 text-[11px] text-muted-foreground">
+                          {faceCount > 0 && <span>出现 {faceCount} 次</span>}
+                          {gender !== undefined && gender !== null && <span>{gender === 1 ? '男' : '女'}</span>}
+                          {age > 0 && <span>约 {age} 岁</span>}
+                          {mergedRoles.length > 0 && <span className="text-accent/80">已合并 {mergedRoles.length} 个角色</span>}
+                        </div>
+                      </div>
+                      {/* 🎭 P0.5+ 操作按钮组：合并/拆分/删除（仅在非合并模式时显示） */}
+                      {!mergeSourceId && (
+                        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => setMergeSourceId(role.id)}
+                            className="text-muted-foreground hover:text-accent transition-colors p-1 rounded hover:bg-accent/10"
+                            title="合并到其他角色"
+                          >
+                            <GitMerge size={13} />
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm(`确定删除角色"${role.name}"吗？关联的镜头将解除角色绑定。`)) {
+                                onDeleteRole(role.id);
+                              }
+                            }}
+                            className="text-muted-foreground hover:text-accent-rose transition-colors p-1 rounded hover:bg-accent-rose/10"
+                            title="删除角色"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      )}
+                      {!mergeSourceId && (
+                        <span className={`text-muted-foreground text-[11px] transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+                      )}
                     </div>
-                    <span className={`text-muted-foreground text-[11px] transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
-                  </div>
-                  {/* 展开区域：多张人脸缩略图（3 列网格，每张较大） */}
-                  {isExpanded && allFaces.length > 0 && (
-                    <div className="px-2 pb-2 pt-1 border-t border-border/10">
-                      <div className="text-[11px] text-muted-foreground mb-1.5">检测到的人脸 ({role.faces?.length || 0})</div>
-                      <div className="grid grid-cols-3 gap-1.5">
-                        {allFaces.map((face: any, idx: number) => {
-                          const faceUrl = face.face_path || face.facePath;
-                          return faceUrl ? (
-                            <div key={idx} className="aspect-square rounded bg-bg-primary overflow-hidden border border-border/20">
-                              <img src={getSafeMediaUrl(faceUrl)} className="w-full h-full object-cover" />
+                    {/* 展开区域：多张人脸缩略图 + 已合并角色拆分按钮 */}
+                    {isExpanded && !mergeSourceId && (
+                      <div className="px-2 pb-2 pt-1 border-t border-border/10">
+                        {/* 🎭 P0.5+ 已合并角色列表（每个带拆分按钮） */}
+                        {mergedRoles.length > 0 && (
+                          <div className="mb-2">
+                            <div className="text-[11px] text-muted-foreground mb-1.5">已合并的角色 ({mergedRoles.length})</div>
+                            <div className="flex flex-col gap-1">
+                              {mergedRoles.map((mr: any) => (
+                                <div key={mr.id} className="flex items-center gap-2 p-1 rounded bg-bg-tertiary/30">
+                                  <div className="w-6 h-6 rounded bg-bg-primary overflow-hidden shrink-0">
+                                    {mr.avatarPath && <img src={getSafeMediaUrl(mr.avatarPath)} className="w-full h-full object-cover" />}
+                                  </div>
+                                  <span className="text-[12px] flex-1 truncate">{mr.name}</span>
+                                  <button
+                                    onClick={() => onUnmergeRole(mr.id, role.id)}
+                                    className="text-muted-foreground hover:text-accent transition-colors p-1 rounded hover:bg-accent/10"
+                                    title="拆分为独立角色"
+                                  >
+                                    <Split size={12} />
+                                  </button>
+                                </div>
+                              ))}
                             </div>
-                          ) : null;
-                        })}
+                          </div>
+                        )}
+                        {/* 多张人脸缩略图（3 列网格，每张较大） */}
+                        {allFaces.length > 0 && (
+                          <>
+                            <div className="text-[11px] text-muted-foreground mb-1.5">检测到的人脸 ({role.faces?.length || 0})</div>
+                            <div className="grid grid-cols-3 gap-1.5">
+                              {allFaces.map((face: any, idx: number) => {
+                                const faceUrl = face.face_path || face.facePath;
+                                return faceUrl ? (
+                                  <div key={idx} className="aspect-square rounded bg-bg-primary overflow-hidden border border-border/20">
+                                    <img src={getSafeMediaUrl(faceUrl)} className="w-full h-full object-cover" />
+                                  </div>
+                                ) : null;
+                              })}
+                            </div>
+                          </>
+                        )}
                       </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
         {facesStatus === "completed" && roles.length === 0 && (

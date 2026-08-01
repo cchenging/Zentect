@@ -21,6 +21,12 @@ export interface ScriptGenInput {
   visionResult?: any;
   /** 上游听觉/ASR 结果 */
   audioResult?: any;
+  /**
+   * 🎭 step1 识别出的人物角色列表，注入到 step3 prompt 中
+   * 让 LLM 生成解说词时使用统一人物名称，避免"男子/女子"等模糊代称
+   * 元素结构：{ id, name, representative?, mergedRoles? }
+   */
+  roles?: Array<{ id: string; name: string; representative?: any; mergedRoles?: any[] }>;
 }
 
 export interface LexiconMark {
@@ -192,6 +198,28 @@ ${CONSTRAINTS.JSON_ONLY}
 
     // 组装用户 Prompt，包含画面描述和字幕数据
     let userPrompt = `【原片画面扫描日志】：\n${sceneContext}`;
+
+    // 🎭 P0 修复：注入人物角色名单，让 LLM 生成解说词时使用统一人物名称
+    // 仅注入有 name 的角色；附加性别/年龄信息帮助 LLM 准确匹配画面中的人物
+    if (input.roles && input.roles.length > 0) {
+      const roleLines = input.roles
+        .filter(r => r && r.name)
+        .map(r => {
+          const rep = r.representative || {};
+          const attrs: string[] = [];
+          if (rep.gender !== undefined) {
+            const g = rep.gender;
+            attrs.push(g === 1 || g === 'M' || g === 'male' ? '男' : '女');
+          }
+          if (rep.age) attrs.push(`${rep.age}岁`);
+          const attrStr = attrs.length > 0 ? `（${attrs.join('，')}）` : '';
+          return `- ${r.name}${attrStr}`;
+        });
+      if (roleLines.length > 0) {
+        userPrompt += `\n\n【已知人物角色】：\n画面中可能出现以下人物，解说词中请优先使用其名称，严禁使用"男子/女子/青年/中年人"等模糊代称：\n${roleLines.join('\n')}`;
+      }
+    }
+
     if (subtitleContext) {
       userPrompt += `\n\n【原片台词/字幕记录】：\n${subtitleContext}`;
     }

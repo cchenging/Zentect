@@ -403,7 +403,16 @@ export class ProjectRepository {
           insertRole.run({
             id: role.id, projectId, systemId: role.systemId || null, name: role.name || '', pronoun: role.pronoun || '',
             avatar: role.avatar || '', description: role.description || '', voiceId: role.voiceId || role.voice_id || '',
-            mergedRoles: JSON.stringify(role.mergedRoles || [])
+            mergedRoles: JSON.stringify(role.mergedRoles || []),
+            // 🔧 修复 Missing named parameter "facesJson"：INSERT_ROLE_FULL SQL 要求 @facesJson
+            // 旧版 bug：此处漏传 facesJson → better-sqlite3 抛异常 → saveFullProjectData 事务回滚
+            //          → vlmFrames/shots 等全部没落盘 → 用户看到"重新进项目数据丢失"
+            // 格式与 PipelineResultWriter L228-232 保持一致，loadFullProjectData L248-265 读取
+            facesJson: JSON.stringify({
+              representative: role.representative || null,
+              faces: role.faces || [],
+              faceCount: role.faceCount ?? (role.faces?.length || 0),
+            })
           });
         }
       }

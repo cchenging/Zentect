@@ -31,6 +31,22 @@ export interface VisionExtractInput {
   /** 前端注入的 ASR 台词（step2 单独执行时 context.bus 无 asr-result，需从 input 读取） */
   audioResult?: { lines: any[] };
   /**
+   * step1 识别出的人物角色列表，注入到 step2 VLM prompt 中
+   * 让 VLM 知道画面中可能出现的人物名称，描述时直接用名称而非"男子/女子"
+   * 元素结构：{ id, name, avatar?, representative?, faces? }
+   */
+  roles?: Array<{ id: string; name: string; avatar?: string; representative?: any; faces?: any[] }>;
+  /**
+   * 🎭 P0.5 帧级角色锚定：frameIdx → 该帧检测到的人物名称列表
+   * 由 step1 基于 role.faces[].frame_index 构建，step2 用于逐帧精确锚定
+   * 例如 { 0: ['张三'], 5: ['张三','李四'] } 表示第 0 帧有张三，第 5 帧有张三和李四
+   * 注入 prompt 后 VLM 无需猜测画面中是谁，直接用姓名描述
+   *
+   * 若不传入，step2 会自动从 input.roles[].faces[].frame_index 推导
+   * （基于 faceFrames@1fps 与 VLM 帧 estimatedInterval 的时间对齐）
+   */
+  frameRoles?: Record<number, string[]>;
+  /**
    * P2 视觉分析模式（VLM 矩阵策略）
    * - 'auto': 智能自动（默认），根据帧间隔自动选择 2x2/3x3
    * - '2x2' / '3x3': 拼图为网格图后单张发送，节省 Token
@@ -87,13 +103,128 @@ export interface VisionExtractOutput {
   };
 }
 
-/** VLM 并发批次路数 */
-const CONCURRENT_VLM = 3;
+/** VLM 并发批次路数（🧪 测试阶段降为 1 避免限流，正式上线可调回 2-3） */
+const CONCURRENT_VLM = 1;
 /** 🔧 fail fast：连续失败达到此阈值时终止整批任务，避免无效 API 调用 */
 const FAIL_FAST_THRESHOLD = 3;
 /** 单次 VLM 调用最大图片数（按 qwen3.7-plus 2048 / flash-plus 系列 256 取保守值 256） */
 // 🧪 测试阶段临时限制为 10 张/次，验证描述质量后再放开回 256
 const MAX_BATCH_IMAGES = 10;
+
+/**
+ * 构建人物名单注入段（用于 VLM prompt）
+ * @param roles step1 识别出的人物角色列表
+ * @returns 拼接好的 prompt 段落；无 roles 或全空时返回空字符串
+ *
+ * 输出示例：
+ * \n\n【已知人物角色】\n画面中可能出现以下人物，描述时请优先使用其名称：\n- 张三（男，30岁）\n- 李四（女，25岁）
+ */
+function buildRolesContextPrompt(
+  roles?: Array<{ id: string; name: string; avatar?: string; representative?: any; faces?: any[] }>,
+): string {
+  if (!roles || roles.length === 0) return '';
+  const roleLines = roles
+    .filter(r => r && r.name)
+    .map(r => {
+      // 附加性别/年龄信息（若有），帮助 VLM 更准确匹配画面中的人物
+      const rep = r.representative || {};
+      const attrs: string[] = [];
+      if (rep.gender !== undefined) {
+        const g = rep.gender;
+        attrs.push(g === 1 || g === 'M' || g === 'male' ? '男' : '女');
+      }
+      if (rep.age) attrs.push(`${rep.age}岁`);
+      const attrStr = attrs.length > 0 ? `（${attrs.join('，')}）` : '';
+      return `- ${r.name}${attrStr}`;
+    });
+  if (roleLines.length === 0) return '';
+  return `\n\n【已知人物角色】\n画面中可能出现以下人物，描述时请优先使用其名称：\n${roleLines.join('\n')}`;
+}
+
+/**
+ * 🎭 P0.5 构建逐帧角色锚定 prompt 段
+ * 为本批次的每一帧单独列出"已检测到的人物"，让 VLM 无需猜测画面中是谁
+ * @param batchFrames 本批次的帧列表（含 idx 绝对索引）
+ * @param frameRoles frameIdx → 人物名称列表的映射
+ * @returns 锚定段文本，如：
+ *   【逐帧角色锚定】
+ *   - 第1张（第0帧）：张三
+ *   - 第2张（第5帧）：张三、李四
+ *   - 第3张（第10帧）：未检测到人物
+ */
+export function buildFrameRolesAnchoringPrompt(
+  batchFrames: { idx: number; path: string }[],
+  frameRoles?: Record<number, string[]>,
+): string {
+  if (!frameRoles) return '';
+  // 仅当本批次至少有一帧存在角色锚定时才注入，避免无谓 prompt 膨胀
+  const lines = batchFrames.map((f, i) => {
+    const names = frameRoles[f.idx];
+    if (names && names.length > 0) {
+      return `- 第${i + 1}张（第${f.idx}帧）：${names.join('、')}`;
+    }
+    return `- 第${i + 1}张（第${f.idx}帧）：未检测到人物`;
+  });
+  // 全部"未检测到人物"时不注入
+  if (lines.every(l => l.includes('未检测到人物'))) return '';
+  return `\n\n【逐帧角色锚定】\n以下人物由人脸识别系统检测，请在对应帧的描述中强制使用其姓名，严禁使用"男子/女子/青年"等模糊代称：\n${lines.join('\n')}`;
+}
+
+/**
+ * 🎭 P0.5 自动推导 frameRoles：从 roles[].faces[].frame_index 反推 VLM 帧到人物的映射
+ *
+ * 时间对齐原理：
+ * - step1 人脸检测专用抽帧使用 1fps（1 帧/秒），face.frame_index 表示该人脸在第 N 秒被检测到
+ * - step2 VLM 分析的帧间隔为 estimatedInterval（秒），VLM 第 i 帧对应时间点 i * estimatedInterval
+ * - 映射规则：face 在第 faceIdx 秒出现 → 落在 VLM 第 floor(faceIdx / estimatedInterval) 帧的时间区间内
+ *
+ * 边界处理：
+ * - estimatedInterval <= 0 或非有限数 → 返回 null（不推导）
+ * - face.frame_index 缺失或非数字 → 跳过该 face
+ * - 同一 VLM 帧上多个人物 → 去重合并为数组
+ * - VLM 帧索引超过 totalFrameCount - 1 → 截断到最后一帧
+ *
+ * @param roles step1 识别出的人物角色列表（每个 role 含 faces 数组，face 含 frame_index）
+ * @param totalFrameCount VLM 分析的总帧数
+ * @param estimatedInterval VLM 帧之间的时间间隔（秒）
+ * @returns frameIdx → 人物名称列表的映射；无有效 face.frame_index 时返回 null
+ */
+export function deriveFrameRolesFromFaces(
+  roles: Array<{ id: string; name: string; faces?: any[] }>,
+  totalFrameCount: number,
+  estimatedInterval: number,
+): Record<number, string[]> | null {
+  if (!roles || roles.length === 0 || totalFrameCount <= 0) return null;
+  if (!Number.isFinite(estimatedInterval) || estimatedInterval <= 0) return null;
+
+  const result: Record<number, string[]> = {};
+  let hasAnyValidFace = false;
+
+  for (const role of roles) {
+    if (!role.name || !Array.isArray(role.faces) || role.faces.length === 0) continue;
+    for (const face of role.faces) {
+      const faceIdx = typeof face?.frame_index === 'number' ? face.frame_index
+        : (typeof face?.frameIndex === 'number' ? face.frameIndex : undefined);
+      if (faceIdx === undefined || !Number.isFinite(faceIdx) || faceIdx < 0) continue;
+      hasAnyValidFace = true;
+
+      // face 帧（1fps）对应时间点 faceIdx 秒，映射到 VLM 帧索引
+      const vlmFrameIdx = Math.min(
+        Math.floor(faceIdx / estimatedInterval),
+        totalFrameCount - 1,
+      );
+      if (vlmFrameIdx < 0) continue;
+
+      if (!result[vlmFrameIdx]) result[vlmFrameIdx] = [];
+      // 去重：同一帧上同一人物只出现一次
+      if (!result[vlmFrameIdx].includes(role.name)) {
+        result[vlmFrameIdx].push(role.name);
+      }
+    }
+  }
+
+  return hasAnyValidFace ? result : null;
+}
 
 export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, VisionExtractOutput> {
   public readonly nodeType = 'vision-extract';
@@ -205,6 +336,21 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       : 4;
 
     AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 帧数: ${totalFrameCount}, ASR台词: ${asrLines.length}, 估算间隔: ${estimatedInterval.toFixed(1)}s, 并发: ${CONCURRENT_VLM}`);
+
+    // ========== 🎭 P0.5 自动推导 frameRoles ==========
+    // 当 input.frameRoles 未传入但 input.roles[].faces[].frame_index 存在时，
+    // 基于 faceFrames@1fps（face 的 frame_index 对应 1 帧/秒）与 VLM 帧 estimatedInterval
+    // 的时间对齐，自动构建 frameIdx → 人物名称列表 的映射
+    let effectiveFrameRoles = input.frameRoles;
+    if (!effectiveFrameRoles && input.roles && input.roles.length > 0 && totalFrameCount > 0) {
+      const derived = deriveFrameRolesFromFaces(input.roles, totalFrameCount, estimatedInterval);
+      if (derived) {
+        effectiveFrameRoles = derived;
+        const anchoredCount = Object.values(derived).filter(arr => arr.length > 0).length;
+        AppLogger.info(LOG_TAGS.AI_AGENT,
+          `[画面描述] 🎭 P0.5 自动推导 frameRoles 成功：${anchoredCount}/${totalFrameCount} 帧锚定人物（基于 roles.faces.frame_index @1fps → VLM 帧 × estimatedInterval）`);
+      }
+    }
 
     const { adapter, modelName: resolvedModel } = LLMFactory.createAdapter('visual');
     /** 💥 修复：优先使用用户在设置中配置的 VLM 模型，不再硬编码 qwen-vl-max */
@@ -327,6 +473,64 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     let globalContext: GlobalSceneContext | null = null;
 
     /**
+     * VLM response_format 能力级别（首次调用检测，后续直接复用，避免重复失败）
+     * 1 = json_schema（最严格，OpenAI/部分服务商支持）
+     * 2 = json_object（多数服务商支持）
+     * 3 = 无 response_format（纯 prompt 约束，兼容所有服务商）
+     */
+    let vlmFormatLevel: 1 | 2 | 3 = 1;
+
+    /**
+     * 按 vlmFormatLevel 调用 VLM
+     * 首次失败自动降级并缓存级别，后续批次直接用有效级别，不重复浪费 API 调用
+     */
+    const callVlmWithFallback = async (
+      msgs: any[], mdl: string, temp: number, fmt: any,
+    ): Promise<string> => {
+      /** 按当前级别构造 options */
+      const buildOpts = (level: 1 | 2 | 3): any => {
+        if (level === 1) return { response_format: fmt };
+        if (level === 2) return { response_format: { type: 'json_object' } };
+        return {};
+      };
+
+      /** 从返回值提取文本 */
+      const extractText = (r: any): string => {
+        if (r && typeof r === 'object') {
+          if (r.success === false) {
+            throw new Error(`VLM 调用失败: ${r.error || '未知错误'}`);
+          }
+          return r.text || '';
+        }
+        return typeof r === 'string' ? r : '';
+      };
+
+      /** 判断是否为 response_format 不兼容错误 */
+      const isFormatError = (e: any): boolean => {
+        const msg = String(e?.message || e);
+        return /response_format|json_schema|json_object|unknown_parameter|400/i.test(msg);
+      };
+
+      // 尝试当前级别，失败则降级（最多降 2 次：1→2→3）
+      while (vlmFormatLevel <= 3) {
+        try {
+          const r = await adapter.chat(msgs, mdl, temp, buildOpts(vlmFormatLevel));
+          return extractText(r);
+        } catch (e: any) {
+          if (vlmFormatLevel < 3 && isFormatError(e)) {
+            AppLogger.warn(LOG_TAGS.AI_AGENT,
+              `[画面描述] VLM 不支持 Level ${vlmFormatLevel}，降级到 Level ${vlmFormatLevel + 1}`);
+            vlmFormatLevel = (vlmFormatLevel + 1) as 1 | 2 | 3;
+            continue;
+          }
+          throw e; // 非格式错误或已到 Level 3，直接抛出
+        }
+      }
+      // 理论上不会走到（while 循环已覆盖）
+      throw new Error('VLM 调用失败: 未知错误');
+    };
+
+    /**
      * P3 Stage 1: 构建全局场景摘要
      * 从待分析帧中均匀采样 4 帧代表帧 → 直接发送 4 张图给 VLM 获取全局场景信息
      * （不拼图，避免与 P2 批次拼图逻辑耦合；全局摘要仅 1 次调用 4 帧，拼图收益微小）
@@ -362,33 +566,23 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         }];
 
         /** 全局摘要用低 temperature 确保稳定 */
-        const rawResult = await adapter.chat(messages, model, 0.3, {
-          response_format: {
-            type: 'json_object' as const,
-            json_schema: {
-              name: 'global_scene_summary',
-              schema: {
-                type: 'object',
-                properties: {
-                  location: { type: 'string', description: '场景地点' },
-                  subject: { type: 'string', description: '主体人物特征' },
-                  colorTone: { type: 'string', description: '主色调与光影' },
-                  narrativeTone: { type: 'string', description: '叙事基调' },
-                },
-                required: ['location', 'subject'],
+        const summaryFmt = {
+          type: 'json_object' as const,
+          json_schema: {
+            name: 'global_scene_summary',
+            schema: {
+              type: 'object',
+              properties: {
+                location: { type: 'string', description: '场景地点' },
+                subject: { type: 'string', description: '主体人物特征' },
+                colorTone: { type: 'string', description: '主色调与光影' },
+                narrativeTone: { type: 'string', description: '叙事基调' },
               },
+              required: ['location', 'subject'],
             },
           },
-        });
-
-        /** 解析全局摘要响应 */
-        let resultText = '';
-        if (rawResult && typeof rawResult === 'object') {
-          if (rawResult.success === false) throw new Error(rawResult.error || '全局摘要调用失败');
-          resultText = rawResult.text || '';
-        } else if (typeof rawResult === 'string') {
-          resultText = rawResult;
-        }
+        };
+        const resultText = await callVlmWithFallback(messages, model, 0.3, summaryFmt);
 
         const cleaned = resultText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
         const parsed = JSON.parse(cleaned);
@@ -432,8 +626,9 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       );
       const asrText = matchedAsr.map(l => l.text).join(' ');
 
-      /** P0-1：构建精简提示词（防幻觉 + 结构化输出约束） */
-      const { systemPrompt } = PromptBuilder.buildVisionExtractPrompt(asrText, '', 'vlm_optimized');
+      /** P0-1：构建精简提示词（防幻觉 + 结构化输出约束）
+       * 🎭 注入 roles：让 VLM 知道画面中可能出现的人物名称，描述时直接用名称 */
+      const { systemPrompt } = PromptBuilder.buildVisionExtractPrompt(asrText, '', 'vlm_optimized', undefined, input.roles);
 
       /** 构建帧清单文本：让 VLM 知道每张图的序号和时间 */
       const frameListText = batchFrames.map((f, i) =>
@@ -443,6 +638,19 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       // P3: 构建全局上下文注入段（有全局摘要时要求增量描述，减少 Output Token）
       const globalContextPrompt = globalContext
         ? `\n\n【全局场景上下文】\n- 场景: ${globalContext.location}\n- 主体: ${globalContext.subject}\n- 色调: ${globalContext.colorTone}\n- 基调: ${globalContext.narrativeTone}\n\n【增量描述要求】\n- 已知全局背景如上，无需在每帧描述中重复背景信息\n- 只需描述当前帧的具体动作、表情变化和视觉细节`
+        : '';
+
+      // 🎭 构建人物名单注入段：让 VLM 在描述时直接使用人物名称
+      // 格式示例：【已知人物角色】\n画面中可能出现以下人物，描述时请优先使用其名称：\n- 张三（男，30岁）\n- 李四（女，25岁）
+      // 不使用 userPrompt（buildVisionExtractPrompt 返回的 userPrompt 未被消费），独立构建保证拼图/1x1 两条路径都能注入
+      const rolesContextPrompt = buildRolesContextPrompt(input.roles);
+      // 🎭 P0.5 逐帧角色锚定段：为每帧列出"已检测到的人物"，VLM 无需猜测画面中是谁
+      // 当 frameRoles 存在且本批至少一帧有角色时注入，与全局名单互补
+      // 使用 effectiveFrameRoles：优先取 input.frameRoles，否则取自动推导结果
+      const frameRolesAnchoringPrompt = buildFrameRolesAnchoringPrompt(batchFrames, effectiveFrameRoles);
+      // 🎭 人物名称使用指引：仅在有人物名单或帧级锚定时附加，避免无 roles 时出现悬空引用
+      const rolesUsageHint = (rolesContextPrompt || frameRolesAnchoringPrompt)
+        ? '\n- 若画面中出现【已知人物角色】或【逐帧角色锚定】中的人物，请使用其名称；未在名单中的人物用"男子/女子"等泛称'
         : '';
 
       // P2: 拼图模式 — 先构建网格图（失败则降级为 1x1 多图独立发送）
@@ -461,7 +669,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           : '3×3 网格图（9 个子图，按 [1]~[9] 编号排列）';
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体动作","emotionalState":"情绪","visualAtmosphere":"光影色调","spatialRelation":"构图空间","keywords":["关键词1","关键词2"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体动作","emotionalState":"情绪","visualAtmosphere":"光影色调","spatialRelation":"构图空间","keywords":["关键词1","关键词2"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
         });
         userContent.push({
           type: 'image_url',
@@ -471,7 +679,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         /** 1x1 模式或拼图降级：多图独立发送 */
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体动作","emotionalState":"情绪","visualAtmosphere":"光影色调","spatialRelation":"构图空间","keywords":["关键词1","关键词2"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体动作","emotionalState":"情绪","visualAtmosphere":"光影色调","spatialRelation":"构图空间","keywords":["关键词1","关键词2"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
         });
         for (const f of batchFrames) {
           userContent.push({
@@ -514,16 +722,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       };
 
       try {
-        const rawResult = await adapter.chat(messages, model, 0.2, { response_format: responseFormat });
-        let resultText = '';
-        if (rawResult && typeof rawResult === 'object') {
-          if (rawResult.success === false) {
-            throw new Error(`VLM 调用失败: ${rawResult.error || '未知错误'}`);
-          }
-          resultText = rawResult.text || '';
-        } else if (typeof rawResult === 'string') {
-          resultText = rawResult;
-        }
+        const resultText = await callVlmWithFallback(messages, model, 0.2, responseFormat);
 
         /** P0-1：解析 { frames: [...] } 结构（兼容旧版裸数组降级） */
         let parsedItems: any[] = [];

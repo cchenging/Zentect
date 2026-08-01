@@ -105,6 +105,12 @@ export interface StepMaterialAnalysisViewProps {
   onSetCurrentTime: (time: number) => void;
   onSetActivePlaySource: (source: MediaItem | null) => void;
   onUpdateRole: (id: string, updates: Partial<Role>) => void;
+  /** 🎭 P0.5+ 合并角色：source 合并到 target */
+  onMergeRoles: (sourceRoleId: string, targetRoleId: string) => void;
+  /** 🎭 P0.5+ 拆分角色：从 target 恢复 source */
+  onUnmergeRole: (sourceRoleId: string, targetRoleId: string) => void;
+  /** 🎭 P0.5+ 删除角色 */
+  onDeleteRole: (id: string) => void;
   onSetSubStepStatus: (key: string, status: StepStatus) => void;
   onRetrySubStep: (stepKey: string) => void;
   /** 停止正在运行的子任务（调用后端 abortPipeline + 前端状态置为 idle） */

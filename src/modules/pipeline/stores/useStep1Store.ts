@@ -45,7 +45,14 @@ export interface ExtractionConfig {
   };
   audio: AudioConfig;
   whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'auto' };
-  faces: { enabled: boolean; engine: 'insightface' | 'mediapipe' };
+  faces: {
+    enabled: boolean;
+    engine: 'insightface' | 'mediapipe';
+    /** 🎭 P0.5+ 余弦相似度阈值（可选，默认 0.70）
+     * HDBSCAN 聚类后用于合并过拆簇 + 分配噪声点
+     * 经验值：0.65 宽松 / 0.70 平衡 / 0.75 严格 / 0.82 极严格 */
+    cosineThreshold?: number;
+  };
 }
 
 export interface Step1Store {
@@ -88,6 +95,7 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
     fps: 2,
     scale: 1024,
     minFrameInterval: 4,
+    matrixMode: 'auto',
   },
   audio: { enabled: true, separationMode: 'quality', engine: 'auto' },
   whisper: { enabled: true, engine: 'auto' },

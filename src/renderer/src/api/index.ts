@@ -228,6 +228,18 @@ export const API = {
       invokeSafe(IPC_CHANNELS.ROLE_LIST, projectId),
     updateVoice: (id: string, voiceId: string) =>
       invokeSafe(IPC_CHANNELS.ROLE_UPDATE_VOICE, { id, voiceId }),
+    /** 🎭 P0.5+ 更新角色信息（名称/代词/描述/头像） */
+    update: (id: string, fields: { name?: string; pronoun?: string; description?: string; avatar?: string }) =>
+      invokeSafe(IPC_CHANNELS.ROLE_UPDATE, { id, fields }),
+    /** 🎭 P0.5+ 合并角色：source 合并到 target */
+    merge: (sourceRoleId: string, targetRoleId: string, projectId: string) =>
+      invokeSafe(IPC_CHANNELS.ROLE_MERGE, { sourceRoleId, targetRoleId, projectId }),
+    /** 🎭 P0.5+ 拆分角色：从 target 恢复 source 为独立角色 */
+    unmerge: (sourceRoleId: string, targetRoleId: string) =>
+      invokeSafe(IPC_CHANNELS.ROLE_UNMERGE, { sourceRoleId, targetRoleId }),
+    /** 🎭 P0.5+ 删除角色 */
+    delete: (id: string, projectId: string) =>
+      invokeSafe(IPC_CHANNELS.ROLE_DELETE, { id, projectId }),
   },
   voice: {
     preview: (provider: string, voiceId?: string, text?: string) =>

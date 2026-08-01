@@ -167,6 +167,11 @@ export const IPC_CHANNELS = {
   // --- V1.1 角色音色管理 ---
   ROLE_LIST: 'role:list',
   ROLE_UPDATE_VOICE: 'role:updateVoice',
+  /** 🎭 P0.5+ 角色合并/拆分/删除/更新 */
+  ROLE_UPDATE: 'role:update',
+  ROLE_MERGE: 'role:merge',
+  ROLE_UNMERGE: 'role:unmerge',
+  ROLE_DELETE: 'role:delete',
   VOICE_PREVIEW: 'voice:preview',
   VOICE_LIST_BY_ENGINE: 'voice:listByEngine',
 

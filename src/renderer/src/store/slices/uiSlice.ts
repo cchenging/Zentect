@@ -83,7 +83,12 @@ declare module '../storeTypes' {
       };
       audio: { enabled: boolean; engine: 'demucs' | 'mdx' | 'auto'; };
       whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'auto'; };
-      faces: { enabled: boolean; engine: 'insightface' | 'mediapipe'; };
+      faces: {
+        enabled: boolean;
+        engine: 'insightface' | 'mediapipe';
+        /** 🎭 P0.5+ 余弦相似度阈值（可选，默认 0.70） */
+        cosineThreshold?: number;
+      };
     };
 
     toggleLeftPanel: () => void;

@@ -1,7 +1,7 @@
 // Module: pipeline/step1-material - FrameExtractConfig
 
 import React from 'react';
-import { Sparkles, Clock, Zap, Crosshair, Sliders, Image as ImageIcon, Grid2x2, Grid3x3, Square, Wand2 } from 'lucide-react';
+import { Sparkles, Clock, Zap, Crosshair, Sliders, Image as ImageIcon } from 'lucide-react';
 import { Slider } from '@renderer/components/ui/slider';
 import { Input } from '@renderer/components/ui/input';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
@@ -15,14 +15,6 @@ const STRATEGY_OPTIONS = [
   { value: 'UNIFORM_FPS', label: '均匀抽帧', desc: '固定帧率', Icon: Clock },
   { value: 'FAST_KEYFRAME', label: '极速关键帧', desc: '仅I帧', Icon: Zap },
   { value: 'PRECISE_SINGLE', label: '精准单帧', desc: '定点截图', Icon: Crosshair },
-] as const;
-
-/** P2 视觉分析模式（VLM 矩阵策略）选项 */
-const MATRIX_OPTIONS = [
-  { value: 'auto', label: '智能自动', desc: '自动切换', Icon: Wand2 },
-  { value: '2x2', label: '标准均衡', desc: '2x2 / 4帧', Icon: Grid2x2 },
-  { value: '3x3', label: '动作捕捉', desc: '3x3 / 9帧', Icon: Grid3x3 },
-  { value: '1x1', label: '精细单帧', desc: '1x1 / 独立', Icon: Square },
 ] as const;
 
 const SCALE_OPTIONS = [
@@ -48,7 +40,6 @@ export const FrameExtractConfig: React.FC<FrameExtractConfigProps> = ({ isRunnin
   const scale = frames.scale ?? 1024;
   const quality = frames.quality ?? 3;
   const minInterval = frames.minFrameInterval ?? 4;
-  const matrixMode = (frames as any).matrixMode || 'auto';
 
   const updateFrames = (patch: Record<string, any>) => {
     if (isRunning) return;
@@ -183,44 +174,6 @@ export const FrameExtractConfig: React.FC<FrameExtractConfigProps> = ({ isRunnin
             </div>
             <Slider min={1} max={5} step={1} value={[quality]} onValueChange={([v]) => updateFrames({ quality: v })} disabled={isRunning} />
           </div>
-        </div>
-      )}
-
-      {/* P2 视觉分析模式（VLM 矩阵策略）：控制步骤2 帧拼图布局 */}
-      {strategy !== 'PRECISE_SINGLE' && (
-        <div className="rounded-lg border border-border/50 bg-muted/20 p-2 flex flex-col gap-1.5 shadow-sm">
-          <span className="text-[10px] text-muted-foreground flex items-center gap-1">
-            <Grid2x2 size={10} /> 视觉分析模式
-          </span>
-          <div className="grid grid-cols-4 gap-1">
-            {MATRIX_OPTIONS.map((opt) => {
-              const isSelected = matrixMode === opt.value;
-              return (
-                <button
-                  key={opt.value}
-                  onClick={() => updateFrames({ matrixMode: opt.value })}
-                  disabled={isRunning}
-                  className={`
-                    flex flex-col items-center gap-0.5 py-1 px-0.5 rounded text-center transition-all cursor-pointer border outline-none select-none
-                    ${isSelected
-                      ? 'bg-primary/10 border-primary/30 text-primary shadow-sm shadow-primary/5'
-                      : 'bg-muted/30 border-border/50 text-muted-foreground hover:bg-muted/50 hover:border-border'}
-                    ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}
-                  `}
-                  title={`${opt.label}（${opt.desc}）`}
-                >
-                  <opt.Icon size={12} strokeWidth={isSelected ? 2.2 : 1.8} />
-                  <span className="text-[9px] font-semibold leading-tight">{opt.label}</span>
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[9px] text-muted-foreground/60 leading-relaxed">
-            {matrixMode === 'auto' && '根据帧间隔自动选择 2x2/3x3，平衡 Token 与细节'}
-            {matrixMode === '2x2' && '4 帧拼图，最省 Token，适合解说/影视/Vlog'}
-            {matrixMode === '3x3' && '9 帧拼图，高密度捕捉，适合游戏/运动/快剪'}
-            {matrixMode === '1x1' && '逐帧独立分析，精细但 Token 消耗高'}
-          </p>
         </div>
       )}
     </div>

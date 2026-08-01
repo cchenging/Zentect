@@ -84,10 +84,13 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
         /** 💥 统一 VLM 数据映射：兼容两种后端返回格式
          *  格式1（对象数组）: frames = [{ url, description, ... }]
          *  格式2（VisionExtractStrategy）: { sceneDescriptions: string, framePaths: string[] }
-         *  关键修复：framePaths 是绝对路径，需通过 getSafeMediaUrl 转换为可显示的 URL */
+         *  关键修复：framePaths 是绝对路径，需通过 getSafeMediaUrl 转换为可显示的 URL
+         *  🎭 P0 修复：用 spread 保留所有扩展字段（downstream/characters 等），
+         *     避免 step3 消费时丢失结构化人物动作信息 */
         const frames = nodeResult.frames || nodeResult.frameDescriptions || [];
         if (Array.isArray(frames) && frames.length > 0 && typeof frames[0] === 'object') {
           mappers.setVlmFrames(frames.map((f: any) => ({
+            ...f, // 保留 downstream/timeMs/timeStr/asrText/asrTime/emotion 等所有扩展字段
             url: f.url || f.framePath || f.thumbnail || '',
             description: f.description || f.text || f.content || '',
             editing: false,

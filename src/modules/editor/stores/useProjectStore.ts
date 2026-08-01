@@ -141,6 +141,8 @@ export interface ProjectStore {
   updateRole: (id: string, updates: Partial<Role>) => void;
   mergeRoles: (sourceRoleId: string, targetRoleId: string) => void;
   unmergeRole: (sourceRoleId: string, targetRoleId: string) => void;
+  /** 🎭 P0.5+ 删除角色 */
+  deleteRole: (id: string) => void;
 
   // 音频多米诺
   applyAudioDomino: (
@@ -337,20 +339,35 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     }));
   },
 
-  updateRole: (id, updates) =>
+  updateRole: (id, updates) => {
     set((s) => ({
       roles: s.roles.map((role) =>
         role.id === id ? { ...role, ...updates } : role
       ),
-    })),
+    }));
+    // 🎭 P0.5+ 持久化到 DB（仅更新允许的字段，fire-and-forget）
+    const { name, pronoun, description, avatar } = updates as any;
+    const fields: any = {};
+    if (name !== undefined) fields.name = name;
+    if (pronoun !== undefined) fields.pronoun = pronoun;
+    if (description !== undefined) fields.description = description;
+    if (avatar !== undefined) fields.avatar = avatar;
+    if (Object.keys(fields).length > 0) {
+      API.roles.update(id, fields).catch(() => {
+        // 持久化失败不阻断 UI，用户可在重试中恢复
+      });
+    }
+  },
 
   mergeRoles: (sourceRoleId, targetRoleId) => {
     get().saveSnapshot();
+    const state = get();
+    if (sourceRoleId === targetRoleId) return;
+    const sourceRole = state.roles.find((r) => r.id === sourceRoleId);
+    const targetRole = state.roles.find((r) => r.id === targetRoleId);
+    if (!sourceRole || !targetRole) return;
+
     set((s) => {
-      if (sourceRoleId === targetRoleId) return s;
-      const sourceRole = s.roles.find((r) => r.id === sourceRoleId);
-      const targetRole = s.roles.find((r) => r.id === targetRoleId);
-      if (!sourceRole || !targetRole) return s;
       const newShots = s.shots.map((shot) =>
         shot.roleId === sourceRoleId
           ? { ...shot, roleId: targetRoleId, originalRoleId: shot.originalRoleId || sourceRoleId }
@@ -370,21 +387,26 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
         .map((r) => (r.id === targetRoleId ? newTargetRole : r));
       return { shots: newShots, aiShots: newAiShots, roles: newRoles };
     });
+
+    // 🎭 P0.5+ 持久化到 DB
+    API.roles.merge(sourceRoleId, targetRoleId, state.projectId).catch(() => {});
   },
 
   unmergeRole: (sourceRoleId, targetRoleId) => {
     get().saveSnapshot();
+    const state = get();
+    const targetRole = state.roles.find((r) => r.id === targetRoleId);
+    if (!targetRole || !targetRole.mergedRoles) return;
+    const sourceRole = targetRole.mergedRoles.find((r: any) => r.id === sourceRoleId);
+    if (!sourceRole) return;
+
     set((s) => {
-      const targetRole = s.roles.find((r) => r.id === targetRoleId);
-      if (!targetRole || !targetRole.mergedRoles) return s;
-      const sourceRole = targetRole.mergedRoles.find((r: any) => r.id === sourceRoleId);
-      if (!sourceRole) return s;
-      const newMergedRoles = targetRole.mergedRoles.filter((r: any) => r.id !== sourceRoleId);
+      const newMergedRoles = targetRole.mergedRoles!.filter((r: any) => r.id !== sourceRoleId);
       const newTargetRole = { ...targetRole, mergedRoles: newMergedRoles };
       const newRoles = s.roles.map((r) =>
         r.id === targetRoleId ? newTargetRole : r
       );
-      newRoles.push(sourceRole);
+      newRoles.push(sourceRole as any);
       const newShots = s.shots.map((shot) =>
         shot.roleId === targetRoleId && shot.originalRoleId === sourceRoleId
           ? { ...shot, roleId: sourceRoleId }
@@ -397,6 +419,26 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       );
       return { roles: newRoles, shots: newShots, aiShots: newAiShots };
     });
+
+    // 🎭 P0.5+ 持久化到 DB
+    API.roles.unmerge(sourceRoleId, targetRoleId).catch(() => {});
+  },
+
+  /**
+   * 🎭 P0.5+ 删除角色：从前端状态移除 + 持久化到 DB
+   */
+  deleteRole: (id) => {
+    get().saveSnapshot();
+    const state = get();
+    set((s) => ({
+      roles: s.roles.filter((r) => r.id !== id),
+      shots: s.shots.map((shot) =>
+        shot.roleId === id
+          ? { ...shot, roleId: undefined, originalRoleId: shot.originalRoleId || id }
+          : shot
+      ),
+    }));
+    API.roles.delete(id, state.projectId).catch(() => {});
   },
 
   applyAudioDomino: (shotId, audioPath, rawAudioDuration, strategy, target = 'shots') => {
@@ -676,25 +718,40 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     if (d.extractionConfig && typeof s1.updateExtractionConfig === 'function') s1.updateExtractionConfig(d.extractionConfig as any);
 
     // ── Step2Store ──
+    // 🔧 修复 vlmFrames 持久化丢失：只在 d.vlmFrames !== undefined 时才更新
+    // 旧版 bug：IPCBridge/useExtractionHandler 的 partial hydration 不传 vlmFrames
+    //          → setVlmFrames([]) 清空 store 中已恢复的数据 → 用户看到"数据丢失"
+    // 修复：partial 数据不更新 vlmFrames，保留已有值（完整 hydrate 时正常更新）
     const s2 = useStep2Store.getState();
-    if (typeof s2.setVlmFrames === 'function') s2.setVlmFrames(Array.isArray(d.vlmFrames) ? d.vlmFrames : []);
+    if (typeof s2.setVlmFrames === 'function' && d.vlmFrames !== undefined) {
+      s2.setVlmFrames(Array.isArray(d.vlmFrames) ? d.vlmFrames : []);
+    }
 
     // ── Step3Store ──
+    // 🔧 同步修复：scriptParagraphs 也只在存在时才更新，避免 partial hydration 清空
     const s3 = useStep3Store.getState();
-    if (typeof s3.setScriptParagraphs === 'function') s3.setScriptParagraphs(Array.isArray(d.scriptParagraphs) ? d.scriptParagraphs : []);
+    if (typeof s3.setScriptParagraphs === 'function' && d.scriptParagraphs !== undefined) {
+      s3.setScriptParagraphs(Array.isArray(d.scriptParagraphs) ? d.scriptParagraphs : []);
+    }
     if (d.scriptStyle && typeof s3.setScriptStyle === 'function') s3.setScriptStyle(d.scriptStyle as string);
     if (d.speechRate !== undefined && typeof s3.setSpeechRate === 'function') s3.setSpeechRate(Number(d.speechRate) || 4.5);
     if (d.pipelineParams && typeof s3.setPipelineParams === 'function') s3.setPipelineParams(d.pipelineParams as any);
 
     // ── Step4Store ──
+    // 🔧 同步修复：ttsResults 也只在存在时才更新
     const s4 = useStep4Store.getState();
-    if (typeof s4.setTtsResults === 'function') s4.setTtsResults(Array.isArray(d.ttsResults) ? d.ttsResults : []);
+    if (typeof s4.setTtsResults === 'function' && d.ttsResults !== undefined) {
+      s4.setTtsResults(Array.isArray(d.ttsResults) ? d.ttsResults : []);
+    }
     if (d.ttsEngine && typeof s4.setTtsEngine === 'function') s4.setTtsEngine(d.ttsEngine as string);
     if (d.ttsVoiceId !== undefined && typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((d.ttsVoiceId as string) || '');
 
     // ── Step5Store ──
+    // 🔧 同步修复：videoChunks 也只在存在时才更新
     const s5 = useStep5Store.getState();
-    if (typeof s5.setVideoChunks === 'function') s5.setVideoChunks(Array.isArray(d.videoChunks) ? d.videoChunks : []);
+    if (typeof s5.setVideoChunks === 'function' && d.videoChunks !== undefined) {
+      s5.setVideoChunks(Array.isArray(d.videoChunks) ? d.videoChunks : []);
+    }
 
     // ── EditorNavStore ──
     const nav = useEditorNavStore.getState();

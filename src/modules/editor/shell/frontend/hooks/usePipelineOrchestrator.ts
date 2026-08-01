@@ -109,12 +109,16 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
           mediaPath: activeMedia?.filePath || '',
           mediaId: activeMedia?.id || '',
           // step2 注入 framePaths（复用 step1 已抽关键帧，避免重新抽帧）+ projectId + audioResult（ASR 台词对齐）
+          // P2: 注入 matrixMode（用户在步骤1选择的视觉分析模式，传递给步骤2动态拼图）
+          // 🎭 注入 roles：让 step2 VLM 描述时使用人物名称（来自 step1 人脸识别结果）
           ...(step === 2 ? {
             framePaths: projectState.extractedData?.framePaths || [],
             projectId: projectState.projectId,
+            matrixMode: useStep1Store.getState().extractionConfig?.frames?.matrixMode || 'auto',
             audioResult: {
               lines: useStep1Store.getState().asrLines || [],
             },
+            roles: projectState.roles || [],
           } : {}),
           ...(step === 3 ? {
             scriptStyle: step3State.scriptStyle || '赛博现实主义',
@@ -125,10 +129,16 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
                 ?.map((f: any) => f.description || '')
                 .filter(Boolean)
                 .join('\n') || '',
+              // 🎭 P0 修复：透传 vlmFrames 完整数据（含 downstream 结构化字段），
+              // 让 ScriptGenStrategy 可消费 downstreamContext.shots 优化路径
+              frames: step2State.vlmFrames || [],
             },
             audioResult: {
               lines: useStep1Store.getState().asrLines || [],
             },
+            // 🎭 P0 修复：注入 roles 人物角色列表，让 step3 生成解说时使用统一人物名称
+            // 数据源用 projectState.roles（hydrate 后的统一来源，含用户手动改名后的最新值）
+            roles: projectState.roles || [],
           } : {}),
           ...(step === 4 ? {
             ttsEngine: step4State.ttsEngine || 'edge',

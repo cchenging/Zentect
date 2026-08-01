@@ -629,7 +629,15 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           if (detectedFaces.length > 0) {
             lastProgress = Math.max(lastProgress, 80);
             onProgress(lastProgress, `人脸检测完成 (${detectedFaces.length}张)，正在聚类...`);
-            const clustersMap = await VisionProcessor.clusterFaces(mediaId, detectedFaces, facesDir);
+            const clustersMap = await VisionProcessor.clusterFaces(
+              mediaId,
+              detectedFaces,
+              facesDir,
+              // 🎭 P0.5+ 透传余弦相似度阈值（未配置时 Python 端使用默认 0.70）
+              typeof config.faces === 'object' && config.faces
+                ? (config.faces as any).cosineThreshold
+                : undefined,
+            );
             const roleGroups: Record<string, any[]> = {};
             for (const face of detectedFaces) {
               const faceId = face.id || face.face_id || '';

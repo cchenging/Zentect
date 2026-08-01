@@ -1,20 +1,35 @@
 // Module: pipeline/step2-vision - View (Pure Props)
 
 import React, { useState, useCallback } from "react";
-import { ChevronLeft, ChevronRight, X, Maximize2, BookOpen } from "lucide-react";
+import { ChevronLeft, ChevronRight, X, Maximize2, BookOpen, Grid2x2, Grid3x3, Square, Wand2 } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { StatHeader, EmptyState } from "@renderer/components/shared";
 import type { VlmFrame } from "../../../../shared/types/entities/editor";
+
+/** P2 视觉分析模式（VLM 矩阵策略）选项 */
+const MATRIX_OPTIONS = [
+  { value: 'auto', label: '智能自动', desc: '自动切换', Icon: Wand2 },
+  { value: '2x2', label: '标准均衡', desc: '2x2 / 4帧', Icon: Grid2x2 },
+  { value: '3x3', label: '动作捕捉', desc: '3x3 / 9帧', Icon: Grid3x3 },
+  { value: '1x1', label: '精细单帧', desc: '1x1 / 独立', Icon: Square },
+] as const;
 
 export interface StepVisionDescriptionProps {
   vlmFrames: VlmFrame[];
   onUpdateDescription: (index: number, description: string) => void;
   onSetEditing: (index: number, editing: boolean) => void;
   onGoToStep1?: () => void;
+  /** P2: 视觉分析模式（控制 VLM 拼图策略） */
+  matrixMode?: 'auto' | '2x2' | '3x3' | '1x1';
+  /** P2: 切换视觉分析模式 */
+  onSetMatrixMode?: (mode: 'auto' | '2x2' | '3x3' | '1x1') => void;
+  /** 是否正在执行（运行中禁用切换） */
+  isProcessing?: boolean;
 }
 
 export const StepVisionDescriptionView: React.FC<StepVisionDescriptionProps> = ({
   vlmFrames, onUpdateDescription, onSetEditing, onGoToStep1,
+  matrixMode = 'auto', onSetMatrixMode, isProcessing = false,
 }) => {
   const [zoomIndex, setZoomIndex] = useState<number | null>(null);
 
@@ -46,6 +61,47 @@ export const StepVisionDescriptionView: React.FC<StepVisionDescriptionProps> = (
           <StatHeader value={vlmFrames.length} unit="帧已分析" secondary={`已确认 ${vlmFrames.filter((f) => f.confirmed).length} 帧`} />
         )}
       </div>
+
+      {/* P2 视觉分析模式选择器：控制 VLM 拼图策略（步骤2专属配置） */}
+      {onSetMatrixMode && (
+        <div className="glass-card-sm p-2.5 flex flex-col gap-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+              <Grid2x2 size={11} /> 视觉分析模式
+            </span>
+            <span className="text-[9px] text-muted-foreground/60">控制 VLM 拼图策略</span>
+          </div>
+          <div className="grid grid-cols-4 gap-1">
+            {MATRIX_OPTIONS.map((opt) => {
+              const isSelected = matrixMode === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  onClick={() => onSetMatrixMode(opt.value)}
+                  disabled={isProcessing}
+                  className={`
+                    flex flex-col items-center gap-0.5 py-1.5 px-0.5 rounded text-center transition-all cursor-pointer border outline-none select-none
+                    ${isSelected
+                      ? 'bg-primary/10 border-primary/30 text-primary shadow-sm shadow-primary/5'
+                      : 'bg-muted/30 border-border/50 text-muted-foreground hover:bg-muted/50 hover:border-border'}
+                    ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}
+                  `}
+                  title={`${opt.label}（${opt.desc}）`}
+                >
+                  <opt.Icon size={14} strokeWidth={isSelected ? 2.2 : 1.8} />
+                  <span className="text-[10px] font-semibold leading-tight">{opt.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-muted-foreground/70 leading-relaxed">
+            {matrixMode === 'auto' && '根据帧间隔自动选择 2x2/3x3，平衡 Token 与细节'}
+            {matrixMode === '2x2' && '4 帧拼图，最省 Token，适合解说/影视/Vlog'}
+            {matrixMode === '3x3' && '9 帧拼图，高密度捕捉，适合游戏/运动/快剪'}
+            {matrixMode === '1x1' && '逐帧独立分析，精细但 Token 消耗高'}
+          </p>
+        </div>
+      )}
       {vlmFrames.length > 0 ? (
         <div className="flex flex-col gap-3">
           {vlmFrames.map((frame, idx) => (
