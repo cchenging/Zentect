@@ -73,6 +73,13 @@ export interface FrameDetail {
     emotion: string;
     keywords: string[];
   };
+  /**
+   * 🎭 P0.5 帧级锚定：该帧已检测到的人物名称列表
+   * 来源：effectiveFrameRoles[i]（基于 step1 roles.faces.frame_index 自动推导）
+   * 供下游 step3/step4 消费，无需重新解析画面描述猜测人物
+   * 未检测到人物时为空数组，未启用帧级锚定时为 undefined
+   */
+  characters?: string[];
 }
 
 /**
@@ -943,6 +950,13 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         keywords: Array.isArray(jsonItem.keywords) ? jsonItem.keywords : [],
       } : undefined;
 
+      /**
+       * 🎭 P0.5 帧级锚定：从 effectiveFrameRoles 取本帧已检测到的人物名称列表
+       * effectiveFrameRoles 已在上方自动推导（基于 roles.faces.frame_index @1fps → VLM 帧 × estimatedInterval）
+       * 未启用帧级锚定时 effectiveFrameRoles 为 undefined，characters 字段不写入
+       */
+      const frameCharacters = effectiveFrameRoles ? (effectiveFrameRoles[i] || []) : undefined;
+
       return {
         url,
         description: frameDescriptions[i] || '',
@@ -956,6 +970,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         confirmed: !!(frameDescriptions[i] && frameDescriptions[i].trim()),
         emotion: jsonItem?.emotionalState || jsonItem?.emotionTone || '',
         downstream,
+        characters: frameCharacters,
       };
     });
 

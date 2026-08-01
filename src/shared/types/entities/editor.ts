@@ -32,6 +32,12 @@ export interface VlmFrame {
     emotion: string;
     keywords: string[];
   };
+  /**
+   * 🎭 P0.5 帧级锚定：该帧已检测到的人物名称列表
+   * 来源：VisionExtractStrategy 的 effectiveFrameRoles[i]
+   * 供下游 step3/step4 消费，未启用帧级锚定时为 undefined
+   */
+  characters?: string[];
 }
 
 /** 解说文案段落 */

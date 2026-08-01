@@ -1,6 +1,6 @@
 // Module: pipeline/step3-script - Script Generation Service
 
-import type { Step3Input, Step3Output } from '../types';
+import type { Step3Input, Step3Output, Step3Role } from '../types';
 import type { ScriptParagraph, VlmFrame } from '../../../../shared/types/entities/editor';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 
@@ -111,10 +111,40 @@ ${styleInstruction}
   }
 
   /**
-   * 构建 User Prompt
+   * 🎭 构建人物角色名单注入段
+   * 仅注入有 name 的角色；附加性别/年龄信息帮助 LLM 准确匹配画面中的人物
+   * 与 ScriptGenStrategy.ts 注入逻辑保持一致，确保主引擎与新模块行为对齐
+   * @param roles step1 识别出的人物角色列表
+   * @returns 拼接好的人物名单段落；无 roles 或全空时返回空字符串
    */
-  buildUserPrompt(_input: Step3Input, sceneContext: string): string {
-    return `【原片画面扫描日志】：\n${sceneContext}\n\n请直接输出 JSON 数组：`;
+  private buildRolesPrompt(roles?: Step3Role[]): string {
+    if (!roles || roles.length === 0) return '';
+    const roleLines = roles
+      .filter(r => r && r.name)
+      .map(r => {
+        const rep = r.representative || {};
+        const attrs: string[] = [];
+        if (rep.gender !== undefined) {
+          const g = rep.gender;
+          attrs.push(g === 1 || g === 'M' || g === 'male' ? '男' : '女');
+        }
+        if (rep.age) attrs.push(`${rep.age}岁`);
+        const attrStr = attrs.length > 0 ? `（${attrs.join('，')}）` : '';
+        return `- ${r.name}${attrStr}`;
+      });
+    if (roleLines.length === 0) return '';
+    return `\n\n【已知人物角色】：\n画面中可能出现以下人物，解说词中请优先使用其名称，严禁使用"男子/女子/青年/中年人"等模糊代称：\n${roleLines.join('\n')}`;
+  }
+
+  /**
+   * 构建 User Prompt
+   * 🎭 P0 同步：注入人物角色名单，让 LLM 生成解说词时使用统一人物名称
+   */
+  buildUserPrompt(input: Step3Input, sceneContext: string): string {
+    let userPrompt = `【原片画面扫描日志】：\n${sceneContext}`;
+    userPrompt += this.buildRolesPrompt(input.roles);
+    userPrompt += `\n\n请直接输出 JSON 数组：`;
+    return userPrompt;
   }
 
   /**
