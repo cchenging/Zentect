@@ -112,6 +112,9 @@ export class MigrationManager implements IMigrationManager {
     addCol('projects', 'video_path', 'TEXT');
     addCol('projects', 'is_draft', 'INTEGER NOT NULL DEFAULT 1');
     addCol('projects', 'current_step', "TEXT NOT NULL DEFAULT 'import'");
+    // 🎬 P2-A 剧集层：projects 关联到剧集（show_id 为 NULL 表示独立项目，向后兼容）
+    addCol('projects', 'show_id', 'TEXT');
+    addCol('projects', 'episode_number', 'INTEGER');
 
     addCol('chat_history', 'action_payload', 'TEXT');
 

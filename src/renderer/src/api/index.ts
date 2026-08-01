@@ -262,6 +262,30 @@ export const API = {
     findLocalRoles: (globalCharacterId: string) =>
       invokeSafe(IPC_CHANNELS.GLOBAL_CHARACTER_FIND_LOCAL_ROLES, { globalCharacterId }),
   },
+  /** 🎬 P2-A 剧集语义层（跨集项目组织） */
+  shows: {
+    /** 列出所有剧集（按更新时间降序） */
+    list: () =>
+      invokeSafe(IPC_CHANNELS.SHOW_LIST),
+    /** 创建新剧集 */
+    create: (name: string, options?: { coverPath?: string; description?: string }) =>
+      invokeSafe(IPC_CHANNELS.SHOW_CREATE, { name, ...options }),
+    /** 更新剧集信息（名称/封面/描述） */
+    update: (id: string, fields: { name?: string; coverPath?: string; description?: string }) =>
+      invokeSafe(IPC_CHANNELS.SHOW_UPDATE, { id, fields }),
+    /** 删除剧集（同时解绑其下所有项目） */
+    delete: (id: string) =>
+      invokeSafe<{ success: boolean; unbindCount: number }>(IPC_CHANNELS.SHOW_DELETE, { id }),
+    /** 查询某剧集下所有项目（按集数升序） */
+    findProjects: (showId: string) =>
+      invokeSafe(IPC_CHANNELS.SHOW_FIND_PROJECTS, { showId }),
+    /** 把项目绑定到剧集（episodeNumber 省略时自动递增） */
+    bindProject: (projectId: string, showId: string, episodeNumber?: number) =>
+      invokeSafe(IPC_CHANNELS.SHOW_BIND_PROJECT, { projectId, showId, episodeNumber }),
+    /** 解除项目与剧集的绑定 */
+    unbindProject: (projectId: string) =>
+      invokeSafe(IPC_CHANNELS.SHOW_UNBIND_PROJECT, { projectId }),
+  },
   voice: {
     preview: (provider: string, voiceId?: string, text?: string) =>
       invokeSafe<{ audioPath: string }>(IPC_CHANNELS.VOICE_PREVIEW, { provider, voiceId, text }),

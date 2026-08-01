@@ -13,6 +13,7 @@ import { HealthService } from '../services/HealthService';
 import { WorkflowService } from '../services/WorkflowService';
 import { RoleRepository } from '../database/repositories/RoleRepository';
 import { GlobalCharacterRepository } from '../database/repositories/GlobalCharacterRepository';
+import { ShowRepository } from '../database/repositories/ShowRepository';
 import { TTSProvider } from '../../modules/pipeline/step4-tts/backend/Service';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
@@ -403,6 +404,53 @@ export class EngineController {
     }) => {
       const repo = new RoleRepository();
       return repo.findByGlobalCharacterId(payload.globalCharacterId);
+    });
+
+    // 🎬 P2-A 剧集语义层：跨集项目组织（shows 表 CRUD + 项目绑定/解绑）
+    IpcRouter.handle(IPC_CHANNELS.SHOW_LIST, async () => {
+      const repo = new ShowRepository();
+      return repo.findAll();
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.SHOW_CREATE, async (_, payload: {
+      name: string; coverPath?: string; description?: string;
+    }) => {
+      const repo = new ShowRepository();
+      const id = ShowRepository.generateId();
+      return repo.create({ id, name: payload.name, coverPath: payload.coverPath, description: payload.description });
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.SHOW_UPDATE, async (_, payload: {
+      id: string; fields: { name?: string; coverPath?: string; description?: string };
+    }) => {
+      const repo = new ShowRepository();
+      repo.update(payload.id, payload.fields);
+      return { success: true };
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.SHOW_DELETE, async (_, payload: { id: string }) => {
+      const repo = new ShowRepository();
+      const result = repo.delete(payload.id);
+      return { success: true, unbindCount: result.unbindCount };
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.SHOW_FIND_PROJECTS, async (_, payload: { showId: string }) => {
+      const repo = new ShowRepository();
+      return repo.findProjectsByShowId(payload.showId);
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.SHOW_BIND_PROJECT, async (_, payload: {
+      projectId: string; showId: string; episodeNumber?: number;
+    }) => {
+      const repo = new ShowRepository();
+      repo.bindProject(payload.projectId, payload.showId, payload.episodeNumber);
+      return { success: true };
+    });
+
+    IpcRouter.handle(IPC_CHANNELS.SHOW_UNBIND_PROJECT, async (_, payload: { projectId: string }) => {
+      const repo = new ShowRepository();
+      repo.unbindProject(payload.projectId);
+      return { success: true };
     });
 
     // V1.1: 音色试听 — 使用指定引擎/音色合成示例文本，返回音频路径

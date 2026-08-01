@@ -179,6 +179,14 @@ export const IPC_CHANNELS = {
   GLOBAL_CHARACTER_BIND: 'globalCharacter:bind',
   GLOBAL_CHARACTER_UNBIND: 'globalCharacter:unbind',
   GLOBAL_CHARACTER_FIND_LOCAL_ROLES: 'globalCharacter:findLocalRoles',
+  /** 🎬 P2-A 剧集语义层（跨集项目组织） */
+  SHOW_LIST: 'show:list',
+  SHOW_CREATE: 'show:create',
+  SHOW_UPDATE: 'show:update',
+  SHOW_DELETE: 'show:delete',
+  SHOW_FIND_PROJECTS: 'show:findProjects',
+  SHOW_BIND_PROJECT: 'show:bindProject',
+  SHOW_UNBIND_PROJECT: 'show:unbindProject',
   VOICE_PREVIEW: 'voice:preview',
   VOICE_LIST_BY_ENGINE: 'voice:listByEngine',
 

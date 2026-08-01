@@ -588,6 +588,9 @@ export class ProjectRepository {
         //   `if (project.canvasData)` 永远 false → canvas_data 恢复逻辑完全失效（死代码）
         //   导致：handleBeforeUnload 保存到 canvas_data 的字段（stepStatuses/asrLines/...）全部丢失
         canvasData: (project as any).canvas_data || null,
+        // 🎬 P2-A 剧集层：返回 show_id / episode_number（NULL 表示独立项目，向后兼容）
+        showId: (project as any).show_id ?? null,
+        episodeNumber: (project as any).episode_number ?? null,
         shots: shots
       };
     } catch (error) {
