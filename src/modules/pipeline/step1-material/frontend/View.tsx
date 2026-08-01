@@ -1,7 +1,7 @@
 // Module: pipeline/step1-material - View
 
 import React, { useEffect, useState } from "react";
-import { Edit3, Music, Play, UndoDot, RotateCcw, Square, AlertTriangle, GitMerge, Split, Trash2, X } from "lucide-react";
+import { Edit3, Music, Play, UndoDot, RotateCcw, Square, AlertTriangle, GitMerge, Split, Trash2, X, Globe } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "@renderer/components/shared";
 import { FrameExtractConfig } from "./components/FrameExtractConfig";
@@ -262,6 +262,8 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                 const isMergeSource = mergeSourceId === role.id;
                 /** 合并模式下的目标高亮：非源角色显示"点击合并"提示 */
                 const isMergeTarget = mergeSourceId && mergeSourceId !== role.id;
+                /** 🎭 P1 全局人物注册中心：role.globalCharacterId 存在表示该角色已匹配到全局人物（跨集/跨项目复用） */
+                const globalCharacterId = (role as any).globalCharacterId as string | undefined;
                 return (
                   <div
                     key={role.id}
@@ -288,8 +290,17 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                       }}
                     >
                       {/* 方形大头像 80x80，比旧版 48x48 大 2.8 倍 */}
-                      <div className="w-20 h-20 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
+                      <div className="relative w-20 h-20 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
                         {role.avatarPath && <img src={getSafeMediaUrl(role.avatarPath)} className="w-full h-full object-cover" />}
+                        {/* 🎭 P1 全局人物标记：右上角紫色 Globe 徽章，标识该角色已匹配到全局人物（跨集/跨项目复用） */}
+                        {globalCharacterId && (
+                          <span
+                            className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-accent-purple/90 flex items-center justify-center ring-1 ring-bg-primary"
+                            title="已匹配全局人物（跨集/跨项目复用）"
+                          >
+                            <Globe size={10} className="text-white" />
+                          </span>
+                        )}
                       </div>
                       <div className="flex-1 min-w-0">
                         <input
@@ -303,6 +314,13 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                           {gender !== undefined && gender !== null && <span>{gender === 1 ? '男' : '女'}</span>}
                           {age > 0 && <span>约 {age} 岁</span>}
                           {mergedRoles.length > 0 && <span className="text-accent/80">已合并 {mergedRoles.length} 个角色</span>}
+                          {/* 🎭 P1 全局人物注册中心：显示「已匹配全局人物」标记，点击可查看跨项目关联 */}
+                          {globalCharacterId && (
+                            <span className="inline-flex items-center gap-1 text-accent-purple/90">
+                              <Globe size={10} />
+                              已匹配全局人物
+                            </span>
+                          )}
                         </div>
                       </div>
                       {/* 🎭 P0.5+ 操作按钮组：合并/拆分/删除（仅在非合并模式时显示） */}
