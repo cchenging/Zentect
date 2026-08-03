@@ -146,7 +146,7 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
             className="h-7 px-4 rounded-md bg-gradient-to-r from-accent to-accent-purple text-white text-[13px] font-semibold shadow-sm hover:brightness-110 transition-all cursor-pointer outline-none flex items-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed">
             <Play size={11} /> {pipelineRunning ? '执行中...' : '启动'}
           </button>
-          {!isAutoMode && stepStatuses[currentStep - 1] === 'completed' && currentStep < 5 && (
+          {stepStatuses[currentStep - 1] === 'completed' && currentStep < 5 && (
             <button onClick={onNextStep}
               className="h-7 px-4 rounded-md bg-bg-secondary border border-border/50 text-[13px] font-medium hover:border-accent/40 hover:text-accent transition-all cursor-pointer outline-none flex items-center gap-1.5">
               下一步 <ChevronRight size={11} />
