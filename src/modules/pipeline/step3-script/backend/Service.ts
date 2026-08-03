@@ -4,21 +4,30 @@ import type { Step3Input, Step3Output, Step3Role } from '../types';
 import type { ScriptParagraph, VlmFrame } from '../../../../shared/types/entities/editor';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 
-/** 风格到 Prompt 指令的映射（从 ScriptGenStrategy 提取） */
+/** 风格到 Prompt 指令的映射（与 ScriptGenStrategy 保持一致） */
 const STYLE_PROMPTS: Record<string, string> = {
-  '赛博现实主义': '擅长使用逻辑悖论和废话文学（例如："这只狗之所以是只狗，是因为它不是猫"）。情绪卡点必须高燃，在看似荒诞的描述中突然拔高立意。',
-  '无厘头废话文学': '全程废话文学，用看似有逻辑实则毫无意义的句式推进叙事（例如："之所以如此，是因为如此"）。越荒诞越好，但必须和画面内容有微弱关联。',
-  '正经科普': '以严谨客观的语气进行知识性解说，注重事实准确性和逻辑清晰度，适当引用专业术语但保持通俗易懂。',
-  '情感叙事': '以细腻感性的笔触描绘画面中的情绪流动，善用比喻和意象，在平淡场景中挖掘深层情感共鸣。',
-  '悬疑推理': '用层层设问和伏笔构建悬念，每一句解说都是线索碎片，引导观众在脑中拼凑真相，节奏张弛有度。',
-  '轻松幽默': '用轻松诙谐的语气吐槽画面内容，善用网络流行语和反转梗，让观众会心一笑，但不要过度玩梗。',
+  '爆款短视频': '抖音/快手快剪风格：前3秒必须制造强钩子（悬念/冲突/反转），多用短句快切、网感词，节奏紧凑。',
+  '深度解说': 'B站长视频风格：硬核分析镜头语言与导演隐喻，剖析人物动机和剧情结构，逻辑层层递进。',
+  '评述视角': '主观点评风格：输出明确观点与价值判断，善用金句提炼和对比论证，带有强烈的个人立场。',
+  '情感叙事': '感性叙事风格：以细腻笔触描绘画面中的情绪流动，善用比喻和意象，在平淡场景中挖掘深层情感共鸣。',
+  '悬疑推理': '悬疑营造风格：用层层设问和伏笔构建悬念，每一句解说都是线索碎片，引导观众在脑中拼凑真相。',
+  '硬核科普': '知识科普风格：以严谨客观的语气进行知识性解说，注重事实准确性和逻辑清晰度，适当引用专业术语。',
 };
 
 /** 默认语速（字/秒） */
 const DEFAULT_SPEECH_RATE = 4.5;
 
-/** 默认 R/S/T/P 参数 */
-const DEFAULT_PARAMS = { R: 50, S: 50, T: 50, P: 50 };
+/** 默认参数（融合方案，与前端 DEFAULT_PIPELINE_PARAMS 对齐） */
+const DEFAULT_PARAMS: import('../../../../shared/types/entities/editor').PipelineParams = {
+  narrativePerspective: 'third',
+  informationLevel: 'deep',
+  narrationDensity: 'standard',
+  originalAudioStrategy: 'keep_key',
+  rhythmMode: 'mixed',
+  emotionTone: 'neutral',
+  hookIntensity: 0.7,
+  audioVisualWeight: 0.6,
+};
 
 /** LLM 聊天函数签名 */
 export type LLMChatFn = (systemPrompt: string, userPrompt: string) => Promise<string>;
@@ -74,40 +83,71 @@ export class ScriptGenerator {
   }
 
   /**
-   * 构建 System Prompt
+   * 构建 System Prompt（与 ScriptGenStrategy 保持一致，简化版用于无上下文调用）
    */
   buildSystemPrompt(input: Step3Input): string {
-    const rawStyle = input.scriptStyle || '赛博现实主义';
-    const style = STYLE_PROMPTS[rawStyle] ? rawStyle : '赛博现实主义';
+    const rawStyle = input.scriptStyle || '爆款短视频';
+    const style = STYLE_PROMPTS[rawStyle] ? rawStyle : '爆款短视频';
     const styleInstruction = STYLE_PROMPTS[style];
     const speechRate = input.speechRate || DEFAULT_SPEECH_RATE;
     const params = input.pipelineParams || DEFAULT_PARAMS;
-    const retainRatio = params.R / 100;
-    const silenceRatio = params.S / 100;
-    const ttsCoverage = params.T / 100;
-    const paceFactor = params.P / 100;
+    const hookIntensity = params.hookIntensity ?? 0.7;
+    const audioVisualWeight = params.audioVisualWeight ?? 0.6;
+    // 解说密度 → 字数填充系数
+    const densityFillRate = params.narrationDensity === 'full' ? 1.0
+                          : params.narrationDensity === 'sparse' ? 0.5
+                          : 0.65;
 
-    return `你是专业视频讲解文案生成器。
+    // TTS 标点停顿折损系数：逗号 ~200ms / 句号 ~500ms，累计需扣除 15%
+    const discountFactor = 0.85;
 
-【创作风格】：${style}
-${styleInstruction}
+    // 节奏模式 → 单句字数上限（short_fast=12 / mixed=20 / slow_soothing=30）
+    const maxSentenceChars = params.rhythmMode === 'short_fast' ? 12
+                           : params.rhythmMode === 'slow_soothing' ? 30
+                           : 20;
 
-必须输出为一个严谨的 JSON 数组，格式如下：
+    return `你是顶级影视解说创作者（爆款UP主），擅长将画面素材转化为高留存率的解说旁白。你的任务是根据上游5维视觉语义（动作/情绪/光影/色彩）、人物角色库、原片台词记录，生成符合目标平台调性的解说文案。你必须杜绝"看图说话"的流水账，专注于剖析人物动机、情绪压抑与剧情转折，让文案"画外有音，言下之意"。
+
+## Task
+你将收到一份经过物理切片与视觉分析的视频片段流（含有时间轴、角色锚定、ASR原声及画面描述）。
+请据此撰写一份具有高吸引力、节奏感强、声画高度契合的解说文案。
+
+## 创作风格
+${style}：${styleInstruction}
+
+【黄金3秒钩子（强度${(hookIntensity * 100).toFixed(0)}%）】：第一句必须制造悬念或冲突吸引观众。
+
+## ⚡ 爆款短句与卡点硬性规则 (Core Short-Sentence Rules)
+1. **单句字数硬限制**：每个单句（两个标点之间的文字）绝对不能超过 ${maxSentenceChars} 字！多用动词、感叹句与极速短句（如："死死盯住！"、"眼神杀气顿显！"）。
+2. **镜头级微切分**：每个输入 chunk 的解说词字数必须严格 ≤ 单段字数上限，绝不能把多个动作揉合成大段落。
+3. **角色名称绝对统一**：严格使用【全局已知角色列表】中的姓名，严禁混淆人名或凭空创造角色列表之外的人名。
+4. **消除视觉幻觉**：若 ASR 旁白与画面物理描述不一致，以【画面物理描述】为准描绘现场动作，以 ASR 为补充。
+5. **拒绝流水账**：严禁描述画面直观已呈现的表面动作，重点剖析言下之意、内心戏与剧情冲突。
+
+【反看图说话准则】：绝不允许复述画面已直观呈现的表面动作！重点剖析言下之意与内心戏。
+【TTS口语化准则】：文案必须适合语音朗读，严禁超过25字无标点的长句。关键转折处插入 [pause: 500ms]。
+【角色别名轮换准则】：严格基于人物库指代角色，严禁"男子/女子"等模糊代称，但可在真名与身份代词间智能轮换。
+
+## 字数预算与参数指引
+【严格字数约束】：考虑 TTS 标点停顿，字数预算需乘以 0.85 折损系数。
+- 单段字数上限 = ⌊ 时长(秒) × ${speechRate} × ${(densityFillRate * 100).toFixed(0)}% × 0.85 ⌋
+- 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * speechRate * densityFillRate * discountFactor)} 字
+- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * speechRate * densityFillRate * discountFactor)} 字
+
+【专业解说参数指引】：
+- 叙事视角：${params.narrativePerspective === 'third' ? '第三人称上帝视角' : params.narrativePerspective === 'first' ? '第一人称沉浸' : '第二人称吐槽'}
+- 信息层次：${params.informationLevel === 'plot' ? '剧情复述' : params.informationLevel === 'deep' ? '深度解读' : '吐槽点评'}
+- 解说密度：${params.narrationDensity === 'full' ? '满配' : params.narrationDensity === 'sparse' ? '留白' : '标准'}（填充率${(densityFillRate * 100).toFixed(0)}%）
+- 原声策略：${params.originalAudioStrategy === 'cover' ? '全量覆盖' : params.originalAudioStrategy === 'keep_key' ? '关键台词保留' : '原声为主'}
+- 节奏模式：${params.rhythmMode === 'short_fast' ? '短句快切' : params.rhythmMode === 'slow_soothing' ? '长句舒缓' : '长短交替'}
+- 情绪基调：${params.emotionTone === 'neutral' ? '客观中立' : params.emotionTone === 'emotional' ? '情感渲染' : params.emotionTone === 'suspense' ? '悬疑营造' : params.emotionTone === 'epic' ? '高燃热血' : '搞笑吐槽'}
+- 声画权重：${(audioVisualWeight * 100).toFixed(0)}%（${audioVisualWeight > 0.5 ? '偏向视觉' : '偏向原声'}）
+
+## Output Format
+请严格按照以下 JSON 数组格式返回结果，切勿包含任何 Markdown 格式化标记或额外解释：
 [
   { "shotId": "s_01", "text": "解说词内容", "duration": 3.5 }
-]
-
-【字数约束】：请按 ${speechRate} 字/秒的语速标准，控制每个分镜的解说词长度。
-- 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * speechRate)} 字
-- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * speechRate)} 字
-
-【参数化创作指引】：
-- 经典片段保留度：${(retainRatio * 100).toFixed(0)}%（数值越高，越倾向于保留原始画面的经典叙事片段；越低则越大胆重写）
-- 原台词保留度：${(silenceRatio * 100).toFixed(0)}%（数值越高，越倾向于保留原始语音台词；越低则越倾向全量重写解说词）
-- TTS 配音覆盖度：${(ttsCoverage * 100).toFixed(0)}%（数值越高，解说词越长越适合 TTS 配音；越低则偏短短语，保留原声比例大）
-- 节奏因子：${(paceFactor * 100).toFixed(0)}%（数值越高节奏越快，分镜越短促；越低则节奏舒缓，单镜时长更长）
-
-注意：绝对不要输出 JSON 代码块之外的任何多余字符。`;
+]`;
   }
 
   /**

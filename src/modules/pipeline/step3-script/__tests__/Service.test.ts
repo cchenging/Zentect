@@ -15,9 +15,18 @@ function makeInput(overrides: Partial<Step3Input> = {}): Step3Input {
       { url: '/frames/02.jpg', description: '繁忙的十字路口', editing: false, confirmed: true },
       { url: '/frames/03.jpg', description: '人物特写微笑', editing: false, confirmed: false },
     ],
-    scriptStyle: '正经科普',
+    scriptStyle: '硬核科普',
     speechRate: 4.5,
-    pipelineParams: { R: 50, S: 50, T: 50, P: 50 },
+    pipelineParams: {
+      narrativePerspective: 'third',
+      informationLevel: 'deep',
+      narrationDensity: 'standard',
+      originalAudioStrategy: 'keep_key',
+      rhythmMode: 'mixed',
+      emotionTone: 'neutral',
+      hookIntensity: 0.7,
+      audioVisualWeight: 0.6,
+    },
     ...overrides,
   };
 }
@@ -120,19 +129,32 @@ describe('ScriptGenerator', () => {
 
   describe('buildSystemPrompt', () => {
     it('应包含风格名称', () => {
-      const prompt = generator.buildSystemPrompt(makeInput({ scriptStyle: '正经科普' }));
-      expect(prompt).toContain('正经科普');
+      const prompt = generator.buildSystemPrompt(makeInput({ scriptStyle: '硬核科普' }));
+      expect(prompt).toContain('硬核科普');
     });
 
-    it('应包含 R/S/T/P 参数百分比', () => {
+    it('应包含融合方案参数百分比（hookIntensity/audioVisualWeight/densityFillRate）', () => {
       const prompt = generator.buildSystemPrompt(
-        makeInput({ pipelineParams: { R: 70, S: 30, T: 80, P: 60 } }),
+        makeInput({
+          pipelineParams: {
+            narrativePerspective: 'third',
+            informationLevel: 'deep',
+            narrationDensity: 'full',
+            originalAudioStrategy: 'cover',
+            rhythmMode: 'short_fast',
+            emotionTone: 'epic',
+            hookIntensity: 0.8,
+            audioVisualWeight: 0.3,
+          },
+        }),
       );
 
-      expect(prompt).toContain('70%');
-      expect(prompt).toContain('30%');
+      // hookIntensity=0.8 → 80%
       expect(prompt).toContain('80%');
-      expect(prompt).toContain('60%');
+      // audioVisualWeight=0.3 → 30%
+      expect(prompt).toContain('30%');
+      // narrationDensity=full → densityFillRate=1.0 → 100%
+      expect(prompt).toContain('100%');
     });
 
     it('应包含语速约束', () => {
@@ -141,20 +163,21 @@ describe('ScriptGenerator', () => {
       expect(prompt).toContain('3.5 字/秒');
     });
 
-    it('未知风格应 fallback 为赛博现实主义', () => {
+    it('未知风格应 fallback 为爆款短视频', () => {
       const prompt = generator.buildSystemPrompt(
         makeInput({ scriptStyle: '不存在的风格' as any }),
       );
 
-      expect(prompt).toContain('赛博现实主义');
+      expect(prompt).toContain('爆款短视频');
     });
 
-    it('缺失 pipelineParams 应使用默认值', () => {
+    it('缺失 pipelineParams 应使用默认值（hookIntensity=70%）', () => {
       const input = makeInput();
       delete (input as any).pipelineParams;
       const prompt = generator.buildSystemPrompt(input);
 
-      expect(prompt).toContain('50%'); // 默认值
+      // 默认 hookIntensity=0.7 → 70%
+      expect(prompt).toContain('70%');
     });
 
     it('缺失 speechRate 应使用默认 4.5', () => {
@@ -174,12 +197,46 @@ describe('ScriptGenerator', () => {
     });
 
     it('所有 6 种风格应均有映射', () => {
-      const styles = ['赛博现实主义', '无厘头废话文学', '正经科普', '情感叙事', '悬疑推理', '轻松幽默'];
+      const styles = ['爆款短视频', '深度解说', '评述视角', '情感叙事', '悬疑推理', '硬核科普'];
 
       for (const style of styles) {
         const prompt = generator.buildSystemPrompt(makeInput({ scriptStyle: style as any }));
         expect(prompt).toContain(style);
       }
+    });
+
+    it('应包含专业解说参数指引（8维参数映射）', () => {
+      const prompt = generator.buildSystemPrompt(makeInput());
+
+      // 验证所有参数维度都映射到 prompt
+      expect(prompt).toContain('叙事视角');
+      expect(prompt).toContain('信息层次');
+      expect(prompt).toContain('解说密度');
+      expect(prompt).toContain('原声策略');
+      expect(prompt).toContain('节奏模式');
+      expect(prompt).toContain('情绪基调');
+      expect(prompt).toContain('声画权重');
+    });
+
+    it('应包含反看图说话与 TTS 口语化准则', () => {
+      const prompt = generator.buildSystemPrompt(makeInput());
+
+      expect(prompt).toContain('反看图说话');
+      expect(prompt).toContain('TTS口语化');
+      expect(prompt).toContain('角色别名轮换');
+    });
+
+    it('应采用四段式 Markdown 结构（## Task / ## Constraints & Rules / ## Output Format）', () => {
+      const prompt = generator.buildSystemPrompt(makeInput());
+
+      expect(prompt).toContain('## Task');
+      expect(prompt).toContain('## Constraints & Rules');
+      expect(prompt).toContain('## Output Format');
+      // 验证 Constraints 包含4条硬性准则
+      expect(prompt).toContain('角色名称绝对统一');
+      expect(prompt).toContain('字数与节奏控制');
+      expect(prompt).toContain('消除视觉幻觉');
+      expect(prompt).toContain('拒绝流水账');
     });
   });
 
@@ -299,7 +356,7 @@ describe('ScriptGenerator', () => {
       // 验证传入 LLM 的 prompt 包含了场景描述
       const systemPrompt = mockLLM.mock.calls[0][0] as string;
       const userPrompt = mockLLM.mock.calls[0][1] as string;
-      expect(systemPrompt).toContain('正经科普');
+      expect(systemPrompt).toContain('硬核科普');
       expect(userPrompt).toContain('城市天际线夜景');
     });
 

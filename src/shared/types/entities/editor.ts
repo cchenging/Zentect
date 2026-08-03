@@ -46,8 +46,28 @@ export interface ScriptParagraph {
   audioSafeText?: string; cleanText?: string;
 }
 
-/** 管线 R/S/T/P 参数 */
-export interface PipelineParams { R: number; S: number; T: number; P: number; }
+/**
+ * 解说文案生成参数（融合方案：枚举按钮组 + 连续值协同）
+ * 替代旧版 R/S/T/P 滑块，改为专业解说维度的枚举参数
+ */
+export interface PipelineParams {
+  /** 叙事视角：third=第三人称上帝视角 / first=第一人称沉浸 / second=第二人称吐槽互动 */
+  narrativePerspective: 'third' | 'first' | 'second';
+  /** 信息层次：plot=剧情复述 / deep=深度解读 / roast=吐槽点评 */
+  informationLevel: 'plot' | 'deep' | 'roast';
+  /** 解说密度：full=满配(95%+填充) / standard=标准(65%填充) / sparse=留白(50%填充) */
+  narrationDensity: 'full' | 'standard' | 'sparse';
+  /** 原声策略：cover=全量覆盖 / keep_key=关键台词保留 / original_main=原声为主 */
+  originalAudioStrategy: 'cover' | 'keep_key' | 'original_main';
+  /** 节奏模式：short_fast=短句快切 / mixed=长短交替 / slow_soothing=长句舒缓 */
+  rhythmMode: 'short_fast' | 'mixed' | 'slow_soothing';
+  /** 情绪基调：neutral=客观中立 / emotional=情感渲染 / suspense=悬疑营造 / epic=高燃热血 / comedy=搞笑吐槽 */
+  emotionTone: 'neutral' | 'emotional' | 'suspense' | 'epic' | 'comedy';
+  /** 钩子强度 0-1：控制前3秒开头悬念强度，0.2=平铺直叙(纪录片) / 0.9=极速冲突(短视频) */
+  hookIntensity: number;
+  /** 声画权重 0-1：0.2=偏向原声(依赖ASR) / 0.8=偏向视觉(依赖画面描述) */
+  audioVisualWeight: number;
+}
 
 /** TTS 合成结果 */
 export interface TtsResult { shotId: string; audioUrl?: string; _failed?: boolean; _error?: string; }

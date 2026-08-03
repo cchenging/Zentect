@@ -22,15 +22,15 @@ describe('Step3 Types', () => {
           { url: '/frame1.png', description: '城市夜景', editing: false, confirmed: true },
           { url: '/frame2.png', description: '人物特写', editing: false, confirmed: true },
         ],
-        scriptStyle: '正经科普',
+        scriptStyle: '硬核科普',
         speechRate: 4.5,
-        pipelineParams: { R: 50, S: 50, T: 50, P: 50 },
+        pipelineParams: { narrativePerspective:'third', informationLevel:'deep', narrationDensity:'standard', originalAudioStrategy:'keep_key', rhythmMode:'mixed', emotionTone:'neutral', hookIntensity:0.7, audioVisualWeight:0.6 },
       };
 
       expect(input.vlmFrames).toHaveLength(2);
-      expect(input.scriptStyle).toBe('正经科普');
+      expect(input.scriptStyle).toBe('硬核科普');
       expect(input.speechRate).toBe(4.5);
-      expect(input.pipelineParams.R).toBe(50);
+      expect(input.pipelineParams.hookIntensity).toBe(0.7);
     });
 
     it('空 vlmFrames 数组应为合法输入', () => {
@@ -38,7 +38,7 @@ describe('Step3 Types', () => {
         vlmFrames: [],
         scriptStyle: '情感叙事',
         speechRate: 3.5,
-        pipelineParams: { R: 30, S: 70, T: 80, P: 40 },
+        pipelineParams: { narrativePerspective:'first', informationLevel:'plot', narrationDensity:'sparse', originalAudioStrategy:'original_main', rhythmMode:'slow_soothing', emotionTone:'emotional', hookIntensity:0.3, audioVisualWeight:0.4 },
       };
 
       expect(input.vlmFrames).toHaveLength(0);
@@ -49,28 +49,28 @@ describe('Step3 Types', () => {
         vlmFrames: [{ url: '/f.png', description: 'test', editing: false, confirmed: false }],
         scriptStyle: '悬疑推理',
         speechRate: 0,
-        pipelineParams: { R: 0, S: 0, T: 0, P: 0 },
+        pipelineParams: { narrativePerspective:'third', informationLevel:'deep', narrationDensity:'standard', originalAudioStrategy:'keep_key', rhythmMode:'mixed', emotionTone:'neutral', hookIntensity:0.7, audioVisualWeight:0.6 },
       };
 
       expect(input.speechRate).toBe(0);
     });
 
-    it('pipelineParams 应接受极端值 0 和 100', () => {
+    it('pipelineParams 应接受钩子强度和声画权重的边界值 0 和 1', () => {
       const minInput: Step3Input = {
         vlmFrames: [],
-        scriptStyle: '轻松幽默',
+        scriptStyle: '爆款短视频',
         speechRate: 4.5,
-        pipelineParams: { R: 0, S: 0, T: 0, P: 0 },
+        pipelineParams: { narrativePerspective:'second', informationLevel:'roast', narrationDensity:'full', originalAudioStrategy:'cover', rhythmMode:'short_fast', emotionTone:'comedy', hookIntensity:0, audioVisualWeight:0 },
       };
-      expect(minInput.pipelineParams.R).toBe(0);
+      expect(minInput.pipelineParams.hookIntensity).toBe(0);
 
       const maxInput: Step3Input = {
         vlmFrames: [],
-        scriptStyle: '赛博现实主义',
+        scriptStyle: '深度解说',
         speechRate: 4.5,
-        pipelineParams: { R: 100, S: 100, T: 100, P: 100 },
+        pipelineParams: { narrativePerspective:'third', informationLevel:'deep', narrationDensity:'standard', originalAudioStrategy:'keep_key', rhythmMode:'mixed', emotionTone:'epic', hookIntensity:1, audioVisualWeight:1 },
       };
-      expect(maxInput.pipelineParams.P).toBe(100);
+      expect(maxInput.pipelineParams.audioVisualWeight).toBe(1);
     });
   });
 
@@ -162,22 +162,42 @@ describe('Step3 Types', () => {
   // ==================== PipelineParams ====================
 
   describe('PipelineParams', () => {
-    it('四个字段应均为 number 类型', () => {
-      const params: PipelineParams = { R: 60, S: 40, T: 75, P: 55 };
+    it('枚举字段应接受合法值', () => {
+      const params: PipelineParams = {
+        narrativePerspective: 'first',
+        informationLevel: 'roast',
+        narrationDensity: 'sparse',
+        originalAudioStrategy: 'original_main',
+        rhythmMode: 'short_fast',
+        emotionTone: 'epic',
+        hookIntensity: 0.9,
+        audioVisualWeight: 0.2,
+      };
 
-      expect(typeof params.R).toBe('number');
-      expect(typeof params.S).toBe('number');
-      expect(typeof params.T).toBe('number');
-      expect(typeof params.P).toBe('number');
+      expect(params.narrativePerspective).toBe('first');
+      expect(params.informationLevel).toBe('roast');
+      expect(params.narrationDensity).toBe('sparse');
+      expect(params.originalAudioStrategy).toBe('original_main');
+      expect(params.rhythmMode).toBe('short_fast');
+      expect(params.emotionTone).toBe('epic');
     });
 
-    it('边界值应允许整数和浮点数', () => {
-      const params: PipelineParams = { R: 33.3, S: 0, T: 100, P: 87.5 };
+    it('连续值字段应接受 0-1 浮点数', () => {
+      const params: PipelineParams = {
+        narrativePerspective: 'third',
+        informationLevel: 'deep',
+        narrationDensity: 'standard',
+        originalAudioStrategy: 'keep_key',
+        rhythmMode: 'mixed',
+        emotionTone: 'neutral',
+        hookIntensity: 0.65,
+        audioVisualWeight: 0.85,
+      };
 
-      expect(params.R).toBe(33.3);
-      expect(params.S).toBe(0);
-      expect(params.T).toBe(100);
-      expect(params.P).toBe(87.5);
+      expect(params.hookIntensity).toBeGreaterThanOrEqual(0);
+      expect(params.hookIntensity).toBeLessThanOrEqual(1);
+      expect(params.audioVisualWeight).toBeGreaterThanOrEqual(0);
+      expect(params.audioVisualWeight).toBeLessThanOrEqual(1);
     });
   });
 
@@ -216,9 +236,18 @@ describe('Step3 Types', () => {
     it('应包含所有 View 需要的回调函数', () => {
       const props: StepScriptGenerationProps = {
         scriptParagraphs: [],
-        scriptStyle: '正经科普',
+        scriptStyle: '硬核科普',
         speechRate: 4.5,
-        pipelineParams: { R: 50, S: 50, T: 50, P: 50 },
+        pipelineParams: {
+          narrativePerspective: 'third',
+          informationLevel: 'deep',
+          narrationDensity: 'standard',
+          originalAudioStrategy: 'keep_key',
+          rhythmMode: 'mixed',
+          emotionTone: 'neutral',
+          hookIntensity: 0.7,
+          audioVisualWeight: 0.6,
+        },
         vlmFrames: [],
         isGenerating: false,
         onSetScriptStyle: () => {},
@@ -231,7 +260,7 @@ describe('Step3 Types', () => {
         onMatchVision: () => {},
       };
 
-      expect(props.scriptStyle).toBe('正经科普');
+      expect(props.scriptStyle).toBe('硬核科普');
       expect(props.isGenerating).toBe(false);
       expect(typeof props.onRegenerate).toBe('function');
       expect(typeof props.onMatchVision).toBe('function');
@@ -246,7 +275,16 @@ describe('Step3 Types', () => {
         scriptParagraphs: [{ id: 's1', text: '文案', editing: false }],
         scriptStyle: '情感叙事',
         speechRate: 3.0,
-        pipelineParams: { R: 30, S: 70, T: 80, P: 20 },
+        pipelineParams: {
+          narrativePerspective: 'first',
+          informationLevel: 'roast',
+          narrationDensity: 'sparse',
+          originalAudioStrategy: 'original_main',
+          rhythmMode: 'slow_soothing',
+          emotionTone: 'emotional',
+          hookIntensity: 0.3,
+          audioVisualWeight: 0.4,
+        },
         vlmFrames: [{ url: '/a.jpg', description: 'test', editing: false, confirmed: true }],
         isGenerating: true,
         onSetScriptStyle: () => {},
