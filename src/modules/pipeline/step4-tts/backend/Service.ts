@@ -38,16 +38,20 @@ export class TTSProvider {
    * @param provider      合成引擎
    * @param saveDir       保存目录 (默认项目目录下的 tts_output)
    * @param voiceOverride 覆写音色 (角色/voice type)
+   * @param rate 语速倍率 (0.5~2.0)，默认 1.0
    * @returns 音频文件绝对路径
    */
   async synthesize(
     text: string,
     provider: TTSVendor,
     saveDir?: string,
-    voiceOverride?: string
+    voiceOverride?: string,
+    rate?: number
   ): Promise<string> {
     const config = ProviderManager.getTTSConfig(provider)
     const targetDir = saveDir || PathManager.getTTSOutputDir()
+    // 语速倍率归一化，默认 1.0
+    const speedRate = typeof rate === 'number' && rate > 0 ? rate : 1.0
 
     // 统一清洗文本，去除 LLM 生成的舞台指示标记
     const cleanedText = text
@@ -55,9 +59,9 @@ export class TTSProvider {
       .replace(/\s+/g, ' ')
       .trim()
 
-    /** 缓存查找：相同清洗后文本+引擎+音色 的合成结果直接复用 */
+    /** 缓存查找：相同清洗后文本+引擎+音色+语速 的合成结果直接复用 */
     const voiceKey = voiceOverride || config.voice || 'default'
-    const cacheHash = crypto.createHash('md5').update(`${cleanedText}|${provider}|${voiceKey}`).digest('hex').substring(0, 12)
+    const cacheHash = crypto.createHash('md5').update(`${cleanedText}|${provider}|${voiceKey}|${speedRate}`).digest('hex').substring(0, 12)
     const ext = provider === 'moss' || provider === 'sovits' ? 'wav' : 'mp3'
     const cachedFile = path.join(targetDir, `tts_${provider}_${voiceKey}_${cacheHash}.${ext}`)
     if (fs.existsSync(cachedFile)) {
@@ -76,7 +80,7 @@ export class TTSProvider {
           const payload = {
             app: { appid: config.appId.trim(), token: config.token.trim(), cluster: 'volcano_tts' },
             user: { uid: 'zentect_studio' },
-            audio: { voice_type: voiceType.trim(), encoding: 'mp3' },
+            audio: { voice_type: voiceType.trim(), encoding: 'mp3', speed_ratio: speedRate },
             request: { reqid: crypto.randomUUID(), text: cleanedText, text_type: 'plain', operation: 'query' }
           }
           const res = await fetch('https://openspeech.bytedance.com/api/v1/tts', {
@@ -99,7 +103,7 @@ export class TTSProvider {
           const res = await fetch('https://api.tts.quest/v3/voicemaker', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: cleanedText, voice: voiceType, format: 'mp3' })
+            body: JSON.stringify({ text: cleanedText, voice: voiceType, format: 'mp3', speed: speedRate })
           })
           const data: any = await res.json()
           if (!data.data?.audio_url) throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, 'Edge TTS 繁忙')
@@ -109,7 +113,7 @@ export class TTSProvider {
         }
         case 'fish': {
           if (!config.apiKey) throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, '未配置 Fish Audio Key')
-          const payload: any = { text: cleanedText }
+          const payload: any = { text: cleanedText, rate: speedRate }
           if (voiceOverride) payload.reference_id = voiceOverride
           const res = await fetch('https://api.fish.audio/v1/tts', {
             method: 'POST',
@@ -128,6 +132,7 @@ export class TTSProvider {
           url.searchParams.append('text', cleanedText)
           url.searchParams.append('text_language', 'zh')
           if (voiceOverride) url.searchParams.append('character', voiceOverride)
+          url.searchParams.append('speed', speedRate.toFixed(2))
           const res = await fetch(url.toString())
           if (!res.ok) throw new AppError(ErrorCode.AI_PROCESS_FAILED, `SoVITS 异常: ${res.statusText}`)
           audioData = Buffer.from(await res.arrayBuffer())
@@ -139,7 +144,7 @@ export class TTSProvider {
           const res = await fetch(`${mossUrl}/tts`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: cleanedText, voice: voiceType, speed: 1.0 })
+            body: JSON.stringify({ text: cleanedText, voice: voiceType, speed: speedRate })
           })
           if (!res.ok) throw new AppError(ErrorCode.AI_PROCESS_FAILED, `MOSS-TTS 异常: ${await res.text()}`)
           const json: any = await res.json()

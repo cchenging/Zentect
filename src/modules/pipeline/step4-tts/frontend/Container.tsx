@@ -58,7 +58,6 @@ export const StepTTSSynthesis: React.FC = () => {
   const setTtsVoiceId = useStep4Store((s) => s.setTtsVoiceId);
 
   const scriptParagraphs = useStep3Store((s) => s.scriptParagraphs);
-  const pipelineRunning = usePipelineStore((s) => s.pipelineRunning);
 
   const [speechRate, setSpeechRate] = useState(1.0);
   const [playingIdx, setPlayingIdx] = useState<number | null>(null);
@@ -114,18 +113,21 @@ export const StepTTSSynthesis: React.FC = () => {
       const step4State = useStep4Store.getState();
       const previewText = getPreviewText(voiceId)
         || "欢迎使用 Zentect 智能剪辑，这是一段语音合成测试。";
-      const result = await API.voice.preview(step4State.ttsEngine, voiceId, previewText);
+      // 传 speechRate 让后端按当前语速合成试听音频
+      const result = await API.voice.preview(step4State.ttsEngine, voiceId, previewText, speechRate);
       if (result?.audioPath) {
         stopAudio();
         let url = result.audioPath;
         if (!url.startsWith("http") && !url.startsWith("magic://")) url = "magic://local/" + url.replace(/\\/g, "/");
         const audio = new Audio(url); audioRef.current = audio;
+        // 双保险：后端按 speechRate 合成，前端 playbackRate 同步应用
+        audio.playbackRate = speechRate;
         audio.play().catch(() => {}); audio.onended = () => { setPlayingIdx(null); setPreviewingVoiceId(null); };
         audio.onerror = () => setPreviewingVoiceId(null);
       }
     } catch { AppNotifier.error("试听失败"); }
     setPreviewingVoiceId(null);
-  }, [previewingVoiceId, stopAudio]);
+  }, [previewingVoiceId, speechRate, stopAudio]);
 
   const handleSynthesize = useCallback(async () => {
     const step3State = useStep3Store.getState();
@@ -135,9 +137,10 @@ export const StepTTSSynthesis: React.FC = () => {
 
     if (!step3State.scriptParagraphs?.length) { AppNotifier.warning("请先完成步骤3（解说文案）"); return; }
     setIsSynthesizing(true);
+    // 🔧 修复：resetPipeline 必须在 setPipelineRunning(true) 之前调用
+    pipelineState.resetPipeline();
     pipelineState.setStepStatus(4, "running");
     pipelineState.setPipelineRunning(true);
-    pipelineState.resetPipeline();
     try {
       const sequence = STEP_SEQUENCES[4].map((node: any) => ({
         ...node,
@@ -145,6 +148,7 @@ export const StepTTSSynthesis: React.FC = () => {
           ...(node.params || {}),
           ttsEngine: step4State.ttsEngine || "edge",
           voiceId: step4State.ttsVoiceId || "",
+          speechRate: speechRate,  // 语速倍率(0.5~2.0)，传给后端 TTS 引擎
           mediaPath: projectState.mediaItems?.[0]?.filePath || "",
           scriptShots: step3State.scriptParagraphs || [],
         }
@@ -167,7 +171,9 @@ export const StepTTSSynthesis: React.FC = () => {
     }
   }, []);
 
-  const isProcessing = isSynthesizing || pipelineRunning;
+  // isProcessing 只依赖步骤4自身的合成状态，不耦合全局 pipelineRunning
+  // 避免其他步骤(如 step3 等 LLM 响应)running 时卡死步骤4的引擎/音色选择
+  const isProcessing = isSynthesizing;
   const successCount = ttsResults.filter((r: any) => r.audioUrl && !r._failed).length;
   const failedCount = ttsResults.filter((r: any) => r._failed || !r.audioUrl).length;
 

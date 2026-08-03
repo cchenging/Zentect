@@ -102,15 +102,16 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
             const pId = p.shotId || p.id || ''; const result = ttsResults.find((r) => (r.shotId || '') === pId) || ttsResults[idx] || null;
             const status = result ? (result._failed ? "failed" : result.audioUrl ? "completed" : "failed") : null;
             const isPlaying = playingIdx === idx;
+            const durationStr = p.duration ? `${Number(p.duration).toFixed(1)}s` : '';
             return (
               <div key={`tts-${idx}-${p.id}`} className="glass-card-sm p-2.5 flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-accent font-mono shrink-0">{p.shotId || p.id}</span>
+                    <span className="text-[10px] text-accent font-mono shrink-0">第 {String(idx + 1).padStart(2, '0')} 段</span>
                     <Badge variant={status === "completed" ? "success" : status === "failed" ? "danger" : "default"}>
                       {status === "completed" ? "已完成" : status === "failed" ? "失败" : "待合成"}
                     </Badge>
-                    {p.duration && <span className="text-[10px] text-muted-foreground">{p.duration}s</span>}
+                    {durationStr && <span className="text-[10px] text-muted-foreground">{durationStr}</span>}
                   </div>
                   <div className="text-[13px] text-foreground truncate mt-0.5">{p.text}</div>
                 </div>

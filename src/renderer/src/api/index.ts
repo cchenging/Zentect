@@ -205,10 +205,6 @@ export const API = {
     // P0: 前置检查 — 查询 AI 服务配置状态
     preflight: (steps?: string[]) => invokeSafe<{ ok: boolean; message: string; checks: any[] }>(IPC_CHANNELS.ENGINE_PREFLIGHT, { steps }),
 
-    // V1.1: Pipeline 参数更新
-    updateParams: (projectId: string, params: Record<string, number>) =>
-      invokeSafe(IPC_CHANNELS.PIPELINE_UPDATE_PARAMS, { projectId, params }),
-
     // 💥 断层2修复：DAG 工作流执行 — 从 WorkflowService 加载 DAG 并拓扑排序执行
     runDagWorkflow: (projectId: string) =>
       invokeSafe(IPC_CHANNELS.ENGINE_RUN_DAG_WORKFLOW, { projectId }),
@@ -287,8 +283,8 @@ export const API = {
       invokeSafe(IPC_CHANNELS.SHOW_UNBIND_PROJECT, { projectId }),
   },
   voice: {
-    preview: (provider: string, voiceId?: string, text?: string) =>
-      invokeSafe<{ audioPath: string }>(IPC_CHANNELS.VOICE_PREVIEW, { provider, voiceId, text }),
+    preview: (provider: string, voiceId?: string, text?: string, rate?: number) =>
+      invokeSafe<{ audioPath: string }>(IPC_CHANNELS.VOICE_PREVIEW, { provider, voiceId, text, rate }),
     listByEngine: (engine: string) =>
       invokeSafe(IPC_CHANNELS.VOICE_LIST_BY_ENGINE, engine),
     /** 获取已克隆的音色列表 */

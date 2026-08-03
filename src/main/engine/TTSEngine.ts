@@ -16,10 +16,12 @@ export class TTSEngine {
   // ---------------------------------------------------------------------------
   // 🔊 语音合成中枢 (彻底消灭 SettingsRepository)
   // ---------------------------------------------------------------------------
-  public async generateTTS(text: string, provider: 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss', saveDir?: string, voiceOverride?: string): Promise<string> {
+  public async generateTTS(text: string, provider: 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss', saveDir?: string, voiceOverride?: string, rate?: number): Promise<string> {
     const config = ProviderManager.getTTSConfig(provider);
     const targetDir = saveDir || os.tmpdir();
     let ext = 'mp3'; let audioData: Buffer;
+    // 语速倍率(0.5~2.0)，默认 1.0，各引擎参数名与取值范围不同，需归一化
+    const speedRate = typeof rate === 'number' && rate > 0 ? rate : 1.0;
 
     // 提权：对所有引擎统一清洗文本，去除 LLM 生成的舞台指示标记
     const cleanedText = text
@@ -32,7 +34,7 @@ export class TTSEngine {
         case 'doubao': {
           if (!config.appId || !config.token) throw new Error('火山 TTS 未配置。请在 设置 → AI → 语音合成 中选择其他引擎，或填写火山引擎的 AppID 和 Token。');
           const voiceType = voiceOverride || config.voice || 'zh_female_meilinvyou_saturn_bigtts';
-          const payload = { app: { appid: config.appId.trim(), token: config.token.trim(), cluster: "volcano_tts" }, user: { uid: "zentect_studio" }, audio: { voice_type: voiceType.trim(), encoding: "mp3" }, request: { reqid: crypto.randomUUID(), text: cleanedText, text_type: "plain", operation: "query" } };
+          const payload = { app: { appid: config.appId.trim(), token: config.token.trim(), cluster: "volcano_tts" }, user: { uid: "zentect_studio" }, audio: { voice_type: voiceType.trim(), encoding: "mp3", speed_ratio: speedRate }, request: { reqid: crypto.randomUUID(), text: cleanedText, text_type: "plain", operation: "query" } };
           const res = await fetch('https://openspeech.bytedance.com/api/v1/tts', { method: 'POST', headers: { 'Authorization': `Bearer ${config.token.trim()}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
           const json = await res.json();
           if (json.code !== 3000) throw new Error(`火山报错: ${json.message}`);
@@ -41,7 +43,7 @@ export class TTSEngine {
         }
         case 'edge': {
           let voiceType = voiceOverride || (/^[a-zA-Z0-9\s.,!?'-]+$/.test(cleanedText) ? 'en-US-JennyNeural' : 'zh-CN-XiaoxiaoNeural');
-          const res = await fetch('https://api.tts.quest/v3/voicemaker', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: cleanedText, voice: voiceType, format: 'mp3' }) });
+          const res = await fetch('https://api.tts.quest/v3/voicemaker', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: cleanedText, voice: voiceType, format: 'mp3', speed: speedRate }) });
           const data = await res.json();
           if (!data.data || !data.data.audio_url) throw new Error('Edge TTS 繁忙');
           const audioRes = await fetch(data.data.audio_url); audioData = Buffer.from(await audioRes.arrayBuffer());
@@ -49,7 +51,7 @@ export class TTSEngine {
         }
         case 'fish': {
           if (!config.apiKey) throw new Error('未配置 Fish Audio Key');
-          const payload: any = { text: cleanedText }; if (voiceOverride) payload.reference_id = voiceOverride;
+          const payload: any = { text: cleanedText, rate: speedRate }; if (voiceOverride) payload.reference_id = voiceOverride;
           const res = await fetch('https://api.fish.audio/v1/tts', { method: 'POST', headers: { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
           if (!res.ok) throw new Error(`Fish Audio 异常: ${await res.text()}`);
           audioData = Buffer.from(await res.arrayBuffer());
@@ -59,6 +61,7 @@ export class TTSEngine {
           const url = new URL(config.url || 'http://127.0.0.1:9880');
           url.searchParams.append('text', cleanedText); url.searchParams.append('text_language', 'zh');
           if (voiceOverride) url.searchParams.append('character', voiceOverride);
+          url.searchParams.append('speed', speedRate.toFixed(2));
           const res = await fetch(url.toString());
           if (!res.ok) throw new Error(`SoVITS 异常: ${res.statusText}`);
           audioData = Buffer.from(await res.arrayBuffer()); ext = 'wav';
@@ -70,7 +73,7 @@ export class TTSEngine {
           const res = await fetch(`${mossUrl}/tts`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: cleanedText, voice: voiceType, speed: 1.0 })
+            body: JSON.stringify({ text: cleanedText, voice: voiceType, speed: speedRate })
           });
           if (!res.ok) throw new Error(`MOSS-TTS 异常: ${await res.text()}`);
           const json = await res.json();

@@ -153,10 +153,10 @@ export class AIController {
     });
 
     // 🔊 音色试听
-    IpcRouter.handle(IPC_CHANNELS.VOICE_PREVIEW, async (_, payload: { provider: string; voiceId?: string; text?: string }) => {
+    IpcRouter.handle(IPC_CHANNELS.VOICE_PREVIEW, async (_, payload: { provider: string; voiceId?: string; text?: string; rate?: number }) => {
       const previewText = payload.text || '欢迎使用 Zentect 智能剪辑';
       const audioPath = await ttsEngine.generateTTS(previewText,
-        payload.provider as any, undefined, payload.voiceId);
+        payload.provider as any, undefined, payload.voiceId, payload.rate);
       return { audioPath };
     });
 

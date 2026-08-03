@@ -1,5 +1,7 @@
-// VoiceCard - compatibility stub
+// VoiceCard - 音色卡片组件
 import React from 'react';
+import { Play, Square, Check } from 'lucide-react';
+import { cn } from '../../lib/utils';
 
 interface VoiceCardProps {
   /** 音色 ID（兼容旧调用方传入） */
@@ -18,16 +20,60 @@ interface VoiceCardProps {
   onPreview?: (voiceId: string) => void;
 }
 
+/**
+ * 音色卡片组件
+ * 用于 TTS 步骤的音色选择，支持选中态高亮与试听预览
+ */
 export const VoiceCard: React.FC<VoiceCardProps> = ({ name, selected, isPreviewing, onSelect, onPreview, id, lang }) => {
-  void id; void lang; void isPreviewing; void onPreview;
   return (
     <div
       onClick={onSelect}
-      className={`p-3 border rounded cursor-pointer ${
-        selected ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
-      }`}
+      className={cn(
+        'group relative p-2 rounded-lg border cursor-pointer transition-all duration-200 select-none',
+        'flex flex-col gap-0.5 min-h-[52px]',
+        selected
+          ? 'border-accent/60 bg-accent/10 shadow-sm'
+          : 'border-border/40 bg-bg-tertiary/40 hover:border-accent/30 hover:bg-bg-secondary/50'
+      )}
     >
-      {name}
+      {/* 选中标记 */}
+      {selected && (
+        <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-accent flex items-center justify-center">
+          <Check size={10} className="text-white" />
+        </span>
+      )}
+
+      {/* 音色名称 */}
+      <span className={cn(
+        'text-[12px] font-medium truncate',
+        selected ? 'text-accent' : 'text-foreground'
+      )}>
+        {name}
+      </span>
+
+      {/* 语言标识 */}
+      {lang && (
+        <span className="text-[10px] text-muted-foreground/70 truncate">{lang}</span>
+      )}
+
+      {/* 试听按钮 */}
+      {onPreview && id && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onPreview(id);
+          }}
+          className={cn(
+            'absolute bottom-1 right-1 w-5 h-5 rounded-full flex items-center justify-center transition-all',
+            isPreviewing
+              ? 'bg-accent-cyan/20 text-accent-cyan'
+              : 'bg-muted/30 text-muted-foreground hover:bg-accent-cyan/15 hover:text-accent-cyan opacity-0 group-hover:opacity-100'
+          )}
+          aria-label={isPreviewing ? '停止试听' : '试听音色'}
+        >
+          {isPreviewing ? <Square size={10} /> : <Play size={10} />}
+        </button>
+      )}
     </div>
   );
 };

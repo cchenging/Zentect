@@ -82,6 +82,8 @@ export class TTSStrategy extends BaseNodeStrategy {
       || ProviderManager.getTTSConfig().provider as TTSProvider
       || 'edge';
     const voiceId: string | undefined = input.voiceId || undefined;
+    // 语速倍率(0.5~2.0)，默认 1.0，传给 TTS 引擎控制合成速度
+    const speechRate: number = typeof input.speechRate === 'number' ? input.speechRate : 1.0;
 
     // 收集待合成的段落列表
     let shots: Array<{ shotId: string; text: string; duration: number }> = [];
@@ -127,7 +129,7 @@ export class TTSStrategy extends BaseNodeStrategy {
       concurrency,
       // 单段合成执行器
       async (shot, _idx) => {
-        const audioPath = await ttsEngine.generateTTS(shot.text, provider, cacheDir, voiceId);
+        const audioPath = await ttsEngine.generateTTS(shot.text, provider, cacheDir, voiceId, speechRate);
         return { shotId: shot.shotId, text: shot.text, audioPath, duration: shot.duration } as TTSItemResult;
       },
       // 进度回调：每完成一段更新进度

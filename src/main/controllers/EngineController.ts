@@ -17,7 +17,6 @@ import { ShowRepository } from '../database/repositories/ShowRepository';
 import { TTSProvider } from '../../modules/pipeline/step4-tts/backend/Service';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
-import { SettingsRepository } from '../database/repositories/SettingsRepository';
 import { FFmpegRenderer } from '../engine/media/FFmpegRenderer'
 import { BatchQueueEngine } from '../engine/BatchQueueEngine'
 import { PublishService } from '../services/PublishService';
@@ -277,27 +276,6 @@ export class EngineController {
       return service.load(projectId);
     });
 
-    // V1.1: Pipeline 参数更新 — 持久化 R/S/T/P 到 Settings，后续 Pipeline 执行时自动注入 ExecutionContext
-    IpcRouter.handle(IPC_CHANNELS.PIPELINE_UPDATE_PARAMS, async (_, payload: { projectId: string; params: Record<string, number> }) => {
-      AppLogger.info(LOG_TAGS.ENGINE, `Pipeline 参数更新: project=${payload.projectId}, params=${JSON.stringify(payload.params)}`);
-
-      const settings = new SettingsRepository();
-      const paramMapping: Record<string, string> = {
-        R: 'pipeline.param.retainRatio',
-        S: 'pipeline.param.silenceRatio',
-        T: 'pipeline.param.ttsCoverage',
-        P: 'pipeline.param.paceFactor',
-      };
-
-      for (const [key, settingKey] of Object.entries(paramMapping)) {
-        if (payload.params[key] !== undefined) {
-          settings.saveSettings({ [settingKey]: String(payload.params[key]) });
-        }
-      }
-
-      return { success: true, params: payload.params };
-    });
-
     // V1.1: License 已迁移至 VIP 激活码体系（UserController 处理）
     // 旧 IPC 频道保留兼容，返回迁移提示
     IpcRouter.handle(IPC_CHANNELS.LICENSE_VALIDATE, async () => {
@@ -454,10 +432,10 @@ export class EngineController {
     });
 
     // V1.1: 音色试听 — 使用指定引擎/音色合成示例文本，返回音频路径
-    IpcRouter.handle(IPC_CHANNELS.VOICE_PREVIEW, async (_, payload: { provider: string; voiceId?: string; text?: string }) => {
+    IpcRouter.handle(IPC_CHANNELS.VOICE_PREVIEW, async (_, payload: { provider: string; voiceId?: string; text?: string; rate?: number }) => {
       const provider = new TTSProvider();
       const sampleText = payload.text || '欢迎使用 Zentect 智能剪辑，这是一段测试语音合成效果。';
-      const audioPath = await provider.synthesize(sampleText, payload.provider as any, undefined, payload.voiceId || undefined);
+      const audioPath = await provider.synthesize(sampleText, payload.provider as any, undefined, payload.voiceId || undefined, payload.rate);
       return { audioPath };
     });
 
