@@ -4,15 +4,11 @@
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '@renderer/store/useStore';
+import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { resetAllProjectStores } from '@modules/editor/stores/resetAllProjectStores';
 import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
-import { useProjectStore } from '@modules/editor/stores/useProjectStore';
-import { useStep2Store } from '@modules/pipeline/stores/useStep2Store';
-import { useStep3Store } from '@modules/pipeline/stores/useStep3Store';
-import { useStep4Store } from '@modules/pipeline/stores/useStep4Store';
-import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
-import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
 import { DraftService } from '@renderer/services/DraftService';
 import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 import { AppNotifier } from '@renderer/core/AppNotifier';
@@ -30,44 +26,10 @@ export const useEditorHydration = (id: string | undefined) => {
     let isMounted = true;
     const projectStore = useProjectStore.getState();
 
-    projectStore.resetProjectState();
-    // 逐个重置局部 Store
-    usePlayerStore.getState().resetState();
-    useProjectStore.getState().resetProjectState?.();
-    // 🔧 修复状态丢失：不重置 subStepStatuses/stepCompleted/stepStatuses
-    // 旧版 bug：每次进场都 resetAllStepStatuses() 把所有子步骤置为 idle → hydrate 从 DB 恢复之前
-    //          React 组件已经读到 idle 状态重新渲染；更严重的是，如果 hydrate 因时序问题延迟，
-    //          UI 会短暂显示"未开始"然后又跳回"已完成"，用户误以为状态丢失
-    // 修复：subStepStatuses/stepCompleted/stepStatuses 由 hydrateProjectData 从 DB 恢复，
-    //       进场时只重置瞬态运行状态（pipelineRunning/progress/error）
-    usePipelineStore.getState().setPipelineRunning?.(false);
-    usePipelineStore.getState().setPipelineProgress?.(0, '');
-    usePipelineStore.getState().setPipelineError?.(null);
-    usePipelineStore.getState().setExtractionConfig?.(null);
-    // 🔧 修复状态丢失：进场时不硬重置 step1 数据状态
-    // 旧版 bug：每次进场都 setAsrLines([]) setFrameCount(0) setAudioSeparated(false)
-    //   → hydrate 异步加载项目数据前的瞬间，store 已被清空
-    //   → 如果 hydrate 失败或数据为空，之前成功状态永久丢失
-    // 修复：只重置运行时进度（subStepProgresses），数据状态由 hydrate 负责
-    //   hydrate 时从 DB 读取成功状态恢复；DB 中已有保护：空数组/false 不覆盖
-    useStep1Store.setState({
-      subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 },
-    });
-    useStep2Store.getState().setVlmFrames?.([]);
-    useStep3Store.getState().setScriptParagraphs?.([]);
-    useStep3Store.getState().setScriptStyle?.('赛博现实主义');
-    useStep3Store.getState().setSpeechRate?.(4.5);
-    useStep3Store.getState().setPipelineParams?.({ R: 70, S: 50, T: 80, P: 60 });
-    useStep4Store.getState().setTtsEngine?.('edge');
-    useStep4Store.getState().setTtsVoiceId?.('');
-    useStep4Store.getState().setTtsProgress?.(0);
-    useStep4Store.getState().setTtsResults?.([]);
-    useStep5Store.getState().setMatchResults?.([]);
-    useStep5Store.getState().setActiveBgm?.(null);
-    useStep5Store.getState().setBeatTimestamps?.([]);
-    useStep5Store.getState().setVideoChunks?.([]);
-    useEditorNavStore.getState().setCurrentStep?.(1);
-    useEditorNavStore.getState().setIsAutoMode?.(false);
+    // 🛑 原则 3:项目状态实例化 — 彻底重置所有 store,根治跨项目数据泄漏
+    // 各 store 自带 reset() 方法,初始值单一数据源(定义在 store 内部),不会遗漏字段。
+    // 重置后由 hydrateProjectData 从 DB 无条件恢复(DB 是唯一真相源)。
+    resetAllProjectStores();
 
     const initWorkspace = async () => {
       useStore.getState().setHydrationStatus?.('LOADING');

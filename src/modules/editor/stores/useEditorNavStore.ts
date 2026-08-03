@@ -16,6 +16,9 @@ export interface EditorNavStore {
 
   setCurrentStep: (step: number) => void;
   setIsAutoMode: (auto: boolean) => void;
+
+  /** 重置导航状态 */
+  reset: () => void;
 }
 
 export const useEditorNavStore = create<EditorNavStore>()((set) => ({
@@ -24,4 +27,6 @@ export const useEditorNavStore = create<EditorNavStore>()((set) => ({
 
   setCurrentStep: (step) => set({ currentStep: step }),
   setIsAutoMode: (auto) => set({ isAutoMode: auto }),
+
+  reset: () => set({ currentStep: 1, isAutoMode: false }),
 }));

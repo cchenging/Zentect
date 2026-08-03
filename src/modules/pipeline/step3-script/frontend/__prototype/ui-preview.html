@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>步骤3 参数 UI 原型 v3</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          'bg-primary': '#0f1117',
+          'bg-secondary': '#161922',
+          'bg-tertiary': '#1d2130',
+          'border': '#2a2f3e',
+          'accent': '#6366f1',
+          'accent-soft': '#818cf8',
+          'muted': '#6b7280',
+          'fg': '#e5e7eb',
+          'amber-warn': '#f59e0b',
+        }
+      }
+    }
+  }
+</script>
+<style>
+  body { background: #0a0c12; color: #e5e7eb; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .glass-card-sm { background: rgba(22,25,34,0.6); border: 1px solid rgba(42,47,62,0.5); border-radius: 8px; }
+  .param-btn { transition: all 0.15s ease; }
+  .param-btn:hover:not(:disabled):not(.active) { border-color: rgba(99,102,241,0.5); color: #e5e7eb; }
+  .param-btn.active { background: rgba(99,102,241,0.15); border-color: rgba(99,102,241,0.6); color: #818cf8; }
+  .param-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .density-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0.3; }
+  .density-dot.on { opacity: 1; }
+  .tooltip-trigger { position: relative; display: inline-flex; align-items: center; cursor: help; }
+  .tooltip-trigger:hover .tooltip-content { opacity: 1; visibility: visible; transform: translateY(0); }
+  .tooltip-content {
+    position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%) translateY(4px);
+    background: #1d2130; border: 1px solid rgba(42,47,62,0.8); border-radius: 6px;
+    padding: 6px 10px; white-space: nowrap; font-size: 12px; color: #9ca3af;
+    opacity: 0; visibility: hidden; transition: all 0.2s; z-index: 50; margin-bottom: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  input[type="range"] { -webkit-appearance: none; height: 3px; background: #2a2f3e; border-radius: 2px; outline: none; }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #6366f1; cursor: pointer; }
+  /* 模拟 lucide 图标用 SVG 内联 */
+  .icon { display: inline-block; vertical-align: middle; }
+</style>
+</head>
+<body class="p-6">
+<div class="max-w-xl mx-auto flex flex-col gap-3">
+
+  <!-- 预估时长（无主标题，直接显示统计；空状态时隐藏） -->
+  <div class="flex items-center justify-end gap-3 text-[12px]">
+    <div class="flex items-center gap-1.5">
+      <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      <span class="text-muted">段文案</span>
+      <span class="text-accent-soft font-mono font-semibold">3</span>
+    </div>
+    <div class="text-muted/40">·</div>
+    <div class="flex items-center gap-1.5">
+      <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <span class="text-muted">预估</span>
+      <span class="text-fg font-mono font-semibold">2</span>
+      <span class="text-muted">分钟</span>
+    </div>
+  </div>
+
+  <!-- 风格选择（保留原下拉框样式，只加问号 tooltip） -->
+  <div class="flex items-center gap-2">
+    <span class="text-[13px] text-muted-foreground shrink-0 flex items-center gap-1">
+      风格
+      <span class="tooltip-trigger">
+        <svg class="icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        <span class="tooltip-content">选择目标平台与解说风格，决定整体文案调性</span>
+      </span>
+    </span>
+    <select class="text-[13px] px-2 py-1 rounded-md bg-bg-secondary border border-border/30 text-fg outline-none cursor-pointer">
+      <option>爆款短视频</option>
+      <option>深度解说</option>
+      <option>评述视角</option>
+      <option>情感叙事</option>
+      <option>悬疑推理</option>
+      <option>硬核科普</option>
+    </select>
+  </div>
+
+  <!-- 解说控制参数（单一卡片，内部分3组用分隔线区分） -->
+  <div class="glass-card-sm p-3 flex flex-col gap-3">
+
+    <!-- 组1：内容语义 -->
+    <div class="flex flex-col gap-2.5">
+      <div class="text-[12px] text-muted-foreground/70 uppercase tracking-wide">内容语义</div>
+
+      <!-- 叙事视角 -->
+      <div class="flex items-center gap-2">
+        <span class="text-[13px] text-muted-foreground w-16 shrink-0">叙事视角</span>
+        <div class="flex gap-1.5">
+          <button class="param-btn active text-[12px] px-2.5 py-1 rounded border border-border/30 font-medium">第三人称</button>
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">第一人称</button>
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">第二人称</button>
+        </div>
+      </div>
+
+      <!-- 信息层次（带问号 tooltip） -->
+      <div class="flex items-center gap-2">
+        <span class="text-[13px] text-muted-foreground w-16 shrink-0 flex items-center gap-1">
+          信息层次
+          <span class="tooltip-trigger">
+            <svg class="icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span class="tooltip-content">剧情复述=讲发生了什么；深度解读=分析为什么；吐槽点评=主观评价</span>
+          </span>
+        </span>
+        <div class="flex gap-1.5">
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">剧情复述</button>
+          <button class="param-btn active text-[12px] px-2.5 py-1 rounded border border-border/30 font-medium">深度解读</button>
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">吐槽点评</button>
+        </div>
+      </div>
+
+      <!-- 情绪基调 -->
+      <div class="flex items-center gap-2">
+        <span class="text-[13px] text-muted-foreground w-16 shrink-0">情绪基调</span>
+        <div class="flex gap-1.5 flex-wrap">
+          <button class="param-btn active text-[12px] px-2.5 py-1 rounded border border-border/30 font-medium">客观</button>
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">情感</button>
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">悬疑</button>
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">高燃</button>
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">搞笑</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 分隔线 -->
+    <div class="border-t border-border/20"></div>
+
+    <!-- 组2：视听编排 -->
+    <div class="flex flex-col gap-2.5">
+      <div class="text-[12px] text-muted-foreground/70 uppercase tracking-wide">视听编排</div>
+
+      <!-- 解说密度（带问号 + 密度点可视化） -->
+      <div class="flex items-center gap-2">
+        <span class="text-[13px] text-muted-foreground w-16 shrink-0 flex items-center gap-1">
+          解说密度
+          <span class="tooltip-trigger">
+            <svg class="icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span class="tooltip-content">控制字数填充率：满配100%、标准65%、留白50%</span>
+          </span>
+        </span>
+        <div class="flex gap-1.5">
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted flex items-center gap-1.5">
+            <span class="flex gap-0.5"><span class="density-dot on"></span><span class="density-dot on"></span><span class="density-dot on"></span></span>
+            满配
+          </button>
+          <button class="param-btn active text-[12px] px-2.5 py-1 rounded border border-border/30 font-medium flex items-center gap-1.5">
+            <span class="flex gap-0.5"><span class="density-dot on"></span><span class="density-dot on"></span><span class="density-dot"></span></span>
+            标准
+          </button>
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted flex items-center gap-1.5">
+            <span class="flex gap-0.5"><span class="density-dot on"></span><span class="density-dot"></span><span class="density-dot"></span></span>
+            留白
+          </button>
+        </div>
+      </div>
+
+      <!-- 原声策略（带问号） -->
+      <div class="flex items-center gap-2">
+        <span class="text-[13px] text-muted-foreground w-16 shrink-0 flex items-center gap-1">
+          原声策略
+          <span class="tooltip-trigger">
+            <svg class="icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span class="tooltip-content">全量覆盖=忽略原声；关键保留=冲突台词暂停解说；原声为主=解说仅辅助</span>
+          </span>
+        </span>
+        <div class="flex gap-1.5">
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">全量覆盖</button>
+          <button class="param-btn active text-[12px] px-2.5 py-1 rounded border border-border/30 font-medium">关键保留</button>
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">原声为主</button>
+        </div>
+      </div>
+
+      <!-- 节奏模式 -->
+      <div class="flex items-center gap-2">
+        <span class="text-[13px] text-muted-foreground w-16 shrink-0">节奏模式</span>
+        <div class="flex gap-1.5">
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">短句快切</button>
+          <button class="param-btn active text-[12px] px-2.5 py-1 rounded border border-border/30 font-medium">长短交替</button>
+          <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted">长句舒缓</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 分隔线 -->
+    <div class="border-t border-border/20"></div>
+
+    <!-- 组3：精细控制（滑块，沿用项目 ParameterSlider 风格） -->
+    <div class="flex flex-col gap-2.5">
+      <div class="text-[12px] text-muted-foreground/70 uppercase tracking-wide">精细控制</div>
+
+      <!-- 钩子强度 -->
+      <div class="flex items-center gap-2">
+        <span class="text-[13px] text-muted-foreground w-16 shrink-0 flex items-center gap-1">
+          钩子强度
+          <span class="tooltip-trigger">
+            <svg class="icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span class="tooltip-content">前3秒悬念冲击力：低=平铺直叙，高=极速反转</span>
+          </span>
+        </span>
+        <div class="flex-1 flex items-center gap-2">
+          <input type="range" min="0" max="100" value="70" class="flex-1">
+          <span class="w-10 text-[12px] text-accent font-mono text-right">70%</span>
+        </div>
+      </div>
+
+      <!-- 声画权重 -->
+      <div class="flex items-center gap-2">
+        <span class="text-[13px] text-muted-foreground w-16 shrink-0 flex items-center gap-1">
+          声画权重
+          <span class="tooltip-trigger">
+            <svg class="icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <span class="tooltip-content">偏向视觉=依据画面描述，偏向原声=提炼对白核心</span>
+          </span>
+        </span>
+        <div class="flex-1 flex items-center gap-2">
+          <input type="range" min="0" max="100" value="60" class="flex-1">
+          <span class="w-10 text-[12px] text-accent font-mono text-right">60%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 语速控制（独立卡片，沿用现有结构，字号升级） -->
+  <div class="glass-card-sm p-3 flex flex-col gap-2">
+    <div class="flex items-center justify-between">
+      <span class="text-[13px] text-muted-foreground">语速控制</span>
+      <span class="text-[12px] px-1.5 py-0.5 rounded bg-bg-secondary text-accent font-mono">4.5字/秒</span>
+    </div>
+    <div class="flex items-center gap-3 text-[12px] text-muted-foreground">
+      <span>当前字数: <span class="text-fg font-mono">125</span></span>
+      <span>预估时长: <span class="text-fg font-mono">28s</span></span>
+    </div>
+    <div class="flex flex-wrap gap-1.5">
+      <button class="param-btn text-[12px] px-2.5 py-1 rounded-md border border-border/30 bg-bg-secondary text-muted">5.5 (紧凑)</button>
+      <button class="param-btn text-[12px] px-2.5 py-1 rounded-md border border-border/30 bg-bg-secondary text-muted">5.0 (轻快)</button>
+      <button class="param-btn active text-[12px] px-2.5 py-1 rounded-md border border-border/30 font-medium">4.5 (标准)</button>
+      <button class="param-btn text-[12px] px-2.5 py-1 rounded-md border border-border/30 bg-bg-secondary text-muted">4.0 (舒缓)</button>
+      <button class="param-btn text-[12px] px-2.5 py-1 rounded-md border border-border/30 bg-bg-secondary text-muted">3.5 (低缓)</button>
+    </div>
+  </div>
+
+  <!-- 锁定态示例（原声为主 → 满配锁定） -->
+  <div class="glass-card-sm p-3" style="border-color: rgba(245,158,11,0.3);">
+    <div class="flex items-center gap-2 mb-2">
+      <svg class="icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/></svg>
+      <span class="text-[13px] text-amber-warn">冲突防呆示例</span>
+      <span class="text-[12px] text-muted">原声为主时，满配自动锁定</span>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="text-[13px] text-muted-foreground w-16 shrink-0">解说密度</span>
+      <div class="flex gap-1.5">
+        <button disabled class="param-btn text-[12px] px-2.5 py-1 rounded border bg-bg-secondary text-amber-warn/50 flex items-center gap-1.5" style="border-color: rgba(245,158,11,0.3);">
+          <svg class="icon" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <span class="flex gap-0.5"><span class="density-dot on"></span><span class="density-dot on"></span><span class="density-dot on"></span></span>
+          满配(锁定)
+        </button>
+        <button class="param-btn active text-[12px] px-2.5 py-1 rounded border border-border/30 font-medium flex items-center gap-1.5">
+          <span class="flex gap-0.5"><span class="density-dot on"></span><span class="density-dot on"></span><span class="density-dot"></span></span>
+          标准
+        </button>
+        <button class="param-btn text-[12px] px-2.5 py-1 rounded border border-border/30 bg-bg-secondary text-muted flex items-center gap-1.5">
+          <span class="flex gap-0.5"><span class="density-dot on"></span><span class="density-dot"></span><span class="density-dot"></span></span>
+          留白
+        </button>
+      </div>
+    </div>
+    <div class="mt-2 text-[12px] text-amber-warn/70 flex items-center gap-1">
+      <svg class="icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      原声为主时不可满配，已自动降级为标准
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

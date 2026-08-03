@@ -9,6 +9,7 @@ import { MediaRepository } from '../data/MediaRepository';
 import { ProjectRepository } from '../../../../main/database/repositories/ProjectRepository';
 import { AppLogger } from '@modules/infra/logger/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
+import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 import type { MediaItem } from '../types';
 
 /** 需转码的视频容器格式 */
@@ -73,31 +74,31 @@ export class ImportService {
 
         this.repo.insertMedia(mediaItem);
 
-        // 视频导入：同步快速截图（seek 1s，单帧），让前端瞬间拿到封面，避免闪烁
-        // 后台 processMediaInBackground 仍会跑完整 generateCover 优化为最亮帧
-        let fastCoverPath = '';
+        // 视频导入：同步用 FFmpeg thumbnail 滤镜生成封面（0.5-2秒）
+        // thumbnail 滤镜自动跳过黑场/纯白/高重复帧，选色彩最丰富的代表帧
+        // 一次生成即为最终封面，无需异步二次覆盖，避免图片跳变
+        let coverPath = '';
         if (type === 'video') {
           try {
-            const fastCoverName = await videoProcessor.generateCoverFast(
+            const coverName = await videoProcessor.generateCover(
               filePath,
               pathManager.getProjectThumbnailsDir(projectId),
               mediaId,
             );
-            if (fastCoverName) {
-              fastCoverPath = `thumbnails/${fastCoverName}`;
-              // 同步写入 DB，避免后台未完成时关闭应用导致封面丢失
-              this.repo.updateMediaMeta(mediaId, { coverPath: fastCoverPath });
-              // 🔧 修复 P0：同步写 projects.cover_path，让首页立即显示封面
-              // 旧版 bug：只写 media_assets.cover_path，projects.cover_path 推迟到异步后台任务写入
-              //   用户在后台完成前切回首页 → projects.cover_path 为 NULL → 首页显示图标
+            if (coverName) {
+              coverPath = `thumbnails/${coverName}`;
+              // 同步写入 DB
+              this.repo.updateMediaMeta(mediaId, { coverPath });
+              // 同步写 projects.cover_path，让首页立即显示封面
               try {
-                new ProjectRepository().updateCover(projectId, fastCoverPath);
+                new ProjectRepository().updateCover(projectId, coverPath);
+                this.broadcastCoverUpdated(projectId, coverPath);
               } catch (e) {
                 AppLogger.warn(LOG_TAGS.MEDIA, `同步回写 projects.cover_path 失败: ${projectId}`);
               }
             }
           } catch (e) {
-            AppLogger.warn(LOG_TAGS.MEDIA, `generateCoverFast failed for ${mediaId}`);
+            AppLogger.warn(LOG_TAGS.MEDIA, `generateCover failed for ${mediaId}`);
           }
         }
 
@@ -107,13 +108,13 @@ export class ImportService {
           type,
           name: fileName,
           filePath,
-          coverPath: fastCoverPath ? `magic://${projectId}/${fastCoverPath}` : '',
+          coverPath: coverPath ? `magic://${projectId}/${coverPath}` : '',
           duration: '00:00:00',
           status: 'importing',
         };
         results.push(frontendMediaItem);
 
-        // 后台异步处理（元数据提取 + 完整封面优化 + 可选转码）
+        // 后台异步处理（元数据提取 + 可选转码，封面已同步生成无需再处理）
         this.processMediaInBackground(
           projectId,
           mediaId,
@@ -183,7 +184,7 @@ export class ImportService {
         }
       }
 
-      // 提取元数据
+      // 提取元数据（封面已在导入时同步生成，此处不再处理）
       let metadata: any = {
         formattedTime: '00:00:00',
         duration: 0,
@@ -191,7 +192,6 @@ export class ImportService {
         height: 0,
         fps: 0,
       };
-      let pureCoverName = '';
 
       if (type === 'video') {
         try {
@@ -202,39 +202,9 @@ export class ImportService {
             `extractMetadata failed for ${mediaId}, using defaults`,
           );
         }
-        try {
-          pureCoverName = await videoProcessor.generateCover(
-            playableFilePath,
-            pathManager.getProjectThumbnailsDir(projectId),
-            mediaId,
-          );
-        } catch (e) {
-          AppLogger.warn(
-            LOG_TAGS.MEDIA,
-            `generateCover failed for ${mediaId}`,
-          );
-        }
-        // 完整版失败兜底：重新调用快速截图，避免封面从有变无造成退化
-        // （generateCover 内部失败会删除同名文件，需重生成）
-        if (!pureCoverName) {
-          try {
-            pureCoverName = await videoProcessor.generateCoverFast(
-              playableFilePath,
-              pathManager.getProjectThumbnailsDir(projectId),
-              mediaId,
-            );
-          } catch (e) {
-            AppLogger.warn(LOG_TAGS.MEDIA, `generateCoverFast fallback failed for ${mediaId}`);
-          }
-        }
       }
 
-      const relativeCoverPath = pureCoverName
-        ? `thumbnails/${pureCoverName}`
-        : '';
-
       this.repo.updateMediaMeta(mediaId, {
-        coverPath: relativeCoverPath,
         status: 'parsed',
         duration: metadata.duration || 0,
         width: metadata.width || 0,
@@ -243,36 +213,7 @@ export class ImportService {
         filePath: playableFilePath,
       });
 
-      // 🔧 修复：推送给前端的 coverPath 必须是 magic URL，不能用裸相对路径
-      // 旧版 bug：推送 'thumbnails/xxx.jpg' → getSafeMediaUrl 转成 magic://local/... → 404
-      //          重进项目时 MediaController 才转 magic://{projectId}/... → 能显示
-      //          导致"导入后封面不显示，重进才显示"
-      // DB 仍存裸相对路径（hydrate 时由 MediaController 转 magic），保持兼容
-      const frontendCoverPath = relativeCoverPath
-        ? `magic://${projectId}/${relativeCoverPath}`
-        : '';
-
-      // 🔧 修复：同步回写到 projects.cover_path，供首页项目卡片显示
-      // 旧版 bug：封面只写 media_assets.cover_path，projects.cover_path 永远 NULL
-      //          首页读 projects.cover_path → NULL → 显示兜底图标
-      // 复用已有的 ProjectRepository.updateCover() 孤儿方法，写入裸相对路径
-      // 首页读取时 ProjectService.getList() 会转成 magic://{projectId}/... URL
-      if (relativeCoverPath) {
-        try {
-          new ProjectRepository().updateCover(projectId, relativeCoverPath);
-        } catch (e: any) {
-          // 🔧 修复 P2-A：补全错误堆栈，便于定位 db 单例/require 路径/SQL 异常
-          // 旧版 bug：仅打印 projectId，丢失堆栈，无法判断失败根因
-          AppLogger.warn(
-            LOG_TAGS.MEDIA,
-            `回写 projects.cover_path 失败: ${projectId} | ${e?.message || e}`,
-            e,
-          );
-        }
-      }
-
       this.notifyFrontend(projectId, mediaId, {
-        coverPath: frontendCoverPath,
         duration: metadata.formattedTime,
         status: 'parsed',
       });
@@ -293,6 +234,27 @@ export class ImportService {
   }
 
   // --- 工具方法 ---
+
+  /**
+   * 🎬 封面增量广播:通知首页 patch 指定项目的 coverPath
+   * 前端收到后追加 ?t=timestamp 破除 Chromium 图片强缓存,局部 state patch
+   * @param projectId 项目 ID
+   * @param relativeCoverPath 裸相对路径(如 thumbnails/media_xxx.jpg),前端自行转 magic URL
+   */
+  private broadcastCoverUpdated(projectId: string, relativeCoverPath: string): void {
+    try {
+      const windows = BrowserWindow.getAllWindows();
+      for (const win of windows) {
+        if (!win.isDestroyed()) {
+          win.webContents.send(IPC_CHANNELS.EVENT_COVER_UPDATED, {
+            projectId,
+            coverPath: `magic://${projectId}/${relativeCoverPath}`,
+            updatedAt: Date.now(),
+          });
+        }
+      }
+    } catch {}
+  }
 
   private notifyFrontend(
     projectId: string,

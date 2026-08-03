@@ -138,7 +138,6 @@ SystemController → ApiProfileController → ProjectController → MediaControl
 | `PIPELINE_PROBE_RECOVERY` | `pipeline:probe-recovery` | invoke (schema) | EngineController | — |
 | `PIPELINE_RECOVERY_CONTINUE` | `pipeline:recovery-continue` | invoke (schema) | EngineController | — |
 | `PIPELINE_RECOVERY_ABANDON` | `pipeline:recovery-abandon` | invoke (schema) | EngineController | — |
-| `PIPELINE_UPDATE_PARAMS` | `pipeline:updateParams` | invoke | EngineController | API.engine.updateParams |
 | `ENGINE_RUN_DAG_WORKFLOW` | `engine:run-dag-workflow` | invoke | EngineController | API.engine.runDagWorkflow |
 | `WORKFLOW_SAVE` | `workflow:save` | invoke | EngineController | API.workflow.save |
 | `WORKFLOW_LOAD` | `workflow:load` | invoke | EngineController | API.workflow.load |

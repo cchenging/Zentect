@@ -2,7 +2,7 @@
 // 全局侧边栏 - V3 深空紫蓝设计，支持展开/收起
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Home, Download, Crown, LogOut, LogIn, PanelLeftClose, PanelLeftOpen, Users, Film } from 'lucide-react';
+import { Home, Crown, LogOut, LogIn, PanelLeftClose, PanelLeftOpen, Users, Film } from 'lucide-react';
 import { AppIcon } from '../../components/app-icon';
 import { useI18n } from '../../store/useI18n';
 import { useUserStore } from '../../store/useUserStore';
@@ -29,7 +29,6 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ className = "" }) => {
   /** 导航项 */
   const navItems = [
     { key: '/', icon: <Home size={18} />, label: t.nav?.home || '首页' },
-    { key: '/models', icon: <Download size={18} />, label: '模型下载' },
     { key: '/characters', icon: <Users size={18} />, label: '全局人物' },
     { key: '/shows', icon: <Film size={18} />, label: '剧集管理' },
   ];

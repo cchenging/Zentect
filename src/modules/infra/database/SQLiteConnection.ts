@@ -3,6 +3,7 @@ import { PathManager } from '../../../main/utils/pathManager';
 import { AppLogger } from '../logger/AppLogger';
 import { LOG_TAGS } from '../logger/LogConstants';
 import { MigrationManager } from './MigrationManager';
+import { SchemaValidator } from './SchemaValidator';
 import type { DatabaseConnection } from './types';
 
 /**
@@ -23,6 +24,10 @@ export class SQLiteConnection implements DatabaseConnection {
     migrationManager.runAll();
     MigrationManager.migrateColumnNames(this.db);
     migrationManager.safeAddColumns();
+
+    // 🛑 原则 3:schema 契约校验 — migration + safeAddColumns 后,校验所有 SQL 引用的表/列都存在
+    // 缺失就 fail-fast 抛错,拒绝启动。不降级不兜底。
+    SchemaValidator.validate(this.db);
 
     this.performDisasterRecovery();
   }

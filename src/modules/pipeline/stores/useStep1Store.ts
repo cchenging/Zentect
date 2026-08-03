@@ -83,6 +83,9 @@ export interface Step1Store {
   // 子步骤进度操作
   // setSubStepStatus / setAllSubStepsCompleted 已迁移至 usePipelineStore
   setSubStepProgress: (key: string, progress: number) => void;
+
+  /** 重置运行时数据(保留 extractionConfig 持久化配置) */
+  reset: () => void;
 }
 
 const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
@@ -139,6 +142,15 @@ export const useStep1Store = create<Step1Store>()(
         set((s) => ({
           subStepProgresses: { ...s.subStepProgresses, [key]: progress },
         })),
+
+      reset: () => set({
+        asrLines: [],
+        frameCount: 0,
+        audioSeparated: false,
+        vocalsIsFallback: false,
+        subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 },
+        // extractionConfig 是 persist 持久化配置,不重置
+      }),
     }),
     {
       name: 'zentect-step1-store',

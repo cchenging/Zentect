@@ -8,7 +8,7 @@
  */
 export const getSafeMediaUrl = (rawPath?: string | null): string => {
   if (!rawPath) return '';
-  
+
   const trimmedPath = rawPath.trim();
 
   // 1. 绝对放行的安全协议（http/https/data/magic 直接透传
@@ -22,17 +22,27 @@ export const getSafeMediaUrl = (rawPath?: string | null): string => {
   ) {
     return trimmedPath;
   }
-  
+
   // 2. 处理 atom:// 协议，转换为 magic:// 协议
   if (trimmedPath.startsWith('atom://')) {
     const pathWithoutProtocol = trimmedPath.replace(/^atom:\/\//, '');
     return getSafeMediaUrl(pathWithoutProtocol);
   }
 
+  // 🎬 分离 query 参数(如 ?t=1720000000),避免被 encodeURI 转义成 %3F
+  // 用于封面 cache-busting:覆盖同名文件后 ?t=timestamp 强制 Chromium 重新加载
+  let pathPart = trimmedPath;
+  let queryPart = '';
+  const queryIdx = trimmedPath.indexOf('?');
+  if (queryIdx >= 0) {
+    pathPart = trimmedPath.slice(0, queryIdx);
+    queryPart = trimmedPath.slice(queryIdx + 1);
+  }
+
   // 3. 处理 Windows 绝对路径（如 C:\Users\xxx\video.mp4）
-  let cleanPath = trimmedPath.startsWith('file://') 
-    ? trimmedPath.replace(/^file:/, '') 
-    : trimmedPath;
+  let cleanPath = pathPart.startsWith('file://')
+    ? pathPart.replace(/^file:/, '')
+    : pathPart;
 
   // 3. 物理洗地：统一目录分隔符
   cleanPath = cleanPath.replace(/\\/g, '/');
@@ -45,7 +55,7 @@ export const getSafeMediaUrl = (rawPath?: string | null): string => {
 
   // 5. 编码处理
   let safeEncodedPath = encodeURI(cleanPath);
-  
+
   // 特殊处理 Windows 盘符冒号（需在 encodeURI 之后进行，因为 encodeURI 不会转义冒号）
   if (isWindowsAbsolutePath) {
     safeEncodedPath = safeEncodedPath.replace(/^([A-Za-z]):/, '$1%3A');
@@ -53,12 +63,14 @@ export const getSafeMediaUrl = (rawPath?: string | null): string => {
 
   // 额外处理其他可能截断 URL 的字符
   safeEncodedPath = safeEncodedPath
-    .replace(/#/g, '%23')
-    .replace(/\?/g, '%3F');
+    .replace(/#/g, '%23');
 
   // 6. 核心修复：强制铸造为绕过跨域限制的特权协议！
   // 使用 magic://local/ 前缀确保盘符(G%3A)位于 pathname 而非 host
-  return `magic://local/${safeEncodedPath}`;
+  const baseUrl = `magic://local/${safeEncodedPath}`;
+
+  // 🎬 拼回 query 参数,用于 cache-busting
+  return queryPart ? `${baseUrl}?${queryPart}` : baseUrl;
 }
 
 /**

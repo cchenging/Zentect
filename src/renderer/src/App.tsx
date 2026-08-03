@@ -25,7 +25,6 @@ import { HomeContainer } from '@modules/home';
 import { GlobalCharactersContainer } from '@modules/global-characters';
 import { ShowsContainer } from '@modules/shows';
 const Editor = React.lazy(() => import('@modules/editor'));
-const ModelsPage = React.lazy(() => import('@modules/models'));
 const UserSettingsPage = React.lazy(() => import('@modules/user-settings'));
 const SettingsPage = React.lazy(() => import('@modules/settings/frontend').then(m => ({ default: m.Settings })));
 
@@ -150,7 +149,6 @@ function App() {
           <Routes>
             <Route path="/" element={<AppLayout />}>
               <Route index element={<HomeContainer />} />
-              <Route path="models" element={<ModelsPage />} />
               <Route path="characters" element={<GlobalCharactersContainer />} />
               <Route path="shows" element={<ShowsContainer />} />
             </Route>

@@ -118,6 +118,12 @@ export class MigrationManager implements IMigrationManager {
 
     addCol('chat_history', 'action_payload', 'TEXT');
 
+    // 🛑 原则 1:删除兜底建表(global_characters/shows)— 那是 migration 的职责
+    // 旧版兜底建表掩盖了 migration 未执行的问题,导致 schema 不一致被静默吞掉
+    // 现在由 SchemaValidator 在启动时 fail-fast 校验,缺失就拒绝启动
+    // safeAddColumns 只负责 ALTER TABLE ADD COLUMN(SQLite 不支持 IF NOT EXISTS 的变通)
+    addCol('roles', 'global_character_id', 'TEXT');
+
     // 🔧 修复 Bug：补齐 api_profiles 扩展字段（alias/enabled/is_preset/preset_type）
     // 原 migration 020/021 文件名与 020_audio_separation_config / 021_backfill_project_cover 冲突
     // 导致 alias 列未添加，apiProfile:update 报 "no such column: alias"
@@ -154,9 +160,9 @@ export class MigrationManager implements IMigrationManager {
   }
 
   /** 执行单个迁移文件 (幂等)
-   * 🔧 修复重复字段警告：将 SQL 按分号拆分为单条语句逐条执行，
-   *    对 ALTER TABLE 的 "duplicate column" / "no such table" 等错误容错，
-   *    确保即使部分语句失败也能记录 _migrations，避免下次启动重复尝试
+   * 🛑 原则 1:不吞错。ALTER TABLE 的 "duplicate column" 是唯一幂等场景,可跳过。
+   *    其他错误必须抛出,不标记 _migrations,让 SchemaValidator fail-fast。
+   *    旧版 bug:所有错误都被吞 + 标记已执行 → migration 实际没生效但下次跳过 → schema 不一致
    */
   private runFile(filename: string): void {
     const alreadyExecuted = this.db
@@ -173,41 +179,44 @@ export class MigrationManager implements IMigrationManager {
     try {
       sql = fs.readFileSync(filepath, 'utf-8');
     } catch {
-      AppLogger.warn(LOG_TAGS.BOOTSTRAP, `无法读取迁移文件: ${filename}`);
-      return;
+      // 🛑 原则 1:无法读取迁移文件是严重错误,抛出而非静默返回
+      throw new Error(`无法读取迁移文件: ${filename}`);
     }
 
-    // 按分号拆分为单条语句，过滤空行与注释
-    const statements = sql
+    // 🛑 修复:先按行移除注释(以 -- 开头),再按分号拆分语句
+    // 旧版 bug:直接 split(';') 后 filter(!startsWith('--'))
+    //   → migration 027/028 每个语句块都以注释开头 → 整个块被过滤掉
+    //   → CREATE TABLE 没执行但 _migrations 标记为已执行 → schema 不一致
+    const cleanedSql = sql
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('--'))
+      .join('\n');
+    const statements = cleanedSql
       .split(';')
       .map((s) => s.trim())
-      .filter((s) => s.length > 0 && !s.startsWith('--'));
+      .filter((s) => s.length > 0);
 
-    let failedCount = 0;
     let executedCount = 0;
+    let idempotentSkips = 0;
     for (const stmt of statements) {
       try {
         this.db.exec(stmt);
         executedCount++;
       } catch (error: any) {
-        failedCount++;
-        // ALTER TABLE 容错：字段已存在 / 表不存在都属于可忽略的幂等场景
         const msg = error.message || '';
-        if (msg.includes('duplicate column name') || msg.includes('no such table')) {
+        // 🛑 唯一幂等场景:duplicate column name(字段已存在)。跳过但不报错。
+        if (msg.includes('duplicate column name')) {
+          idempotentSkips++;
           AppLogger.debug(LOG_TAGS.BOOTSTRAP, `迁移语句幂等跳过: ${filename}`, { sql: stmt.slice(0, 80), error: msg });
         } else {
-          AppLogger.warn(LOG_TAGS.BOOTSTRAP, `迁移语句执行异常: ${filename}`, { sql: stmt.slice(0, 80), error: msg });
+          // 🛑 原则 1:其他错误不吞,直接抛出。不标记 _migrations,让用户看到真实问题。
+          throw new Error(`迁移文件 ${filename} 执行失败: ${msg} (SQL: ${stmt.slice(0, 100)})`);
         }
       }
     }
 
-    // 无论是否有部分语句失败，都标记为已执行，避免下次启动重复尝试
     this.db.prepare('INSERT INTO _migrations (filename) VALUES (?)').run(filename);
-    if (failedCount > 0) {
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, `迁移执行完成(含 ${failedCount} 条幂等跳过): ${filename}`);
-    } else {
-      AppLogger.info(LOG_TAGS.BOOTSTRAP, `迁移执行完成: ${filename} (${executedCount} 条语句)`);
-    }
+    AppLogger.info(LOG_TAGS.BOOTSTRAP, `迁移执行完成: ${filename} (${executedCount} 条语句, ${idempotentSkips} 幂等跳过)`);
   }
 
   /** 列名前缀迁移 (camelCase → snake_case) */

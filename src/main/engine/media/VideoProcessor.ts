@@ -11,9 +11,9 @@ import { PathManager } from '../../utils/pathManager';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
-import sharp from 'sharp';
 import {
   buildCoverCommand,
+  buildThumbnailCoverCommand,
   buildProbeCommand,
 } from './FFmpegCommandBuilder';
 
@@ -171,50 +171,27 @@ export class VideoProcessor {
   }
 
   /**
-   * 使用 sharp 检测封面亮度（平均灰度值 0~255），失败返回 null
-   */
-  private static async measureBrightness(imagePath: string): Promise<number | null> {
-    try {
-      const { data } = await sharp(imagePath)
-        .raw()
-        .resize(50, 50, { fit: 'inside' })
-        .toBuffer({ resolveWithObject: true });
-      const avg = data.reduce((sum, v) => sum + v, 0) / data.length;
-      return avg;
-    } catch (e) {
-      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面亮度检测失败: ${e}`);
-      return null;
-    }
-  }
-
-  /**
-   * 生成视频封面图（动态扫描 + 自动跳过黑帧）
+   * 🎬 生成视频封面图(FFmpeg thumbnail 滤镜版)
    *
-   * 策略：
-   *   1. 取视频总时长 duration
-   *   2. 从 startTime（默认 1s）开始，以 interval（默认 2s）为步长向 duration 方向扫描
-   *   3. 每个候选时间点截取一帧，用 sharp 计算平均亮度
-   *   4. 首帧亮度 >= brightnessThreshold → 直接返回
-   *   5. 扫描到 duration * maxSampleRatio 仍未达标 → 取所有采样中最亮帧
-   *   6. 后置验证：最亮帧仍 < 30（极暗）→ 删除文件返回空字符串，触发前端占位图标兜底
-   *   7. 极端短视频 (< startTime) → 取中间位置截图
+   * 旧版策略(已废弃):循环 N 次 captureFrameAt + sharp 算亮度
+   *   - 10分钟视频 240 帧 × ~200ms = 48s,太慢
+   *   - 只看平均亮度,选不出色彩最丰富的帧
    *
-   * @param videoPath    视频文件绝对路径
-   * @param outputDir    封面输出目录
-   * @param mediaId      媒体 ID，用于命名
-   * @param startTime    起始扫描时间（秒），默认 1
-   * @param interval     扫描间隔（秒），默认 2
-   * @param brightnessThreshold  亮度阈值（0~255），默认 40
-   * @param maxSampleRatio       最大扫描比例（0~1），默认 0.8
+   * 新版策略:FFmpeg 原生 thumbnail 滤镜
+   *   - 一次调用分析前 N 帧的色彩直方图,自动抛弃纯黑/纯白/高重复帧
+   *   - 选出色彩最丰富的代表帧,0.5-2s 完成
+   *   - 不再依赖 sharp 算亮度
+   *
+   * @param videoPath 视频文件绝对路径
+   * @param outputDir 封面输出目录
+   * @param mediaId   媒体 ID,用于命名
+   * @param frames    thumbnail 滤镜扫描帧数(默认 100,约 3-4 秒内容)
    */
   static async generateCover(
     videoPath: string,
     outputDir: string,
     mediaId: string,
-    startTime: number = 1,
-    interval: number = 2,
-    brightnessThreshold: number = 40,
-    maxSampleRatio: number = 0.8,
+    frames: number = 100,
   ): Promise<string> {
     const safeMediaId = mediaId.replace(/[^\w\-\u4e00-\u9fff]/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
     const coverFileName = `${safeMediaId}.jpg`;
@@ -237,110 +214,46 @@ export class VideoProcessor {
       return '';
     }
 
-    // 极端短视频：取中间位置
-    if (duration <= startTime) {
+    // 极端短视频(< 1s):thumbnail 滤镜无意义,直接取中间帧
+    if (duration <= 1) {
       const midPoint = parseFloat((duration / 2).toFixed(2));
       if (fs.existsSync(coverFullPath)) fs.unlinkSync(coverFullPath);
-
       const ok = await this.captureFrameAt(ffmpegExe, videoPath, coverFullPath, midPoint);
       if (!ok) return '';
-
-      const brightness = await this.measureBrightness(coverFullPath);
-      if (brightness !== null && brightness < 30) {
-        AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 短视频封面极暗 (${brightness.toFixed(1)})，返回空触发前端占位图标`);
-        if (fs.existsSync(coverFullPath)) fs.unlinkSync(coverFullPath);
-        return '';
-      }
-      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 短视频封面 seek=${midPoint}s 亮度=${brightness?.toFixed(1) ?? 'N/A'}`);
+      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 短视频封面 seek=${midPoint}s`);
       return coverFileName;
     }
 
-    // 常规视频：动态扫描候选时间点
-    const maxSampleTime = duration * maxSampleRatio;
-    const candidates: number[] = [];
-    for (let t = startTime; t < maxSampleTime; t += interval) {
-      candidates.push(parseFloat(t.toFixed(2)));
-    }
-    // 兜底：确保至少有一个候选点
-    if (candidates.length === 0) {
-      candidates.push(startTime);
-    }
-
-    let bestSeekTime = candidates[0];
-    let bestBrightness = -1;
-
-    for (const seekTime of candidates) {
-      if (fs.existsSync(coverFullPath)) fs.unlinkSync(coverFullPath);
-
-      const ok = await this.captureFrameAt(ffmpegExe, videoPath, coverFullPath, seekTime);
-      if (!ok) continue;
-
-      const brightness = await this.measureBrightness(coverFullPath);
-      if (brightness === null) continue;
-
-      if (brightness > bestBrightness) {
-        bestBrightness = brightness;
-        bestSeekTime = seekTime;
-      }
-
-      if (brightness >= brightnessThreshold) {
-        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面合格 seek=${seekTime}s 亮度=${brightness.toFixed(1)}`);
-        return coverFileName;
-      }
-
-      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面过暗 seek=${seekTime}s 亮度=${brightness.toFixed(1)}`);
-    }
-
-    // 全部候选均不达标，取最亮帧
-    if (bestBrightness >= 0) {
-      // 如果最亮帧不是最后一个扫描的，需要重新截取
-      if (bestSeekTime !== candidates[candidates.length - 1]) {
-        if (fs.existsSync(coverFullPath)) fs.unlinkSync(coverFullPath);
-        await this.captureFrameAt(ffmpegExe, videoPath, coverFullPath, bestSeekTime);
-      }
-
-      // 后置验证：极暗封面直接放弃，触发前端占位图标兜底
-      const finalBrightness = await this.measureBrightness(coverFullPath);
-      if (finalBrightness !== null && finalBrightness < 30) {
-        AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面极暗 (${finalBrightness.toFixed(1)})，返回空触发前端占位图标`);
-        if (fs.existsSync(coverFullPath)) fs.unlinkSync(coverFullPath);
-        return '';
-      }
-
-      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面亮度始终不合格，返回最亮帧 seek=${bestSeekTime}s 亮度=${bestBrightness.toFixed(1)}`);
-      return coverFileName;
-    }
-
-    return '';
-  }
-
-  /**
-   * 快速封面截图：只截 1 帧（seek 1秒），不做亮度检测/多帧扫描
-   * 用于导入时同步生成，避免封面闪烁（后台异步再跑完整 generateCover 优化为最亮帧）
-   * @returns 成功返回封面文件名（如 media_xxx.jpg），失败返回空串
-   */
-  public static async generateCoverFast(
-    videoPath: string,
-    outputDir: string,
-    mediaId: string,
-  ): Promise<string> {
-    const safeMediaId = mediaId.replace(/[^\w\-\u4e00-\u9fff]/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
-    const coverFileName = `${safeMediaId}.jpg`;
-    const coverFullPath = path.join(outputDir, coverFileName);
-    const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
-
-    if (!ffmpegExe || !fs.existsSync(ffmpegExe)) return '';
-    if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-
-    const duration = await this.getDuration(videoPath);
-    if (duration <= 0) return '';
-
-    // seek 1 秒（短视频取中间位置避免黑屏）
-    const seekTime = duration > 1 ? 1 : parseFloat((duration / 2).toFixed(2));
+    // 常规视频:thumbnail 滤镜选最佳帧
     if (fs.existsSync(coverFullPath)) fs.unlinkSync(coverFullPath);
 
-    const ok = await this.captureFrameAt(ffmpegExe, videoPath, coverFullPath, seekTime);
-    return ok ? coverFileName : '';
+    const args = buildThumbnailCoverCommand({
+      videoPath,
+      outputPath: coverFullPath,
+      frames,
+      scaleHeight: 360,
+      jpgQuality: 2,
+    });
+
+    const ok = await new Promise<boolean>((resolve) => {
+      const child = spawn(ffmpegExe, args);
+      let stderr = '';
+      child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+      child.on('close', (code) => {
+        if (code === 0 && fs.existsSync(coverFullPath)) resolve(true);
+        else {
+          if (stderr) AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] thumbnail 滤镜失败 (code=${code}): ${stderr.slice(0, 500)}`);
+          resolve(false);
+        }
+      });
+      child.on('error', () => resolve(false));
+      ProcessManager.register(child, 'FFmpeg-thumbnail封面');
+    });
+
+    if (!ok) return '';
+
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] thumbnail 封面生成成功 frames=${frames}`);
+    return coverFileName;
   }
 
   /**

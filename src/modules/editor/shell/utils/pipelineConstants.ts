@@ -23,8 +23,18 @@ export const STEP_SEQUENCES: Record<number, PipelineTask[]> = {
   5: [{ nodeId: 'match-1', actionType: 'semantic-analyze', label: '镜头匹配', params: {}, dependsOn: [], mergedInputs: {} }],
 };
 
-/** 文案风格选项 */
-export const SCRIPT_STYLES = ['赛博现实主义', '无厘头废话文学', '正经科普', '情感叙事', '悬疑推理', '轻松幽默'];
+/**
+ * 文案风格选项（重写：去掉废话文学，改为专业解说方向）
+ * 风格作为"词汇库/语法框架"，与情绪基调(tone)做二次乘法组合
+ */
+export const SCRIPT_STYLES = [
+  '爆款短视频',   // 抖音/快手快剪风格：高钩子、短句快切、网感词
+  '深度解说',     // B站长视频风格：硬核分析、镜头语言解读、因果推导
+  '评述视角',     // 主观点评风格：观点输出、价值判断、金句提炼
+  '情感叙事',     // 感性叙事风格：细腻笔触、意象比喻、情绪共鸣
+  '悬疑推理',     // 悬疑营造风格：层层设问、伏笔铺设、真相拼凑
+  '硬核科普',     // 知识科普风格：事实准确、专业术语、逻辑清晰
+];
 
 /** 素材库标签（icon 为组件引用，消费方需自行渲染） */
 export const MEDIA_TABS: { key: string; label: string; icon?: LucideIcon }[] = [

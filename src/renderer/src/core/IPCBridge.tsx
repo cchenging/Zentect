@@ -91,7 +91,8 @@ export const IPCBridge: React.FC = () => {
         window.api.ipc.invoke(IPC_CHANNELS.PROJECT_LOAD_DATA, storeState.projectId)
           .then((freshData) => {
             if (freshData) {
-              storeState.hydrateProjectData({
+              // 🛑 原则 2：partial 增量走 mergePartialUpdate,不进 hydrate
+              storeState.mergePartialUpdate({
                 shots: freshData.shots || [],
                 aiShots: freshData.aiShots || [],
                 roles: freshData.roles || [],

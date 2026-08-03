@@ -1,5 +1,5 @@
 // 📁 路径：src/modules/home/frontend/components/ProjectCard.tsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Film } from 'lucide-react';
 import type { ProjectRecord } from '../../types';
 import { AppIcon } from '@renderer/components/app-icon';
@@ -67,11 +67,19 @@ const formatBytes = (bytes?: number) => {
 export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRename, onDuplicate, onDelete, onExport, onBindShow }) => {
   const { t } = useI18n();
   const [imgError, setImgError] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   // 🔧 修复 P2：防御性转换，应对后端漏转 magic URL 的情况
   //   后端 getList() 已做转换，但若 coverPath 为裸相对路径，getSafeMediaUrl 会兜底转 magic URL
   const coverUrl = getSafeMediaUrl(project.coverPath) || '';
   const displayName = truncateMiddleSmart(project.name);
+
+  // 🎬 封面路径变化时重置加载状态,触发渐现过渡
+  // 配合 cache-busting ?t=timestamp,新封面加载完成后淡入,旧封面不闪烁
+  useEffect(() => {
+    setImgError(false);
+    setIsLoaded(false);
+  }, [project.coverPath]);
 
   return (
     // 容器增加了柔和的间距和动画过渡
@@ -83,12 +91,15 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRe
         onClick={() => onClick(project.id)}
       >
         {coverUrl && !imgError ? (
-          // 图片增加了 duration-700 ease-out 打造极致丝滑的呼吸感放大
+          // 🎬 渐现过渡:opacity-0 → opacity-100,onLoad 触发,避免封面切换闪烁
           <img
             src={coverUrl}
             alt={project.name}
-            className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover/cover:scale-110"
+            onLoad={() => setIsLoaded(true)}
             onError={() => setImgError(true)}
+            className={`w-full h-full object-cover transition-all duration-500 ease-out group-hover/cover:scale-110 ${
+              isLoaded ? 'opacity-100 scale-100' : 'opacity-0 scale-95'
+            }`}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-muted/50 to-muted">

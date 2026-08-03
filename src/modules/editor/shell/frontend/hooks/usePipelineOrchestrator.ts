@@ -69,9 +69,22 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
     const projectState = useProjectStore.getState();
     if (!projectState.projectId) return;
 
+    // 🔧 修复：步骤2-5已完成的跳过逻辑（与步骤1一致）
+    // 如果当前步骤已完成，直接跳到下一步，避免重新执行
+    // 必须在 setStepStatus('running') 之前检查，否则状态已被覆盖
+    const currentStepStatus = ps.stepStatuses[step - 1];
+    if (currentStepStatus === 'completed' && step < 5) {
+      AppNotifier.info(`步骤${step}已完成，跳转至下一步`);
+      useEditorNavStore.getState().setCurrentStep(step + 1);
+      return;
+    }
+
+    // 🔧 修复：先清理上次管线的进度/错误瞬态，再设置 running 状态
+    // 旧版 bug：resetPipeline() 在 setPipelineRunning(true) 之后调用，
+    //          内部 set({ pipelineRunning: false }) 把刚设的 true 覆盖回 false
+    ps.resetPipeline();
     ps.setStepStatus(step, 'running');
     ps.setPipelineRunning(true);
-    ps.resetPipeline();
     editorLogger.trackStep(step, 'start', { projectId: projectState.projectId });
 
     try {
@@ -121,9 +134,9 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
             roles: projectState.roles || [],
           } : {}),
           ...(step === 3 ? {
-            scriptStyle: step3State.scriptStyle || '赛博现实主义',
+            scriptStyle: step3State.scriptStyle || '爆款短视频',
             speechRate: step3State.speechRate || 4.5,
-            pipelineParams: step3State.pipelineParams || { R: 50, S: 50, T: 50, P: 50 },
+            pipelineParams: step3State.pipelineParams,
             visionResult: {
               sceneDescriptions: step2State.vlmFrames
                 ?.map((f: any) => f.description || '')
@@ -349,7 +362,7 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
       const response = await window.api.ipc.invoke(IPC_CHANNELS.ENGINE_RUN_PIPELINE, {
         projectId,
         sequence: [],
-        context: { scriptStyle, hyperParams: pipelineParams, projectId },
+        context: { scriptStyle, pipelineParams, projectId },
       });
 
       if (!response?.success) {

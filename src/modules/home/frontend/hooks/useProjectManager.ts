@@ -48,6 +48,32 @@ export const useProjectManager = () => {
     fetchProjects();
   }, [fetchProjects]);
 
+  /**
+   * 🎬 监听后端封面增量广播,局部 patch state + cache-busting
+   * 旧版 bug:首页只靠 fetchProjects 全量重载,封面生成后要重进才显示
+   * 现在:IPC 'event:cover-updated' → 定位项目 → 追加 ?t=timestamp → state patch
+   */
+  useEffect(() => {
+    const handler = (_event: any, data: { projectId: string; coverPath: string; updatedAt: number }) => {
+      if (!data || !data.projectId || !data.coverPath) return;
+      // 💥 破解 Chromium 图片强缓存:URL 加时间戳 Query,强制 <img> 重新加载
+      const freshCoverPath = `${data.coverPath}?t=${data.updatedAt || Date.now()}`;
+      setProjects((prev) =>
+        prev.map((proj) =>
+          proj.id === data.projectId ? { ...proj, coverPath: freshCoverPath } : proj
+        )
+      );
+    };
+    if (window.api?.ipc?.on) {
+      window.api.ipc.on('event:cover-updated', handler);
+    }
+    return () => {
+      if (window.api?.ipc?.removeListener) {
+        window.api.ipc.removeListener('event:cover-updated', handler);
+      }
+    };
+  }, []);
+
   /** 过滤后的项目列表（按名称搜索） */
   const filteredProjects = useMemo(() => {
     if (!searchText.trim()) return projects;

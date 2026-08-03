@@ -15,10 +15,6 @@ export const CONFIG_KEYS = {
   PIPELINE_DEFAULT_FPS: 'pipeline.defaultFps',
   PIPELINE_CHECKPOINT_ENABLED: 'pipeline.checkpointEnabled',
   PIPELINE_RECOVERY_ENABLED: 'pipeline.recoveryEnabled',
-  PIPELINE_PARAM_R: 'pipeline.param.retainRatio',
-  PIPELINE_PARAM_S: 'pipeline.param.silenceRatio',
-  PIPELINE_PARAM_T: 'pipeline.param.ttsCoverage',
-  PIPELINE_PARAM_P: 'pipeline.param.paceFactor',
 
   STORAGE_WORK_DIR: 'storage.workDir',
   STORAGE_MIN_FREE_GB: 'storage.minFreeGb',

@@ -22,6 +22,9 @@ export interface Step4Store {
   setTtsVoiceId: (voiceId: string) => void;
   setTtsProgress: (progress: number) => void;
   setTtsResults: (results: TtsResult[]) => void;
+
+  /** 重置步骤4状态 */
+  reset: () => void;
 }
 
 export const useStep4Store = create<Step4Store>()((set) => ({
@@ -34,4 +37,11 @@ export const useStep4Store = create<Step4Store>()((set) => ({
   setTtsVoiceId: (voiceId) => set({ ttsVoiceId: voiceId }),
   setTtsProgress: (progress) => set({ ttsProgress: progress }),
   setTtsResults: (results) => set({ ttsResults: results }),
+
+  reset: () => set({
+    ttsEngine: 'edge',
+    ttsVoiceId: '',
+    ttsProgress: 0,
+    ttsResults: [],
+  }),
 }));

@@ -30,6 +30,9 @@ export interface Step5Store {
   setActiveBgm: (bgm: BgmInfo | null) => void;
   setBeatTimestamps: (beats: number[]) => void;
   setVideoChunks: (chunks: any[]) => void;
+
+  /** 重置步骤5状态 */
+  reset: () => void;
 }
 
 export const useStep5Store = create<Step5Store>()((set) => ({
@@ -54,4 +57,11 @@ export const useStep5Store = create<Step5Store>()((set) => ({
   setActiveBgm: (bgm) => set({ activeBgm: bgm }),
   setBeatTimestamps: (beats) => set({ beatTimestamps: beats }),
   setVideoChunks: (chunks) => set({ videoChunks: chunks }),
+
+  reset: () => set({
+    matchResults: [],
+    activeBgm: null,
+    beatTimestamps: [],
+    videoChunks: [],
+  }),
 }));

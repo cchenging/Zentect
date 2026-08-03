@@ -174,5 +174,7 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
     videoChunks: Array.isArray(rawData.videoChunks) ? rawData.videoChunks : [],
     // Canvas
     canvasData: rawData.canvasData,
+    // 分镜模式('original' | 'ai'):存于 metadata,需回传给前端 hydrate 恢复
+    storyboardMode: rawData.storyboardMode === 'ai' ? 'ai' : 'original',
   };
 }

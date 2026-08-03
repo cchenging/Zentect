@@ -19,6 +19,9 @@ export interface Step2Store {
   setVlmFrames: (frames: VlmFrame[]) => void;
   updateVlmDescription: (index: number, description: string) => void;
   setVlmEditing: (index: number, editing: boolean) => void;
+
+  /** 重置步骤2状态 */
+  reset: () => void;
 }
 
 export const useStep2Store = create<Step2Store>()((set) => ({
@@ -37,4 +40,6 @@ export const useStep2Store = create<Step2Store>()((set) => ({
       if (frames[index]) frames[index] = { ...frames[index], editing };
       return { vlmFrames: frames };
     }),
+
+  reset: () => set({ vlmFrames: [] }),
 }));

@@ -514,6 +514,12 @@ body {
 .semi-layout-sider { border-right-color: var(--border) !important; }
 
 /* =========================================
+   no-scrollbar 工具类
+========================================= */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* =========================================
    滚动条
 ========================================= */
 ::-webkit-scrollbar { width: 6px; height: 6px; }

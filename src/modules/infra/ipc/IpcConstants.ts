@@ -130,6 +130,8 @@ export const IPC_CHANNELS = {
   EVENT_APP_NOTIFY: 'app:notify',
   EVENT_EXTRACTION_SUCCESS: 'event:extraction-success',
   EVENT_MEDIA_UPDATED: 'event:media-updated',
+  // 🎬 封面增量广播:封面生成完成后单播指定项目,前端 patch state + cache-busting
+  EVENT_COVER_UPDATED: 'event:cover-updated',
   EVENT_NODE_STATE_CHANGE: 'event:node-state-change',
 
   // 💥 断层3+4修复：管线错误与流式安全数据推送通道
@@ -156,9 +158,6 @@ export const IPC_CHANNELS = {
   WORKFLOW_SAVE: 'workflow:save',
   WORKFLOW_LOAD: 'workflow:load',
   ENGINE_RUN_DAG_WORKFLOW: 'engine:run-dag-workflow',
-
-  // --- V1.1 Pipeline 参数 ---
-  PIPELINE_UPDATE_PARAMS: 'pipeline:updateParams',
 
   // --- V1.1 License 校验 ---
   LICENSE_VALIDATE: 'license:validate',

@@ -227,14 +227,15 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
       }
 
       // 写入 roles（独立于 shots，避免因 shots 为空导致角色数据丢失）
+      // 🛑 原则 2：partial 增量走 mergePartialUpdate,不进 hydrate(避免清空其他字段)
       if (payload.roles && payload.roles.length > 0) {
-        projectState.hydrateProjectData({
+        projectState.mergePartialUpdate({
           roles: payload.roles,
         });
       }
 
       if (shots.length > 0) {
-        projectState.hydrateProjectData({
+        projectState.mergePartialUpdate({
           shots,
           aiShots: payload.aiShots || projectState.aiShots,
         });

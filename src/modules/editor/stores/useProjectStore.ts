@@ -164,7 +164,10 @@ export interface ProjectStore {
 
   // === 以下方法在阶段三迁移后生效 ===
   resetProjectState: () => void;
+  /** 全量 hydrate:项目切换/初次进场时调用,无条件设置所有字段(空就是空) */
   hydrateProjectData: (projectData: any) => void;
+  /** 增量 merge:管线执行中部分结果回写时调用,只更新传入的字段,不影响其他字段 */
+  mergePartialUpdate: (partial: any) => void;
 }
 
 export const useProjectStore = create<ProjectStore>()((set, get) => ({
@@ -630,13 +633,15 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     AppNotifier.success('✂️ 剃刀切割完成');
   },
 
-  resetProjectState: () => set(() => ({
-    projectId: null, projectName: '加载中...',
-    mediaItems: [], roles: [], shots: [], characterRelations: [],
-    storyboardMode: 'original', aiShots: [],
-    canvasData: null, pastSnapshots: [], futureSnapshots: [],
-    extractedData: { videoPath: '', vocalPath: '', backgroundPath: '', asrLines: [], frameCount: 0, framePaths: [] },
-  })),
+  resetProjectState: () => {
+    set(() => ({
+      projectId: null, projectName: '加载中...',
+      mediaItems: [], roles: [], shots: [], characterRelations: [],
+      storyboardMode: 'original', aiShots: [],
+      canvasData: null, pastSnapshots: [], futureSnapshots: [],
+      extractedData: { videoPath: '', vocalPath: '', backgroundPath: '', asrLines: [], frameCount: 0, framePaths: [] },
+    }));
+  },
 
   hydrateProjectData: (projectData) => {
     const state = get();
@@ -644,8 +649,10 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
 
     const d = projectData as any;
 
-    // 后端 assembleFullPayload 已将所有数据解析、归一化、推导完毕，前端仅做分发
-    const mediaItems = Array.isArray(d.mediaItems) ? d.mediaItems : state.mediaItems;
+    // 🛑 原则 1&2 重构：全量 hydrate 无条件设置,空就是空
+    // 旧版 bug:if (asrLines.length > 0) 之类条件导致新项目空数据不覆盖旧项目数据
+    // 修复:hydrate 只负责全量设置;partial 增量走 mergePartialUpdate 独立方法
+    const mediaItems = Array.isArray(d.mediaItems) ? d.mediaItems : [];
     const asrLines = Array.isArray(d.asrLines) ? d.asrLines : [];
     const framePaths = Array.isArray(d.framePaths) ? d.framePaths : [];
     const frameCount = d.frameCount || framePaths.length || 0;
@@ -683,12 +690,23 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       if (typeof ps.setStepCompleted === 'function') ps.setStepCompleted(i, !!stepCompleted[i - 1]);
     }
     if (typeof ps.setSubStepStatus === 'function') {
+      // 🛑 原则 1：无条件设置。先重置所有已知子步骤为 idle,再用 DB 值覆盖
+      // 旧版 bug:d.subStepStatuses 为 {} 时循环不执行 → 旧项目状态泄漏到新项目
+      const ALL_SUB_STEP_KEYS = ['frames', 'audio', 'whisper', 'faces'];
+      for (const key of ALL_SUB_STEP_KEYS) {
+        ps.setSubStepStatus(key, 'idle');
+      }
       for (const [key, status] of Object.entries(subStepStatuses)) {
         ps.setSubStepStatus(key, (status || 'idle') as any);
       }
     }
     const subStepProgresses: Record<string, number> = d.subStepProgresses || {};
     if (typeof ps.setSubStepProgress === 'function') {
+      // 🛑 原则 1：无条件重置进度为 0,再用 DB 值覆盖
+      const ALL_SUB_STEP_KEYS = ['frames', 'audio', 'whisper', 'faces'];
+      for (const key of ALL_SUB_STEP_KEYS) {
+        ps.setSubStepProgress(key, 0);
+      }
       for (const [key, progress] of Object.entries(subStepProgresses)) {
         ps.setSubStepProgress(key, typeof progress === 'number' ? progress : 0);
       }
@@ -703,9 +721,10 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
 
     // ── Step1Store ──
     const s1 = useStep1Store.getState();
-    if (typeof s1.setAsrLines === 'function' && asrLines.length > 0) s1.setAsrLines(asrLines);
-    if (typeof s1.setFrameCount === 'function' && frameCount) s1.setFrameCount(frameCount);
-    if (typeof s1.setAudioSeparated === 'function' && d.audioSeparated !== undefined) s1.setAudioSeparated(!!d.audioSeparated);
+    // 🛑 原则 1：无条件设置,空就是空(新项目无 ASR/帧数据)
+    if (typeof s1.setAsrLines === 'function') s1.setAsrLines(asrLines);
+    if (typeof s1.setFrameCount === 'function') s1.setFrameCount(frameCount);
+    if (typeof s1.setAudioSeparated === 'function') s1.setAudioSeparated(!!d.audioSeparated);
     const videoMedia = mediaItems.find((m: any) => m.type === 'video');
     if (typeof s1.setVocalsIsFallback === 'function' && videoMedia?.vocalsIsFallback !== undefined) {
       s1.setVocalsIsFallback(!!videoMedia.vocalsIsFallback);
@@ -718,38 +737,32 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     if (d.extractionConfig && typeof s1.updateExtractionConfig === 'function') s1.updateExtractionConfig(d.extractionConfig as any);
 
     // ── Step2Store ──
-    // 🔧 修复 vlmFrames 持久化丢失：只在 d.vlmFrames !== undefined 时才更新
-    // 旧版 bug：IPCBridge/useExtractionHandler 的 partial hydration 不传 vlmFrames
-    //          → setVlmFrames([]) 清空 store 中已恢复的数据 → 用户看到"数据丢失"
-    // 修复：partial 数据不更新 vlmFrames，保留已有值（完整 hydrate 时正常更新）
+    // 🛑 原则 1：无条件设置。partial 增量走 mergePartialUpdate,不进 hydrate
     const s2 = useStep2Store.getState();
-    if (typeof s2.setVlmFrames === 'function' && d.vlmFrames !== undefined) {
+    if (typeof s2.setVlmFrames === 'function') {
       s2.setVlmFrames(Array.isArray(d.vlmFrames) ? d.vlmFrames : []);
     }
 
     // ── Step3Store ──
-    // 🔧 同步修复：scriptParagraphs 也只在存在时才更新，避免 partial hydration 清空
     const s3 = useStep3Store.getState();
-    if (typeof s3.setScriptParagraphs === 'function' && d.scriptParagraphs !== undefined) {
+    if (typeof s3.setScriptParagraphs === 'function') {
       s3.setScriptParagraphs(Array.isArray(d.scriptParagraphs) ? d.scriptParagraphs : []);
     }
-    if (d.scriptStyle && typeof s3.setScriptStyle === 'function') s3.setScriptStyle(d.scriptStyle as string);
-    if (d.speechRate !== undefined && typeof s3.setSpeechRate === 'function') s3.setSpeechRate(Number(d.speechRate) || 4.5);
+    if (typeof s3.setScriptStyle === 'function') s3.setScriptStyle((d.scriptStyle as string) || '');
+    if (typeof s3.setSpeechRate === 'function') s3.setSpeechRate(Number(d.speechRate) || 4.5);
     if (d.pipelineParams && typeof s3.setPipelineParams === 'function') s3.setPipelineParams(d.pipelineParams as any);
 
     // ── Step4Store ──
-    // 🔧 同步修复：ttsResults 也只在存在时才更新
     const s4 = useStep4Store.getState();
-    if (typeof s4.setTtsResults === 'function' && d.ttsResults !== undefined) {
+    if (typeof s4.setTtsResults === 'function') {
       s4.setTtsResults(Array.isArray(d.ttsResults) ? d.ttsResults : []);
     }
-    if (d.ttsEngine && typeof s4.setTtsEngine === 'function') s4.setTtsEngine(d.ttsEngine as string);
-    if (d.ttsVoiceId !== undefined && typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((d.ttsVoiceId as string) || '');
+    if (typeof s4.setTtsEngine === 'function') s4.setTtsEngine((d.ttsEngine as string) || '');
+    if (typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((d.ttsVoiceId as string) || '');
 
     // ── Step5Store ──
-    // 🔧 同步修复：videoChunks 也只在存在时才更新
     const s5 = useStep5Store.getState();
-    if (typeof s5.setVideoChunks === 'function' && d.videoChunks !== undefined) {
+    if (typeof s5.setVideoChunks === 'function') {
       s5.setVideoChunks(Array.isArray(d.videoChunks) ? d.videoChunks : []);
     }
 
@@ -762,19 +775,86 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       projectId: d.id || state.projectId,
       projectName: d.name || state.projectName,
       mediaItems,
-      shots: d.shots || state.shots,
-      aiShots: d.aiShots || state.aiShots,
-      roles: d.roles || state.roles,
-      canvasData: d.canvasData !== undefined ? d.canvasData : state.canvasData,
+      shots: Array.isArray(d.shots) ? d.shots : [],
+      aiShots: Array.isArray(d.aiShots) ? d.aiShots : [],
+      roles: Array.isArray(d.roles) ? d.roles : [],
+      canvasData: d.canvasData !== undefined ? d.canvasData : null,
+      // 🛑 原则 1:无条件恢复 storyboardMode(存于 metadata,DB 是真相源)
+      // 旧版 bug:saveData 保存了但 hydrate 没恢复 → 切回项目时 AI 模式丢失
+      storyboardMode: d.storyboardMode === 'ai' ? 'ai' : 'original',
       extractedData: {
         videoPath: d.videoPath || '',
         vocalPath: d.vocalPath || '',
         backgroundPath: d.backgroundPath || '',
-        asrLines: asrLines.length > 0 ? asrLines : state.extractedData.asrLines,
-        framePaths: framePaths.length > 0 ? framePaths : state.extractedData.framePaths,
-        frameCount: frameCount || state.extractedData.frameCount,
+        asrLines,
+        framePaths,
+        frameCount,
       }
     }));
+  },
+
+  /**
+   * 增量 merge:管线执行中部分结果回写时调用
+   * 只更新传入的字段,不影响其他字段(用于 useExtractionHandler 的 partial payload)
+   * 🛑 原则 2:与 hydrateProjectData 语义独立,不混用
+   */
+  mergePartialUpdate: (partial) => {
+    const d = partial as any;
+    const state = get();
+
+    // 只更新传入的字段
+    const updates: any = {};
+    if (Array.isArray(d.shots)) updates.shots = d.shots;
+    if (Array.isArray(d.aiShots)) updates.aiShots = d.aiShots;
+    if (Array.isArray(d.roles)) updates.roles = d.roles;
+    if (Array.isArray(d.mediaItems)) updates.mediaItems = d.mediaItems;
+    if (d.canvasData !== undefined) updates.canvasData = d.canvasData;
+
+    if (Object.keys(updates).length > 0) {
+      set(updates);
+    }
+
+    // extractedData 增量合并
+    if (d.asrLines !== undefined || d.framePaths !== undefined || d.frameCount !== undefined
+        || d.videoPath !== undefined || d.vocalPath !== undefined || d.backgroundPath !== undefined) {
+      const cur = state.extractedData;
+      set({
+        extractedData: {
+          videoPath: d.videoPath !== undefined ? d.videoPath : cur.videoPath,
+          vocalPath: d.vocalPath !== undefined ? d.vocalPath : cur.vocalPath,
+          backgroundPath: d.backgroundPath !== undefined ? d.backgroundPath : cur.backgroundPath,
+          asrLines: d.asrLines !== undefined ? d.asrLines : cur.asrLines,
+          framePaths: d.framePaths !== undefined ? d.framePaths : cur.framePaths,
+          frameCount: d.frameCount !== undefined ? d.frameCount : cur.frameCount,
+        }
+      });
+    }
+
+    // Step1Store 增量:asrLines
+    if (Array.isArray(d.asrLines) && d.asrLines.length > 0) {
+      const s1 = useStep1Store.getState();
+      if (typeof s1.setAsrLines === 'function') s1.setAsrLines(d.asrLines);
+    }
+    // Step2Store 增量:vlmFrames
+    if (Array.isArray(d.vlmFrames)) {
+      const s2 = useStep2Store.getState();
+      if (typeof s2.setVlmFrames === 'function') s2.setVlmFrames(d.vlmFrames);
+    }
+    // Step3Store 增量:scriptParagraphs
+    if (Array.isArray(d.scriptParagraphs)) {
+      const s3 = useStep3Store.getState();
+      if (typeof s3.setScriptParagraphs === 'function') s3.setScriptParagraphs(d.scriptParagraphs);
+    }
+    // Step4Store 增量:ttsResults
+    if (Array.isArray(d.ttsResults)) {
+      const s4 = useStep4Store.getState();
+      if (typeof s4.setTtsResults === 'function') s4.setTtsResults(d.ttsResults);
+    }
+    // Step5Store 增量:videoChunks
+    if (Array.isArray(d.videoChunks)) {
+      const s5 = useStep5Store.getState();
+      if (typeof s5.setVideoChunks === 'function') s5.setVideoChunks(d.videoChunks);
+    }
   },
 
 }));

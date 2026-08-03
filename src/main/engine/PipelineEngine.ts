@@ -18,7 +18,6 @@ import { Step1MaterialStrategy } from '../../modules/pipeline/step1-material/bac
 import { PathManager } from '../utils/pathManager';
 import { generateStateHash } from '../utils/crypto';
 import { WorkflowService } from '../services/WorkflowService';
-import { SettingsRepository } from '../database/repositories/SettingsRepository';
 import { EngineStateGuard } from '../core/EngineStateGuard';
 import { ExceptionHub } from '../core/ExceptionHub';
 import * as path from 'path';
@@ -58,14 +57,17 @@ export class PipelineEngine {
     AppLogger.warn(LOG_TAGS.SCHEDULER, '🛑 收到全局熔断指令，算力锁已全部清空');
   }
 
-  /** V1.1: 从 Settings 读取 R/S/T/P 参数，注入到 ExecutionContext */
-  private loadPipelineParams(): { R: number; S: number; T: number; P: number } {
-    const settings = new SettingsRepository();
+  /** V1.1: 返回新版 8 维解说控制参数默认值，注入到 ExecutionContext */
+  private loadPipelineParams(): import('../../shared/types/entities/editor').PipelineParams {
     return {
-      R: settings.get('pipeline.param.retainRatio', 50),
-      S: settings.get('pipeline.param.silenceRatio', 50),
-      T: settings.get('pipeline.param.ttsCoverage', 50),
-      P: settings.get('pipeline.param.paceFactor', 50),
+      narrativePerspective: 'third',
+      informationLevel: 'deep',
+      narrationDensity: 'standard',
+      originalAudioStrategy: 'keep_key',
+      rhythmMode: 'mixed',
+      emotionTone: 'neutral',
+      hookIntensity: 0.7,
+      audioVisualWeight: 0.6,
     };
   }
 

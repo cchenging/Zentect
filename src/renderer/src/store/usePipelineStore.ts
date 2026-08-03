@@ -80,6 +80,9 @@ export interface PipelineStore {
   // Actions — 参数
   setPipelineParams: (params: PipelineParams) => void;
   setExtractionConfig: (config: ExtractionConfig | null) => void;
+
+  /** 全量重置(切换项目时调用,清空所有状态到初始值) */
+  reset: () => void;
 }
 
 export const usePipelineStore = create<PipelineStore>()((set) => ({
@@ -97,7 +100,16 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
   pipelineError: null,
   pipelineNodes: [],
 
-  pipelineParams: { R: 70, S: 50, T: 80, P: 60 },
+  pipelineParams: {
+    narrativePerspective: 'third',
+    informationLevel: 'deep',
+    narrationDensity: 'standard',
+    originalAudioStrategy: 'keep_key',
+    rhythmMode: 'mixed',
+    emotionTone: 'neutral',
+    hookIntensity: 0.7,
+    audioVisualWeight: 0.6,
+  },
   extractionConfig: null,
 
   setStepStatus: (step, status) =>
@@ -159,4 +171,29 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
 
   setPipelineParams: (params) => set({ pipelineParams: params }),
   setExtractionConfig: (config) => set({ extractionConfig: config }),
+
+  reset: () => set({
+    hydrationStatus: 'IDLE',
+    stepStatuses: [...INITIAL_STEP_STATUSES],
+    stepCompleted: [false, false, false, false, false],
+    subStepStatuses: { ...INITIAL_SUB_STEP_STATUSES },
+    subStepProgresses: { ...INITIAL_SUB_STEP_PROGRESSES },
+    subStepTimings: { ...INITIAL_SUB_STEP_TIMINGS },
+    pipelineRunning: false,
+    pipelineProgress: 0,
+    pipelineNode: '',
+    pipelineError: null,
+    pipelineNodes: [],
+    pipelineParams: {
+    narrativePerspective: 'third',
+    informationLevel: 'deep',
+    narrationDensity: 'standard',
+    originalAudioStrategy: 'keep_key',
+    rhythmMode: 'mixed',
+    emotionTone: 'neutral',
+    hookIntensity: 0.7,
+    audioVisualWeight: 0.6,
+  },
+    extractionConfig: null,
+  }),
 }));

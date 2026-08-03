@@ -4,13 +4,10 @@ import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import type { PipelineTask } from '../../../shared/types';
 import { PathManager } from '../../utils/pathManager';
 import { PipelineModelConfigRepository } from '../../database/repositories/ModelRepository';
+import type { PipelineParams } from '../../../shared/types/entities/editor';
 
-export interface PipelineParams {
-  R: number; // 经典片段保留比 (0-100)
-  S: number; // 原台词保留比 (0-100)
-  T: number; // TTS 覆盖比 (0-100)
-  P: number; // 节奏因子 (0-100)
-}
+// re-export shared 新版 8 维参数（替代旧版 R/S/T/P）
+export type { PipelineParams } from '../../../shared/types/entities/editor';
 
 /** 节点模型配置（从 pipeline_model_config 表读取） */
 export interface NodeModelConfig {
