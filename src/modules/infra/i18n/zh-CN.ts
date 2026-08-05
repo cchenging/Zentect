@@ -234,7 +234,6 @@ export const zhCN = {
     tts_doubao: '火山豆包 (商业级/强推)',
     tts_edge: '微软 Edge (免费白嫖)',
     tts_sovits: 'GPT-SoVITS (本地化)',
-    tts_fish: 'Fish Audio (高保真)',
     tts_edge_hint: 'Edge 通道无需配置秘钥即可使用。',
     tts_sovits_url: 'API 推理地址',
     tts_doubao_appid: 'App ID',

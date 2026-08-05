@@ -67,11 +67,15 @@ export interface FrameDetail {
   editing: boolean;
   confirmed: boolean;
   emotion: string;
-  /** P0-3：下游瘦身字段，供 step3 消费，避免 step3 重新解析长文本 */
+  /** P0-3：下游瘦身字段，供 step3 消费，避免 step3 重新解析长文本
+   * 🎬 shotType：镜头语言（特写/近景/中景/全景），供 step3 蒸馏【特写】前缀
+   * 💬 asrText：该帧时间区间内匹配到的 ASR 台词，供 step3 直接消费无需重新匹配 */
   downstream?: {
     action: string;
     emotion: string;
     keywords: string[];
+    shotType?: string;
+    asrText?: string;
   };
   /**
    * 🎭 P0.5 帧级锚定：该帧已检测到的人物名称列表
@@ -104,9 +108,10 @@ export interface VisionExtractOutput {
   framePaths?: string[];
   /** 每帧完整信息，含画面描述和关联台词 */
   frames?: FrameDetail[];
-  /** P0-3：下游瘦身上下文，极简结构化数据，供 step3 直接消费 */
+  /** P0-3：下游瘦身上下文，极简结构化数据，供 step3 直接消费
+   * 🎬 shotType/asrText 透传，让 step3 无需重新解析长文本或匹配 ASR */
   downstreamContext?: {
-    shots: { action: string; emotion: string; keywords: string[] }[];
+    shots: { action: string; emotion: string; keywords: string[]; shotType?: string; asrText?: string }[];
   };
 }
 
@@ -676,7 +681,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           : '3×3 网格图（9 个子图，按 [1]~[9] 编号排列）';
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体动作","emotionalState":"情绪","visualAtmosphere":"光影色调","spatialRelation":"构图空间","keywords":["关键词1","关键词2"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- 严禁描述背景颜色、家具材质、墙壁、衣服样式等静态杂物\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头），禁止环境描写\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉）\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- visualAtmosphere 仅 2-4 字概括氛围\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体核心动作","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
         });
         userContent.push({
           type: 'image_url',
@@ -686,7 +691,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         /** 1x1 模式或拼图降级：多图独立发送 */
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体动作","emotionalState":"情绪","visualAtmosphere":"光影色调","spatialRelation":"构图空间","keywords":["关键词1","关键词2"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- 严禁描述背景颜色、家具材质、墙壁、衣服样式等静态杂物\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头），禁止环境描写\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉）\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- visualAtmosphere 仅 2-4 字概括氛围\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体核心动作","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
         });
         for (const f of batchFrames) {
           userContent.push({
@@ -700,7 +705,8 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         { role: 'user', content: userContent },
       ];
 
-      /** P0-1：JSON Schema 强制结构化输出，消除格式解析失败 */
+      /** P0-1：JSON Schema 强制结构化输出，消除格式解析失败
+       * 🎬 shotType：剪辑师准则新增字段，输出特写/近景/中景/全景，供 step3 蒸馏【特写】前缀 */
       const responseFormat = {
         type: 'json_object' as const,
         json_schema: {
@@ -713,13 +719,14 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
                 items: {
                   type: 'object',
                   properties: {
-                    narrativeAction: { type: 'string', description: '主体核心动作/视觉变化' },
-                    emotionalState: { type: 'string', description: '主体的微表情/情绪' },
-                    visualAtmosphere: { type: 'string', description: '光影/色调/氛围' },
+                    narrativeAction: { type: 'string', description: '主体核心动作/视觉变化（聚焦戏剧动作，禁止环境描写）' },
+                    emotionalState: { type: 'string', description: '主体的微表情/情绪（如眼神/咬牙/冷笑）' },
+                    shotType: { type: 'string', description: '镜头语言：特写|近景|中景|全景', enum: ['特写', '近景', '中景', '全景'] },
+                    visualAtmosphere: { type: 'string', description: '光影/色调/氛围（2-4字概括）' },
                     spatialRelation: { type: 'string', description: '构图/镜头移动方式' },
-                    keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词' },
+                    keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词（仅动作/情绪/道具，禁止环境词）' },
                   },
-                  required: ['narrativeAction', 'emotionalState'],
+                  required: ['narrativeAction', 'emotionalState', 'shotType'],
                 },
               },
             },
@@ -758,9 +765,10 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
 
           if (parsedItem && typeof parsedItem === 'object') {
             frameJsonItems[frameIdx] = parsedItem;
-            /** P0-3：构建 UI 显示描述 */
+            /** P0-3：构建 UI 显示描述（🎬 shotType 前缀，让 UI 一眼可见镜头语言） */
+            const shotPrefix = parsedItem.shotType ? `【${parsedItem.shotType}】` : '';
             const parts = [
-              parsedItem.narrativeAction || '',
+              `${shotPrefix}${parsedItem.narrativeAction || ''}`,
               parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
               parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
               parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
@@ -790,8 +798,9 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
             if (!parsedItem || typeof parsedItem !== 'object') continue;
             const contentHash = contentHashMap.get(batchFrames[i].path);
             if (!contentHash) continue;
+            const shotPrefix = parsedItem.shotType ? `【${parsedItem.shotType}】` : '';
             const parts = [
-              parsedItem.narrativeAction || '',
+              `${shotPrefix}${parsedItem.narrativeAction || ''}`,
               parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
               parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
               parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
@@ -799,7 +808,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
             cacheRecords.push({
               frameHash: contentHash,
               modelName: model,
-              promptVersion: 'v1',
+              promptVersion: 'v2',
               resultJson: JSON.stringify(parsedItem),
               description: parts.join(' '),
             });
@@ -943,11 +952,16 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       const url = (framePathsOriginal.length > 0 && idx >= 0) ? framePathsOriginal[idx] : fp;
       const jsonItem = frameJsonItems[i];
 
-      /** P0-3：提取下游瘦身上下文（action/emotion/keywords），供 step3 直接消费 */
+      /** P0-3：提取下游瘦身上下文（action/emotion/keywords/shotType/asrText），供 step3 直接消费
+       * 🎬 shotType 透传：step3 用于蒸馏【特写】前缀，让 LLM 一眼看到镜头语言
+       * 💬 asrText 透传：该帧时间区间匹配到的 ASR 台词，step3 无需重新按时间戳匹配 */
+      const frameAsrText = matchedAsr.map(l => l.text).join(' ');
       const downstream = jsonItem ? {
         action: jsonItem.narrativeAction || '',
         emotion: jsonItem.emotionalState || jsonItem.emotionTone || '',
         keywords: Array.isArray(jsonItem.keywords) ? jsonItem.keywords : [],
+        shotType: jsonItem.shotType || undefined,
+        asrText: frameAsrText || undefined,
       } : undefined;
 
       /**

@@ -20,8 +20,7 @@ const DEFAULT_SETTINGS_SCHEMA: Record<string, any> = {
   taskVisualModel: 'qwen-vl-max', taskScriptModel: 'deepseek-chat',
   taskTranslateModel: 'qwen-plus', taskHelperModel: 'gpt-4o-mini',
   ttsProvider: 'edge', sovitsUrl: 'http://127.0.0.1:9880',
-  fishKey: '', doubaoTtsAppId: '', doubaoTtsToken: '', doubaoTtsVoice: 'zh_female_meilinvyou_saturn_bigtts',
-  mossUrl: 'http://127.0.0.1:9881', mossModelDir: '',
+  doubaoTtsAppId: '', doubaoTtsToken: '', doubaoTtsVoice: 'zh_female_meilinvyou_saturn_bigtts',
 };
 
 const parseModels = (val: any, defaultModels: string[]) => {
@@ -176,7 +175,6 @@ export const useSettingsManager = () => {
         API.system.setSetting('doubaoTtsAppId', config.doubaoTtsAppId || ''),
         API.system.setSetting('doubaoTtsToken', config.doubaoTtsToken || ''),
         API.system.setSetting('doubaoTtsVoice', config.doubaoTtsVoice || ''),
-        API.system.setSetting('fishKey', config.fishKey || ''),
         API.system.setSetting('sovitsUrl', config.sovitsUrl || '')
       ]);
     } catch (e) {}

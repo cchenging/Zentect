@@ -67,6 +67,59 @@ function formatMsToTime(ms: number): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}.${String(mmm).padStart(3, '0')}`;
 }
 
+/**
+ * 🎬 视觉噪点过滤与 Key-Action 提纯器
+ * 输入：step2 downstream.shot 结构（含 action/emotion/keywords/shotType/asrText）
+ * 输出：蒸馏后的 keyAction（带【特写】前缀）+ 噪点过滤后的 keywords
+ *
+ * 设计原则（遵循项目准则"错就错，不降级"）：
+ * - 不对 action 做正则兜底（VLM 已通过 JSON Schema 强制输出 narrativeAction，缺失就是缺失，暴露给 LLM）
+ * - 不创造默认值掩盖空字段（action 为空时 keyAction 也为空，LLM 会自然依据 ASR 推理）
+ * - keywords 噪点过滤是"设计上的多路径"，不是防御性兜底：剔除环境类词以聚焦戏剧冲突
+ *
+ * @param shot step2 输出的 downstream.shot 结构
+ * @returns 蒸馏后的 keyAction 与过滤后的 keywords
+ */
+function extractKeyVisualAction(shot: any): {
+  keyAction: string;
+  emotion?: string;
+  atmosphere?: string;
+  purifiedKeywords: string[];
+} {
+  // 1. action 直接取自 VLM 结构化输出（narrativeAction），无需正则清洗
+  const rawAction: string = shot?.action || '';
+
+  // 2. 组合镜头语言前缀（如：【特写】死死盯住冰鱼），让 LLM 一眼看到镜头调度
+  const shotType: string = shot?.shotType || '';
+  const shotPrefix = shotType ? `【${shotType}】` : '';
+  const keyAction = `${shotPrefix}${rawAction}`;
+
+  // 3. keywords 噪点过滤：剔除环境/材质/颜色类静态词，仅保留动作/情绪/道具/人物关键词
+  // 这是"设计上的多路径"（用户需求明确要求聚焦戏剧冲突），不是防御性兜底
+  const ENVIRONMENT_NOISE_PATTERNS = [
+    // 环境套话：背景/墙面/地板/家具/材质
+    /^(背景|墙面|墙壁|地板|地面|天花板|家具|桌子|椅子|沙发|床|门|窗|窗帘|地毯)/,
+    // 颜色与材质：白/黑/红/木/金属/塑料 + 墙/地/桌
+    /^(白色|黑色|红色|黄色|蓝色|绿色|灰色|木制|木质|金属|塑料|玻璃)/,
+    // 静态场景词：室内/户外/房间/客厅/办公室/街道
+    /^(室内|户外|房间|客厅|卧室|厨房|办公室|街道|场景|环境)/,
+    // 图像说明套话：画面/镜头/图片
+    /^(画面|镜头|图片|图像|视角)/,
+  ];
+  const rawKeywords: string[] = Array.isArray(shot?.keywords) ? shot.keywords : [];
+  const purifiedKeywords = rawKeywords.filter((kw: any) => {
+    if (typeof kw !== 'string' || !kw.trim()) return false;
+    return !ENVIRONMENT_NOISE_PATTERNS.some(pattern => pattern.test(kw.trim()));
+  });
+
+  return {
+    keyAction,
+    emotion: shot?.emotion || undefined,
+    atmosphere: shot?.atmosphere || shot?.lighting || undefined,
+    purifiedKeywords,
+  };
+}
+
 export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, GeneratedShot[]> {
   readonly nodeType = 'script-gen';
 
@@ -184,6 +237,11 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
         : asrLines.slice(i * Math.max(1, Math.floor(asrLines.length / totalShots)), (i + 1) * Math.max(1, Math.floor(asrLines.length / totalShots)));
       const asrContext = chunkAsrLines.map(l => l.text || l.content || '').filter(Boolean).join(' ') || '';
 
+      // 🎬 视觉噪点过滤与 Key-Action 提纯：剔除"背景是一面墙"等静态水文
+      // 仅保留戏剧动作（带【特写】镜头前缀）+ 微表情 + 噑点过滤后的 keywords
+      // 让 LLM 注意力聚焦于戏剧冲突，而非环境描写
+      const purifiedVisual = extractKeyVisualAction(shot);
+
       contextChunks.push({
         chunkId: `chunk_${String(i + 1).padStart(3, '0')}`,
         timeRange: `${formatMsToTime(chunkStartMs)} -> ${formatMsToTime(chunkStartMs + chunkDurationMs)}`,
@@ -193,10 +251,10 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
         anchoredCharacters,
         asrContext: asrContext ? `原声：${asrContext}` : '',
         visualContext: {
-          action: shot.action || (sceneDescriptions ? sceneDescriptions.split('\n')[i] || '' : ''),
-          atmosphere: shot.atmosphere || shot.lighting || '',
-          emotionTone: shot.emotion || shot.emotionTone || '',
-          keywords: shot.keywords || [],
+          keyAction: purifiedVisual.keyAction,           // 蒸馏后的动作（如：【特写】死死盯住冰鱼）
+          emotion: purifiedVisual.emotion,                // 表情情绪（如：阴沉/咬牙）
+          atmosphere: purifiedVisual.atmosphere,          // 氛围（如：压抑对峙）
+          keywords: purifiedVisual.purifiedKeywords,      // 噑点过滤后的关键词
         },
       });
     }

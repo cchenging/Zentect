@@ -5,9 +5,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // === Mock 外部依赖（vi.mock 会被 vitest 自动 hoist） ===
 // 使用 vi.hoisted 避免 hoist 导致的变量未初始化错误
 
-const { mockGetTTSConfig, mockGetTTSOutputDir } = vi.hoisted(() => ({
+const { mockGetTTSConfig, mockGetTTSOutputDir, mockSynthesizeEdgeTts } = vi.hoisted(() => ({
   mockGetTTSConfig: vi.fn(),
   mockGetTTSOutputDir: vi.fn(),
+  mockSynthesizeEdgeTts: vi.fn(),
 }));
 
 vi.mock('../../../../main/engine/config/ProviderManager', () => ({
@@ -20,6 +21,11 @@ vi.mock('../../../../main/utils/pathManager', () => ({
   PathManager: {
     getTTSOutputDir: mockGetTTSOutputDir,
   },
+}));
+
+// Edge 走微软官方 WSS（synthesizeEdgeTts），不依赖 fetch，必须 mock 模块避免真实网络
+vi.mock('../../../../main/engine/edgeTts', () => ({
+  synthesizeEdgeTts: mockSynthesizeEdgeTts,
 }));
 
 // fs 使用 spy 而非 mock，避免 async factory 问题
@@ -39,9 +45,6 @@ function setupMocks(overrides: Record<string, unknown> = {}) {
     token: (overrides.token as string) ?? '',
     voice: (overrides.voice as string) ?? '',
     url: (overrides.url as string) ?? 'http://127.0.0.1:9880',
-    apiKey: (overrides.apiKey as string) ?? '',
-    mossUrl: (overrides.mossUrl as string) ?? 'http://127.0.0.1:9881',
-    mossModelDir: (overrides.mossModelDir as string) ?? '',
   });
 
   mockGetTTSOutputDir.mockReturnValue(
@@ -92,7 +95,7 @@ describe('TTSProvider', () => {
       // 清除 mock 重置 → 让缓存命中
       mockGetTTSConfig.mockReturnValue({
         provider: 'edge',
-        appId: '', token: '', voice: '', url: '', apiKey: '', mossUrl: '', mossModelDir: '',
+        appId: '', token: '', voice: '', url: '',
       });
       mockGetTTSOutputDir.mockReturnValue(saveDir);
 
@@ -160,16 +163,7 @@ describe('TTSProvider', () => {
     it('edge 应支持中英文自动选择音色', async () => {
       setupMocks({ provider: 'edge' });
 
-      globalThis.fetch = vi
-        .fn()
-        // 第一次 fetch：voicemaker API
-        .mockResolvedValueOnce({
-          json: () => Promise.resolve({ data: { audio_url: 'http://fake/audio.mp3' } }),
-        })
-        // 第二次 fetch：下载音频
-        .mockResolvedValueOnce({
-          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
-        });
+      mockSynthesizeEdgeTts.mockResolvedValue(Buffer.from('fake-mp3'));
 
       const result = await provider.synthesize('Hello world', 'edge');
       expect(result).toContain('tts_edge_');
@@ -178,14 +172,7 @@ describe('TTSProvider', () => {
     it('edge 中文文本应使用中文音色', async () => {
       setupMocks({ provider: 'edge' });
 
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValueOnce({
-          json: () => Promise.resolve({ data: { audio_url: 'http://fake/audio2.mp3' } }),
-        })
-        .mockResolvedValueOnce({
-          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
-        });
+      mockSynthesizeEdgeTts.mockResolvedValue(Buffer.from('fake-mp3'));
 
       const result = await provider.synthesize('你好世界', 'edge');
       expect(result).toContain('tts_edge_');
@@ -194,42 +181,14 @@ describe('TTSProvider', () => {
     it('edge voiceOverride 应覆盖默认音色', async () => {
       setupMocks({ provider: 'edge' });
 
-      const fetchSpy = vi
-        .fn()
-        .mockResolvedValueOnce({
-          json: () => Promise.resolve({ data: { audio_url: 'http://fake/audio3.mp3' } }),
-        })
-        .mockResolvedValueOnce({
-          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
-        });
-      globalThis.fetch = fetchSpy;
+      mockSynthesizeEdgeTts.mockResolvedValue(Buffer.from('fake-mp3'));
 
       await provider.synthesize('测试', 'edge', undefined, 'zh-CN-YunxiNeural');
 
-      // 验证 fetch 被调用时 voice 参数被覆盖
-      const callBody = JSON.parse(fetchSpy.mock.calls[0]?.[1]?.body as string);
-      expect(callBody.voice).toBe('zh-CN-YunxiNeural');
-    });
-
-    it('fish 无 apiKey 应抛出错误', async () => {
-      setupMocks({ provider: 'fish', apiKey: '' });
-
-      await expect(
-        provider.synthesize('测试', 'fish'),
-      ).rejects.toMatchObject({ code: ErrorCode.AI_PROCESS_FAILED });
-    });
-
-    it('fish 接口 HTTP 非 200 应抛出 AI_PROCESS_FAILED', async () => {
-      setupMocks({ provider: 'fish', apiKey: 'fake-key' });
-
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: false,
-        text: () => Promise.resolve('Unauthorized'),
-      });
-
-      await expect(
-        provider.synthesize('测试', 'fish'),
-      ).rejects.toMatchObject({ code: ErrorCode.AI_PROCESS_FAILED });
+      // 验证 synthesizeEdgeTts 收到 voiceOverride
+      expect(mockSynthesizeEdgeTts).toHaveBeenCalledWith(
+        expect.objectContaining({ voice: 'zh-CN-YunxiNeural' })
+      );
     });
 
     it('sovits 非 200 响应应抛出 AI_PROCESS_FAILED', async () => {
@@ -242,32 +201,6 @@ describe('TTSProvider', () => {
 
       await expect(
         provider.synthesize('测试', 'sovits'),
-      ).rejects.toMatchObject({ code: ErrorCode.AI_PROCESS_FAILED });
-    });
-
-    it('moss 非 200 响应应抛出 AI_PROCESS_FAILED', async () => {
-      setupMocks({ provider: 'moss', mossUrl: 'http://127.0.0.1:9881' });
-
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: false,
-        text: () => Promise.resolve('Model not loaded'),
-      });
-
-      await expect(
-        provider.synthesize('测试', 'moss'),
-      ).rejects.toMatchObject({ code: ErrorCode.AI_PROCESS_FAILED });
-    });
-
-    it('moss 返回 code !== 0 应抛出 AI_PROCESS_FAILED', async () => {
-      setupMocks({ provider: 'moss', mossUrl: 'http://127.0.0.1:9881' });
-
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ code: 1, message: 'Voice not found' }),
-      });
-
-      await expect(
-        provider.synthesize('测试', 'moss'),
       ).rejects.toMatchObject({ code: ErrorCode.AI_PROCESS_FAILED });
     });
 
@@ -334,103 +267,36 @@ describe('TTSProvider', () => {
     it('第一个引擎成功应直接返回', async () => {
       setupMocks({ provider: 'edge' });
 
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValueOnce({
-          json: () => Promise.resolve({ data: { audio_url: 'http://fake/edge.mp3' } }),
-        })
-        .mockResolvedValueOnce({
-          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
-        });
+      mockSynthesizeEdgeTts.mockResolvedValue(Buffer.from('fake-mp3'));
 
       const result = await provider.synthesizeWithFallback('测试文案');
       expect(result.provider).toBe('edge');
       expect(result.path).toContain('tts_edge_');
     });
 
-    it('Edge 失败 → MOSS 成功 → 应返回 MOSS', async () => {
-      setupMocks({ provider: 'edge', mossUrl: 'http://127.0.0.1:9881' });
-
-      // Edge 失败
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValueOnce({
-          json: () => Promise.resolve({ data: {} }), // edge: 无 audio_url
-        })
-        // MOSS 成功
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              code: 0,
-              audio: Buffer.from('moss-audio').toString('hex'),
-            }),
-        });
-
-      const result = await provider.synthesizeWithFallback('测试');
-      expect(result.provider).toBe('moss');
-      expect(result.path).toContain('tts_moss_');
-    });
-
     it('全部引擎失败应抛出 AI_PROCESS_FAILED', async () => {
-      setupMocks({ provider: 'edge', mossUrl: 'http://127.0.0.1:9881' });
+      setupMocks({ provider: 'edge' });
 
       // 所有引擎都失败
-      globalThis.fetch = vi.fn().mockRejectedValue(new Error('网络不可达'));
+      mockSynthesizeEdgeTts.mockRejectedValue(new Error('Edge down'));
 
       await expect(
         provider.synthesizeWithFallback('测试'),
       ).rejects.toMatchObject({ code: ErrorCode.AI_PROCESS_FAILED });
     });
 
-    it('降级链顺序应为 edge → moss → fish', async () => {
-      // 所有引擎共用同一份配置，fish apiKey 必须存在
-      mockGetTTSConfig.mockReturnValue({
-        provider: 'edge',
-        appId: '', token: '', voice: '', url: 'http://127.0.0.1:9880',
-        apiKey: 'fish-key',
-        mossUrl: 'http://127.0.0.1:9881', mossModelDir: '',
-      });
-      mockGetTTSOutputDir.mockReturnValue(path.join(os.tmpdir(), 'zentect-fallback-test'));
-      vi.spyOn(fs, 'existsSync').mockReturnValue(false);
-
-      // 每个引擎在第一个 fetch 失败后即抛出，不会继续第二个 fetch
-      // edge(1) + moss(1) = 2 次失败，fish 排在 attempt 3
-      let attempt = 0;
-      globalThis.fetch = vi.fn().mockImplementation(() => {
-        attempt++;
-        if (attempt <= 2) {
-          return Promise.reject(new Error('down'));
-        }
-        return Promise.resolve({
-          ok: true,
-          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
-        });
-      });
-
-      const result = await provider.synthesizeWithFallback('最终测试');
-      expect(result.provider).toBe('fish');
-    });
-
     it('voiceOverride 应传递给降级链中每个引擎', async () => {
-      setupMocks({ provider: 'edge', mossUrl: 'http://127.0.0.1:9881' });
+      setupMocks({ provider: 'edge' });
 
-      const fetchSpy = vi
-        .fn()
-        // edge 成功
-        .mockResolvedValueOnce({
-          json: () => Promise.resolve({ data: { audio_url: 'http://fake/e.mp3' } }),
-        })
-        .mockResolvedValueOnce({
-          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
-        });
-      globalThis.fetch = fetchSpy;
+      // edge 成功
+      mockSynthesizeEdgeTts.mockResolvedValue(Buffer.from('fake-mp3'));
 
       await provider.synthesizeWithFallback('你好', undefined, 'custom-voice');
 
       // 验证 edge 调用使用了 voiceOverride
-      const callBody = JSON.parse(fetchSpy.mock.calls[0]?.[1]?.body as string);
-      expect(callBody.voice).toBe('custom-voice');
+      expect(mockSynthesizeEdgeTts).toHaveBeenCalledWith(
+        expect.objectContaining({ voice: 'custom-voice' })
+      );
     });
   });
 
@@ -440,14 +306,7 @@ describe('TTSProvider', () => {
     it('极长文本应正常处理', async () => {
       setupMocks({ provider: 'edge' });
 
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValueOnce({
-          json: () => Promise.resolve({ data: { audio_url: 'http://fake/long.mp3' } }),
-        })
-        .mockResolvedValueOnce({
-          arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
-        });
+      mockSynthesizeEdgeTts.mockResolvedValue(Buffer.from('fake-mp3'));
 
       const longText = '测试'.repeat(500); // 2000 字符
       const result = await provider.synthesize(longText, 'edge');

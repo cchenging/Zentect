@@ -228,8 +228,8 @@ describe('TTSStrategy', () => {
 
       await strategy.performTask(
         {
-          ttsEngine: 'moss',
-          voiceId: 'Junhao',
+          ttsEngine: 'edge',
+          voiceId: 'zh-CN-XiaoxiaoNeural',
           scriptShots: [{ shotId: 's1', text: '测试' }],
         },
         { bus: new Map() } as any,
@@ -239,9 +239,10 @@ describe('TTSStrategy', () => {
 
       expect(mockGenerateTTS).toHaveBeenCalledWith(
         '测试',           // text
-        'moss',           // provider
+        'edge',           // provider
         '/cache',         // cacheDir
-        'Junhao',         // voiceId
+        'zh-CN-XiaoxiaoNeural', // voiceId
+        1.0,              // speechRate（默认）
       );
     });
 
@@ -261,7 +262,7 @@ describe('TTSStrategy', () => {
       );
 
       expect(mockGenerateTTS).toHaveBeenCalledWith(
-        '无音色', 'edge', '/cache', undefined,
+        '无音色', 'edge', '/cache', undefined, 1.0,
       );
     });
   });
@@ -347,6 +348,7 @@ describe('TTSStrategy', () => {
         'edge',
         '/cache',
         undefined,
+        1.0,
       );
     });
   });

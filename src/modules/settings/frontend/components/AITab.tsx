@@ -1,7 +1,7 @@
 // AI 服务配置 Tab - V3 设计系统风格
 // Provider 卡片（扁平式，不可展开）+ 管线映射 + TTS 配置
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Eye, EyeOff, Server, Play, ExternalLink, Zap, Plus, FolderOpen } from 'lucide-react';
+import { Eye, EyeOff, Server, Play, ExternalLink, Zap, Plus } from 'lucide-react';
 import { Input } from '@renderer/components/ui/input';
 import { Button } from '@renderer/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select';
@@ -179,7 +179,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   }, [propBindings]);
 
   /* ---------- TTS 相关 ---------- */
-  const TTS_SETTINGS_KEYS = ['ttsProvider', 'doubaoTtsAppId', 'doubaoTtsToken', 'doubaoTtsVoice', 'fishKey', 'sovitsUrl', 'mossUrl', 'mossModelDir'];
+  const TTS_SETTINGS_KEYS = ['ttsProvider', 'doubaoTtsAppId', 'doubaoTtsToken', 'doubaoTtsVoice', 'sovitsUrl'];
   const ttsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleValChange = (field: string, val: any) => {
     onUpdate('ai', field, val);
@@ -674,9 +674,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                 <SelectContent className="bg-bg-tertiary border-border/50">
                   <SelectItem value="doubao" className="text-xs">火山引擎 TTS (推荐)</SelectItem>
                   <SelectItem value="edge" className="text-xs">微软 Edge TTS (免费)</SelectItem>
-                  <SelectItem value="moss" className="text-xs">MOSS 本地模型 (需下载)</SelectItem>
                   <SelectItem value="sovits" className="text-xs">本地 SoVITS</SelectItem>
-                  <SelectItem value="fish" className="text-xs">Fish Audio (API)</SelectItem>
                 </SelectContent>
               </Select>
               <Button onClick={onTestTTS} className="h-9 text-xs px-4 bg-accent/10 text-accent hover:bg-accent/20 border border-accent/20 shadow-none shrink-0 gap-1.5">
@@ -688,27 +686,6 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
             {currentTts === 'edge' && (
               <div className="text-xs text-accent-green bg-accent-green/10 p-3 rounded-lg border border-accent-green/20 flex items-center gap-2">该引擎为免费开源接口，无需额外配置任何密钥。</div>
             )}
-            {currentTts === 'moss' && (
-              <div className="flex flex-col gap-4">
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-xs text-muted-foreground font-medium">MOSS 模型路径</span>
-                  <div className="flex gap-3">
-                    <Input value={aiData.mossModelDir || ''} onChange={e => handleValChange('mossModelDir', e.target.value)} placeholder="F:\Tools\Zentect\resources\models\moss-tts-nano" className="flex-1 text-xs bg-bg-secondary h-9 border-border/50 font-mono" />
-                    <Button variant="outline" onClick={async () => {
-                      const dir = await window.api?.ipc?.invoke?.('dialog:openDirectory');
-                      if (dir) handleValChange('mossModelDir', dir);
-                    }} className="h-9 text-xs text-accent-cyan hover:text-accent-cyan border-accent-cyan/20 bg-accent-cyan/5 hover:bg-accent-cyan/10 px-4 shadow-none shrink-0 gap-1.5 cursor-pointer">
-                      <FolderOpen size={13} /> 选择
-                    </Button>
-                  </div>
-                  <span className="text-xs text-muted-foreground mt-1">选择 moss-tts-nano 文件夹所在路径，包含 MOSS-TTS-Nano-100M-ONNX 和 MOSS-Audio-Tokenizer-Nano-ONNX 子目录</span>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-xs text-muted-foreground font-medium">服务地址（自动启动）</span>
-                  <Input value={aiData.mossUrl || 'http://127.0.0.1:9881'} onChange={e => handleValChange('mossUrl', e.target.value)} className="text-xs bg-bg-secondary h-9 border-border/50 font-mono" />
-                </div>
-              </div>
-            )}
             {currentTts === 'sovits' && (
               <div className="flex flex-col gap-1.5">
                 <span className="text-xs text-muted-foreground font-medium">本地服务端点</span>
@@ -719,9 +696,6 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                   </Button>
                 </div>
               </div>
-            )}
-            {currentTts === 'fish' && (
-              <PasswordField label="Fish Audio API Key" value={aiData.fishKey || ''} onChange={(e: any) => handleValChange('fishKey', e.target.value)} onCheck={onTestTTS} linkUrl="https://fish.audio/zh-CN/go-api/" />
             )}
             {currentTts === 'doubao' && (
               <div className="flex flex-col gap-4">

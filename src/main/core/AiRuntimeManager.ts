@@ -20,7 +20,7 @@ interface RuntimeStatus {
 
 /**
  * AI 运行时管理器
- * 管理 Python AI 运行时（TTS、ASR、人脸检测等微服务）的完整生命周期：
+ * 管理 Python AI 运行时（ASR、音频分离、人脸检测等微服务）的完整生命周期：
  *  - 启动 / 停止 / 重启
  *  - 健康检查
  *  - 版本校验

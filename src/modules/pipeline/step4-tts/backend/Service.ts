@@ -2,26 +2,28 @@
 
 import { ProviderManager } from '../../../../main/engine/config/ProviderManager'
 import { PathManager } from '../../../../main/utils/pathManager'
+import { synthesizeEdgeTts } from '../../../../main/engine/edgeTts'
 import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import { AppError, ErrorCode } from '@modules/infra/error/AppError'
 
-export type TTSVendor = 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss'
+export type TTSVendor = 'doubao' | 'edge' | 'sovits'
 
 export class TTSProvider {
-  /** V1.1: TTS 男主角 fallback 链 — Edge → MOSS → Fish Audio 逐级降级 */
+  /** fallback 链 — 当前仅保留默认引擎 Edge */
   async synthesizeWithFallback(
     text: string,
     saveDir?: string,
-    voiceOverride?: string
+    voiceOverride?: string,
+    rate?: number
   ): Promise<{ path: string; provider: TTSVendor }> {
-    const fallbackChain: TTSVendor[] = ['edge', 'moss', 'fish'];
+    const fallbackChain: TTSVendor[] = ['edge'];
     let lastError: Error | null = null;
 
     for (const provider of fallbackChain) {
       try {
-        const audioPath = await this.synthesize(text, provider, saveDir, voiceOverride);
+        const audioPath = await this.synthesize(text, provider, saveDir, voiceOverride, rate);
         return { path: audioPath, provider };
       } catch (err: any) {
         lastError = err;
@@ -62,7 +64,7 @@ export class TTSProvider {
     /** 缓存查找：相同清洗后文本+引擎+音色+语速 的合成结果直接复用 */
     const voiceKey = voiceOverride || config.voice || 'default'
     const cacheHash = crypto.createHash('md5').update(`${cleanedText}|${provider}|${voiceKey}|${speedRate}`).digest('hex').substring(0, 12)
-    const ext = provider === 'moss' || provider === 'sovits' ? 'wav' : 'mp3'
+    const ext = provider === 'sovits' ? 'wav' : 'mp3'
     const cachedFile = path.join(targetDir, `tts_${provider}_${voiceKey}_${cacheHash}.${ext}`)
     if (fs.existsSync(cachedFile)) {
       return cachedFile
@@ -100,31 +102,8 @@ export class TTSProvider {
           const voiceType =
             voiceOverride ||
             (/^[a-zA-Z0-9\s.,!?'-]+$/.test(cleanedText) ? 'en-US-JennyNeural' : 'zh-CN-XiaoxiaoNeural')
-          const res = await fetch('https://api.tts.quest/v3/voicemaker', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: cleanedText, voice: voiceType, format: 'mp3', speed: speedRate })
-          })
-          const data: any = await res.json()
-          if (!data.data?.audio_url) throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, 'Edge TTS 繁忙')
-          const audioRes = await fetch(data.data.audio_url)
-          audioData = Buffer.from(await audioRes.arrayBuffer())
-          break
-        }
-        case 'fish': {
-          if (!config.apiKey) throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, '未配置 Fish Audio Key')
-          const payload: any = { text: cleanedText, rate: speedRate }
-          if (voiceOverride) payload.reference_id = voiceOverride
-          const res = await fetch('https://api.fish.audio/v1/tts', {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${config.apiKey}`,
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(payload)
-          })
-          if (!res.ok) throw new AppError(ErrorCode.AI_PROCESS_FAILED, `Fish Audio 异常: ${await res.text()}`)
-          audioData = Buffer.from(await res.arrayBuffer())
+          // 微软官方 Edge TTS（免费、无需 key），替代已失效的第三方代理 api.tts.quest（实测返回 404）
+          audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate })
           break
         }
         case 'sovits': {
@@ -138,20 +117,6 @@ export class TTSProvider {
           audioData = Buffer.from(await res.arrayBuffer())
           break
         }
-        case 'moss': {
-          const mossUrl = config.mossUrl || 'http://127.0.0.1:9881'
-          const voiceType = voiceOverride || 'Junhao'
-          const res = await fetch(`${mossUrl}/tts`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: cleanedText, voice: voiceType, speed: speedRate })
-          })
-          if (!res.ok) throw new AppError(ErrorCode.AI_PROCESS_FAILED, `MOSS-TTS 异常: ${await res.text()}`)
-          const json: any = await res.json()
-          if (json.code !== 0) throw new AppError(ErrorCode.AI_PROCESS_FAILED, `MOSS-TTS 错误: ${json.message}`)
-          audioData = Buffer.from(json.audio, 'hex')
-          break
-        }
         default:
           throw new AppError(ErrorCode.SYS_ENV_ERROR, `未知的 TTS 引擎: ${provider}`)
       }
@@ -160,14 +125,13 @@ export class TTSProvider {
       fs.writeFileSync(cachedFile, audioData)
       return cachedFile
     } catch (err: any) {
+      const msg = err?.message || '';
       const hints: Record<string, string> = {
         doubao: '（请在 设置 → AI → 语音合成 中检查火山引擎配置）',
-        fish: '（请在 设置 → AI → 语音合成 中检查 Fish Audio Key）',
         sovits: '（请确认本地 GPT-SoVITS 服务已启动，默认端口 9880）',
-        moss: '（请确认 MOSS-TTS-Nano 模型已下载，或切换到 Edge 免费引擎）',
         edge: ''
       }
-      throw new AppError(ErrorCode.AI_PROCESS_FAILED, `${err.message || '语音合成失败'}${hints[provider] || ''}`)
+      throw new AppError(ErrorCode.AI_PROCESS_FAILED, `${msg || '语音合成失败'}${hints[provider] || ''}`)
     }
   }
 }

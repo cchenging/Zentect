@@ -601,7 +601,7 @@ React 组件，在 `useEffect` 中通过 `window.api.ipc.on` 监听 4 个推送�
 | 频道 | AIController 实现 | EngineController 实现 | 生效者 |
 |------|------------------|---------------------|--------|
 | `voice:preview` | `AIEngine.generateTTS` | `TTSProvider.synthesize` | EngineController |
-| `voice:listByEngine` | hardcoded + moss HTTP fetch | `getVoicesForEngine()` | EngineController |
+| `voice:listByEngine` | hardcoded 音色表 | `getVoicesForEngine()` | EngineController |
 | `voice:get-cloned-voices` | fs-based clones 目录读取 | `LocalAiGateway.getClonedVoices()` | EngineController |
 
 ---

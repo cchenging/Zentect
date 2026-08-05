@@ -21,8 +21,6 @@ export interface GeneralSettings {
   autoSaveInterval: number;
   /** Python 路径 */
   pythonPath?: string;
-  /** MOSS-TTS 模型目录 */
-  mossModelDir?: string;
 }
 
 /** 健康检查状态 */

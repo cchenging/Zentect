@@ -31,7 +31,7 @@
 | 文件 | 行数 | 角色 |
 |---|---|---|
 | `engine/strategies/TTSStrategy.ts` | 164 | Step4 管线节点策略：并发控制、逐段合成、进度回调、结果统计 |
-| `engine/capabilities/TTSProvider.ts` | 167 | TTS 能力提供者：5 种引擎实现 (doubao/edge/fish/sovits/moss) + 缓存 + 降级链 |
+| `engine/capabilities/TTSProvider.ts` | 167 | TTS 能力提供者：3 种引擎实现 (doubao/edge/sovits) + 缓存 + 降级链 |
 | `engine/AIEngine.ts` | ~80* | `generateTTS()` 静态方法：引擎路由、文本清洗、API 调用、文件落盘 |
 | `controllers/EngineController.ts` | ~86* | IPC 注册：voice:preview / voice:listByEngine / voice:get-cloned-voices / voice:delete-cloned + getVoicesForEngine() |
 | `controllers/AIController.ts` | ~98* | IPC 注册：voice:preview / voice:listByEngine / voice:get-cloned-voices / voice:clone（重复注册，存在双份 handler） |
@@ -57,10 +57,8 @@
 | `fs / path / os` | Node.js | 文件读写、路径、临时目录 |
 | `react` | npm | UI 框架 |
 | 火山引擎 API | `https://openspeech.bytedance.com/api/v1/tts` | doubao TTS |
-| Edge TTS API | `https://api.tts.quest/v3/voicemaker` | 免费 Edge TTS |
-| Fish Audio API | `https://api.fish.audio/v1/tts` | Fish Audio TTS |
+| Edge TTS API | `wss://speech.platform.bing.com` | 免费 Edge TTS（微软官方） |
 | SoVITS 本地服务 | `http://127.0.0.1:9880` | 本地 SoVITS 服务 |
-| MOSS-TTS 本地服务 | `http://127.0.0.1:9881` | 本地 MOSS-TTS-Nano 服务 |
 
 ### 2.2 内部依赖（调用关系图）
 
@@ -106,7 +104,7 @@ EngineController / AIController
 | `editorSlice.ts` | `StepTTSSynthesis.tsx` | TTS 状态读写（引擎/音色/进度/结果） |
 | `editorSlice.ts` | `usePipelineResultMapper.ts` | 管线结果写入 `store.setTtsResults()` |
 | `API.voice.preview` | `StepTTSSynthesis.tsx` | 音色试听 |
-| `API.voice.listByEngine` | `StepTTSSynthesis.tsx` | 动态获取 MOSS 音色列表 |
+| `API.voice.listByEngine` | `StepTTSSynthesis.tsx` | 获取音色列表（edge/doubao/sovits 硬编码 + 后端查询） |
 | `API.engine.runPipeline` | `StepTTSSynthesis.tsx` | 触发 step4 管线执行 |
 | `TTSStrategy.ts` | `EngineController` (runPipeline) | 管线节点策略注册 |
 | `TTSProvider.ts` | `EngineController` / `AIController` | 音色预览合成 |
@@ -120,7 +118,7 @@ EngineController / AIController
 ### 3.1 StepTTSSynthesis.tsx
 **核心功能**：Step4 智能容器组件
 - 管理引擎/音色状态，维护 5 种引擎的静态音色表 (VOICE_OPTIONS)
-- 动态获取 MOSS 在线音色和 SoVITS/Fish 克隆音色
+- 动态获取 SoVITS 克隆音色
 - 音色试听 (handleVoicePreview)：调用 `API.voice.preview`，播放返回的音频
 - 合成触发 (handleSynthesize)：构造 `STEP_SEQUENCES[4]` 序列 → `API.engine.runPipeline`
 - 结果预览：逐段播放合成后的音频
@@ -176,15 +174,15 @@ EngineController / AIController
   3. 按引擎并发数 `runConcurrent()` 批量合成
   4. 进度回调（每完成一段更新百分比）
   5. 返回 `{ shots: TTSItemResult[], provider, successCount, failCount }`
-- 并发策略：edge(6), doubao(5), fish(5), moss(2), sovits(2)
+- 并发策略：edge(6), doubao(5), sovits(2)
 **导出**：`TTSStrategy` (class extends BaseNodeStrategy)
 
 ### 3.8 TTSProvider.ts
 **核心功能**：TTS 能力提供者（独立封装）
-- 5 种引擎实现：doubao / edge / fish / sovits / moss
+- 3 种引擎实现：doubao / edge / sovits
 - 文本清洗（去舞台标记）
 - MD5 缓存：相同文本+引擎+音色复用结果
-- `synthesizeWithFallback()`：Edge → MOSS → Fish 三级降级链
+- `synthesizeWithFallback()`：默认引擎 Edge 合成
 **导出**：`TTSProvider` (class), `TTSVendor` (type)
 
 ### 3.9 AIEngine.generateTTS()
@@ -206,7 +204,7 @@ EngineController / AIController
 **注册的 IPC handlers**（与 EngineController 重复）：
 - `voice:clone` → 本地克隆流程
 - `voice:preview` → AIEngine.generateTTS（与 EngineController 版本实现不同）
-- `voice:listByEngine` → 内联 HARDCODED_VOICES + MOSS 在线查询
+- `voice:listByEngine` → 内联 HARDCODED_VOICES
 - `voice:get-cloned-voices` → 本地文件系统扫描
 
 ### 3.12 AIService.ts (TTS 部分)
@@ -234,10 +232,8 @@ EngineController → PipelineEngine → TTSStrategy.performTask()
   │ 2. 按引擎并发数 batch execute
   │ 3. 每个 shot → AIEngine.generateTTS(text, provider, cacheDir, voiceId)
   │     ├─ doubao → 火山引擎 API
-  │     ├─ edge   → api.tts.quest (免费)
-  │     ├─ fish   → Fish Audio API
-  │     ├─ sovits → 本地 http://127.0.0.1:9880
-  │     └─ moss   → 本地 http://127.0.0.1:9881
+  │     ├─ edge   → 微软官方 Edge TTS (WSS)
+  │     └─ sovits → 本地 http://127.0.0.1:9880
   │ 4. 返回 { shots: [{ shotId, audioPath, _failed }] }
   ▼
 PipelineResult → mapPipelineResultToState()
@@ -323,7 +319,7 @@ src/modules/pipeline/step4-tts/
 | AIController 与 EngineController 中 getVoicesForEngine 逻辑不一致 | 🟡 中 | AIController 有额外音色 + HARDCODED_VOICES 独立定义，EngineController 音色更完整 |
 | StepTTSSynthesis 与 store 紧耦合 | 🟡 中 | 组件直接使用 useStore 读取 12+ 个状态字段，迁移需同步更新引用 |
 | TTSProvider 缓存基于 MD5 | 🟢 低 | 缓存键 = 文本+引擎+音色，合理但需注意清理策略 |
-| 前端 VOICE_OPTIONS 硬编码 | 🟢 低 | 非 MOSS 引擎音色完全前端硬编码，与后端返回可能不一致 |
+| 前端 VOICE_OPTIONS 硬编码 | 🟢 低 | 引擎音色完全前端硬编码，与后端返回可能不一致 |
 | Step4 管线节点依赖上游 script-gen | 🟡 中 | 若 context.bus 中无 script-gen 结果，TTSStrategy 返回空，前端需友好提示 |
 | IpcConstants 重导出层 | 🟢 低 | `shared/utils/IpcConstants.ts` → `infra/ipc/IpcConstants.ts` 多一层跳转 |
 

@@ -56,16 +56,14 @@ describe('Settings General Types', () => {
       }
     });
 
-    it('pythonPath 和 mossModelDir 为可选字段', () => {
+    it('pythonPath 为可选字段', () => {
       const withOptional: GeneralSettings = {
         projectPath: '', exportPath: '', jianyingPath: '',
         theme: 'dark', language: 'zh-CN',
         gpuAcceleration: true, autoSaveInterval: 30,
         pythonPath: 'C:/Python/python.exe',
-        mossModelDir: 'D:/Models/MOSS-TTS',
       };
       expect(withOptional.pythonPath).toBe('C:/Python/python.exe');
-      expect(withOptional.mossModelDir).toBe('D:/Models/MOSS-TTS');
 
       const withoutOptional: GeneralSettings = {
         projectPath: '', exportPath: '', jianyingPath: '',
@@ -73,7 +71,6 @@ describe('Settings General Types', () => {
         gpuAcceleration: true, autoSaveInterval: 30,
       };
       expect(withoutOptional.pythonPath).toBeUndefined();
-      expect(withoutOptional.mossModelDir).toBeUndefined();
     });
 
     it('autoSaveInterval 为 0 表示禁用', () => {

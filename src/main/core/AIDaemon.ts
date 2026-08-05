@@ -1,8 +1,4 @@
-import * as path from 'path';
 import * as http from 'http';
-import { ChildProcess, spawn } from 'child_process';
-import { PathManager } from '../utils/pathManager';
-import { ProcessManager } from '../utils/processManager';
 import { AppLogger } from './AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { SettingsRepository } from '../database/repositories/SettingsRepository';
@@ -15,11 +11,8 @@ import { AiRuntimeManager } from './AiRuntimeManager';
  */
 export class AIDaemon {
   private static instance: AIDaemon;
-  private ttsProcess: ChildProcess | null = null;
   private isReady = false;
-  private ttsReady = false;
   private port = 34567;
-  private ttsPort = 9881;
   private settingsRepo = new SettingsRepository();
   private healthCheckTimer: NodeJS.Timeout | null = null;
   private healthFailCount = 0;
@@ -71,80 +64,6 @@ export class AIDaemon {
     this.stopHealthCheck();
     this.runtimeManager.stop();
     this.isReady = false;
-    this.stopTTS();
-  }
-
-  // ==========================================
-  // 🔊 MOSS-TTS-Nano 工作进程管理
-  // ==========================================
-  public startTTS() {
-    if (this.ttsReady || this.ttsProcess) return;
-
-    const pythonExe = this.resolvePythonPath();
-    const scriptPath = PathManager.getScriptPath('tts_worker.py');
-    const defaultModelsDir = PathManager.getModelsPath();
-    // 读取用户在设置中配置的模型路径，优先使用
-    const configuredModelDir = this.settingsRepo.get<string>('mossModelDir', '');
-    const modelDir = configuredModelDir || path.join(defaultModelsDir, 'moss-tts-nano');
-
-    AppLogger.info(LOG_TAGS.AI_DAEMON, 'Starting MOSS-TTS worker...', { script: scriptPath, port: this.ttsPort, modelDir });
-
-    const pyLibsPath = path.join(PathManager.getResourcesPath(), 'scripts', 'py_libs');
-    const pythonEnv = { ...process.env, PYTHONPATH: pyLibsPath };
-    this.ttsProcess = spawn(pythonExe, [
-      scriptPath,
-      '--port', this.ttsPort.toString(),
-      '--model_dir', modelDir,
-    ], { env: pythonEnv });
-    ProcessManager.register(this.ttsProcess, 'MOSS_TTS_Worker');
-
-    // 捕获 stdout 输出（uvicorn 启动日志走 stdout）
-    this.ttsProcess.stdout?.on('data', (data) => {
-      const output = data.toString().trim();
-      AppLogger.info(LOG_TAGS.AI_DAEMON, `[MOSS-TTS stdout] ${output}`);
-      if (output.includes('Uvicorn running') || output.includes('Application startup')) {
-        this.ttsReady = true;
-        AppLogger.info(LOG_TAGS.AI_DAEMON, 'MOSS-TTS worker is online.', { port: this.ttsPort });
-      }
-    });
-
-    // 捕获 stderr 输出（模型加载日志走 stderr）
-    this.ttsProcess.stderr?.on('data', (data) => {
-      const output = data.toString().trim();
-      AppLogger.info(LOG_TAGS.AI_DAEMON, `[MOSS-TTS stderr] ${output}`);
-      if (output.includes('Uvicorn running') || output.includes('Application startup')) {
-        this.ttsReady = true;
-        AppLogger.info(LOG_TAGS.AI_DAEMON, 'MOSS-TTS worker is online.', { port: this.ttsPort });
-      }
-    });
-
-    this.ttsProcess.on('close', (code) => {
-      this.ttsReady = false;
-      this.ttsProcess = null;
-      AppLogger.info(LOG_TAGS.AI_DAEMON, `MOSS-TTS worker exited with code ${code}.`);
-    });
-
-    this.ttsProcess.on('error', (err) => {
-      AppLogger.error(LOG_TAGS.AI_DAEMON, 'Failed to start MOSS-TTS worker.', err);
-    });
-  }
-
-  public stopTTS() {
-    if (this.ttsProcess) {
-      // 💥 危机三修复：树形强杀 TTS 进程，杜绝僵尸端口占满
-      const pid = this.ttsProcess.pid;
-      if (pid) {
-        ProcessManager.killTree(pid);
-      } else {
-        this.ttsProcess.kill();
-      }
-      this.ttsProcess = null;
-      this.ttsReady = false;
-    }
-  }
-
-  public isTTSReady(): boolean {
-    return this.ttsReady;
   }
 
   /** 等待就绪 — 查询 AiRuntimeManager 状态；若离线则自动点火 */
@@ -374,23 +293,5 @@ export class AIDaemon {
       .catch((err) => {
         AppLogger.error(LOG_TAGS.AI_DAEMON, 'RuntimeManager 重启失败', err);
       });
-  }
-
-  /**
-   * 解析 Python 解释器路径
-   * 优先级：用户 settings 自定义 → ai-env 便携环境 → 系统 Python
-   * 与 AiRuntimeManager.resolvePythonPath 保持一致，确保 TTS worker 与 ai_daemon 用同一解释器
-   */
-  private resolvePythonPath(): string {
-    // 1. 用户在设置中显式配置的 pythonPath
-    const userDefined = this.settingsRepo.get<string>('pythonPath', '');
-    if (userDefined) return userDefined;
-
-    // 2. ai-env 便携环境（发版内置）
-    const aiEnvPython = PathManager.getAiEnvPythonPath();
-    if (aiEnvPython) return aiEnvPython;
-
-    // 3. 降级到系统 Python
-    return 'python';
   }
 }

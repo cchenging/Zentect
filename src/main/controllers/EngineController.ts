@@ -653,32 +653,10 @@ async function getVoicesForEngine(engine: string): Promise<Array<{ id: string; n
         { id: 'zh_female_vv_uranus_bigtts', name: 'vv 女声', gender: 'female', locale: 'zh-CN' },
         { id: 'zh_male_dashu_saturn_bigtts', name: '大叔 (男)', gender: 'male', locale: 'zh-CN' },
       ];
-    case 'fish':
-      return [
-        { id: 'default', name: 'Fish Audio 默认音色', gender: 'unknown', locale: 'zh-CN' },
-      ];
     case 'sovits':
       return [
         { id: 'default', name: '本地 SoVITS 音色 (需克隆)', gender: 'unknown', locale: 'zh-CN' },
       ];
-    case 'moss': {
-      try {
-        const response = await fetch('http://127.0.0.1:9881/voices');
-        const data = await response.json();
-        if (data?.voices && Array.isArray(data.voices)) {
-          const langMap: Record<string, string> = { zh: '中文', en: '英文', ja: '日文' };
-          const genderMap: Record<string, string> = { male: '男', female: '女' };
-          return data.voices.map((v: any) => ({
-            id: v.id,
-            name: v.name,
-            lang: `${langMap[v.language] || v.language}·${genderMap[v.gender] || v.gender}`,
-          }));
-        }
-      } catch {
-        // tts_worker 未启动时返回空数组，前端以硬编码 VOICE_OPTIONS 兜底
-      }
-      return [];
-    }
     default:
       return [];
   }

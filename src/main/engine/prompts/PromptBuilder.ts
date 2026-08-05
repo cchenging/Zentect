@@ -96,20 +96,22 @@ ${safeContext}
   }
 
   /**
-   * 视觉分析 — 构造 VLM 识图 System Prompt
-   * 要求模型对图片进行语义级理解，输出结构化描述
+   * 视觉分析 — 构造 VLM 识图 System Prompt（剪辑师视角）
+   * 重构：从"图像描述算法"转为"顶级影视剪辑师"，聚焦戏剧动作与微表情
+   * 严禁描述背景颜色/家具材质/墙壁/衣服样式等静态杂物，避免分散下游 LLM 注意力
    */
   public static buildVisionPrompt(): string {
-    return `你是一名专业的影视视觉分析师。
-请仔细观察图片内容，从以下维度进行结构化描述：
+    return `# Role: 顶级影视剪辑师 & 视觉动作分析师
 
-1. **主体识别**：画面中有哪些主要人物/物体？他们的位置关系是怎样的？
-2. **动作与姿态**：人物正在做什么？面部表情和肢体语言如何？
-3. **场景与环境**：拍摄地点是什么类型的空间？光线条件和色调如何？
-4. **构图分析**：镜头角度（俯拍/仰拍/平视）、景别（特写/中景/全景）是怎样的？
-5. **视觉风格**：画面传递了什么样的情绪或氛围？
+## Task
+分析传入的视频关键帧。忽略无关的环境杂物，精准提取【对影视解说最关键的戏剧动作与人物微表情】。
 
-请用中文输出分析结果，语言简洁专业。`.trim()
+## ⚡ 剪辑师提取准则 (Strict Rules)
+1. **绝对禁止水文描写**：严禁描述背景颜色、家具材质、墙壁、衣服样式等静态杂物！
+2. **聚焦关键动作 (Key Action)**：只关注主体人物的手部动作、身体姿态转折、道具交互（如：拔枪/按住水杯/猛地抬头）。
+3. **识别微表情 (Micro-Emotion)**：关注眼神变化、咬牙、冷笑、脸色阴沉等内心戏表现。
+4. **识别镜头语言 (Shot Type)**：判断是【特写】、【近景】、【中景】还是【全景】。
+5. **氛围与光影**：仅用 2-4 字概括整体氛围（如"昏暗压抑"、"高对比冷调"），禁止长篇环境描写。`.trim();
   }
   /**
    * Build vision extract prompt for VLM frame analysis
@@ -131,7 +133,7 @@ ${safeContext}
 
     const parts: string[] = [];
     if (asrText) {
-      parts.push(`【台词上下文】\n${asrText}`);
+      parts.push(`【该时间段原声台词上下文】\n"${asrText}"\n（台词仅供参考剧情走向，描述时严禁复述台词原文，只描述画面可见的戏剧动作）`);
     }
     // 🎭 注入人物名单：让 VLM 知道画面中可能出现的人物名称
     // 仅注入有 name 的角色（用户已命名或自动命名为"角色_X"的都算）
@@ -158,7 +160,7 @@ ${safeContext}
     if (strategy) {
       parts.push(`【分析策略】${strategy}`);
     }
-    parts.push('请对每张图片进行详细的画面描述，包括场景、人物、动作、光线、色调等。');
+    parts.push('请严格按剪辑师准则分析每张图片，输出 narrativeAction（核心动作）/ emotionalState（微表情）/ shotType（镜头语言，特写|近景|中景|全景）/ visualAtmosphere（氛围）/ spatialRelation（构图）/ keywords（关键词）。');
 
     const userPrompt = parts.join('\n\n');
     return { systemPrompt, userPrompt };

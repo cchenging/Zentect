@@ -178,7 +178,6 @@ class AppBootstrap {
           try {
             AiRuntimeManager.getInstance();
             AIDaemon.getInstance().start();
-            AIDaemon.getInstance().startTTS();
             AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 6/10 AI 运行时已拉起 (${mark('AiRuntime')}ms)`);
           } catch (e) {
             AppLogger.warn(LOG_TAGS.BOOTSTRAP, 'AI 运行时启动失败（非致命）', e as Error);

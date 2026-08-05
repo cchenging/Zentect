@@ -6,9 +6,9 @@ import type { TTSEngine, Step4Input, Step4Output, TTSResult, VoiceOption, Step4S
 describe('Step4 Types', () => {
   describe('TTSEngine', () => {
     it('所有引擎类型应被类型系统接受', () => {
-      const engines: TTSEngine[] = ['moss', 'edge', 'doubao', 'fish', 'sovits'];
-      expect(engines).toHaveLength(5);
-      expect(new Set(engines).size).toBe(5);
+      const engines: TTSEngine[] = ['edge', 'doubao', 'sovits'];
+      expect(engines).toHaveLength(3);
+      expect(new Set(engines).size).toBe(3);
     });
   });
 
@@ -29,8 +29,8 @@ describe('Step4 Types', () => {
     it('空剧本文本段落数组应为合法输入', () => {
       const input: Step4Input = {
         scriptParagraphs: [],
-        engine: 'moss',
-        voiceId: 'Junhao',
+        engine: 'doubao',
+        voiceId: 'v1',
         speechRate: 1.0,
       };
       expect(input.scriptParagraphs).toHaveLength(0);

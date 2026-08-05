@@ -96,17 +96,8 @@ export class HealthCheckService {
         type: 'cloud',
         hint: ok ? '' : '火山 TTS 未配置，请在 设置 → AI → 语音合成 中填写 AppID 和 Token'
       });
-    } else if (ttsProvider === 'fish') {
-      const cfg = ProviderManager.getTTSConfig('fish');
-      const ok = !!cfg.apiKey;
-      results.push({
-        name: 'TTS 配音 (Fish Audio)',
-        available: ok,
-        type: 'cloud',
-        hint: ok ? '' : 'Fish Audio 未配置，请在 设置 → AI → 语音合成 中填写 API Key'
-      });
     } else {
-      // sovits / moss — 本地引擎
+      // sovits — 本地引擎
       results.push({
         name: `TTS 配音 (${ttsProvider})`,
         available: true,

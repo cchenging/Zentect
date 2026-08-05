@@ -2,7 +2,7 @@ import { SettingsRepository } from '../../database/repositories/SettingsReposito
 import { ApiProfileRepository } from '../../database/repositories/ApiProfileRepository';
 
 export interface LLMConfig { provider: string; model: string; baseURL: string; apiKey: string; temperature: number; }
-export interface TTSConfig { provider: string; appId?: string; token?: string; voice?: string; url?: string; apiKey?: string; mossUrl?: string; mossModelDir?: string; }
+export interface TTSConfig { provider: string; appId?: string; token?: string; voice?: string; url?: string; }
 
 export class ProviderManager {
   private static settings = new SettingsRepository();
@@ -112,9 +112,6 @@ switch (provider) {
       token: this.settings.get<string>('doubaoTtsToken', ''),
       voice: this.settings.get<string>('doubaoTtsVoice', 'zh_female_meilinvyou_saturn_bigtts'),
       url: this.settings.get<string>('sovitsUrl', 'http://127.0.0.1:9880'),
-      apiKey: this.settings.get<string>('fishKey', ''),
-      mossUrl: this.settings.get<string>('mossUrl', 'http://127.0.0.1:9881'),
-      mossModelDir: this.settings.get<string>('mossModelDir', ''),
     };
   }
 }

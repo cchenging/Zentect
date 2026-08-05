@@ -53,7 +53,7 @@ interface ModelModuleDef {
   sizeNote: string;              // 体积说明
 }
 
-/** 22 个具体模型定义（V5 细化版 + V8 增 faster_whisper_large_v3，与 manifest.json models 数组对齐） */
+/** 17 个具体模型定义（V5 细化版 + V8 增 faster_whisper_large_v3，与 manifest.json models 数组对齐） */
 const MODEL_DEFINITIONS: ModelSeedDef[] = [
   // === ASR 语音识别 ===
   {
@@ -85,41 +85,6 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
     ],
   },
   // === TTS 语音合成 ===
-  {
-    id: 'moss_tokenizer_encode', name: 'MOSS Audio Tokenizer Encode', displayName: 'MOSS 音频分词器编码端', type: 'tts',
-    description: 'MOSS TTS 音频分词器编码端 ONNX', version: '1.0',
-    manifestPaths: ['moss-tts-nano/MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_encode.onnx'],
-  },
-  {
-    id: 'moss_tokenizer_decode_full', name: 'MOSS Audio Tokenizer Decode Full', displayName: 'MOSS 音频分词器完整解码端', type: 'tts',
-    description: 'MOSS TTS 音频分词器完整解码端 ONNX', version: '1.0',
-    manifestPaths: ['moss-tts-nano/MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_decode_full.onnx'],
-  },
-  {
-    id: 'moss_tokenizer_decode_step', name: 'MOSS Audio Tokenizer Decode Step', displayName: 'MOSS 音频分词器逐步解码端', type: 'tts',
-    description: 'MOSS TTS 音频分词器逐步解码端 ONNX', version: '1.0',
-    manifestPaths: ['moss-tts-nano/MOSS-Audio-Tokenizer-Nano-ONNX/moss_audio_tokenizer_decode_step.onnx'],
-  },
-  {
-    id: 'moss_tts_prefill', name: 'MOSS TTS 100M Prefill', displayName: 'MOSS TTS 100M 预填充', type: 'tts',
-    description: 'MOSS TTS 100M 预填充模型 ONNX', version: '1.0',
-    manifestPaths: ['moss-tts-nano/MOSS-TTS-Nano-100M-ONNX/moss_tts_prefill.onnx'],
-  },
-  {
-    id: 'moss_tts_decode', name: 'MOSS TTS 100M Decode', displayName: 'MOSS TTS 100M 逐步解码', type: 'tts',
-    description: 'MOSS TTS 100M 逐步解码模型 ONNX', version: '1.0',
-    manifestPaths: ['moss-tts-nano/MOSS-TTS-Nano-100M-ONNX/moss_tts_decode_step.onnx'],
-  },
-  {
-    id: 'moss_tts_local_decoder', name: 'MOSS TTS 100M Local Decoder', displayName: 'MOSS TTS 100M 本地解码器', type: 'tts',
-    description: 'MOSS TTS 100M 本地解码器 ONNX', version: '1.0',
-    manifestPaths: ['moss-tts-nano/MOSS-TTS-Nano-100M-ONNX/moss_tts_local_decoder.onnx'],
-  },
-  {
-    id: 'moss_tokenizer_model', name: 'MOSS TTS Tokenizer', displayName: 'MOSS TTS 分词器', type: 'tts',
-    description: 'MOSS TTS SentencePiece 分词器模型', version: '1.0',
-    manifestPaths: ['moss-tts-nano/MOSS-TTS-Nano-100M-ONNX/tokenizer.model'],
-  },
   {
     id: 'sovits', name: 'GPT-SoVITS', displayName: 'GPT-SoVITS', type: 'tts',
     description: 'TTS 增强（音色克隆，pip 包内置）', version: '1.0', pythonPkg: 'sovits',
@@ -198,13 +163,13 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
 ];
 
 /** 旧版粗粒度模型 id（用于 ensureSeedData 迁移检测）
- *  V1: 7 条（moss_tts/whisper/sensevoice/mdx_net/insightface/emotion/sovits）
+ *  V1: 6 条（whisper/sensevoice/mdx_net/insightface/emotion/sovits）
  *  V5: 21 条（已细化但 whisper_base 路径错误，需要迁移到 V6）
  *  V6 检测到以上任意旧 id 都触发迁移
  */
 const LEGACY_MODEL_IDS = [
   // V1 粗粒度
-  'moss_tts', 'whisper', 'sensevoice', 'mdx_net', 'insightface', 'emotion',
+  'whisper', 'sensevoice', 'mdx_net', 'insightface', 'emotion',
   // V5 细化但 whisper_base.manifestPaths 指向不存在的 ggml-base.bin
   'whisper_base',
 ];
@@ -219,13 +184,6 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
   //   用户也可手动下载整个目录放到 resources/models/faster_whisper/large-v3/
   faster_whisper_large_v3: { url: 'https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main', file: 'model.bin' },
   clip: { url: 'https://huggingface.co/openai/clip-vit-base-patch32/resolve/main', file: 'model.safetensors' },
-  moss_tokenizer_encode: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_encode.onnx' },
-  moss_tokenizer_decode_full: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_decode_full.onnx' },
-  moss_tokenizer_decode_step: { url: 'https://huggingface.co/OpenMOSS/MOSS-Audio-Tokenizer-Nano-ONNX/resolve/main', file: 'moss_audio_tokenizer_decode_step.onnx' },
-  moss_tts_prefill: { url: 'https://huggingface.co/OpenMOSS/MOSS-TTS-Nano-100M-ONNX/resolve/main', file: 'moss_tts_prefill.onnx' },
-  moss_tts_decode: { url: 'https://huggingface.co/OpenMOSS/MOSS-TTS-Nano-100M-ONNX/resolve/main', file: 'moss_tts_decode_step.onnx' },
-  moss_tts_local_decoder: { url: 'https://huggingface.co/OpenMOSS/MOSS-TTS-Nano-100M-ONNX/resolve/main', file: 'moss_tts_local_decoder.onnx' },
-  moss_tokenizer_model: { url: 'https://huggingface.co/OpenMOSS/MOSS-TTS-Nano-100M-ONNX/resolve/main', file: 'tokenizer.model' },
   buffalo_l_det_10g: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/det_10g.onnx' },
   buffalo_l_w600k_r50: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/w600k_r50.onnx' },
   buffalo_l_1k3d68: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/1k3d68.onnx' },
@@ -241,8 +199,8 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
 };
 
 /**
- * 🔧 V7 新增：8 个功能模块定义（对应前端 8 张卡片，按 4 分类分组）
- * 用于前端模型管理页按功能模块展示，而非细碎的 22 个模型
+ * 🔧 V7 新增：6 个功能模块定义（对应前端 6 张卡片，按 4 分类分组）
+ * 用于前端模型管理页按功能模块展示，而非细碎的 17 个模型
  * 每个模块 = 多个模型文件 + 一个运行时依赖
  */
 const MODEL_MODULES: ModelModuleDef[] = [
@@ -299,16 +257,6 @@ const MODEL_MODULES: ModelModuleDef[] = [
     runtimeId: 'clip',  // 运行时依赖：transformers + torch
     sizeNote: '~600 MB (模型) + 100 MB (运行时，含 torch)',
   },
-  // === TTS 语音合成（1 张卡片）===
-  {
-    id: 'moss_tts', category: 'tts', displayName: 'MOSS TTS 语音合成',
-    description: 'MOSS TTS Nano 本地语音合成（纯 ONNX 推理，无需 PyTorch）',
-    icon: '🔊', required: 'optional',
-    modelIds: ['moss_tokenizer_encode', 'moss_tokenizer_decode_full', 'moss_tokenizer_decode_step',
-               'moss_tts_prefill', 'moss_tts_decode', 'moss_tts_local_decoder', 'moss_tokenizer_model'],
-    runtimeId: 'mdx_net',  // 运行时依赖：onnxruntime（与 MDX-Net 共用，已内置）— 此处借用 mdx_net 标记
-    sizeNote: '~150 MB (模型) + 0 (运行时已内置)',
-  },
 ];
 
 /**
@@ -346,8 +294,8 @@ export class ModelService {
   /**
    * 🔧 修复 P0：确保 local_models 表有 seed 数据（V5 细化版 + V8 增 faster_whisper）
    * 迁移逻辑：
-   *   1. 检测旧版 7 条粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 22 条
-   *   2. 表为空 → 直接 seed 22 条
+   *   1. 检测旧版粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 17 条
+   *   2. 表为空 → 直接 seed 17 条
    *   3. 已有新记录 → 跳过
    * 旧版 bug：local_models 表永远空表，预装的模型躺在磁盘但代码不知道
    */
@@ -358,7 +306,7 @@ export class ModelService {
       // 检测旧版粗粒度记录（id 为 'mdx_net' 等），需要迁移到 V5 细化版
       const hasLegacy = existing.some(m => LEGACY_MODEL_IDS.includes(m.id));
       if (hasLegacy) {
-        AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 检测到旧版 7 条粗粒度记录，开始迁移到 V5 22 条细化版');
+        AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 检测到旧版粗粒度记录，开始迁移到 V5 细化版');
         for (const old of existing) {
           try { this.modelRepo.deleteById(old.id); } catch {}
         }
@@ -367,7 +315,7 @@ export class ModelService {
         return;
       }
 
-      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 22 条 V5 细化模型记录');
+      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 17 条 V5 细化模型记录');
       for (const def of MODEL_DEFINITIONS) {
         try {
           this.modelRepo.insert({
@@ -513,7 +461,7 @@ export class ModelService {
   }
 
   /**
-   * 🔧 V7 新增：获取功能模块列表（8 张卡片 + 4 分类）
+   * 🔧 V7 新增：获取功能模块列表（6 张卡片 + 4 分类）
    * 🔧 修复 M1：模型管理只管模型文件，删除 runtime 字段
    *   - 旧版：canUse = 模型文件就绪 + 运行时就绪（混合职责，与 HealthPage 冲突）
    *   - 新版：canUse = 模型文件就绪（纯模型文件管理，运行时去健康检查页看）

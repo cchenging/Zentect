@@ -7,7 +7,6 @@ export const CONFIG_KEYS = {
   TTS_PROVIDER: 'tts.provider',
   TTS_DEFAULT_VOICE_ID: 'tts.defaultVoiceId',
   TTS_EDGE_VOICE: 'tts.edge.voice',
-  TTS_MOSS_VOICE_ID: 'tts.moss.voiceId',
 
   EXPORT_OUTPUT_DIR: 'export.outputDir',
   EXPORT_DEFAULT_FORMAT: 'export.defaultFormat',
@@ -46,7 +45,6 @@ export const SENSITIVE_CONFIG_KEYS: readonly string[] = [
   'doubaoKey',
   'tencentKey',
   'openaiKey',
-  'fishKey',
   'doubaoTtsToken',
 ] as const;
 

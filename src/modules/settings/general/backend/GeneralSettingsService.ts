@@ -20,7 +20,6 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   gpuAcceleration: true,
   autoSaveInterval: 30,
   pythonPath: '',
-  mossModelDir: '',
 };
 
 /**
@@ -39,7 +38,6 @@ export function toGeneralSettings(raw: Record<string, string>): GeneralSettings 
     gpuAcceleration: raw.gpuAcceleration !== 'false',
     autoSaveInterval: parseInt(raw.autoSaveInterval, 10) || 30,
     pythonPath: raw.pythonPath || '',
-    mossModelDir: raw.mossModelDir || '',
   };
 }
 

@@ -50,11 +50,12 @@ export abstract class BaseNodeStrategy<TInput = any, TOutput = any> implements I
   readonly isRecoverable: boolean = false;
 
   // 💥 约束子类：严禁重写 execute！所有业务逻辑必须在此方法内实现
+  // onProgress 第三参 results 支持增量推送中间结果（如 TTS 逐段合成进度），由 execute 透传给外层
   protected abstract performTask(
     input: TInput,
     context: ExecutionContext,
     cacheDir: string,
-    onProgress: (p: number, s: string) => void
+    onProgress: (p: number, s: string, results?: any) => void
   ): Promise<TOutput>;
 
   // 可选的参数校验钩子
@@ -97,7 +98,7 @@ export abstract class BaseNodeStrategy<TInput = any, TOutput = any> implements I
       const nodeCacheDir = PathManager.getNodeBaseDir(context.projectId, nodeId, 'frames');
       PathManager.ensureDir(nodeCacheDir);
 
-      const results = await this.performTask(taskData as TInput, context, nodeCacheDir, (p, s) => onProgress(p, s));
+      const results = await this.performTask(taskData as TInput, context, nodeCacheDir, (p, s, r) => onProgress(p, s, r));
 
       // 防御性检查：确保 context.bus 存在
       if (!context.bus) {

@@ -161,40 +161,8 @@ export class AIController {
     });
 
     // 🔊 引擎音色列表
-    const HARDCODED_VOICES: Record<string, any[]> = {
-      edge: [
-        { id: 'zh-CN-XiaoxiaoNeural', name: '晓晓 (女)', lang: 'zh-CN' },
-        { id: 'zh-CN-YunxiNeural', name: '云希 (男)', lang: 'zh-CN' },
-        { id: 'zh-CN-XiaoyiNeural', name: '晓伊 (女)', lang: 'zh-CN' },
-        { id: 'zh-CN-YunyangNeural', name: '云扬 (男)', lang: 'zh-CN' },
-        { id: 'zh-CN-XiaochenNeural', name: '晓辰 (女)', lang: 'zh-CN' },
-        { id: 'en-US-JennyNeural', name: 'Jenny (EN)', lang: 'en-US' },
-      ],
-      doubao: [
-        { id: 'zh_female_meilinvyou_saturn_bigtts', name: '魅力女友 (女)', lang: 'zh' },
-        { id: 'zh_male_shaonv_saturn_bigtts', name: '少年 (男)', lang: 'zh' },
-      ],
-      fish: [
-        { id: 'reference', name: '参考音频克隆', lang: 'any' },
-      ],
-    };
-
-    IpcRouter.handle(IPC_CHANNELS.VOICE_LIST_BY_ENGINE, async (_, engine: string) => {
-      if (engine === 'moss') {
-        try {
-          const res = await fetch('http://127.0.0.1:9881/voices');
-          const data = await res.json();
-          return Object.entries(data.voices).map(([id, info]: [string, any]) => ({
-            id,
-            name: info.display_name || id,
-            lang: info.group || '',
-          }));
-        } catch {
-          return [];
-        }
-      }
-      return HARDCODED_VOICES[engine] || [];
-    });
+    // 注意：VOICE_LIST_BY_ENGINE 实际由 EngineController.getVoicesForEngine 处理（后注册胜出）
+    // 此处不再重复注册，避免代码歧义。AIController 仅保留 VOICE_PREVIEW 处理试听。
 
     // 🔊 克隆音色列表
     IpcRouter.handle('voice:get-cloned-voices', async () => {

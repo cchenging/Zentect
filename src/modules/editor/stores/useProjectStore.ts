@@ -755,7 +755,24 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     // ── Step4Store ──
     const s4 = useStep4Store.getState();
     if (typeof s4.setTtsResults === 'function') {
-      s4.setTtsResults(Array.isArray(d.ttsResults) ? d.ttsResults : []);
+      // hydrate 防御：过滤旧项目脏数据
+      // 1. 试听临时文件（tts_preview_ 前缀，保存到 os.tmpdir()）不应出现在 ttsResults 中
+      //    旧版本 bug 可能导致试听文件被误持久化，重进项目后临时文件已被系统清理
+      // 2. 失效路径标记为 _failed，让 UI 显示"失败"而非"已完成"，提示用户重新合成
+      const rawTtsResults = Array.isArray(d.ttsResults) ? d.ttsResults : [];
+      const sanitizedTtsResults = rawTtsResults.map((r: any) => {
+        const audioUrl = r?.audioUrl || '';
+        // 试听临时文件前缀：直接标记失败（旧版本 bug 残留）
+        if (audioUrl.includes('tts_preview_')) {
+          return { ...r, audioUrl: '', _failed: true, _error: '试听临时文件已失效，请重新合成' };
+        }
+        // 旧版本无前缀的临时文件路径（指向 Temp 目录）：标记失败
+        if (audioUrl.includes('/Temp/') || audioUrl.includes('\\Temp\\') || audioUrl.includes('/tmp/')) {
+          return { ...r, audioUrl: '', _failed: true, _error: '临时文件已失效，请重新合成' };
+        }
+        return r;
+      });
+      s4.setTtsResults(sanitizedTtsResults);
     }
     if (typeof s4.setTtsEngine === 'function') s4.setTtsEngine((d.ttsEngine as string) || '');
     if (typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((d.ttsVoiceId as string) || '');

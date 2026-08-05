@@ -70,7 +70,7 @@ export interface PipelineParams {
 }
 
 /** TTS 合成结果 */
-export interface TtsResult { shotId: string; audioUrl?: string; _failed?: boolean; _error?: string; }
+export interface TtsResult { shotId: string; audioUrl?: string; _failed?: boolean; _error?: string; _synthesizing?: boolean; }
 
 /** 镜头匹配结果 */
 export interface MatchResult {

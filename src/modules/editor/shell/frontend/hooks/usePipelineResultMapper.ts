@@ -133,24 +133,26 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
       }
 
       case PipelineNodeType.TTS: {
-        /** TTS 结果映射：兼容逐段合成结果 { shots: [...] } 和旧格式 */
+        /** TTS 结果映射：无条件覆盖，禁止 if(length>0) 守卫
+         *  旧实现的 if 守卫会导致：当后端返回空数组（如合成失败未触发 _failed）时，
+         *  ttsResults 不被清空，残留的旧数据（含试听/上次失败产物）会被前端误匹配播放。
+         *  遵循"错就错"原则：空就是空，让 UI 显示"待合成"，错误以原始形态暴露。
+         */
         const ttsShots = nodeResult.shots || nodeResult.results || [];
-        if (ttsShots.length > 0) {
-          mappers.setTtsResults(ttsShots.map((r: any) => {
-            /** 将本地绝对路径转为 magic://local/ URL，供前端 Audio 标签播放 */
-            let audioUrl = r.audioUrl || r.audioPath || '';
-            if (audioUrl && !audioUrl.startsWith('http') && !audioUrl.startsWith('magic://')) {
-              audioUrl = `magic://local/${audioUrl.replace(/\\/g, '/')}`;
-            }
-            return {
-              shotId: r.shotId,
-              audioUrl,
-              duration: r.duration || 0,
-              _failed: r._failed || false,
-              _error: r._error || '',
-            };
-          }));
-        }
+        mappers.setTtsResults(ttsShots.map((r: any) => {
+          /** 将本地绝对路径转为 magic://local/ URL，供前端 Audio 标签播放 */
+          let audioUrl = r.audioUrl || r.audioPath || '';
+          if (audioUrl && !audioUrl.startsWith('http') && !audioUrl.startsWith('magic://')) {
+            audioUrl = `magic://local/${audioUrl.replace(/\\/g, '/')}`;
+          }
+          return {
+            shotId: r.shotId,
+            audioUrl,
+            duration: r.duration || 0,
+            _failed: r._failed || false,
+            _error: r._error || '',
+          };
+        }));
         mappers.setTtsProgress(100);
         break;
       }

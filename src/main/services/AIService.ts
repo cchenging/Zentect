@@ -230,16 +230,17 @@ export class AIService {
 
   public async testTTS(provider: string) {
     try {
-      await AIEngine.generateTTS('测试语音', provider as 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss');
+      await AIEngine.generateTTS('测试语音', provider as 'doubao' | 'edge' | 'sovits');
       return 'success';
     } catch (e: any) {
       return `连接失败: ${e.message}`;
     }
   }
 
-  public async runSingleTTS(_projectId: string, shot: any) {
-    const provider = shot.provider || 'edge';
-    return await AIEngine.generateTTS(shot.text, provider as 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss');
+  public async runSingleTTS(projectId: string, shot: any) {
+    // 改用 TTSEngine.runSingleTTS：支持 voiceId/speechRate 透传 + 写入项目 L2 缓存目录（非 tmp）
+    // 旧实现 AIEngine.generateTTS 只传 text+provider，丢失音色/语速且产物进 tmp 目录无法持久化
+    return await ttsEngine.runSingleTTS(projectId, shot);
   }
 
   public async runGlobalTTS(_projectId: string, shots: any[]) {
@@ -247,7 +248,7 @@ export class AIService {
     for (const shot of shots) {
       try {
         const provider = shot.provider || shot.voiceId || 'edge';
-        const result = await ttsEngine.generateTTS(shot.text || '', provider as 'doubao' | 'fish' | 'edge' | 'sovits' | 'moss');
+        const result = await ttsEngine.generateTTS(shot.text || '', provider as 'doubao' | 'edge' | 'sovits');
         results.push({ shot, audioPath: result });
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.AI_AGENT, `TTS failed for shot ${shot.id}`, e);

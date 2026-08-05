@@ -35,7 +35,7 @@ interface LLMChannelStatus {
  * TTS 引擎状态
  */
 interface TTSEngineStatus {
-  id: string;             // edge/doubao/fish/sovits/moss
+  id: string;             // edge/doubao/sovits
   displayName: string;    // Edge TTS / 豆包 TTS / ...
   available: boolean;     // 是否可用（已配置或内置）
   /** 是否为当前默认引擎 */
@@ -217,7 +217,7 @@ export class HealthService {
 
   private checkAiDaemon(): boolean {
     try {
-      return AIDaemon.getInstance().isTTSReady();
+      return AIDaemon.getInstance().isOnline();
     } catch {
       return false;
     }
@@ -447,23 +447,10 @@ export class HealthService {
                        this.settings.get<string>('doubaoTtsToken', ''))
       },
       {
-        id: 'fish',
-        displayName: 'Fish Speech',
-        builtin: false,
-        check: () => !!this.settings.get<string>('fishKey', '')
-      },
-      {
         id: 'sovits',
         displayName: 'SoVITS',
         builtin: false,
         check: () => !!this.settings.get<string>('sovitsUrl', '')
-      },
-      {
-        id: 'moss',
-        displayName: 'Moss',
-        builtin: false,
-        check: () => !!(this.settings.get<string>('mossUrl', '') &&
-                       this.settings.get<string>('mossModelDir', ''))
       },
     ]
 

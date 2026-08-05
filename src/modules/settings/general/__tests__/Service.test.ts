@@ -15,14 +15,13 @@ describe('GeneralSettingsService', () => {
       expect(DEFAULT_GENERAL_SETTINGS.gpuAcceleration).toBe(true);
       expect(DEFAULT_GENERAL_SETTINGS.autoSaveInterval).toBe(30);
       expect(DEFAULT_GENERAL_SETTINGS.pythonPath).toBe('');
-      expect(DEFAULT_GENERAL_SETTINGS.mossModelDir).toBe('');
     });
 
     it('应是一个完整的 GeneralSettings 对象', () => {
       const keys: (keyof GeneralSettings)[] = [
         'projectPath', 'exportPath', 'jianyingPath',
         'theme', 'language', 'gpuAcceleration', 'autoSaveInterval',
-        'pythonPath', 'mossModelDir',
+        'pythonPath',
       ];
       for (const key of keys) {
         expect(DEFAULT_GENERAL_SETTINGS[key]).toBeDefined();
@@ -41,7 +40,6 @@ describe('GeneralSettingsService', () => {
         gpuAcceleration: 'true',
         autoSaveInterval: '60',
         pythonPath: 'C:/Python/python.exe',
-        mossModelDir: 'D:/Models/MOSS',
       };
 
       const result = toGeneralSettings(raw);
@@ -54,7 +52,6 @@ describe('GeneralSettingsService', () => {
       expect(result.gpuAcceleration).toBe(true);
       expect(result.autoSaveInterval).toBe(60);
       expect(result.pythonPath).toBe('C:/Python/python.exe');
-      expect(result.mossModelDir).toBe('D:/Models/MOSS');
     });
 
     it('空对象应返回默认值', () => {

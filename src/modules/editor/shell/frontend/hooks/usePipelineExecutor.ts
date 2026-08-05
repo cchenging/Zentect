@@ -6,6 +6,7 @@ import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 import { useStep2Store } from '@modules/pipeline/stores/useStep2Store';
+import { useStep4Store } from '@modules/pipeline/stores/useStep4Store';
 import { API } from '@renderer/api';
 import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 import { AppNotifier } from '@renderer/core/AppNotifier';
@@ -57,6 +58,33 @@ export const usePipelineExecutor = () => {
       // 后端 VisionExtractStrategy 每完成 5 帧推送一次，前端需实时渲染打字机效果
       if (Array.isArray(results.partialFrames) && results.partialFrames.length > 0) {
         useStep2Store.getState().setVlmFrames(results.partialFrames);
+      }
+
+      // 🔧 修复：step4 TTS 增量结果推送 — 每完成一段就更新 ttsResults + ttsProgress
+      // 后端 TTSStrategy 每段完成时通过 onProgress 第三参推送 partialTtsResults
+      // 前端据此实时显示"合成中"状态，避免进度条 0→100 跳变
+      if (Array.isArray(results.partialTtsResults)) {
+        const nodeId: string = payload.nodeId || '';
+        if (nodeId.includes('tts')) {
+          const s4 = useStep4Store.getState();
+          // 把后端 audioPath（本地绝对路径）转为 magic://local/ URL
+          const mapped = results.partialTtsResults.map((r: any) => {
+            let audioUrl = r.audioUrl || r.audioPath || '';
+            if (audioUrl && !audioUrl.startsWith('http') && !audioUrl.startsWith('magic://')) {
+              audioUrl = `magic://local/${audioUrl.replace(/\\/g, '/')}`;
+            }
+            return {
+              shotId: r.shotId,
+              audioUrl,
+              duration: r.duration || 0,
+              _failed: r._failed || false,
+              _error: r._error || '',
+            };
+          });
+          s4.setTtsResults(mapped);
+          // 实时更新 ttsProgress，避免 0→100 跳变
+          s4.setTtsProgress(progress);
+        }
       }
     }
 
