@@ -39,11 +39,11 @@ interface ModelSeedDef {
 /**
  * 功能模块定义（V7 新增）
  * 一个功能模块 = 多个模型文件 + 一个运行时依赖
- * 对应前端 7 张卡片，按 4 个分类分组
+ * 对应前端 6 张卡片，按 3 个分类分组
  */
 interface ModelModuleDef {
   id: string;                    // 模块 id（对应 ai_daemon.modules 的 key）
-  category: 'audio' | 'asr' | 'vision' | 'tts';  // 4 分类
+  category: 'audio' | 'asr' | 'vision';  // 3 分类
   displayName: string;           // 中文显示名
   description: string;
   icon: string;                  // emoji 图标
@@ -53,7 +53,7 @@ interface ModelModuleDef {
   sizeNote: string;              // 体积说明
 }
 
-/** 17 个具体模型定义（V5 细化版 + V8 增 faster_whisper_large_v3，与 manifest.json models 数组对齐） */
+/** 16 个具体模型定义（V5 细化版 + V8 增 faster_whisper_large_v3，与 manifest.json models 数组对齐） */
 const MODEL_DEFINITIONS: ModelSeedDef[] = [
   // === ASR 语音识别 ===
   {
@@ -83,12 +83,6 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
       'faster_whisper/large-v3/model.bin',
       'faster_whisper/large-v3/ct2.bin',
     ],
-  },
-  // === TTS 语音合成 ===
-  {
-    id: 'sovits', name: 'GPT-SoVITS', displayName: 'GPT-SoVITS', type: 'tts',
-    description: 'TTS 增强（音色克隆，pip 包内置）', version: '1.0', pythonPkg: 'sovits',
-    manifestPaths: [],
   },
   // === Vision 视觉识别 ===
   {
@@ -163,7 +157,7 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
 ];
 
 /** 旧版粗粒度模型 id（用于 ensureSeedData 迁移检测）
- *  V1: 6 条（whisper/sensevoice/mdx_net/insightface/emotion/sovits）
+ *  V1: 5 条（whisper/sensevoice/mdx_net/insightface/emotion）
  *  V5: 21 条（已细化但 whisper_base 路径错误，需要迁移到 V6）
  *  V6 检测到以上任意旧 id 都触发迁移
  */
@@ -193,14 +187,13 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
   sface_recognition: { url: 'https://huggingface.co/opencv/opencv_extra/resolve/main', file: 'face_recognition_sface_2021dec.onnx' },
   mdx_hq3: { url: 'https://huggingface.co/JeffreyCA/audio-separator-models/resolve/main', file: 'UVR-MDX-NET-Inst_HQ_3.onnx' },
   mdx_hq4: { url: 'https://huggingface.co/JeffreyCA/audio-separator-models/resolve/main', file: 'UVR-MDX-NET-Inst_HQ_4.onnx' },
-  sovits: { url: '', file: '' },
   demucs_htdemucs: { url: '', file: '' },
   emotion: { url: '', file: '' },
 };
 
 /**
- * 🔧 V7 新增：6 个功能模块定义（对应前端 6 张卡片，按 4 分类分组）
- * 用于前端模型管理页按功能模块展示，而非细碎的 17 个模型
+ * 🔧 V7 新增：6 个功能模块定义（对应前端 6 张卡片，按 3 分类分组）
+ * 用于前端模型管理页按功能模块展示，而非细碎的 16 个模型
  * 每个模块 = 多个模型文件 + 一个运行时依赖
  */
 const MODEL_MODULES: ModelModuleDef[] = [
@@ -266,7 +259,6 @@ const MODEL_CATEGORIES = [
   { id: 'audio', displayName: '音频分离', icon: '🎵' },
   { id: 'asr', displayName: '语音识别', icon: '🎙️' },
   { id: 'vision', displayName: '视觉', icon: '👁️' },
-  { id: 'tts', displayName: '语音合成', icon: '🔊' },
 ] as const;
 
 /**
@@ -294,8 +286,8 @@ export class ModelService {
   /**
    * 🔧 修复 P0：确保 local_models 表有 seed 数据（V5 细化版 + V8 增 faster_whisper）
    * 迁移逻辑：
-   *   1. 检测旧版粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 17 条
-   *   2. 表为空 → 直接 seed 17 条
+   *   1. 检测旧版粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 16 条
+   *   2. 表为空 → 直接 seed 16 条
    *   3. 已有新记录 → 跳过
    * 旧版 bug：local_models 表永远空表，预装的模型躺在磁盘但代码不知道
    */
@@ -315,7 +307,7 @@ export class ModelService {
         return;
       }
 
-      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 17 条 V5 细化模型记录');
+      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 16 条 V5 细化模型记录');
       for (const def of MODEL_DEFINITIONS) {
         try {
           this.modelRepo.insert({
@@ -374,7 +366,7 @@ export class ModelService {
         ]));
 
         if (candidatePaths.length === 0) {
-          // 既无 manifestPaths 也无 scanPaths（如 emotion/sovits pip 包内置），跳过磁盘扫描
+          // 既无 manifestPaths 也无 scanPaths（如 emotion pip 包内置），跳过磁盘扫描
           continue;
         }
 

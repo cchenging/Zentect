@@ -8,7 +8,6 @@ import { SimplePipelineRunner } from '../engine/SimplePipelineRunner';
 import { healthCheckService } from '../engine/HealthCheckService';
 import { PipelineRecoveryService } from '../pipeline/PipelineRecoveryService';
 import { PipelineSuspendController } from '../pipeline/PipelineSuspendController';
-import { LocalAiGateway } from '../engine/LocalAiGateway';
 import { HealthService } from '../services/HealthService';
 import { WorkflowService } from '../services/WorkflowService';
 import { RoleRepository } from '../database/repositories/RoleRepository';
@@ -445,17 +444,6 @@ export class EngineController {
       return voices;
     });
 
-    // M3.0 安全收口: 语音克隆代理 — renderer 不再直连 127.0.0.1:9882
-    IpcRouter.handle('voice:get-cloned-voices', async () => {
-      const gateway = LocalAiGateway.getInstance();
-      return gateway.getClonedVoices();
-    });
-
-    IpcRouter.handle('voice:delete-cloned', async (_, payload: { cloneId: string }) => {
-      const gateway = LocalAiGateway.getInstance();
-      return gateway.deleteClonedVoice(payload.cloneId);
-    });
-
     // M4.0: 系统健康检查与冒烟测试
     IpcRouter.handle('system:health', async () => {
       const healthService = new HealthService();
@@ -652,10 +640,6 @@ async function getVoicesForEngine(engine: string): Promise<Array<{ id: string; n
         { id: 'zh_male_shaunglangxueke_moon_bigtts', name: '爽朗学科 (男)', gender: 'male', locale: 'zh-CN' },
         { id: 'zh_female_vv_uranus_bigtts', name: 'vv 女声', gender: 'female', locale: 'zh-CN' },
         { id: 'zh_male_dashu_saturn_bigtts', name: '大叔 (男)', gender: 'male', locale: 'zh-CN' },
-      ];
-    case 'sovits':
-      return [
-        { id: 'default', name: '本地 SoVITS 音色 (需克隆)', gender: 'unknown', locale: 'zh-CN' },
       ];
     default:
       return [];

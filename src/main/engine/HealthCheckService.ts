@@ -96,14 +96,6 @@ export class HealthCheckService {
         type: 'cloud',
         hint: ok ? '' : '火山 TTS 未配置，请在 设置 → AI → 语音合成 中填写 AppID 和 Token'
       });
-    } else {
-      // sovits — 本地引擎
-      results.push({
-        name: `TTS 配音 (${ttsProvider})`,
-        available: true,
-        type: 'local',
-        hint: ''
-      });
     }
 
     // LLM — 脚本生成需要

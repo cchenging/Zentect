@@ -17,7 +17,7 @@ export class TTSEngine {
   // ---------------------------------------------------------------------------
   // 🔊 语音合成中枢 (彻底消灭 SettingsRepository)
   // ---------------------------------------------------------------------------
-  public async generateTTS(text: string, provider: 'doubao' | 'edge' | 'sovits', saveDir?: string, voiceOverride?: string, rate?: number): Promise<string> {
+  public async generateTTS(text: string, provider: 'doubao' | 'edge', saveDir?: string, voiceOverride?: string, rate?: number): Promise<string> {
     const config = ProviderManager.getTTSConfig(provider);
     const targetDir = saveDir || os.tmpdir();
     let ext = 'mp3'; let audioData: Buffer;
@@ -48,16 +48,6 @@ export class TTSEngine {
           audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate });
           break;
         }
-        case 'sovits': {
-          const url = new URL(config.url || 'http://127.0.0.1:9880');
-          url.searchParams.append('text', cleanedText); url.searchParams.append('text_language', 'zh');
-          if (voiceOverride) url.searchParams.append('character', voiceOverride);
-          url.searchParams.append('speed', speedRate.toFixed(2));
-          const res = await fetch(url.toString());
-          if (!res.ok) throw new Error(`SoVITS 异常: ${res.statusText}`);
-          audioData = Buffer.from(await res.arrayBuffer()); ext = 'wav';
-          break;
-        }
         default: throw new Error(`未知的 TTS: ${provider}`);
       }
       // 试听文件（saveDir 为空，保存到 os.tmpdir()）用 tts_preview_ 前缀，与合成文件 tts_ 区分，便于辨识和清理
@@ -69,9 +59,7 @@ export class TTSEngine {
       return filePath;
     } catch (err: any) {
       const msg = err?.message || '';
-      const hint = provider === 'doubao' ? '（请在 设置 → AI → 语音合成 中检查火山引擎配置）'
-        : provider === 'sovits' ? '（请确认本地 GPT-SoVITS 服务已启动，默认端口 9880）'
-        : '';
+      const hint = provider === 'doubao' ? '（请在 设置 → AI → 语音合成 中检查火山引擎配置）' : '';
       throw new Error(`${msg || '语音合成失败'}${hint}`);
     }
   }

@@ -19,7 +19,7 @@ const DEFAULT_SETTINGS_SCHEMA: Record<string, any> = {
   openaiKey: '', openaiBaseUrl: 'https://api.openai.com/v1', openaiModels: null,
   taskVisualModel: 'qwen-vl-max', taskScriptModel: 'deepseek-chat',
   taskTranslateModel: 'qwen-plus', taskHelperModel: 'gpt-4o-mini',
-  ttsProvider: 'edge', sovitsUrl: 'http://127.0.0.1:9880',
+  ttsProvider: 'edge',
   doubaoTtsAppId: '', doubaoTtsToken: '', doubaoTtsVoice: 'zh_female_meilinvyou_saturn_bigtts',
 };
 
@@ -174,8 +174,7 @@ export const useSettingsManager = () => {
         API.system.setSetting('ttsProvider', engineToTest),
         API.system.setSetting('doubaoTtsAppId', config.doubaoTtsAppId || ''),
         API.system.setSetting('doubaoTtsToken', config.doubaoTtsToken || ''),
-        API.system.setSetting('doubaoTtsVoice', config.doubaoTtsVoice || ''),
-        API.system.setSetting('sovitsUrl', config.sovitsUrl || '')
+        API.system.setSetting('doubaoTtsVoice', config.doubaoTtsVoice || '')
       ]);
     } catch (e) {}
 

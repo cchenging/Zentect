@@ -300,32 +300,6 @@ describe('TTSStrategy', () => {
       // 宽松断言：只要 < 200ms 说明并发生效
       expect(elapsed).toBeLessThan(200);
     });
-
-    it('engine=sovits 时并发数应为 2', async () => {
-      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
-
-      mockGenerateTTS.mockImplementation(
-        () => new Promise((resolve) => setTimeout(() => resolve('/r.mp3'), 20)),
-      );
-
-      const scriptShots = Array.from({ length: 4 }, (_, i) => ({
-        shotId: `s${i + 1}`,
-        text: `段${i + 1}`,
-      }));
-
-      const start = Date.now();
-      const result = await strategy.performTask(
-        { ttsEngine: 'sovits', scriptShots },
-        { bus: new Map() } as any,
-        '/cache',
-        vi.fn(),
-      );
-      const elapsed = Date.now() - start;
-
-      expect(result.successCount).toBe(4);
-      // 并发 2：4 段至少 2 批 = 约 40ms + overhead
-      expect(elapsed).toBeLessThan(150);
-    });
   });
 
   describe('performTask - 引擎默认值', () => {
@@ -400,15 +374,6 @@ describe('TTSStrategy', () => {
 
       expect(result.shots).toHaveLength(1);
       expect(result.shots[0].shotId).toBe('priority_s1');
-    });
-  });
-
-  describe('ENGINE_CONCURRENCY 映射（间接验证）', () => {
-    it('各引擎应有合理并发数', () => {
-      // 通过 performTask 间接验证：不同引擎产生不同的 worker 数量
-      // 这里验证逻辑：sovits(2) 比 edge(6) 更慢
-      // 已在并发控制测试中覆盖
-      expect(true).toBe(true);
     });
   });
 });

@@ -191,34 +191,6 @@ describe('TTSProvider', () => {
       );
     });
 
-    it('sovits 非 200 响应应抛出 AI_PROCESS_FAILED', async () => {
-      setupMocks({ provider: 'sovits', url: 'http://127.0.0.1:9880' });
-
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: false,
-        statusText: 'Service Unavailable',
-      });
-
-      await expect(
-        provider.synthesize('测试', 'sovits'),
-      ).rejects.toMatchObject({ code: ErrorCode.AI_PROCESS_FAILED });
-    });
-
-    it('sovits 应支持 voiceOverride 作为 character 参数', async () => {
-      setupMocks({ provider: 'sovits', url: 'http://127.0.0.1:9880' });
-
-      const fetchSpy = vi.fn().mockResolvedValue({
-        ok: true,
-        arrayBuffer: () => Promise.resolve(new ArrayBuffer(8)),
-      });
-      globalThis.fetch = fetchSpy;
-
-      await provider.synthesize('你好', 'sovits', undefined, 'xiaoming');
-
-      const calledUrl = fetchSpy.mock.calls[0]?.[0] as string;
-      expect(calledUrl).toContain('character=xiaoming');
-    });
-
     it('文本清洗应移除全角括号和舞台指示标记', async () => {
       setupMocks({ provider: 'edge' });
 

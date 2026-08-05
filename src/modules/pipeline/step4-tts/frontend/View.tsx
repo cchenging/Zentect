@@ -15,7 +15,6 @@ export interface StepTTSSynthesisViewProps {
   scriptParagraphs: ScriptParagraph[];
   isProcessing: boolean;
   voices: TtsVoiceOption[];
-  clonedVoices: TtsVoiceOption[];
   speechRate: number;
   previewingVoiceId: string | null;
   playingIdx: number | null;
@@ -39,17 +38,17 @@ export interface StepTTSSynthesisViewProps {
 }
 
 const ENGINE_LABELS: Record<string, string> = {
-  edge: "Edge TTS", doubao: "火山引擎", sovits: "SoVITS",
+  edge: "Edge TTS", doubao: "火山引擎",
 };
 
 export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props) => {
   const { ttsEngine, ttsVoiceId, ttsProgress, ttsResults, scriptParagraphs, isProcessing,
-    voices, clonedVoices, speechRate, previewingVoiceId, playingIdx, successCount, failedCount,
+    voices, speechRate, previewingVoiceId, playingIdx, successCount, failedCount,
     singleSynthIdx, isSequentialPlaying, sequentialIdx, isPaused,
     onSetTtsEngine, onSetTtsVoiceId, onSetSpeechRate, onPreview, onVoicePreview, onSynthesize,
     onSingleSynthesize, onSequentialPlay, onSequentialStop } = props;
 
-  const currentVoices = [...voices, ...clonedVoices.map((v) => ({ ...v, lang: "克隆" }))];
+  const currentVoices = voices;
 
   // 顺序播放自动滚动：当前播放段变化时，滚动到对应卡片
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -70,7 +69,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
       <div className="flex items-center gap-2">
         <span className="text-[13px] text-muted-foreground shrink-0">引擎:</span>
         <div className="flex items-center gap-1 flex-wrap">
-          {(["edge", "doubao", "sovits"] as const).map((eng) => (
+          {(["edge", "doubao"] as const).map((eng) => (
             <Badge key={eng} variant={ttsEngine === eng ? "accent" : "default"} interactive="selectable" selected={ttsEngine === eng}
               onClick={() => onSetTtsEngine(eng)} disabled={isProcessing}>
               {ENGINE_LABELS[eng] || eng}

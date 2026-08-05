@@ -245,9 +245,6 @@ SystemController → ApiProfileController → ProjectController → MediaControl
 |---------|-----------|---------|------|
 | `VOICE_PREVIEW` | `voice:preview` | AIController + EngineController | **重复注册**，EngineController 后注册胜出 |
 | `VOICE_LIST_BY_ENGINE` | `voice:listByEngine` | AIController + EngineController | **重复注册**，EngineController 后注册胜出 |
-| `voice:clone` | `voice:clone` (hardcoded) | AIController | 唯一注册 |
-| `voice:get-cloned-voices` | `voice:get-cloned-voices` (hardcoded) | AIController + EngineController | **重复注册**，EngineController 后注册胜出 |
-| `voice:delete-cloned` | `voice:delete-cloned` (hardcoded, schema) | EngineController | 唯一注册，带 Zod 校验 |
 
 ### 2.12 角色管理
 
@@ -452,7 +449,6 @@ export const IPC_CHANNELS = { /* ~120+ 频道常量 */ } as const;
 | `pipeline:probe-recovery` | `{ projectId }` |
 | `pipeline:recovery-continue` | `{ projectId }` |
 | `pipeline:recovery-abandon` | `{ projectId }` |
-| `voice:delete-cloned` | `{ cloneId }` |
 | `export:jianying` | `{ projectId }` + passthrough |
 
 ### 3.5 types/ipc (`src/shared/types/ipc.ts`)
@@ -602,13 +598,12 @@ React 组件，在 `useEffect` 中通过 `window.api.ipc.on` 监听 4 个推送�
 |------|------------------|---------------------|--------|
 | `voice:preview` | `AIEngine.generateTTS` | `TTSProvider.synthesize` | EngineController |
 | `voice:listByEngine` | hardcoded 音色表 | `getVoicesForEngine()` | EngineController |
-| `voice:get-cloned-voices` | fs-based clones 目录读取 | `LocalAiGateway.getClonedVoices()` | EngineController |
 
 ---
 
 ## 五、Schema 注册表覆盖
 
-`shared/contracts/registry.ts` 中 `SCHEMA_REGISTRY` 注册了 9 个频道的 Zod Schema：
+`shared/contracts/registry.ts` 中 `SCHEMA_REGISTRY` 注册了 8 个频道的 Zod Schema：
 
 | # | 频道 | Schema 字段 | strict/passthrough |
 |---|------|-----------|-------------------|
@@ -619,8 +614,7 @@ React 组件，在 `useEffect` 中通过 `window.api.ipc.on` 监听 4 个推送�
 | 5 | `pipeline:probe-recovery` | projectId | strict |
 | 6 | `pipeline:recovery-continue` | projectId | strict |
 | 7 | `pipeline:recovery-abandon` | projectId | strict |
-| 8 | `voice:delete-cloned` | cloneId | strict |
-| 9 | `export:jianying` | projectId | passthrough |
+| 8 | `export:jianying` | projectId | passthrough |
 
 ---
 
@@ -644,6 +638,6 @@ src/infra/ipc/
 2. **IpcConstants.ts** 被 30 个文件导入——需批量更新 import 路径；可保留旧文件为 `@deprecated` 重导出
 3. **contracts/ipc.ts** 被 `IpcRouter.ts` 导入——迁移后需同步更新 internal import
 4. **contracts/registry.ts** 导入了 `IpcConstants`（相对路径 `../../shared/utils/IpcConstants`）——迁移后需更新
-5. **重复注册问题**：`voice:preview`、`voice:listByEngine`、`voice:get-cloned-voices` 在 AIController 和 EngineController 中重复注册——应清理 AIController 中的冗余 handler
+5. **重复注册问题**：`voice:preview`、`voice:listByEngine` 在 AIController 和 EngineController 中重复注册——应清理 AIController 中的冗余 handler
 6. **未注册频道**：`EXPORT_SUBTITLE`、`EXPORT_TXT`、`TASK_CANCEL` 在 API 层有调用但未找到对应的 handler——需确认是否遗漏
 7. **IPCInvokeChannels / IPCEventChannels 类型缺失**：`preload/index.d.ts` 引用了不存在的类型，建议补充完整的类型映射

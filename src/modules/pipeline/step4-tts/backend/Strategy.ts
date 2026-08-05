@@ -8,7 +8,7 @@ import { ttsEngine } from '../../../../main/engine/TTSEngine';
 import { ProviderManager } from '../../../../main/engine/config/ProviderManager';
 
 /** TTS 引擎类型 */
-type TTSProvider = 'doubao' | 'edge' | 'sovits';
+type TTSProvider = 'doubao' | 'edge';
 
 /** 单段 TTS 合成结果 */
 interface TTSItemResult {
@@ -20,11 +20,10 @@ interface TTSItemResult {
   _error?: string;
 }
 
-/** 各引擎推荐并发数：HTTP 类引擎可高并发，本地推理引擎受 GPU 限制 */
+/** 各引擎推荐并发数：HTTP 类引擎可高并发 */
 const ENGINE_CONCURRENCY: Record<TTSProvider, number> = {
   edge: 6,
   doubao: 5,
-  sovits: 2,
 };
 
 /** 单个任务完成后的结果（含成功/失败） */

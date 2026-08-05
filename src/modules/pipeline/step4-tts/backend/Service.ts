@@ -8,7 +8,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { AppError, ErrorCode } from '@modules/infra/error/AppError'
 
-export type TTSVendor = 'doubao' | 'edge' | 'sovits'
+export type TTSVendor = 'doubao' | 'edge'
 
 export class TTSProvider {
   /** fallback 链 — 当前仅保留默认引擎 Edge */
@@ -64,7 +64,7 @@ export class TTSProvider {
     /** 缓存查找：相同清洗后文本+引擎+音色+语速 的合成结果直接复用 */
     const voiceKey = voiceOverride || config.voice || 'default'
     const cacheHash = crypto.createHash('md5').update(`${cleanedText}|${provider}|${voiceKey}|${speedRate}`).digest('hex').substring(0, 12)
-    const ext = provider === 'sovits' ? 'wav' : 'mp3'
+    const ext = 'mp3'
     const cachedFile = path.join(targetDir, `tts_${provider}_${voiceKey}_${cacheHash}.${ext}`)
     if (fs.existsSync(cachedFile)) {
       return cachedFile
@@ -106,17 +106,6 @@ export class TTSProvider {
           audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate })
           break
         }
-        case 'sovits': {
-          const url = new URL(config.url || 'http://127.0.0.1:9880')
-          url.searchParams.append('text', cleanedText)
-          url.searchParams.append('text_language', 'zh')
-          if (voiceOverride) url.searchParams.append('character', voiceOverride)
-          url.searchParams.append('speed', speedRate.toFixed(2))
-          const res = await fetch(url.toString())
-          if (!res.ok) throw new AppError(ErrorCode.AI_PROCESS_FAILED, `SoVITS 异常: ${res.statusText}`)
-          audioData = Buffer.from(await res.arrayBuffer())
-          break
-        }
         default:
           throw new AppError(ErrorCode.SYS_ENV_ERROR, `未知的 TTS 引擎: ${provider}`)
       }
@@ -128,7 +117,6 @@ export class TTSProvider {
       const msg = err?.message || '';
       const hints: Record<string, string> = {
         doubao: '（请在 设置 → AI → 语音合成 中检查火山引擎配置）',
-        sovits: '（请确认本地 GPT-SoVITS 服务已启动，默认端口 9880）',
         edge: ''
       }
       throw new AppError(ErrorCode.AI_PROCESS_FAILED, `${msg || '语音合成失败'}${hints[provider] || ''}`)

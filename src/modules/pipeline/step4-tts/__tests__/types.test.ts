@@ -6,9 +6,9 @@ import type { TTSEngine, Step4Input, Step4Output, TTSResult, VoiceOption, Step4S
 describe('Step4 Types', () => {
   describe('TTSEngine', () => {
     it('所有引擎类型应被类型系统接受', () => {
-      const engines: TTSEngine[] = ['edge', 'doubao', 'sovits'];
-      expect(engines).toHaveLength(3);
-      expect(new Set(engines).size).toBe(3);
+      const engines: TTSEngine[] = ['edge', 'doubao'];
+      expect(engines).toHaveLength(2);
+      expect(new Set(engines).size).toBe(2);
     });
   });
 

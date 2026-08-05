@@ -3,7 +3,7 @@
 import type { ScriptParagraph } from '../../../shared/types/entities/editor';
 
 /** TTS 引擎类型 */
-export type TTSEngine = 'edge' | 'doubao' | 'sovits';
+export type TTSEngine = 'edge' | 'doubao';
 
 /** Step4 输入接口 */
 export interface Step4Input {

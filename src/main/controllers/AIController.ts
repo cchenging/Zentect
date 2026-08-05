@@ -5,9 +5,6 @@ import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { ttsEngine } from '../engine/TTSEngine';
-import { PathManager } from '../utils/pathManager';
-import * as path from 'path';
-import * as fs from 'fs';
 
 export class AIController {
   private aiService = new AIService();
@@ -120,38 +117,6 @@ export class AIController {
       return await this.aiService.getChatHistory(projectId);
     });
 
-    // 🔊 语音克隆
-    IpcRouter.handle('voice:clone', async (_, payload: { audioData: number[]; name: string; text: string; language: string }) => {
-      try {
-        const fs = await import('fs');
-        const path = await import('path');
-        const { PathManager } = await import('../utils/pathManager');
-        const crypto = await import('crypto');
-
-        const clonesDir = path.join(PathManager.getUserDataPath(), 'cloned_voices');
-        const cloneId = `custom-clone-${crypto.randomBytes(4).toString('hex')}`;
-        const cloneDir = path.join(clonesDir, cloneId);
-        fs.mkdirSync(cloneDir, { recursive: true });
-
-        const audioPath = path.join(cloneDir, 'sample.wav');
-        fs.writeFileSync(audioPath, Buffer.from(payload.audioData));
-
-        const res = await fetch('http://127.0.0.1:9881/clone', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            audio_path: audioPath,
-            name: payload.name,
-            text: payload.text,
-            language: payload.language
-          })
-        });
-        return await res.json();
-      } catch (e: any) {
-        return { code: -1, detail: e.message };
-      }
-    });
-
     // 🔊 音色试听
     IpcRouter.handle(IPC_CHANNELS.VOICE_PREVIEW, async (_, payload: { provider: string; voiceId?: string; text?: string; rate?: number }) => {
       const previewText = payload.text || '欢迎使用 Zentect 智能剪辑';
@@ -163,19 +128,5 @@ export class AIController {
     // 🔊 引擎音色列表
     // 注意：VOICE_LIST_BY_ENGINE 实际由 EngineController.getVoicesForEngine 处理（后注册胜出）
     // 此处不再重复注册，避免代码歧义。AIController 仅保留 VOICE_PREVIEW 处理试听。
-
-    // 🔊 克隆音色列表
-    IpcRouter.handle('voice:get-cloned-voices', async () => {
-      try {
-        const clonesDir = path.join(PathManager.getUserDataPath(), 'cloned_voices');
-        if (!fs.existsSync(clonesDir)) return [];
-        const dirs = fs.readdirSync(clonesDir, { withFileTypes: true })
-          .filter(d => d.isDirectory())
-          .map(d => ({ id: d.name, name: d.name, lang: 'custom' }));
-        return dirs;
-      } catch {
-        return [];
-      }
-    });
   }
 }

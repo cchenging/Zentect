@@ -179,7 +179,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   }, [propBindings]);
 
   /* ---------- TTS 相关 ---------- */
-  const TTS_SETTINGS_KEYS = ['ttsProvider', 'doubaoTtsAppId', 'doubaoTtsToken', 'doubaoTtsVoice', 'sovitsUrl'];
+  const TTS_SETTINGS_KEYS = ['ttsProvider', 'doubaoTtsAppId', 'doubaoTtsToken', 'doubaoTtsVoice'];
   const ttsSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleValChange = (field: string, val: any) => {
     onUpdate('ai', field, val);
@@ -674,7 +674,6 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                 <SelectContent className="bg-bg-tertiary border-border/50">
                   <SelectItem value="doubao" className="text-xs">火山引擎 TTS (推荐)</SelectItem>
                   <SelectItem value="edge" className="text-xs">微软 Edge TTS (免费)</SelectItem>
-                  <SelectItem value="sovits" className="text-xs">本地 SoVITS</SelectItem>
                 </SelectContent>
               </Select>
               <Button onClick={onTestTTS} className="h-9 text-xs px-4 bg-accent/10 text-accent hover:bg-accent/20 border border-accent/20 shadow-none shrink-0 gap-1.5">
@@ -685,17 +684,6 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
           <div className="pt-4 border-t border-border/30">
             {currentTts === 'edge' && (
               <div className="text-xs text-accent-green bg-accent-green/10 p-3 rounded-lg border border-accent-green/20 flex items-center gap-2">该引擎为免费开源接口，无需额外配置任何密钥。</div>
-            )}
-            {currentTts === 'sovits' && (
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs text-muted-foreground font-medium">本地服务端点</span>
-                <div className="flex gap-3">
-                  <Input value={aiData.sovitsUrl || ''} onChange={e => handleValChange('sovitsUrl', e.target.value)} placeholder="http://127.0.0.1:9880" className="flex-1 text-xs bg-bg-secondary h-9 border-border/50" />
-                  <Button variant="outline" onClick={onTestTTS} className="h-9 text-xs text-accent-cyan hover:text-accent-cyan border-accent-cyan/20 bg-accent-cyan/5 hover:bg-accent-cyan/10 px-4 shadow-none shrink-0 gap-1.5">
-                    <Server size={13} /> 检测
-                  </Button>
-                </div>
-              </div>
             )}
             {currentTts === 'doubao' && (
               <div className="flex flex-col gap-4">

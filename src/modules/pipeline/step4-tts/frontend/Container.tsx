@@ -2,7 +2,7 @@
 // @migrated 阶段三：从 useStore → useStep4Store + useStep3Store + usePipelineStore + useProjectStore
 // 阶段四：移除 mapPipelineResultToState 的 useStore fallback
 
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import { useStep4Store } from "../../stores/useStep4Store";
 import { useStep3Store } from "../../stores/useStep3Store";
 import { usePipelineStore } from "@renderer/store/usePipelineStore";
@@ -27,7 +27,6 @@ const VOICE_OPTIONS: Record<string, TtsVoiceOption[]> = {
     { id: "zh_female_meilinvyou_saturn_bigtts", name: "美女邻居", lang: "中文·女" },
     { id: "zh_male_shaunglangxueke_moon_bigtts", name: "爽朗学客", lang: "中文·男" },
   ],
-  sovits: [{ id: "default", name: "克隆音色", lang: "通用" }],
 };
 
 export const StepTTSSynthesis: React.FC = () => {
@@ -43,7 +42,6 @@ export const StepTTSSynthesis: React.FC = () => {
   const [speechRate, setSpeechRate] = useState(1.0);
   const [playingIdx, setPlayingIdx] = useState<number | null>(null);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
-  const [clonedVoices, setClonedVoices] = useState<TtsVoiceOption[]>([]);
   const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
   // 顺序播放状态：isSequentialPlaying 是否正在顺序播放；sequentialIdx 当前播放段索引；isPaused 是否暂停中
   const [isSequentialPlaying, setIsSequentialPlaying] = useState(false);
@@ -77,14 +75,6 @@ export const StepTTSSynthesis: React.FC = () => {
   // 顺序播放队列游标：当前播放到队列的第几项（与 sequentialIdx 不同，queue 存的是有效段落索引）
   const sequentialCursorRef = useRef(0);
 
-  useEffect(() => {
-    if (ttsEngine === "sovits") {
-      API.voice.getClonedVoices().then((res: any) => {
-        if (res?.voices && Array.isArray(res.voices)) setClonedVoices(res.voices.map((v: any) => ({ id: v.id, name: v.name, lang: "克隆" })));
-      }).catch(() => {});
-    } else { setClonedVoices([]); }
-  }, [ttsEngine]);
-
   // 停止当前音频并对称清空所有播放状态（单段播放、试听、顺序播放）
   const stopAudio = useCallback(() => {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
@@ -96,7 +86,7 @@ export const StepTTSSynthesis: React.FC = () => {
   }, []);
 
     // 配音列表播放：直接使用已合成的 audioUrl
-    // 注意：不得设置 audio.playbackRate —— speechRate 已由后端合成时应用（Edge/豆包/SoVITS 等引擎
+    // 注意：不得设置 audio.playbackRate —— speechRate 已由后端合成时应用（Edge/豆包等引擎
     // 的 speed/speed_ratio 参数），前端再变速会语速双重应用 + 音调变调，导致"听不清"
     const handlePreview = useCallback((idx: number, audioUrl: string) => {
     console.log('[handlePreview] 点击配音列表播放按钮', { idx, audioUrl, ttsResults: useStep4Store.getState().ttsResults });
@@ -303,7 +293,7 @@ export const StepTTSSynthesis: React.FC = () => {
   }, []);
 
   // 单段配音：仅合成指定段落，立即更新 ttsResults 对应条目（不依赖全局 pipeline）
-  // 语速 speechRate 只在合成时传给后端（Edge/豆包/SoVITS 生效），播放端不变速
+  // 语速 speechRate 只在合成时传给后端（Edge/豆包生效），播放端不变速
   const handleSingleSynthesize = useCallback(async (idx: number) => {
     const step3State = useStep3Store.getState();
     const step4State = useStep4Store.getState();
@@ -365,7 +355,7 @@ export const StepTTSSynthesis: React.FC = () => {
     <StepTTSSynthesisView
       ttsEngine={ttsEngine} ttsVoiceId={ttsVoiceId} ttsProgress={ttsProgress} ttsResults={ttsResults}
       scriptParagraphs={scriptParagraphs} isProcessing={isProcessing}
-      voices={VOICE_OPTIONS[ttsEngine] || []} clonedVoices={clonedVoices}
+      voices={VOICE_OPTIONS[ttsEngine] || []}
       speechRate={speechRate} previewingVoiceId={previewingVoiceId} playingIdx={playingIdx}
       successCount={successCount} failedCount={failedCount}
       singleSynthIdx={singleSynthIdx}

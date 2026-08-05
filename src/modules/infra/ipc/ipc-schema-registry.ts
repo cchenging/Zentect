@@ -45,11 +45,6 @@ SCHEMA_REGISTRY[IPC_CHANNELS.PIPELINE_RECOVERY_ABANDON] = z.object({
   projectId: z.string().min(1, 'projectId 不能为空'),
 }).strict();
 
-/** 语音克隆删除 */
-SCHEMA_REGISTRY['voice:delete-cloned'] = z.object({
-  cloneId: z.string().min(1, 'cloneId 不能为空'),
-}).strict();
-
 /** 导出剪映 */
 SCHEMA_REGISTRY[IPC_CHANNELS.EXPORT_JIANYING] = z.object({
   projectId: z.string().min(1, 'projectId 不能为空'),

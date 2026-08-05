@@ -17,7 +17,7 @@
 | `store/storeTypes.ts` | 270* | EditorSlice 类型定义（含 ttsEngine / ttsVoiceId / ttsProgress / ttsResults） |
 | `store/slices/editorSlice.ts` | 188* | TTS 状态实现：zustand slice，含 setTtsEngine / setTtsVoiceId / setTtsProgress / setTtsResults |
 | `store/usePipelineStore.ts` | 105 | 管线状态独立 Store（stepStatuses / pipelineRunning 等） |
-| `api/index.ts` | 340* | API.voice 封装：preview / listByEngine / getClonedVoices；API.engine.runPipeline |
+| `api/index.ts` | 340* | API.voice 封装：preview / listByEngine；API.engine.runPipeline |
 | `pages/editor/utils/pipelineConstants.ts` | 80* | STEP_SEQUENCES[4] → `{ actionType: 'tts-synthesize', nodeId: 'tts-1' }`；PipelineNodeType 枚举 |
 | `pages/editor/hooks/usePipelineResultMapper.ts` | 162* | 管线结果映射：TTS 结果 (nodeResult.shots) → store.setTtsResults |
 | `shared/types/entities/editor.ts` | 59* | TtsResult / ScriptParagraph 类型定义 |
@@ -31,10 +31,10 @@
 | 文件 | 行数 | 角色 |
 |---|---|---|
 | `engine/strategies/TTSStrategy.ts` | 164 | Step4 管线节点策略：并发控制、逐段合成、进度回调、结果统计 |
-| `engine/capabilities/TTSProvider.ts` | 167 | TTS 能力提供者：3 种引擎实现 (doubao/edge/sovits) + 缓存 + 降级链 |
+| `engine/capabilities/TTSProvider.ts` | 167 | TTS 能力提供者：2 种引擎实现 (doubao/edge) + 缓存 + 降级链 |
 | `engine/AIEngine.ts` | ~80* | `generateTTS()` 静态方法：引擎路由、文本清洗、API 调用、文件落盘 |
-| `controllers/EngineController.ts` | ~86* | IPC 注册：voice:preview / voice:listByEngine / voice:get-cloned-voices / voice:delete-cloned + getVoicesForEngine() |
-| `controllers/AIController.ts` | ~98* | IPC 注册：voice:preview / voice:listByEngine / voice:get-cloned-voices / voice:clone（重复注册，存在双份 handler） |
+| `controllers/EngineController.ts` | ~86* | IPC 注册：voice:preview / voice:listByEngine + getVoicesForEngine() |
+| `controllers/AIController.ts` | ~98* | IPC 注册：voice:preview / voice:listByEngine（重复注册，存在双份 handler） |
 | `services/AIService.ts` | ~50* | TTS 服务方法：testTTS / runSingleTTS / runGlobalTTS |
 | `infra/ipc/IpcConstants.ts` | 220* | IPC 通道常量：VOICE_PREVIEW / VOICE_LIST_BY_ENGINE |
 
@@ -58,7 +58,6 @@
 | `react` | npm | UI 框架 |
 | 火山引擎 API | `https://openspeech.bytedance.com/api/v1/tts` | doubao TTS |
 | Edge TTS API | `wss://speech.platform.bing.com` | 免费 Edge TTS（微软官方） |
-| SoVITS 本地服务 | `http://127.0.0.1:9880` | 本地 SoVITS 服务 |
 
 ### 2.2 内部依赖（调用关系图）
 
@@ -67,7 +66,6 @@ StepTTSSynthesis.tsx (智能组件)
   ├─ useStore()                          → editorSlice (ttsEngine, ttsVoiceId, ...)
   ├─ API.voice.preview()                 → IPC → EngineController / AIController
   ├─ API.voice.listByEngine()            → IPC → getVoicesForEngine()
-  ├─ API.voice.getClonedVoices()         → IPC → LocalAiGateway
   ├─ API.engine.runPipeline()            → IPC → EngineController → TTSStrategy
   ├─ mapPipelineResultToState()          → usePipelineResultMapper → store.setTtsResults
   ├─ STEP_SEQUENCES[4]                   → pipelineConstants
@@ -93,8 +91,7 @@ AIEngine.generateTTS() [与 TTSProvider.synthesize() 代码重复]
 
 EngineController / AIController
   ├─ TTSProvider                         → 音色预览
-  ├─ getVoicesForEngine()                → 音色列表
-  └─ LocalAiGateway                      → 克隆音色
+  └─ getVoicesForEngine()                → 音色列表
 ```
 
 ### 2.3 关键发现
@@ -104,7 +101,7 @@ EngineController / AIController
 | `editorSlice.ts` | `StepTTSSynthesis.tsx` | TTS 状态读写（引擎/音色/进度/结果） |
 | `editorSlice.ts` | `usePipelineResultMapper.ts` | 管线结果写入 `store.setTtsResults()` |
 | `API.voice.preview` | `StepTTSSynthesis.tsx` | 音色试听 |
-| `API.voice.listByEngine` | `StepTTSSynthesis.tsx` | 获取音色列表（edge/doubao/sovits 硬编码 + 后端查询） |
+| `API.voice.listByEngine` | `StepTTSSynthesis.tsx` | 获取音色列表（edge/doubao 硬编码 + 后端查询） |
 | `API.engine.runPipeline` | `StepTTSSynthesis.tsx` | 触发 step4 管线执行 |
 | `TTSStrategy.ts` | `EngineController` (runPipeline) | 管线节点策略注册 |
 | `TTSProvider.ts` | `EngineController` / `AIController` | 音色预览合成 |
@@ -117,8 +114,7 @@ EngineController / AIController
 
 ### 3.1 StepTTSSynthesis.tsx
 **核心功能**：Step4 智能容器组件
-- 管理引擎/音色状态，维护 5 种引擎的静态音色表 (VOICE_OPTIONS)
-- 动态获取 SoVITS 克隆音色
+- 管理引擎/音色状态，维护 2 种引擎的静态音色表 (VOICE_OPTIONS)
 - 音色试听 (handleVoicePreview)：调用 `API.voice.preview`，播放返回的音频
 - 合成触发 (handleSynthesize)：构造 `STEP_SEQUENCES[4]` 序列 → `API.engine.runPipeline`
 - 结果预览：逐段播放合成后的音频
@@ -162,7 +158,6 @@ EngineController / AIController
 **核心功能**：前端 IPC 调用封装
 - `API.voice.preview(provider, voiceId?, text?)` → `voice:preview`
 - `API.voice.listByEngine(engine)` → `voice:listByEngine`
-- `API.voice.getClonedVoices()` → `voice:get-cloned-voices`
 - `API.engine.runPipeline(payload)` → `engine:run-pipeline`
 
 ### 3.7 TTSStrategy.ts
@@ -174,12 +169,12 @@ EngineController / AIController
   3. 按引擎并发数 `runConcurrent()` 批量合成
   4. 进度回调（每完成一段更新百分比）
   5. 返回 `{ shots: TTSItemResult[], provider, successCount, failCount }`
-- 并发策略：edge(6), doubao(5), sovits(2)
+- 并发策略：edge(6), doubao(5)
 **导出**：`TTSStrategy` (class extends BaseNodeStrategy)
 
 ### 3.8 TTSProvider.ts
 **核心功能**：TTS 能力提供者（独立封装）
-- 3 种引擎实现：doubao / edge / sovits
+- 2 种引擎实现：doubao / edge
 - 文本清洗（去舞台标记）
 - MD5 缓存：相同文本+引擎+音色复用结果
 - `synthesizeWithFallback()`：默认引擎 Edge 合成
@@ -196,16 +191,12 @@ EngineController / AIController
 **注册的 IPC handlers**：
 - `voice:preview` → TTSProvider.synthesize
 - `voice:listByEngine` → getVoicesForEngine()
-- `voice:get-cloned-voices` → LocalAiGateway
-- `voice:delete-cloned` → LocalAiGateway
 - `role:updateVoice` → RoleRepository
 
 ### 3.11 AIController.ts (voice handlers — 重复注册)
 **注册的 IPC handlers**（与 EngineController 重复）：
-- `voice:clone` → 本地克隆流程
 - `voice:preview` → AIEngine.generateTTS（与 EngineController 版本实现不同）
 - `voice:listByEngine` → 内联 HARDCODED_VOICES
-- `voice:get-cloned-voices` → 本地文件系统扫描
 
 ### 3.12 AIService.ts (TTS 部分)
 **TTS 方法**：
@@ -232,8 +223,7 @@ EngineController → PipelineEngine → TTSStrategy.performTask()
   │ 2. 按引擎并发数 batch execute
   │ 3. 每个 shot → AIEngine.generateTTS(text, provider, cacheDir, voiceId)
   │     ├─ doubao → 火山引擎 API
-  │     ├─ edge   → 微软官方 Edge TTS (WSS)
-  │     └─ sovits → 本地 http://127.0.0.1:9880
+  │     └─ edge   → 微软官方 Edge TTS (WSS)
   │ 4. 返回 { shots: [{ shotId, audioPath, _failed }] }
   ▼
 PipelineResult → mapPipelineResultToState()
@@ -277,7 +267,7 @@ new Audio(url).play()
 | 后端 TTS 相关文件数 | 7 |
 | 后端纯 TTS 代码行数 | ~645 (TTSStrategy + TTSProvider + AIEngine TTS + handlers) |
 | 后端联合依赖行数 | ~200 (IpcConstants + Router) |
-| 全局依赖数（IPC 通道） | 4 (`voice:preview`, `voice:listByEngine`, `voice:get-cloned-voices`, `engine:run-pipeline`) |
+| 全局依赖数（IPC 通道） | 3 (`voice:preview`, `voice:listByEngine`, `engine:run-pipeline`) |
 | Shared 类型依赖 | TtsResult, ScriptParagraph (来自 `shared/types/entities/editor.ts`) |
 
 ### 5.2 迁移方案建议
@@ -331,9 +321,6 @@ src/modules/pipeline/step4-tts/
 |---|---|---|---|
 | `voice:preview` | `VOICE_PREVIEW` | EngineController + AIController | ⚠️ 重复注册 |
 | `voice:listByEngine` | `VOICE_LIST_BY_ENGINE` | EngineController + AIController | ⚠️ 重复注册 |
-| `voice:get-cloned-voices` | — (字符串字面量) | EngineController + AIController | ⚠️ 重复注册 |
-| `voice:delete-cloned` | — (字符串字面量) | EngineController | ✅ 唯一 |
-| `voice:clone` | — (字符串字面量) | AIController | ✅ 唯一 |
 | `engine:run-pipeline` | `ENGINE_RUN_PIPELINE` | EngineController | ✅ 唯一 |
 | `role:updateVoice` | `ROLE_UPDATE_VOICE` | EngineController | ✅ 唯一 |
 | `ai:testTTS` | `AI_TEST_TTS` | AIController | ✅ 唯一 |

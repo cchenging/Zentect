@@ -2,7 +2,7 @@ import { SettingsRepository } from '../../database/repositories/SettingsReposito
 import { ApiProfileRepository } from '../../database/repositories/ApiProfileRepository';
 
 export interface LLMConfig { provider: string; model: string; baseURL: string; apiKey: string; temperature: number; }
-export interface TTSConfig { provider: string; appId?: string; token?: string; voice?: string; url?: string; }
+export interface TTSConfig { provider: string; appId?: string; token?: string; voice?: string; }
 
 export class ProviderManager {
   private static settings = new SettingsRepository();
@@ -111,7 +111,6 @@ switch (provider) {
       appId: this.settings.get<string>('doubaoTtsAppId', ''),
       token: this.settings.get<string>('doubaoTtsToken', ''),
       voice: this.settings.get<string>('doubaoTtsVoice', 'zh_female_meilinvyou_saturn_bigtts'),
-      url: this.settings.get<string>('sovitsUrl', 'http://127.0.0.1:9880'),
     };
   }
 }

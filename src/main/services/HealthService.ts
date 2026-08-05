@@ -35,7 +35,7 @@ interface LLMChannelStatus {
  * TTS 引擎状态
  */
 interface TTSEngineStatus {
-  id: string;             // edge/doubao/sovits
+  id: string;             // edge/doubao
   displayName: string;    // Edge TTS / 豆包 TTS / ...
   available: boolean;     // 是否可用（已配置或内置）
   /** 是否为当前默认引擎 */
@@ -429,7 +429,7 @@ export class HealthService {
   }
 
   /**
-   * 🔧 V6 新增：获取 TTS 引擎状态列表（5 个引擎）
+   * 🔧 V6 新增：获取 TTS 引擎状态列表（2 个引擎）
    *   读 settings 检测配置
    */
   private getTTSEngines(): TTSEngineStatus[] {
@@ -445,12 +445,6 @@ export class HealthService {
         builtin: false,
         check: () => !!(this.settings.get<string>('doubaoTtsAppId', '') &&
                        this.settings.get<string>('doubaoTtsToken', ''))
-      },
-      {
-        id: 'sovits',
-        displayName: 'SoVITS',
-        builtin: false,
-        check: () => !!this.settings.get<string>('sovitsUrl', '')
       },
     ]
 

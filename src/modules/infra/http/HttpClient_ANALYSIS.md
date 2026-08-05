@@ -22,10 +22,9 @@
 
 > 唯一同级依赖是 `AppLogger`。迁移后 import 路径需更新为 `../logger/AppLogger` 或将 AppLogger 也迁入 infra。
 
-## 消费者分析（共 2 个，不含自身测试）
+## 消费者分析（共 1 个，不含自身测试）
 | 消费者 | 当前导入 | 迁移后需改为 |
 |---|---|---|
-| `src/main/engine/LocalAiGateway.ts` | `import { HttpClient } from '../core/HttpClient'` | `../../infra/http/HttpClient` |
 | `src/main/engine/media/VisionProcessor.ts` | `import { HttpClient } from '../../core/HttpClient'` | `../../../infra/http/HttpClient` |
 
 ## 迁移评估
