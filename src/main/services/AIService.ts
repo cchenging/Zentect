@@ -230,7 +230,7 @@ export class AIService {
 
   public async testTTS(provider: string) {
     try {
-      await AIEngine.generateTTS('测试语音', provider as 'doubao' | 'edge');
+      await AIEngine.generateTTS('测试语音', provider as 'doubao' | 'edge' | 'kokoro');
       return 'success';
     } catch (e: any) {
       return `连接失败: ${e.message}`;
@@ -248,7 +248,7 @@ export class AIService {
     for (const shot of shots) {
       try {
         const provider = shot.provider || shot.voiceId || 'edge';
-        const result = await ttsEngine.generateTTS(shot.text || '', provider as 'doubao' | 'edge');
+        const result = await ttsEngine.generateTTS(shot.text || '', provider as 'doubao' | 'edge' | 'kokoro');
         results.push({ shot, audioPath: result });
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.AI_AGENT, `TTS failed for shot ${shot.id}`, e);

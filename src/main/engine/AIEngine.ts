@@ -193,7 +193,7 @@ export class AIEngine {
   // 使用 dynamic import + any 绕过类型检查，避免再次触发 TS2339（实际方法签名在各服务中定义）
 
   /** TTS 语音合成（已迁移至 TTSEngine，此处转发） */
-  public static async generateTTS(text: string, provider: 'doubao' | 'edge', rate?: number): Promise<string> {
+  public static async generateTTS(text: string, provider: 'doubao' | 'edge' | 'kokoro', rate?: number): Promise<string> {
     const { TTSEngine } = await import('./TTSEngine');
     return (TTSEngine as any).generateTTS(text, provider, undefined, undefined, rate);
   }

@@ -28,6 +28,13 @@ vi.mock('../../../../main/engine/edgeTts', () => ({
   synthesizeEdgeTts: mockSynthesizeEdgeTts,
 }));
 
+// Kokoro 走 ai_daemon HTTP，mock AIDaemon 提供端口与在线状态
+vi.mock('../../../../main/core/AIDaemon', () => ({
+  AIDaemon: {
+    getInstance: () => ({ isOnline: () => true, getPort: () => 34567 }),
+  },
+}));
+
 // fs 使用 spy 而非 mock，避免 async factory 问题
 import fs from 'fs';
 import os from 'os';
@@ -44,7 +51,6 @@ function setupMocks(overrides: Record<string, unknown> = {}) {
     appId: (overrides.appId as string) ?? '',
     token: (overrides.token as string) ?? '',
     voice: (overrides.voice as string) ?? '',
-    url: (overrides.url as string) ?? 'http://127.0.0.1:9880',
   });
 
   mockGetTTSOutputDir.mockReturnValue(
@@ -189,6 +195,41 @@ describe('TTSProvider', () => {
       expect(mockSynthesizeEdgeTts).toHaveBeenCalledWith(
         expect.objectContaining({ voice: 'zh-CN-YunxiNeural' })
       );
+    });
+
+    it('kokoro 应调用 ai_daemon 合成并返回 WAV 路径', async () => {
+      setupMocks({ provider: 'kokoro' });
+
+      const fetchSpy = vi.fn().mockResolvedValue({
+        json: () => Promise.resolve({ success: true, audioPath: '/tmp/tts_kokoro_xxx.wav' }),
+      });
+      globalThis.fetch = fetchSpy;
+
+      const result = await provider.synthesize('你好世界', 'kokoro');
+
+      // 返回 WAV 扩展名的缓存路径
+      expect(result).toContain('.wav');
+      // 请求发给 ai_daemon 的 kokoro 合成端点
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining('/api/tts/kokoro/synthesize'),
+        expect.objectContaining({ method: 'POST' })
+      );
+      // 请求体包含清洗后的文本与默认音色
+      const body = JSON.parse(fetchSpy.mock.calls[0]?.[1]?.body as string);
+      expect(body.text).toBe('你好世界');
+      expect(body.voice).toBe('zf_xiaobei');
+    });
+
+    it('kokoro 失败响应应抛出 AI_PROCESS_FAILED', async () => {
+      setupMocks({ provider: 'kokoro' });
+
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        json: () => Promise.resolve({ success: false, error: 'Kokoro 依赖未安装' }),
+      });
+
+      await expect(
+        provider.synthesize('你好', 'kokoro'),
+      ).rejects.toMatchObject({ code: ErrorCode.AI_PROCESS_FAILED });
     });
 
     it('文本清洗应移除全角括号和舞台指示标记', async () => {

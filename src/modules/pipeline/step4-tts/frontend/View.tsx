@@ -38,7 +38,7 @@ export interface StepTTSSynthesisViewProps {
 }
 
 const ENGINE_LABELS: Record<string, string> = {
-  edge: "Edge TTS", doubao: "火山引擎",
+  edge: "Edge TTS", doubao: "火山引擎", kokoro: "Kokoro",
 };
 
 export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props) => {
@@ -69,7 +69,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
       <div className="flex items-center gap-2">
         <span className="text-[13px] text-muted-foreground shrink-0">引擎:</span>
         <div className="flex items-center gap-1 flex-wrap">
-          {(["edge", "doubao"] as const).map((eng) => (
+          {(["edge", "doubao", "kokoro"] as const).map((eng) => (
             <Badge key={eng} variant={ttsEngine === eng ? "accent" : "default"} interactive="selectable" selected={ttsEngine === eng}
               onClick={() => onSetTtsEngine(eng)} disabled={isProcessing}>
               {ENGINE_LABELS[eng] || eng}

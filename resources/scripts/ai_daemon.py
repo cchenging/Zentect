@@ -84,6 +84,7 @@ import semantic_engine
 import timeline_solver
 import video_analyzer
 import jianying_export
+import tts_kokoro
 
 app.include_router(audio_pipeline.router)
 app.include_router(face_analysis.router)
@@ -91,6 +92,7 @@ app.include_router(semantic_engine.router)
 app.include_router(timeline_solver.router)
 app.include_router(video_analyzer.router)
 app.include_router(jianying_export.router)
+app.include_router(tts_kokoro.router)
 
 print(f"[AI Daemon] ✅ 所有业务路由注册成功！共 {len(app.routes)} 条路由", file=sys.stderr)
 
@@ -125,6 +127,8 @@ async def check_deps():
         'librosa': 'Librosa',
         'soundfile': 'SoundFile',
         'scipy': 'SciPy',
+        'kokoro': 'Kokoro-82M (本地 TTS)',
+        'misaki': 'Misaki (Kokoro G2P)',
     }
     deps = {}
     for mod_name, display_name in targets.items():
@@ -165,6 +169,9 @@ async def check_deps():
         'clip': {**_module_ready(['transformers', 'torch']),
                  'display_name': 'Transformers (CLIP 引擎)', 'size': '~100 MB (含 torch)',
                  'needs': ['torch']},
+        'kokoro': {**_module_ready(['kokoro', 'misaki', 'soundfile']),
+                   'display_name': 'Kokoro-82M TTS 引擎', 'size': '~360 MB (模型)',
+                   'needs': []},
     }
 
     return {'deps': deps, 'modules': modules, 'python_executable': sys.executable}

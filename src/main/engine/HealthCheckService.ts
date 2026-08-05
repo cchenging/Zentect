@@ -96,6 +96,14 @@ export class HealthCheckService {
         type: 'cloud',
         hint: ok ? '' : '火山 TTS 未配置，请在 设置 → AI → 语音合成 中填写 AppID 和 Token'
       });
+    } else if (ttsProvider === 'kokoro') {
+      // 本地 Kokoro-82M 推理引擎：无需密钥配置，依赖/模型状态由健康检查页运行时检查展示
+      results.push({
+        name: 'TTS 配音 (Kokoro)',
+        available: true,
+        type: 'local',
+        hint: '本地推理引擎，请确认 健康检查 → AI 运行时依赖 中 kokoro 已安装'
+      });
     }
 
     // LLM — 脚本生成需要

@@ -331,7 +331,7 @@ export class HealthService {
   }
 
   /**
-   * 🔧 V6 新增：获取 AI 运行时包列表（torch/torchaudio/demucs/funasr/transformers/tokenizers）
+   * 🔧 V6 新增：获取 AI 运行时包列表（torch/torchaudio/demucs/funasr/transformers/tokenizers/kokoro 等）
    *   从 ai_daemon /api/check_deps 拉取 deps 字段，附加 usedBy 标注
    */
   private async getRuntimePkgs(): Promise<RuntimePkgStatus[]> {
@@ -343,6 +343,9 @@ export class HealthService {
       funasr: ['SenseVoice'],
       transformers: ['CLIP'],
       tokenizers: ['CLIP'],
+      kokoro: ['Kokoro TTS'],
+      misaki: ['Kokoro TTS'],
+      soundfile: ['Kokoro TTS', '音频分析'],
     }
     const pkgDisplayName: Record<string, string> = {
       torch: 'PyTorch',
@@ -351,6 +354,9 @@ export class HealthService {
       funasr: 'FunASR',
       transformers: 'Transformers',
       tokenizers: 'Tokenizers',
+      kokoro: 'Kokoro',
+      misaki: 'Misaki',
+      soundfile: 'SoundFile',
     }
 
     const buildOffline = () => Object.keys(pkgUsedBy).map(name => ({

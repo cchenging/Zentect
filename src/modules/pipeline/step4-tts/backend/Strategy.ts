@@ -8,7 +8,7 @@ import { ttsEngine } from '../../../../main/engine/TTSEngine';
 import { ProviderManager } from '../../../../main/engine/config/ProviderManager';
 
 /** TTS 引擎类型 */
-type TTSProvider = 'doubao' | 'edge';
+type TTSProvider = 'doubao' | 'edge' | 'kokoro';
 
 /** 单段 TTS 合成结果 */
 interface TTSItemResult {
@@ -20,10 +20,11 @@ interface TTSItemResult {
   _error?: string;
 }
 
-/** 各引擎推荐并发数：HTTP 类引擎可高并发 */
+/** 各引擎推荐并发数：HTTP 类引擎可高并发；本地 Kokoro 受 Python GIL + INFERENCE_LOCK 串行约束 */
 const ENGINE_CONCURRENCY: Record<TTSProvider, number> = {
   edge: 6,
   doubao: 5,
+  kokoro: 1,
 };
 
 /** 单个任务完成后的结果（含成功/失败） */

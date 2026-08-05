@@ -101,7 +101,7 @@ EngineController / AIController
 | `editorSlice.ts` | `StepTTSSynthesis.tsx` | TTS 状态读写（引擎/音色/进度/结果） |
 | `editorSlice.ts` | `usePipelineResultMapper.ts` | 管线结果写入 `store.setTtsResults()` |
 | `API.voice.preview` | `StepTTSSynthesis.tsx` | 音色试听 |
-| `API.voice.listByEngine` | `StepTTSSynthesis.tsx` | 获取音色列表（edge/doubao 硬编码 + 后端查询） |
+| `API.voice.listByEngine` | `StepTTSSynthesis.tsx` | 获取音色列表（edge/doubao/kokoro 硬编码 + 后端查询） |
 | `API.engine.runPipeline` | `StepTTSSynthesis.tsx` | 触发 step4 管线执行 |
 | `TTSStrategy.ts` | `EngineController` (runPipeline) | 管线节点策略注册 |
 | `TTSProvider.ts` | `EngineController` / `AIController` | 音色预览合成 |
@@ -223,7 +223,8 @@ EngineController → PipelineEngine → TTSStrategy.performTask()
   │ 2. 按引擎并发数 batch execute
   │ 3. 每个 shot → AIEngine.generateTTS(text, provider, cacheDir, voiceId)
   │     ├─ doubao → 火山引擎 API
-  │     └─ edge   → 微软官方 Edge TTS (WSS)
+  │     ├─ edge   → 微软官方 Edge TTS (WSS)
+  │     └─ kokoro → 本地 ai_daemon (Kokoro-82M, CPU)
   │ 4. 返回 { shots: [{ shotId, audioPath, _failed }] }
   ▼
 PipelineResult → mapPipelineResultToState()

@@ -39,11 +39,11 @@ interface ModelSeedDef {
 /**
  * 功能模块定义（V7 新增）
  * 一个功能模块 = 多个模型文件 + 一个运行时依赖
- * 对应前端 6 张卡片，按 3 个分类分组
+ * 对应前端 7 张卡片，按 4 个分类分组
  */
 interface ModelModuleDef {
   id: string;                    // 模块 id（对应 ai_daemon.modules 的 key）
-  category: 'audio' | 'asr' | 'vision';  // 3 分类
+  category: 'audio' | 'asr' | 'vision' | 'tts';  // 4 分类
   displayName: string;           // 中文显示名
   description: string;
   icon: string;                  // emoji 图标
@@ -53,7 +53,7 @@ interface ModelModuleDef {
   sizeNote: string;              // 体积说明
 }
 
-/** 16 个具体模型定义（V5 细化版 + V8 增 faster_whisper_large_v3，与 manifest.json models 数组对齐） */
+/** 17 个具体模型定义（V5 细化版 + V8 增 faster_whisper + V9 增 kokoro_voices，与 manifest.json models 数组对齐） */
 const MODEL_DEFINITIONS: ModelSeedDef[] = [
   // === ASR 语音识别 ===
   {
@@ -90,6 +90,14 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
     description: 'OpenAI CLIP 文本-图像跨模态匹配（脚本-视频帧对齐核心）', version: '1.0',
     manifestPaths: ['clip/config.json', 'clip/model.safetensors', 'clip/preprocessor_config.json'],
     scanPaths: ['clip/model.safetensors', 'huggingface/clip/model.safetensors'],
+  },
+  // === TTS 语音合成 ===
+  {
+    id: 'kokoro_voices', name: 'Kokoro Voices', displayName: 'Kokoro 中文音色包', type: 'tts',
+    description: 'Kokoro-82M 中文音色文件（voices/*.pt，12 个音色，模型本体由 kokoro 首次运行时自动下载）',
+    version: '1.0', pythonPkg: 'kokoro',
+    manifestPaths: ['kokoro/voices/zf_xiaobei.pt'],
+    scanPaths: ['kokoro/voices/zf_xiaobei.pt'],
   },
   {
     id: 'buffalo_l_det_10g', name: 'Buffalo L det_10g', displayName: 'Buffalo L 人脸检测主干', type: 'vision',
@@ -187,13 +195,15 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
   sface_recognition: { url: 'https://huggingface.co/opencv/opencv_extra/resolve/main', file: 'face_recognition_sface_2021dec.onnx' },
   mdx_hq3: { url: 'https://huggingface.co/JeffreyCA/audio-separator-models/resolve/main', file: 'UVR-MDX-NET-Inst_HQ_3.onnx' },
   mdx_hq4: { url: 'https://huggingface.co/JeffreyCA/audio-separator-models/resolve/main', file: 'UVR-MDX-NET-Inst_HQ_4.onnx' },
+  // Kokoro 中文音色（voices/*.pt，单文件下载；其余音色合成时由 kokoro 自动从 HF 拉取）
+  kokoro_voices: { url: 'https://huggingface.co/hexgrad/Kokoro-82M/resolve/main', file: 'voices/zf_xiaobei.pt' },
   demucs_htdemucs: { url: '', file: '' },
   emotion: { url: '', file: '' },
 };
 
 /**
- * 🔧 V7 新增：6 个功能模块定义（对应前端 6 张卡片，按 3 分类分组）
- * 用于前端模型管理页按功能模块展示，而非细碎的 16 个模型
+ * 🔧 V7 新增：7 个功能模块定义（对应前端 7 张卡片，按 4 分类分组）
+ * 用于前端模型管理页按功能模块展示，而非细碎的 17 个模型
  * 每个模块 = 多个模型文件 + 一个运行时依赖
  */
 const MODEL_MODULES: ModelModuleDef[] = [
@@ -250,6 +260,15 @@ const MODEL_MODULES: ModelModuleDef[] = [
     runtimeId: 'clip',  // 运行时依赖：transformers + torch
     sizeNote: '~600 MB (模型) + 100 MB (运行时，含 torch)',
   },
+  // === TTS 语音合成（1 张卡片）===
+  {
+    id: 'kokoro', category: 'tts', displayName: 'Kokoro 本地 TTS',
+    description: 'Kokoro-82M 轻量本地语音合成（82M 参数，CPU 实时，音质对标大模型）',
+    icon: '🔊', required: 'optional',
+    modelIds: ['kokoro_voices'],
+    runtimeId: 'kokoro',  // 运行时依赖：kokoro + misaki[zh] + soundfile
+    sizeNote: '~350 MB (模型，HF 缓存) + 30 MB (中文音色)',
+  },
 ];
 
 /**
@@ -259,6 +278,7 @@ const MODEL_CATEGORIES = [
   { id: 'audio', displayName: '音频分离', icon: '🎵' },
   { id: 'asr', displayName: '语音识别', icon: '🎙️' },
   { id: 'vision', displayName: '视觉', icon: '👁️' },
+  { id: 'tts', displayName: '语音合成', icon: '🔊' },
 ] as const;
 
 /**
@@ -286,8 +306,8 @@ export class ModelService {
   /**
    * 🔧 修复 P0：确保 local_models 表有 seed 数据（V5 细化版 + V8 增 faster_whisper）
    * 迁移逻辑：
-   *   1. 检测旧版粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 16 条
-   *   2. 表为空 → 直接 seed 16 条
+   *   1. 检测旧版粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 17 条
+   *   2. 表为空 → 直接 seed 17 条
    *   3. 已有新记录 → 跳过
    * 旧版 bug：local_models 表永远空表，预装的模型躺在磁盘但代码不知道
    */
@@ -307,7 +327,7 @@ export class ModelService {
         return;
       }
 
-      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 16 条 V5 细化模型记录');
+      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 17 条 V5 细化模型记录');
       for (const def of MODEL_DEFINITIONS) {
         try {
           this.modelRepo.insert({

@@ -17,7 +17,7 @@ type ModelFileStatus = 'not_downloaded' | 'downloaded' | 'downloading' | 'corrup
 type ModuleStatus = 'ready' | 'partial' | 'missing';
 
 /** 分类 key（与后端 MODEL_CATEGORIES 对齐） */
-type CategoryId = 'audio' | 'asr' | 'vision';
+type CategoryId = 'audio' | 'asr' | 'vision' | 'tts';
 
 /** 分类菜单项 */
 interface CategoryOption {
@@ -62,6 +62,7 @@ const CATEGORY_OPTIONS: CategoryOption[] = [
   { key: 'audio', label: '音频分离', icon: '🎵' },
   { key: 'asr', label: '语音识别', icon: '🎙️' },
   { key: 'vision', label: '视觉', icon: '👁️' },
+  { key: 'tts', label: '语音合成', icon: '🔊' },
 ];
 
 /** 格式化字节大小为人类可读字符串 */
@@ -75,7 +76,7 @@ function formatBytes(bytes: number): string {
 /**
  * 本地模型管理 Tab - V7 功能模块化版本
  * 🔧 修复 M3：只管模型文件，运行时依赖去健康检查页查看
- * 3 分类 Chip + 6 功能模块卡片（仅模型文件状态 + 操作）
+ * 4 分类 Chip + 7 功能模块卡片（仅模型文件状态 + 操作）
  */
 export const ModelTab: React.FC = () => {
   const [modules, setModules] = useState<ModuleCard[]>([]);

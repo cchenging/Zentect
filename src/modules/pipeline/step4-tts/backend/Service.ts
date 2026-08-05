@@ -8,7 +8,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { AppError, ErrorCode } from '@modules/infra/error/AppError'
 
-export type TTSVendor = 'doubao' | 'edge'
+export type TTSVendor = 'doubao' | 'edge' | 'kokoro'
 
 export class TTSProvider {
   /** fallback 链 — 当前仅保留默认引擎 Edge */
@@ -64,7 +64,8 @@ export class TTSProvider {
     /** 缓存查找：相同清洗后文本+引擎+音色+语速 的合成结果直接复用 */
     const voiceKey = voiceOverride || config.voice || 'default'
     const cacheHash = crypto.createHash('md5').update(`${cleanedText}|${provider}|${voiceKey}|${speedRate}`).digest('hex').substring(0, 12)
-    const ext = 'mp3'
+    // 引擎扩展名：本地 Kokoro 输出 24kHz WAV，在线引擎输出 MP3
+    const ext = provider === 'kokoro' ? 'wav' : 'mp3'
     const cachedFile = path.join(targetDir, `tts_${provider}_${voiceKey}_${cacheHash}.${ext}`)
     if (fs.existsSync(cachedFile)) {
       return cachedFile
@@ -106,6 +107,30 @@ export class TTSProvider {
           audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate })
           break
         }
+        case 'kokoro': {
+          // 本地 Kokoro-82M 推理：ai_daemon Python 进程直接写 WAV 到缓存路径
+          const daemon = (await import('../../../../main/core/AIDaemon')).AIDaemon.getInstance()
+          if (!daemon.isOnline()) {
+            throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, 'AI 运行时未启动，请先等待运行时就绪或检查 设置 → 健康检查')
+          }
+          const port = daemon.getPort()
+          const res = await fetch(`http://127.0.0.1:${port}/api/tts/kokoro/synthesize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: cleanedText,
+              voice: voiceOverride || 'zf_xiaobei',
+              speed: speedRate,
+              out_path: cachedFile,
+            }),
+          })
+          const json: any = await res.json()
+          if (!json?.success || !json?.audioPath) {
+            throw new AppError(ErrorCode.AI_PROCESS_FAILED, json?.error || 'Kokoro 合成失败')
+          }
+          // Python 端已写盘（缓存文件即最终产物），直接返回路径
+          return cachedFile
+        }
         default:
           throw new AppError(ErrorCode.SYS_ENV_ERROR, `未知的 TTS 引擎: ${provider}`)
       }
@@ -117,7 +142,8 @@ export class TTSProvider {
       const msg = err?.message || '';
       const hints: Record<string, string> = {
         doubao: '（请在 设置 → AI → 语音合成 中检查火山引擎配置）',
-        edge: ''
+        edge: '',
+        kokoro: '（请到 设置 → 健康检查 → AI 运行时依赖 安装 Kokoro 依赖）',
       }
       throw new AppError(ErrorCode.AI_PROCESS_FAILED, `${msg || '语音合成失败'}${hints[provider] || ''}`)
     }

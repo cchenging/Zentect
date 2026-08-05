@@ -17,7 +17,7 @@ export class TTSEngine {
   // ---------------------------------------------------------------------------
   // 🔊 语音合成中枢 (彻底消灭 SettingsRepository)
   // ---------------------------------------------------------------------------
-  public async generateTTS(text: string, provider: 'doubao' | 'edge', saveDir?: string, voiceOverride?: string, rate?: number): Promise<string> {
+  public async generateTTS(text: string, provider: 'doubao' | 'edge' | 'kokoro', saveDir?: string, voiceOverride?: string, rate?: number): Promise<string> {
     const config = ProviderManager.getTTSConfig(provider);
     const targetDir = saveDir || os.tmpdir();
     let ext = 'mp3'; let audioData: Buffer;
@@ -48,6 +48,27 @@ export class TTSEngine {
           audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate });
           break;
         }
+        case 'kokoro': {
+          // 本地 Kokoro-82M 推理（ai_daemon Python 进程直接写 WAV 文件，不经 Node Buffer）
+          const daemon = (await import('../core/AIDaemon')).AIDaemon.getInstance();
+          if (!daemon.isOnline()) throw new Error('AI 运行时未启动，请先等待运行时就绪或检查 设置 → 健康检查');
+          const port = daemon.getPort();
+          const ext = 'wav';
+          const filePath = path.join(targetDir, `${!saveDir ? 'tts_preview_' : 'tts_'}kokoro_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${ext}`);
+          const res = await fetch(`http://127.0.0.1:${port}/api/tts/kokoro/synthesize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              text: cleanedText,
+              voice: voiceOverride || 'zf_xiaobei',
+              speed: speedRate,
+              out_path: filePath,
+            }),
+          });
+          const json = await res.json();
+          if (!json?.success || !json?.audioPath) throw new Error(json?.error || 'Kokoro 合成失败');
+          return json.audioPath;
+        }
         default: throw new Error(`未知的 TTS: ${provider}`);
       }
       // 试听文件（saveDir 为空，保存到 os.tmpdir()）用 tts_preview_ 前缀，与合成文件 tts_ 区分，便于辨识和清理
@@ -59,7 +80,8 @@ export class TTSEngine {
       return filePath;
     } catch (err: any) {
       const msg = err?.message || '';
-      const hint = provider === 'doubao' ? '（请在 设置 → AI → 语音合成 中检查火山引擎配置）' : '';
+      const hint = provider === 'doubao' ? '（请在 设置 → AI → 语音合成 中检查火山引擎配置）'
+        : provider === 'kokoro' ? '（请到 设置 → 健康检查 → AI 运行时依赖 安装 Kokoro 依赖）' : '';
       throw new Error(`${msg || '语音合成失败'}${hint}`);
     }
   }

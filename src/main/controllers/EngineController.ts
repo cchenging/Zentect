@@ -641,6 +641,22 @@ async function getVoicesForEngine(engine: string): Promise<Array<{ id: string; n
         { id: 'zh_female_vv_uranus_bigtts', name: 'vv 女声', gender: 'female', locale: 'zh-CN' },
         { id: 'zh_male_dashu_saturn_bigtts', name: '大叔 (男)', gender: 'male', locale: 'zh-CN' },
       ];
+    case 'kokoro':
+      // Kokoro-82M 本地中文音色（与前端 VOICE_OPTIONS / 模型管理 voices 目录一致）
+      return [
+        { id: 'zf_xiaobei', name: '小北 (女)', gender: 'female', locale: 'zh-CN' },
+        { id: 'zf_xiaoni', name: '小妮 (女)', gender: 'female', locale: 'zh-CN' },
+        { id: 'zf_xiaoxiao', name: '小小 (女)', gender: 'female', locale: 'zh-CN' },
+        { id: 'zf_xiaoyi', name: '小一 (女)', gender: 'female', locale: 'zh-CN' },
+        { id: 'zf_xiaomo', name: '小莫 (女)', gender: 'female', locale: 'zh-CN' },
+        { id: 'zf_xiaoyou', name: '小悠 (女)', gender: 'female', locale: 'zh-CN' },
+        { id: 'zm_yunjian', name: '云健 (男)', gender: 'male', locale: 'zh-CN' },
+        { id: 'zm_yunxi', name: '云希 (男)', gender: 'male', locale: 'zh-CN' },
+        { id: 'zm_yunyang', name: '云扬 (男)', gender: 'male', locale: 'zh-CN' },
+        { id: 'zm_yunye', name: '云野 (男)', gender: 'male', locale: 'zh-CN' },
+        { id: 'zm_yunhao', name: '云皓 (男)', gender: 'male', locale: 'zh-CN' },
+        { id: 'zm_yunze', name: '云泽 (男)', gender: 'male', locale: 'zh-CN' },
+      ];
     default:
       return [];
   }
