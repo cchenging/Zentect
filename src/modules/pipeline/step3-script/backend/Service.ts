@@ -37,6 +37,8 @@ interface RawShot {
   shotId?: string;
   text?: string;
   duration?: number;
+  /** 原声段落标记（keep_key/original_main 策略时 LLM 可输出 true） */
+  keepOriginalAudio?: boolean;
 }
 
 export class ScriptGenerator {
@@ -106,6 +108,9 @@ export class ScriptGenerator {
                            : params.rhythmMode === 'slow_soothing' ? 30
                            : 20;
 
+    // 原声策略 → 是否允许标记原声段落（cover 模式禁止标记）
+    const allowOriginalMark = params.originalAudioStrategy !== 'cover';
+
     return `你是顶级影视解说创作者（爆款UP主），擅长将画面素材转化为高留存率的解说旁白。你的任务是根据上游5维视觉语义（动作/情绪/光影/色彩）、人物角色库、原片台词记录，生成符合目标平台调性的解说文案。你必须杜绝"看图说话"的流水账，专注于剖析人物动机、情绪压抑与剧情转折，让文案"画外有音，言下之意"。
 
 ## Task
@@ -143,10 +148,17 @@ ${style}：${styleInstruction}
 - 情绪基调：${params.emotionTone === 'neutral' ? '客观中立' : params.emotionTone === 'emotional' ? '情感渲染' : params.emotionTone === 'suspense' ? '悬疑营造' : params.emotionTone === 'epic' ? '高燃热血' : '搞笑吐槽'}
 - 声画权重：${(audioVisualWeight * 100).toFixed(0)}%（${audioVisualWeight > 0.5 ? '偏向视觉' : '偏向原声'}）
 
+${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
+原声策略要求保留部分原片原声。当某段分镜的核心是"原片台词/标志性对白/冲突声"（观众需要亲耳听到原声），请将该分镜标记为原声段落：
+1. 该分镜输出 \`"keepOriginalAudio": true\`，\`text\` 填写原声台词原文（或最贴近的原文引用）。
+2. 原声段落字数预算不适用，\`duration\` 填写原声在视频中的实际时长（秒）。
+3. 每段解说之间最多允许 1~2 个原声段落，避免整片变成原声；原声段落前后各留一段解说引导。
+4. 仅当该段原声与剧情强相关（名场面/冲突高潮/关键台词）才标记，普通背景音不标记。
+` : ``}
 ## Output Format
 请严格按照以下 JSON 数组格式返回结果，切勿包含任何 Markdown 格式化标记或额外解释：
 [
-  { "shotId": "s_01", "text": "解说词内容", "duration": 3.5 }
+  { "shotId": "s_01", "text": "解说词内容", "duration": 3.5${allowOriginalMark ? ', "keepOriginalAudio": false' : ''} }
 ]`;
   }
 
@@ -229,6 +241,8 @@ ${style}：${styleInstruction}
         text,
         duration,
         editing: false,
+        /** 原声段落透传：LLM 标记 keepOriginalAudio 的段落下游 TTS 跳过合成、匹配锁定原片时间段 */
+        keepOriginalAudio: raw.keepOriginalAudio === true,
       } satisfies ScriptParagraph;
     });
   }

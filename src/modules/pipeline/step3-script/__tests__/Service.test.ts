@@ -270,6 +270,17 @@ describe('ScriptGenerator', () => {
       expect(result[0].editing).toBe(false);
     });
 
+    it('keepOriginalAudio=true 的段落应透传原声标记', () => {
+      const raw = makeLLMResponse([
+        { shotId: 's_01', text: '这是原声段落', duration: 2.0, keepOriginalAudio: true },
+        { shotId: 's_02', text: '普通解说段落', duration: 3.0 },
+      ]);
+
+      const result = generator.parseScriptResponse(raw);
+      expect(result[0].keepOriginalAudio).toBe(true);
+      expect(result[1].keepOriginalAudio).toBe(false);
+    });
+
     it('缺失 shotId 时应自动生成 s_01, s_02...', () => {
       const raw = makeLLMResponse([
         { text: '文案 A', duration: 2 },

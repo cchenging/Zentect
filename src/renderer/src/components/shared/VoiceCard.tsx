@@ -56,7 +56,7 @@ export const VoiceCard: React.FC<VoiceCardProps> = ({ name, selected, isPreviewi
         <span className="text-[10px] text-muted-foreground/70 truncate">{lang}</span>
       )}
 
-      {/* 试听按钮 */}
+      {/* 试听按钮：始终可见（一键试听），hover 时高亮 */}
       {onPreview && id && (
         <button
           onClick={(e) => {
@@ -67,7 +67,7 @@ export const VoiceCard: React.FC<VoiceCardProps> = ({ name, selected, isPreviewi
             'absolute bottom-1 right-1 w-5 h-5 rounded-full flex items-center justify-center transition-all',
             isPreviewing
               ? 'bg-accent-cyan/20 text-accent-cyan'
-              : 'bg-muted/30 text-muted-foreground hover:bg-accent-cyan/15 hover:text-accent-cyan opacity-0 group-hover:opacity-100'
+              : 'bg-muted/40 text-muted-foreground hover:bg-accent-cyan/15 hover:text-accent-cyan'
           )}
           aria-label={isPreviewing ? '停止试听' : '试听音色'}
         >

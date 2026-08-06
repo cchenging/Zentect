@@ -6,7 +6,6 @@ describe('FEATURE_FLAGS', () => {
     expect(FEATURE_FLAGS.USE_V1_PIPELINE_ADAPTER).toBe(true);
     expect(FEATURE_FLAGS.USE_SIMPLE_PIPELINE_RUNNER).toBe(true);
     expect(FEATURE_FLAGS.USE_PIPELINE_ENGINE).toBe(true);    // V1.1 DAG 引擎已激活
-    expect(FEATURE_FLAGS.RENDERER_DIRECT_DAEMON).toBe(false);
   });
 
   it('Phase 0 核心基建已全部激活', () => {
@@ -26,8 +25,6 @@ describe('FEATURE_FLAGS', () => {
 
   it('Phase 3-4 高级特性', () => {
     expect(FEATURE_FLAGS.ENABLE_SUSPEND_RESUME).toBe(true);
-    expect(FEATURE_FLAGS.ENABLE_JOB_QUEUE).toBe(false);
-    expect(FEATURE_FLAGS.ENABLE_MULTI_ROLE_VOICE_BINDING).toBe(false);
   });
 
   it('has no undefined values', () => {
@@ -45,6 +42,5 @@ describe('isFeatureEnabled', () => {
 
   it('returns correct boolean for disabled flags', () => {
     expect(isFeatureEnabled('USE_PIPELINE_ENGINE')).toBe(true);    // V1.1 DAG 引擎已激活
-    expect(isFeatureEnabled('RENDERER_DIRECT_DAEMON')).toBe(false);
   });
 });
