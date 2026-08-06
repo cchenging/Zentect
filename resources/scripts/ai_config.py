@@ -61,6 +61,8 @@ class AIModels:
     face_app = None
     clip_model = None
     clip_processor = None
+    chinese_clip_model = None
+    chinese_clip_processor = None
     _funasr_model = None
     _faster_whisper_model = None
 
@@ -102,6 +104,19 @@ class AIModels:
             cls._gc_collect()
 
     @classmethod
+    def release_chinese_clip(cls):
+        """释放中文 CLIP 模型内存"""
+        if cls.chinese_clip_model is not None and cls.chinese_clip_model is not False:
+            import torch
+            del cls.chinese_clip_model
+            del cls.chinese_clip_processor
+            cls.chinese_clip_model = None
+            cls.chinese_clip_processor = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            cls._gc_collect()
+
+    @classmethod
     def release_funasr_sensevoice(cls):
         """释放 FunASR SenseVoice + VAD 模型内存"""
         if cls._funasr_model is not None:
@@ -122,6 +137,7 @@ class AIModels:
         """释放所有已加载模型，回收内存"""
         cls.release_face_app()
         cls.release_clip()
+        cls.release_chinese_clip()
         cls.release_funasr_sensevoice()
         cls.release_faster_whisper()
         print('[AI Daemon] 🧹 所有模型已释放，内存已回收', file=sys.stderr)
@@ -187,6 +203,40 @@ class AIModels:
         if cls.clip_model is False:
             return (None, None)
         return (cls.clip_model, cls.clip_processor)
+
+    @classmethod
+    def get_chinese_clip(cls):
+        """获取中文 CLIP 模型和处理器（OFA Chinese-CLIP，中文文案直编无需翻译，带锁保护）。
+        失败时返回 (None, None)，调用方回退英文 CLIP + LLM 翻译链路。"""
+        if cls.chinese_clip_model is None:
+            with INFERENCE_LOCK:
+                if cls.chinese_clip_model is None:
+                    zh_dir = os.path.join(MODELS_DIR, 'chinese-clip')
+                    # 目录不存在直接标记不可用，避免 from_pretrained 打印误导性 Repo id 报错
+                    if not os.path.isdir(zh_dir) or not os.path.exists(os.path.join(zh_dir, 'config.json')):
+                        print('[AI Daemon] ⚠️ Chinese-CLIP 模型目录不存在，回退英文 CLIP 翻译匹配', file=sys.stderr)
+                        cls.chinese_clip_model = False
+                        cls.chinese_clip_processor = False
+                    else:
+                        try:
+                            import torch
+                            from transformers import ChineseCLIPModel, ChineseCLIPProcessor
+                            print('[AI Daemon] 🧠 首次按需加载: Chinese-CLIP 中文多模态匹配雷达...',
+                                  file=sys.stderr)
+                            cls.chinese_clip_model = ChineseCLIPModel.from_pretrained(
+                                zh_dir, local_files_only=True
+                            ).to(cls._ensure_device())
+                            cls.chinese_clip_processor = ChineseCLIPProcessor.from_pretrained(
+                                zh_dir, local_files_only=True
+                            )
+                        except Exception as e:
+                            print(f'[AI Daemon] ⚠️ Chinese-CLIP 加载失败，将回退英文 CLIP 翻译匹配: {e}',
+                                  file=sys.stderr)
+                            cls.chinese_clip_model = False
+                            cls.chinese_clip_processor = False
+        if cls.chinese_clip_model is False:
+            return (None, None)
+        return (cls.chinese_clip_model, cls.chinese_clip_processor)
 
     @classmethod
     def get_funasr_sensevoice(cls):

@@ -6,6 +6,7 @@ import { LexiconFilter } from '../lexicon/LexiconFilter';
 import { NetworkPipeline } from '../../core/NetworkPipeline';
 import { PERSONAS } from '../prompts/personas';
 import { CONSTRAINTS } from '../prompts/constraints';
+import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 
 export interface ScriptGenInput {
   modelName?: string;
@@ -45,6 +46,8 @@ export interface GeneratedShot {
   lexiconMarks: LexiconMark[];
   duration: number;
   emotion?: string;
+  /** 原声段落标记：文案生成按原声策略标记"留原声"的段落（keep_key/original_main），下游 TTS 跳过合成、匹配锁定原片时间段 */
+  keepOriginalAudio?: boolean;
 }
 
 /** 风格到 Prompt 指令的映射（重写：去掉废话文学，改为专业解说方向） */
@@ -311,6 +314,53 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
 
     onProgress(30, '正在组装剧本 Prompt 并设定创作逻辑...');
 
+    // ========== 阶段A：剧情理解（剧情驱动解说的前置大纲） ==========
+    // 🎬 用户核心诉求：解说应"贴合剧情主线 + 加合理解读"，而非"画面翻译"。
+    // 让 LLM 先通读全部片段流 + 角色列表，提炼剧情大纲（logline/arc/动机/转折），
+    // 阶段B 带大纲逐段解说，每段都有全局坐标，保证段间因果连贯、转折处有解读。
+    // 失败处理（设计上的多路径）：剧情理解是增强路径，失败时明确告警并回退"逐段解说"基础路径
+    // （与 BGM 节拍检测失败继续无 BGM 模式同哲学），不静默掩盖。
+    let plotOutline: any = null;
+    try {
+      onProgress(33, '正在理解剧情主线（阶段1/2）...');
+      const outlineSystemPrompt = `你是一位顶级的影视剧情分析师。你的任务是从片段流中提炼完整剧情主线，供解说创作者撰写"贴合剧情"的解说文案。
+你绝不描述画面细节（那是画面翻译，不是剧情理解），只提炼剧情逻辑：发生了什么、为什么、人物想要什么、转折在哪里。`;
+      const roleLinesForOutline = (input.roles || [])
+        .filter((r: any) => r && r.name)
+        .map((r: any) => `- ${r.name}${r.representative?.gender !== undefined ? (r.representative.gender === 1 || r.representative.gender === 'M' || r.representative.gender === 'male' ? '（男）' : '（女）') : ''}`)
+        .join('\n');
+      const outlineUserPrompt = `【角色列表】：
+${roleLinesForOutline || '（未识别到角色，以片段流中的代称为准）'}
+
+【视频片段流（含时间轴 / 画面描述 / 原声台词）】：
+${JSON.stringify(contextChunks, null, 2)}
+
+请严格输出 JSON（不要 Markdown 包裹，不要解释）：
+{
+  "logline": "一句话故事梗概（谁 + 想做什么 + 阻碍 + 结果）",
+  "arc": ["开场钩子", "铺垫", "冲突升级", "高潮", "结局"],
+  "characterMotives": { "角色名": "该角色的目标与动机（无角色则空对象）" },
+  "keyTurns": [{ "chunkId": "片段流中的 chunkId", "turn": "剧情转折点描述" }]
+}`;
+      const outlineResponse = await adapter.chat(
+        [
+          { role: 'system', content: outlineSystemPrompt },
+          { role: 'user', content: outlineUserPrompt },
+        ],
+        modelName,
+        0.3, // 大纲生成用低温，保证剧情归纳稳定
+      );
+      const parsedOutline = NetworkPipeline.strictParseJson(outlineResponse.text || '');
+      if (parsedOutline && typeof parsedOutline === 'object' && !Array.isArray(parsedOutline) && parsedOutline.logline) {
+        plotOutline = parsedOutline;
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 剧情理解完成：${parsedOutline.logline}`);
+      } else {
+        AppLogger.warn(LOG_TAGS.AI_AGENT, '[文案生成] 剧情大纲返回格式异常，降级为逐段解说模式');
+      }
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT, `[文案生成] 剧情理解失败，降级为逐段解说模式: ${e.message}`);
+    }
+
     // 动态注入用户选择的风格
     const style = input.scriptStyle || '爆款短视频';
     const styleInstruction = STYLE_PROMPTS[style] || STYLE_PROMPTS['爆款短视频'];
@@ -339,6 +389,8 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       'keep_key': '关键台词保留：识别ASR中高压/冲突台词区间，在该时间段暂停解说留出原声出场',
       'original_main': '原声为主：原声保留，解说仅辅助过渡',
     };
+    // 原声策略 → 是否允许标记原声段落（cover 模式禁止标记）
+    const allowOriginalMark = params.originalAudioStrategy !== 'cover';
     // 节奏模式 → prompt 指令（含TTS标记规范）
     const rhythmMap: Record<string, string> = {
       'short_fast': '短句快切：严格使用微型短句。每句末尾强制使用逗号或感叹号。适合极速快切。密集注入 [pause: 200ms]',
@@ -368,8 +420,16 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     const systemPrompt = `${PERSONAS.SCREENWRITER}
 
 ## Task
-你将收到一份经过物理切片与视觉分析的视频片段流（含有时间轴、角色锚定、ASR原声及画面描述）。
-请据此撰写一份具有高吸引力、节奏感强、声画高度契合的解说文案。
+你将收到一份经过物理切片与视觉分析的视频片段流（含有时间轴、角色锚定、ASR原声及画面描述）${plotOutline ? '，以及一份已提炼的【全局剧情大纲】' : ''}。
+请据此撰写一份"贴合剧情主线、在关键节点给出合理解读"的高吸引力解说文案。
+
+## 🎬 剧情思维（最高优先级，先于一切形式规则）
+1. **贴剧情，不贴画面**：解说不是画面翻译！每一段解说必须回答"这段在剧情中推进了什么"（因果/转折/人物弧线），段与段之间承上启下、逻辑连贯。
+2. **合理解读**：每 3~5 段至少 1 段是解读——剖析人物动机、前后呼应、主题升华或现实隐喻。解读必须基于已确认的剧情事实，严禁编造剧情。
+3. **剧情优先于形式**：所有短句/卡点/句式规则都是表达手段，不得以牺牲剧情逻辑为代价。宁可放弃一个"金句"，也要保证剧情链条完整。
+
+${plotOutline ? `## 📖 全局剧情大纲（必须首先通读，解说严格贴合以下主线）
+${JSON.stringify(plotOutline, null, 2)}` : ''}
 
 ## 创作风格
 ${style}：${styleInstruction}
@@ -405,10 +465,17 @@ ${CONSTRAINTS.JSON_ONLY}
 - 情绪基调：${emotionToneMap[params.emotionTone] || emotionToneMap.neutral}
 - 声画权重：${(audioVisualWeight * 100).toFixed(0)}%（${audioVisualWeight > 0.5 ? '偏向视觉，主要依据画面描述描绘微表情和动作细节' : '偏向原声，解说词主要起提炼对白核心逻辑的作用'}）
 
+${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
+原声策略要求保留部分原片原声。当某段分镜的核心是"原片台词/标志性对白/冲突声"（观众需要亲耳听到原声），请将该分镜标记为原声段落：
+1. 该分镜输出 \`"keepOriginalAudio": true\`，\`text\` 填写原声台词原文（或最贴近的原文引用）。
+2. 原声段落字数预算不适用，\`duration\` 填写原声在视频中的实际时长（秒）。
+3. 每段解说之间最多允许 1~2 个原声段落，避免整片变成原声；原声段落前后各留一段解说引导。
+4. 仅当该段原声与剧情强相关（名场面/冲突高潮/关键台词）才标记，普通背景音不标记。
+` : ``}
 ## Output Format
 请严格按照以下 JSON 数组格式返回结果，切勿包含任何 Markdown 格式化标记或额外解释：
 [
-  { "shotId": "s_01", "text": "解说词内容", "duration": 3.5 }
+  { "shotId": "s_01", "text": "解说词内容", "duration": 3.5${allowOriginalMark ? ', "keepOriginalAudio": false' : ''} }
 ]`;
 
     // ========== 组装用户 Prompt：ContextChunk JSON + 角色ID映射 ==========
@@ -454,7 +521,7 @@ ${roleMapLines.join('\n')}
 
     onProgress(90, '正在对生成的剧本进行反序列化...');
 
-    let rawShots: Array<{ shotId: string; text: string; duration: number }> = [];
+    let rawShots: Array<{ shotId: string; text: string; duration: number; keepOriginalAudio?: boolean }> = [];
     try {
       rawShots = NetworkPipeline.strictParseJson(response.text || '');
       if (!Array.isArray(rawShots)) {
@@ -492,6 +559,8 @@ ${roleMapLines.join('\n')}
           replaced: m.replaced,
         })),
         duration: paceAdjustedDuration,
+        /** 原声段落透传：keep_key/original_main 模式下 LLM 标记的 keepOriginalAudio 原样保留 */
+        keepOriginalAudio: raw.keepOriginalAudio === true,
       } as GeneratedShot;
     });
 

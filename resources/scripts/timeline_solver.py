@@ -26,6 +26,8 @@ class KMMatchQuery(BaseModel):
     shotId: str
     text: str
     audioDurationMs: float = 0
+    """🎭 P0 意境维度：段落情绪标签（如：紧张/平静/温馨），来自步骤3 文案生成的 emotion 字段，用于与切片情绪做相容度匹配"""
+    emotion: str = ''
 
 
 class KMMatchReq(BaseModel):
@@ -41,6 +43,67 @@ class KMMatchReq(BaseModel):
     vlmApiKey: str = ''
     vlmApiBase: str = ''
     vlmApiModel: str = ''
+
+
+# ==========================================
+# 🎭 P0 意境维度：情绪归一化与相容度（文案情绪 ↔ 画面情绪）
+# ==========================================
+# 情绪类别关键词表：把步骤2 VLM 输出的自由文本情绪（emotionalState）与步骤3 LLM 生成的段落情绪
+# 归一化到有限类别，避免两个自由文本直接比较（"阴沉的" vs "压抑" 文本不等但语义同向）
+EMOTION_CATEGORIES = {
+    '紧张悬疑': ['紧张', '悬疑', '压迫', '焦虑', '不安', '忐忑', '急促', '惊悚', '恐惧', '害怕', '惊险', '惶恐', '揪心', '屏息', '诡异', '惊慌', '惊恐', '阴森', '诡秘'],
+    '悲伤沉重': ['悲伤', '伤心', '难过', '压抑', '沉重', '哀伤', '凄凉', '落寞', '绝望', '无奈', '心碎', '感伤', '忧郁', '怅然', '沮丧', '阴沉', '阴郁', '悲痛', '哀痛'],
+    '愤怒激昂': ['愤怒', '激动', '激烈', '冲突', '激昂', '决绝', '狠戾', '狰狞', '咆哮', '爆发', '愤慨', '暴怒', '怒火', '杀气', '狠辣', '戾气'],
+    '欢快轻松': ['欢快', '轻松', '喜悦', '开心', '高兴', '愉快', '温馨', '甜蜜', '活泼', '兴奋', '雀跃', '浪漫', '温情', '美好', '幸福', '俏皮'],
+    '平静舒缓': ['平静', '舒缓', '宁静', '淡然', '沉稳', '安详', '悠远', '平缓', '温和', '静谧', '从容', '祥和', '深邃', '安逸', '淡泊'],
+    '中性': ['中性', '平淡', '客观', '普通', '日常', '寻常', '冷静'],
+}
+
+# 情绪类别相容度矩阵（对称，0~1）：同类别 1.0；同向情绪（同为负向/同为正向）0.6；高强度情绪 0.5；中性与其他 0.5；其余 0.15
+EMOTION_COMPAT = {
+    ('紧张悬疑', '悲伤沉重'): 0.6,
+    ('欢快轻松', '平静舒缓'): 0.6,
+    ('紧张悬疑', '愤怒激昂'): 0.5,
+    ('悲伤沉重', '愤怒激昂'): 0.5,
+    ('欢快轻松', '愤怒激昂'): 0.3,
+    ('悲伤沉重', '平静舒缓'): 0.3,
+    ('紧张悬疑', '平静舒缓'): 0.15,
+    ('悲伤沉重', '欢快轻松'): 0.05,
+    ('紧张悬疑', '欢快轻松'): 0.05,
+    ('愤怒激昂', '平静舒缓'): 0.15,
+}
+_EMOTION_COMPAT_SYMMETRIC = {}
+for (_a, _b), _v in EMOTION_COMPAT.items():
+    _EMOTION_COMPAT_SYMMETRIC[(_a, _b)] = _v
+    _EMOTION_COMPAT_SYMMETRIC[(_b, _a)] = _v
+
+
+def _normalize_emotion(text: str) -> str:
+    """情绪自由文本 → 情绪类别：命中关键词即归入该类别；空文本/未命中统一归为中性"""
+    text = (text or '').strip()
+    if not text:
+        return '中性'
+    for category, keywords in EMOTION_CATEGORIES.items():
+        for kw in keywords:
+            if kw in text:
+                return category
+    return '中性'
+
+
+def _emotion_compatibility(q_emotion: str, c_emotion: str) -> float:
+    """
+    文案情绪与切片情绪的相容度（0~1）
+    设计（与切片描述 has_desc 掩码同哲学）：任一方情绪缺失时给中性 0.5——
+    缺失是"该维度无信息"，不参与加分也不参与惩罚，避免空值干扰匹配排序；
+    双方都有情绪时按类别相容度打分，让"画面情绪符合文案意境"参与决策。
+    """
+    if not (q_emotion or '').strip() or not (c_emotion or '').strip():
+        return 0.5
+    q_norm = _normalize_emotion(q_emotion)
+    c_norm = _normalize_emotion(c_emotion)
+    if q_norm == c_norm:
+        return 1.0
+    return _EMOTION_COMPAT_SYMMETRIC.get((q_norm, c_norm), 0.15)
 
 
 @router.post("/api/solver/kuhn_munkres_match")
@@ -61,6 +124,29 @@ async def kuhn_munkres_match(req: KMMatchReq):
             print(f"ERROR: KM 匹配算法崩溃 - {str(e)}", file=sys.stderr)
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
+
+
+def _extract_pooler(features):
+    """
+    兼容 transformers 新旧版：get_text_features / get_image_features 在新版返回
+    BaseModelOutputWithPooling（含 pooler_output），旧版直接返回 tensor
+    """
+    return features.pooler_output if hasattr(features, 'pooler_output') else features
+
+
+def _compute_combined_score(sem_score: float, duration_penalty: float, motion_score: float,
+                            emotion_score: float = 0.5) -> float:
+    """
+    多因子综合打分：0.4 文本语义 + 0.2 情绪意境 + 0.15 画面运动 + 0.25 时长契合
+    - 语义：CLIP 图文余弦相似度归一化到 0~1
+    - 情绪：文案情绪与切片情绪相容度（0~1，任一方缺失给中性 0.5）
+    - 运动：切片 motionScore（0~1），画面运动越显著越贴合解说节奏
+    - 时长：语音与切片时长契合度（exp 衰减，0~1）
+    权重设计防止"只看文字匹配，却选中一个时长严重不匹配、被强拉变速的怪异画面"；
+    🎭 P0 意境维度：引入情绪项后语义权重从 0.5 降至 0.4，让"画面情绪符合文案意境"参与决策
+    （情绪全缺失时 emotion_score=0.5 贡献常数 0.1，其余维度权重与旧权重接近，排序基本不变）。
+    """
+    return 0.4 * sem_score + 0.2 * emotion_score + 0.15 * motion_score + 0.25 * duration_penalty
 
 
 def _call_llm_translate(texts: list, api_key: str, api_base: str, model: str) -> list:
@@ -138,34 +224,52 @@ def _call_llm_translate(texts: list, api_key: str, api_base: str, model: str) ->
 
 # VLM 二次裁决阈值（低于此值的匹配结果将触发 GPT-4o 重排）
 VLM_CONFIDENCE_THRESHOLD = 0.4
+# VLM 失败熔断：连续失败达到阈值后本进程内禁用重排，避免纯文本模型/无效凭据反复打日志
+_VLM_FAIL_COUNT = 0
+_VLM_FAIL_THRESHOLD = 3
 
 
-def _call_vlm_rerank(script_text: str, candidate_descriptions: list,
+def _call_vlm_rerank(script_text: str, candidate_covers: list,
                      api_key: str, api_base: str, model: str = "gpt-4o") -> int:
     """
-    调用 VLM（GPT-4o）从 top-3 候选切片中选出与文案最匹配的一个。
-    返回 0/1/2，失败时返回 0（保持原匹配）。
+    调用云端多模态 VLM（OpenAI 兼容接口，需支持识图）从 top-3 候选切片的封面图中，
+    选出与解说词最匹配的一个。返回 0/1/2，失败或模型不支持识图时返回 0（保持原匹配）。
     """
     import requests
+
+    global _VLM_FAIL_COUNT
+    if _VLM_FAIL_COUNT >= _VLM_FAIL_THRESHOLD:
+        return 0
 
     if not api_key or not api_base:
         print("[VLM裁决] 凭据不完整，跳过", file=sys.stderr)
         return 0
 
     prompt = (
-        "从以下3个候选视频切片中，选出与解说词最匹配的一个。只输出数字 0、1 或 2。\n\n"
+        "从以下3张候选视频切片的封面图中，选出与解说词最匹配的一张。只输出数字 0、1 或 2。\n\n"
         f"解说词: {script_text}\n\n"
-        f"切片0: {candidate_descriptions[0]}\n"
-        f"切片1: {candidate_descriptions[1]}\n"
-        f"切片2: {candidate_descriptions[2]}\n\n"
         "最佳匹配切片序号:"
     )
 
     try:
+        import base64
+        content = [{"type": "text", "text": prompt}]
+        # 将候选封面图 base64 编码为多模态图片块（按 0/1/2 顺序排列）
+        for cp in candidate_covers[:3]:
+            if cp and os.path.exists(cp):
+                try:
+                    with open(cp, "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode("utf-8")
+                    content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+                except Exception:
+                    pass
+        if len(content) < 2:
+            return 0
+
         url = api_base.rstrip('/') + "/chat/completions"
         payload = {
             "model": model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
             "temperature": 0.1,
             "max_tokens": 10,
         }
@@ -177,26 +281,31 @@ def _call_vlm_rerank(script_text: str, candidate_descriptions: list,
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
         resp.raise_for_status()
         body = resp.json()
-        content = body["choices"][0]["message"]["content"].strip()
+        content_str = body["choices"][0]["message"]["content"].strip()
 
-        match = re.search(r'[0-2]', content)
+        match = re.search(r'[0-2]', content_str)
         if match:
             return int(match.group())
-        print(f"[VLM裁决] 响应无法解析数字: {content[:100]}", file=sys.stderr)
+        print(f"[VLM裁决] 响应无法解析数字: {content_str[:100]}", file=sys.stderr)
         return 0
 
     except Exception as e:
-        print(f"[VLM裁决] 调用失败: {e}", file=sys.stderr)
+        _VLM_FAIL_COUNT += 1
+        if _VLM_FAIL_COUNT >= _VLM_FAIL_THRESHOLD:
+            print(f"[VLM裁决] 连续失败 {_VLM_FAIL_COUNT} 次，本进程内禁用 VLM 重排（模型可能不支持识图）: {e}", file=sys.stderr)
+        else:
+            print(f"[VLM裁决] 调用失败: {e}", file=sys.stderr)
         return 0
 
 
 def _apply_vlm_rerank(results: list, queries, video_chunks: list,
                       valid_chunk_indices: list, semantic_sim,
-                      n_queries: int, api_key: str, api_base: str,
+                      emotion_sim, n_queries: int, api_key: str, api_base: str,
                       model: str = "gpt-4o") -> list:
     """
     对置信度低于 VLM_CONFIDENCE_THRESHOLD 的匹配结果，收集 top-3 候选切片，
     调用 VLM 二次裁决，替换低置信度匹配。
+    🎭 P0 意境维度：新增 emotion_sim 参数，候选打分与 KM 主体一致计入情绪相容度。
     """
     import numpy as np
 
@@ -266,7 +375,13 @@ def _apply_vlm_rerank(results: list, queries, video_chunks: list,
                 else:
                     duration_penalty = float(np.exp(-delta * 0.5))
 
-            combined_score = sem_score * 0.8 + duration_penalty * 0.2
+            motion_score = float(chunk.get("motionScore") or 0.0)
+            motion_score = max(0.0, min(1.0, motion_score))
+
+            # 🎭 P0 意境维度：候选打分与 KM 主体一致计入情绪相容度
+            emotion_score = float(emotion_sim[qi, ci_idx])
+
+            combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score)
             scores.append((ci_idx, ci, combined_score))
 
         scores.sort(key=lambda x: x[2], reverse=True)
@@ -279,16 +394,15 @@ def _apply_vlm_rerank(results: list, queries, video_chunks: list,
         while len(top3) < 3:
             top3.append(top3[-1])
 
-        # 提取候选切片描述
-        descriptions = []
+        # 提取候选切片封面图（多模态 VLM 直接看图裁决）
+        covers = []
         for _, ci, _ in top3:
             chunk = video_chunks[ci]
-            desc = chunk.get("description") or chunk.get("visualDescription") or "无视觉描述"
-            descriptions.append(str(desc))
+            covers.append(chunk.get("coverPath", ""))
 
         # 调用 VLM
         script_text = queries[qi].text
-        chosen = _call_vlm_rerank(script_text, descriptions, api_key, api_base, model)
+        chosen = _call_vlm_rerank(script_text, covers, api_key, api_base, model)
 
         if chosen == 0:
             continue  # VLM 认可当前最佳候选（即原匹配），无需替换
@@ -312,11 +426,202 @@ def _apply_vlm_rerank(results: list, queries, video_chunks: list,
     return results
 
 
+# ==========================================
+# 🎬 P1 衔接流畅性：相邻切片连续性（色调 / 景别 / 情绪）
+# ==========================================
+# 景别 → 等级映射：1 特写 ~ 5 远景。相邻切片景别大跨级（特写↔全景）视觉跳跃突兀，
+# 递进式衔接（特写→中景→全景）自然。识别不出景别时返回 None（该项给中性值，不参与惩罚）。
+SHOT_TYPE_LEVELS = {
+    '大特写': 1, '特写': 1, '极特写': 1, '微距': 1,
+    '近景': 2, '中近景': 2,
+    '中景': 3, '中全景': 3,
+    '全景': 4, '远景': 5, '大远景': 5, '空镜': 5, '航拍': 5,
+}
+
+
+def _shot_type_level(shot_type: str):
+    """景别文本 → 等级（1~5）；空/未识别返回 None"""
+    shot_type = (shot_type or '').strip()
+    if not shot_type:
+        return None
+    for kw, level in SHOT_TYPE_LEVELS.items():
+        if kw in shot_type:
+            return level
+    return None
+
+
+def _color_histogram_distance(hist_a, hist_b) -> float:
+    """两切片 HSV 色相直方图 L1 距离归一化到 0~1（0 完全一致，1 完全不同）。
+    缺色调特征时给中性 0.5（与 P0 情绪掩码同哲学：缺失不参与惩罚也不加分）。"""
+    import numpy as np
+    if not hist_a or not hist_b or len(hist_a) != len(hist_b):
+        return 0.5
+    return min(1.0, float(np.sum(np.abs(
+        np.array(hist_a, dtype=np.float64) - np.array(hist_b, dtype=np.float64)))) / 2.0)
+
+
+def _continuity_penalty(prev_chunk: dict, next_chunk: dict) -> float:
+    """
+    🎬 P1 衔接流畅性惩罚（0~1，越大越突兀）：
+    - 色调：相邻切片 HSV 色相直方图差异（权重 0.4）
+    - 景别：特写↔全景 大跨级跳跃（权重 0.3）
+    - 情绪：相邻切片情绪突变（权重 0.3，复用 P0 情绪相容度）
+    缺某项特征时该项给 0.5 中性，不参与惩罚也不加分。
+    """
+    hist_dist = _color_histogram_distance(
+        prev_chunk.get('colorHistogram'), next_chunk.get('colorHistogram'))
+    level_prev = _shot_type_level(prev_chunk.get('shotType'))
+    level_next = _shot_type_level(next_chunk.get('shotType'))
+    if level_prev is not None and level_next is not None:
+        shot_dist = min(1.0, abs(level_prev - level_next) / 4.0)
+    else:
+        shot_dist = 0.5
+    emotion_dist = 1.0 - _emotion_compatibility(
+        prev_chunk.get('emotion'), next_chunk.get('emotion'))
+    return 0.4 * hist_dist + 0.3 * shot_dist + 0.3 * emotion_dist
+
+
+def _apply_continuity_rerank(results: list, queries, video_chunks: list,
+                             valid_chunk_indices: list, semantic_sim, emotion_sim) -> list:
+    """
+    🎬 P1 衔接流畅性重排：对成品时间轴相邻匹配对做连续性检查（色调/景别/情绪），
+    连续性差（惩罚超阈值）的边界，从该段文案的时间块候选池中替换为
+    "内容可接受（综合分不低于原切片 90%）且衔接更自然"的未占用切片。
+    局部替换，不动全局 KM 解；保持全局排他（不引入已占用切片）。
+    """
+    import numpy as np
+
+    if len(results) < 2:
+        return results
+
+    # 1. 构建 query→block / chunk→block 映射（与 VLM 重排同款时间块机制）
+    BLOCK_DURATION_MS = 300000
+    query_block = {}
+    accumulated_ms = 0
+    for qi in range(len(queries)):
+        audio_dur = queries[qi].audioDurationMs or 0
+        query_block[qi] = int(accumulated_ms / BLOCK_DURATION_MS)
+        accumulated_ms += audio_dur
+    chunk_block = {}
+    for ci_idx, ci in enumerate(valid_chunk_indices):
+        chunk_block[ci_idx] = int((video_chunks[ci].get("startMs") or 0) / BLOCK_DURATION_MS)
+
+    # 2. 已占用切片集合（全局排他约束：候选切片必须未被任何 result 占用）
+    used_chunk_ids = set()
+    for r in results:
+        cid = r.get("chunkId") or ""
+        if cid:
+            used_chunk_ids.add(cid)
+
+    CONTINUITY_TRIGGER = 0.55  # 惩罚超过该阈值才触发替换尝试（避免过度调整）
+    MIN_SCORE_KEEP = 0.9       # 替代切片综合分不得低于原切片 90%（内容不劣化）
+    reranked = 0
+
+    # 3. 逐相邻对检查连续性
+    for i in range(1, len(results)):
+        prev_r, cur_r = results[i - 1], results[i]
+        prev_cid, cur_cid = prev_r.get("chunkId") or "", cur_r.get("chunkId") or ""
+        if not prev_cid or not cur_cid:
+            continue
+        prev_chunk = next((c for c in video_chunks if c.get("id") == prev_cid), None)
+        cur_chunk = next((c for c in video_chunks if c.get("id") == cur_cid), None)
+        if prev_chunk is None or cur_chunk is None:
+            continue
+        penalty = _continuity_penalty(prev_chunk, cur_chunk)
+        if penalty < CONTINUITY_TRIGGER:
+            continue
+
+        # 找到该 result 对应的 query 索引及其时间块候选池
+        qi = None
+        for idx, q in enumerate(queries):
+            if q.shotId == cur_r.get("shotId"):
+                qi = idx
+                break
+        if qi is None:
+            continue
+        block_idx = query_block[qi]
+        candidate_indices = set()
+        for offset in range(-3, 4):
+            for ci_idx, cb in chunk_block.items():
+                if cb == block_idx + offset:
+                    candidate_indices.add(ci_idx)
+        if not candidate_indices:
+            continue
+
+        # 原切片综合分（含情绪）作为内容保底基准
+        cur_ci_idx = next(
+            (ci_idx for ci_idx, ci in enumerate(valid_chunk_indices)
+             if video_chunks[ci].get("id") == cur_cid), None)
+        if cur_ci_idx is None:
+            continue
+        audio_dur_ms = queries[qi].audioDurationMs or 0
+
+        def _score(ci_idx):
+            """计算 (query qi, 切片 ci_idx) 的综合分（与 KM 主体一致）"""
+            chunk = video_chunks[valid_chunk_indices[ci_idx]]
+            sem = max(0.0, min(1.0, (float(semantic_sim[qi, ci_idx]) + 1.0) / 2.0))
+            emo = float(emotion_sim[qi, ci_idx])
+            motion = max(0.0, min(1.0, float(chunk.get("motionScore") or 0.0)))
+            dur = 1.0
+            vdur = chunk.get("durationMs", 0)
+            if audio_dur_ms > 0 and vdur > 0:
+                d = abs(vdur - audio_dur_ms) / max(audio_dur_ms, 1)
+                dur = float(np.exp(-d * 2)) if vdur < audio_dur_ms else float(np.exp(-d * 0.5))
+            return _compute_combined_score(sem, dur, motion, emo), chunk
+
+        cur_score, _ = _score(cur_ci_idx)
+
+        # 在候选池中找"内容可接受 + 与前一切片衔接最优"的替代
+        best_cand_ci = None
+        best_cand_chunk = None
+        best_penalty = penalty
+        for ci_idx in sorted(candidate_indices):
+            ci = valid_chunk_indices[ci_idx]
+            cand = video_chunks[ci]
+            cid = cand.get("id") or ""
+            if cid in used_chunk_ids:
+                continue
+            cand_score, _ = _score(ci_idx)
+            if cand_score < cur_score * MIN_SCORE_KEEP:
+                continue
+            cand_penalty = _continuity_penalty(prev_chunk, cand)
+            if cand_penalty < best_penalty:
+                best_penalty = cand_penalty
+                best_cand_ci = ci_idx
+                best_cand_chunk = cand
+
+        if best_cand_ci is None:
+            continue
+
+        # 4. 替换：释放原切片占用，写入新切片，重算综合分与变速参考
+        old_cid = cur_r.get("chunkId") or ""
+        used_chunk_ids.discard(old_cid)
+        used_chunk_ids.add(best_cand_chunk.get("id") or "")
+        cur_r["chunkId"] = best_cand_chunk.get("id", f"chunk_{best_cand_ci:03d}")
+        cur_r["coverPath"] = best_cand_chunk.get("coverPath", "")
+        cur_r["chunkData"] = best_cand_chunk
+        new_score, _ = _score(best_cand_ci)
+        cur_r["confidence"] = round(new_score, 4)
+        # 变速参考：切片时长 / 成品时间段（保持 KM 的 0.85~1.15 限制）
+        final_dur = (cur_r.get("videoTimelineEndMs") or 0) - (cur_r.get("videoTimelineStartMs") or 0)
+        cand_vdur = best_cand_chunk.get("durationMs", 0)
+        if final_dur > 0 and cand_vdur > 0:
+            spd = cand_vdur / final_dur
+            cur_r["appliedSpeedFactor"] = round(max(0.85, min(1.15, spd)), 3)
+        reranked += 1
+        print(f"[衔接重排] shotId={cur_r.get('shotId')} 连续性差({penalty:.2f}) → 替换为切片 "
+              f"{best_cand_chunk.get('id')}（衔接 {best_penalty:.2f}）", file=sys.stderr)
+
+    if reranked > 0:
+        print(f"[衔接重排] 共 {reranked} 个匹配因衔接流畅性被替换", file=sys.stderr)
+    return results
+
+
 def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     """
     🚀 KM 全局排他性最优匹配算法
     - 优先使用切片中预提取的 CLIP 512维视觉特征（省去重复编码）
-    - 代价矩阵：semantic_score * 0.8 + time_penalty * 0.2
+    - 代价矩阵：0.5 * 文本语义 + 0.2 * 画面运动 + 0.3 * 时长契合（多因子综合打分）
     - 5分钟时序块级联分治，将 O(n³) 复杂度压制在可控范围内
     带全局推理锁保护，防止并发原生库崩溃
     """
@@ -334,7 +639,8 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     if n_queries == 0 or n_chunks == 0:
         return {"success": True, "results": []}
 
-    texts = [q.text for q in req.queries]
+    original_texts = [q.text for q in req.queries]
+    texts = list(original_texts)
 
     # 🚀 英文匹配：将中文文案翻译为英文后参与 CLIP 文本编码
     if req.translateToEnglish and req.llmApiKey and req.llmApiBase and req.llmApiModel:
@@ -412,17 +718,88 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
         enhanced_texts.append(enhanced)
 
     model, processor = AIModels.get_clip()
+    zh_model, zh_processor = AIModels.get_chinese_clip()
     text_features = None
     semantic_sim = np.zeros((n_queries, len(valid_chunk_indices)), dtype=np.float64)
 
-    if has_pre_embeddings and model is not None and processor is not None:
+    if zh_model is not None and zh_processor is not None:
+        # 🚀 分支1：中文 CLIP（优先）——中文文案直编（无需翻译），切片封面用中文 CLIP 重新编码
+        #    注意：英文 CLIP 预提取的 visionEmbedding 与中文 CLIP 特征空间不对齐，必须重编码图片
+        import torch
+        import torch.nn.functional as F
+        from PIL import Image
+
+        with INFERENCE_LOCK:
+            zh_inputs = zh_processor(text=original_texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
+            with torch.no_grad():
+                zh_text_features = _extract_pooler(zh_model.get_text_features(
+                    input_ids=zh_inputs["input_ids"],
+                    attention_mask=zh_inputs["attention_mask"],
+                ))
+            zh_text_features = F.normalize(zh_text_features, p=2, dim=-1).cpu().numpy()
+
+            IMAGE_ENCODE_BATCH = 64
+            all_image_features = []
+            for batch_start in range(0, len(valid_chunk_indices), IMAGE_ENCODE_BATCH):
+                batch_imgs = []
+                for ci in valid_chunk_indices[batch_start:batch_start + IMAGE_ENCODE_BATCH]:
+                    cover = video_chunks[ci].get("coverPath", "")
+                    if cover and os.path.exists(cover):
+                        try:
+                            with Image.open(cover) as img:
+                                batch_imgs.append(img.convert("RGB"))
+                        except Exception:
+                            batch_imgs.append(Image.new('RGB', (224, 224), color=(128, 128, 128)))
+                    else:
+                        batch_imgs.append(Image.new('RGB', (224, 224), color=(128, 128, 128)))
+
+                image_inputs = zh_processor(images=batch_imgs, return_tensors="pt", padding=True).to(AIModels.device)
+                with torch.no_grad():
+                    batch_features = _extract_pooler(zh_model.get_image_features(
+                        pixel_values=image_inputs["pixel_values"],
+                    ))
+                all_image_features.append(F.normalize(batch_features, p=2, dim=-1))
+                del image_inputs, batch_features, batch_imgs
+
+            image_features = torch.cat(all_image_features, dim=0).cpu().numpy()
+            del all_image_features
+
+            image_sim = zh_text_features @ image_features.T  # (n_queries, n_chunks) 文案↔封面图像
+
+            # 🎯 切片描述文本语义：文案 ↔ 切片描述（步骤2 逐帧 VLM 描述按时间轴聚合而来）
+            #    有描述切片：语义 = 0.5*图像 + 0.5*描述文本（描述含动作/情绪/景别/台词，信息量远超单帧封面）
+            #    无描述切片：语义 = 纯图像（空文本编码结果不可预测，必须掩码归零，不能参与混合）
+            chunk_desc_texts = [(video_chunks[ci].get("description") or "").strip() for ci in valid_chunk_indices]
+            has_desc = np.array([1.0 if t else 0.0 for t in chunk_desc_texts], dtype=np.float64)
+            if has_desc.sum() > 0:
+                desc_inputs = zh_processor(text=chunk_desc_texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
+                with torch.no_grad():
+                    desc_features = _extract_pooler(zh_model.get_text_features(
+                        input_ids=desc_inputs["input_ids"],
+                        attention_mask=desc_inputs["attention_mask"],
+                    ))
+                desc_features = F.normalize(desc_features, p=2, dim=-1).cpu().numpy()
+                text_sim = zh_text_features @ desc_features.T
+                del desc_features
+                text_sim *= has_desc[None, :]  # 无描述切片文本语义归零
+                semantic_sim = np.where(has_desc[None, :] > 0, 0.5 * image_sim + 0.5 * text_sim, image_sim)
+                print(f"[KM] 中文 CLIP + 切片描述文本语义，{int(has_desc.sum())}/{len(valid_chunk_indices)} 切片带描述",
+                      file=sys.stderr)
+            else:
+                semantic_sim = image_sim
+
+            del zh_text_features, image_features
+
+        print(f"[KM] 使用中文 CLIP 直编，匹配维度: {semantic_sim.shape[1]}", file=sys.stderr)
+
+    elif has_pre_embeddings and model is not None and processor is not None:
         import torch
         import torch.nn.functional as F
 
         with INFERENCE_LOCK:
             text_inputs = processor(text=enhanced_texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
             with torch.no_grad():
-                text_features = model.get_text_features(**text_inputs)
+                text_features = _extract_pooler(model.get_text_features(**text_inputs))
             text_features = F.normalize(text_features, p=2, dim=-1).cpu().numpy()
 
             final_image_features = np.zeros((len(valid_chunk_indices), text_features.shape[1]), dtype=np.float32)
@@ -447,7 +824,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
         with INFERENCE_LOCK:
             text_inputs = processor(text=enhanced_texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
             with torch.no_grad():
-                text_features = model.get_text_features(**text_inputs)
+                text_features = _extract_pooler(model.get_text_features(**text_inputs))
             text_features = F.normalize(text_features, p=2, dim=-1)
 
             IMAGE_ENCODE_BATCH = 64
@@ -467,7 +844,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
 
                 image_inputs = processor(images=batch_imgs, return_tensors="pt", padding=True).to(AIModels.device)
                 with torch.no_grad():
-                    batch_features = model.get_image_features(**image_inputs)
+                    batch_features = _extract_pooler(model.get_image_features(**image_inputs))
                 all_image_features.append(F.normalize(batch_features, p=2, dim=-1))
                 del image_inputs, batch_features, batch_imgs
 
@@ -481,6 +858,19 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     else:
         print("[KM] CLIP 不可用，降级为时长匹配模式", file=sys.stderr)
         semantic_sim = np.ones((n_queries, len(valid_chunk_indices)), dtype=np.float64) * 0.3
+
+    # 🎭 P0 意境维度：构建文案情绪 ↔ 切片情绪相容度矩阵 (n_queries, n_chunks)
+    #    切片情绪由步骤2 帧情绪按时间轴聚合而来（chunk.emotion），文案情绪来自步骤3 生成（query.emotion）
+    query_emotions = [(q.emotion or '') for q in req.queries]
+    chunk_emotions = [(video_chunks[ci].get("emotion") or '') for ci in valid_chunk_indices]
+    emotion_sim = np.zeros((n_queries, len(valid_chunk_indices)), dtype=np.float64)
+    for qi in range(n_queries):
+        for ci_idx in range(len(valid_chunk_indices)):
+            emotion_sim[qi, ci_idx] = _emotion_compatibility(query_emotions[qi], chunk_emotions[ci_idx])
+    q_with_emotion = sum(1 for e in query_emotions if e.strip())
+    c_with_emotion = sum(1 for e in chunk_emotions if e.strip())
+    print(f"[KM] 情绪匹配就绪：{q_with_emotion}/{n_queries} 段文案带情绪，{c_with_emotion}/{len(valid_chunk_indices)} 切片带情绪",
+          file=sys.stderr)
 
     BLOCK_DURATION_MS = 300000
     results = []
@@ -508,6 +898,8 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
 
     max_block = max(max(query_blocks.keys(), default=0), max(chunk_blocks.keys(), default=0))
     global_used_chunks = set()
+    # video_chunks 全局索引 → semantic_sim 列索引 的映射，供变速超限重选后重算语义分
+    chunk_rank = {ci: idx for idx, ci in enumerate(valid_chunk_indices)}
 
     for block_idx in range(max_block + 1):
         block_queries = query_blocks.get(block_idx, [])
@@ -541,7 +933,13 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                     else:
                         duration_penalty = float(np.exp(-delta * 0.5))
 
-                combined_score = sem_score * 0.8 + duration_penalty * 0.2
+                motion_score = float(chunk.get("motionScore") or 0.0)
+                motion_score = max(0.0, min(1.0, motion_score))
+
+                # 🎭 P0 意境维度：文案情绪与切片情绪相容度
+                emotion_score = float(emotion_sim[qi, ci_idx])
+
+                combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score)
                 local_cost[lqi, lci] = -combined_score
 
         if local_n_queries > local_n_chunks:
@@ -578,12 +976,51 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
 
             final_video_duration_ms = target_end_time_ms - current_timeline_ms
 
+            combined_score = -local_cost[ri, ci]
+
+            raw_speed_factor = 1.0
+            if final_video_duration_ms > 0 and video_dur_ms > 0:
+                raw_speed_factor = video_dur_ms / final_video_duration_ms
+
+            # 变速超限重选：语音与素材时长严重不匹配（超出 0.85~1.15 变速能力）时，
+            # 从当前时序块候选池中重选一个时长更贴近语音的未使用切片，避免强拉变速造成的鬼畜/变相
+            if raw_speed_factor < 0.85 or raw_speed_factor > 1.15:
+                best_ci = real_ci
+                best_gap = abs(video_dur_ms - final_video_duration_ms)
+                for cand_idx in block_chunk_idx_list:
+                    cand_ci = valid_chunk_indices[cand_idx]
+                    if cand_ci in global_used_chunks:
+                        continue
+                    cand_dur = video_chunks[cand_ci].get("durationMs", 0)
+                    if cand_dur <= 0:
+                        continue
+                    gap = abs(cand_dur - final_video_duration_ms)
+                    if gap < best_gap:
+                        best_gap = gap
+                        best_ci = cand_ci
+                if best_ci != real_ci:
+                    # 重选成功：占位新切片，并重算变速与综合得分
+                    global_used_chunks.add(best_ci)
+                    chunk = video_chunks[best_ci]
+                    video_dur_ms = chunk.get("durationMs", 0)
+                    print(f"[KM] shotId={query.shotId} 时长严重不匹配（变速 {raw_speed_factor:.2f} 超限），重选切片 {best_ci} 替代 {real_ci}", file=sys.stderr)
+                    best_sem = float(semantic_sim[qi, chunk_rank[best_ci]])
+                    best_sem = max(0.0, min(1.0, (best_sem + 1.0) / 2.0))
+                    best_motion = float(chunk.get("motionScore") or 0.0)
+                    best_motion = max(0.0, min(1.0, best_motion))
+                    best_dur_pen = 1.0
+                    if audio_dur_ms > 0 and video_dur_ms > 0:
+                        d = abs(video_dur_ms - audio_dur_ms) / max(audio_dur_ms, 1)
+                        best_dur_pen = float(np.exp(-d * 2)) if video_dur_ms < audio_dur_ms else float(np.exp(-d * 0.5))
+                    # 🎭 P0 意境维度：变速重选同样计入情绪相容度，避免为了时长丢弃意境更贴合的切片
+                    best_emotion = float(emotion_sim[qi, chunk_rank[best_ci]])
+                    combined_score = _compute_combined_score(best_sem, best_dur_pen, best_motion, best_emotion)
+
             speed_factor = 1.0
             if final_video_duration_ms > 0 and video_dur_ms > 0:
                 speed_factor = video_dur_ms / final_video_duration_ms
-                speed_factor = max(0.7, min(1.5, speed_factor))
-
-            combined_score = -local_cost[ri, ci]
+                # 变速区间收紧到 0.85~1.15，防止强拉慢放导致的鬼畜/变相
+                speed_factor = max(0.85, min(1.15, speed_factor))
 
             results.append({
                 "shotId": query.shotId,
@@ -603,8 +1040,16 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     if req.vlmApiKey and req.vlmApiBase and req.vlmApiModel:
         results = _apply_vlm_rerank(
             results, req.queries, video_chunks, valid_chunk_indices,
-            semantic_sim, n_queries,
+            semantic_sim, emotion_sim, n_queries,
             req.vlmApiKey, req.vlmApiBase, req.vlmApiModel,
+        )
+
+    # 🎬 P1 衔接流畅性重排：相邻切片色调/景别/情绪连续性优化。
+    #    放在 VLM 内容裁决之后：先保证单点内容正确，再优化序列衔接，避免为了衔接牺牲内容。
+    if len(results) > 1:
+        results = _apply_continuity_rerank(
+            results, req.queries, video_chunks, valid_chunk_indices,
+            semantic_sim, emotion_sim,
         )
 
     return {"success": True, "results": results}

@@ -85,13 +85,23 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
   beforeEach(() => {
     strategy = new ScriptGenStrategy();
     vi.clearAllMocks();
-    // 默认返回合法 JSON 数组
-    mockChat.mockResolvedValue({
-      success: true,
-      text: JSON.stringify([
-        { shotId: 's_01', text: '张三走入画面', duration: 3.5 },
-      ]),
-    });
+    // 🎬 两阶段调用：阶段A（剧情理解）返回大纲 JSON；阶段B（主生成）返回合法解说 JSON 数组
+    mockChat
+      .mockResolvedValueOnce({
+        success: true,
+        text: JSON.stringify({
+          logline: '张三潜入室内寻找证据，最终直面真相',
+          arc: ['开场钩子', '铺垫', '冲突升级', '高潮', '结局'],
+          characterMotives: { 张三: '寻找真相' },
+          keyTurns: [{ chunkId: 'chunk_001', turn: '发现关键线索' }],
+        }),
+      })
+      .mockResolvedValue({
+        success: true,
+        text: JSON.stringify([
+          { shotId: 's_01', text: '张三走入画面', duration: 3.5 },
+        ]),
+      });
   });
 
   /**
@@ -137,9 +147,9 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    expect(mockChat).toHaveBeenCalledTimes(1);
-    // adapter.chat 签名: (messages, modelName, temperature) → calls[0][0] 是 messages 数组
-    const userContent = mockChat.mock.calls[0][0][1].content;
+    expect(mockChat).toHaveBeenCalledTimes(2);
+    // 第一次调用是阶段A（剧情理解），第二次才是主生成 → 断言 calls[1]（阶段B）的 userContent
+    const userContent = mockChat.mock.calls[1][0][1].content;
     // 应包含全局角色列表段（阶段2：ID→名称显式映射）
     expect(userContent).toContain('【全局已知角色列表】');
     expect(userContent).toContain('r1 -> 张三');
@@ -157,7 +167,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[0][0][1].content;
+    const userContent = mockChat.mock.calls[1][0][1].content;
     // 应有角色写作硬性准则：严禁使用模糊代称
     expect(userContent).toContain('【角色写作硬性准则】');
     expect(userContent).toContain('严禁');
@@ -169,7 +179,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[0][0][1].content;
+    const userContent = mockChat.mock.calls[1][0][1].content;
     expect(userContent).not.toContain('【全局已知角色列表】');
   });
 
@@ -178,7 +188,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[0][0][1].content;
+    const userContent = mockChat.mock.calls[1][0][1].content;
     expect(userContent).not.toContain('【全局已知角色列表】');
   });
 
@@ -191,7 +201,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[0][0][1].content;
+    const userContent = mockChat.mock.calls[1][0][1].content;
     expect(userContent).toContain('r1 -> 张三');
     // 不应包含无 name 的角色 ID 映射
     expect(userContent).not.toContain('r2 ->');
@@ -203,7 +213,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[0][0][1].content;
+    const userContent = mockChat.mock.calls[1][0][1].content;
     // 阶段1 ContextChunk 在前，阶段2 角色列表在后
     const contextIdx = userContent.indexOf('【多模态上下文片段流（ContextChunk）】');
     const rolesIdx = userContent.indexOf('【全局已知角色列表】');
@@ -216,7 +226,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[0][0][1].content;
+    const userContent = mockChat.mock.calls[1][0][1].content;
     expect(userContent).toContain('r1 -> 王五');
     // 不应有空括号
     expect(userContent).not.toContain('（）');
@@ -265,11 +275,106 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[0][0][1].content;
+    const userContent = mockChat.mock.calls[1][0][1].content;
     // 应使用 downstreamContext 的结构化数据，而非 sceneDescriptions
     expect(userContent).toContain('走入室内');
     expect(userContent).toContain('拿起杯子');
     expect(userContent).toContain('平静');
     expect(userContent).not.toContain('应该被忽略的长文本');
+  });
+});
+
+// ========== 🎬 两阶段"剧情驱动"解说改造测试 ==========
+
+describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () => {
+  let strategy: ScriptGenStrategy;
+
+  /** 构造标准 step3 输入（剧情驱动测试用） */
+  function buildInput() {
+    return {
+      scriptStyle: '爆款短视频',
+      speechRate: 4.5,
+      pipelineParams: {
+        narrativePerspective: 'third' as const,
+        informationLevel: 'deep' as const,
+        narrationDensity: 'standard' as const,
+        originalAudioStrategy: 'keep_key' as const,
+        rhythmMode: 'mixed' as const,
+        emotionTone: 'neutral' as const,
+        hookIntensity: 0.7,
+        audioVisualWeight: 0.6,
+      },
+      visionResult: {
+        sceneDescriptions: '第1镜: 男子走入室内\n第2镜: 男子拿起杯子',
+      },
+      audioResult: {
+        lines: [{ text: '你好', startMs: 1000 }],
+      },
+    };
+  }
+
+  /** 构造执行上下文（剧情驱动测试用） */
+  function buildContext() {
+    return { bus: new Map(), projectId: 'test' } as any;
+  }
+
+  beforeEach(() => {
+    strategy = new ScriptGenStrategy();
+    vi.clearAllMocks();
+    // 阶段A：剧情大纲成功；阶段B：主生成解说数组
+    mockChat
+      .mockResolvedValueOnce({
+        success: true,
+        text: JSON.stringify({
+          logline: '一个被逼上绝路的人走上复仇之路',
+          arc: ['开场钩子', '铺垫', '冲突升级', '高潮', '结局'],
+          characterMotives: { 高启强: '从卑微到黑化' },
+          keyTurns: [{ chunkId: 'chunk_003', turn: '第一次反抗' }],
+        }),
+      })
+      .mockResolvedValue({
+        success: true,
+        text: JSON.stringify([{ shotId: 's_01', text: '剧情解说', duration: 3.0 }]),
+      });
+  });
+
+  it('应调用两次 LLM：阶段A（剧情理解）在先，阶段B（主生成）在后', async () => {
+    await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    expect(mockChat).toHaveBeenCalledTimes(2);
+    // 阶段A 的 userPrompt 应包含"剧情主线"提炼指令与片段流
+    const outlineUser = mockChat.mock.calls[0][0][1].content as string;
+    expect(outlineUser).toContain('logline');
+    expect(outlineUser).toContain('【视频片段流');
+    // 阶段A 用低温保证归纳稳定
+    expect(mockChat.mock.calls[0][2]).toBe(0.3);
+  });
+
+  it('阶段A 成功时，阶段B 的 systemPrompt 应注入【全局剧情大纲】', async () => {
+    await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    const systemContent = mockChat.mock.calls[1][0][0].content as string;
+    expect(systemContent).toContain('【全局剧情大纲】');
+    expect(systemContent).toContain('一个被逼上绝路的人走上复仇之路');
+    // 剧情思维规则应注入
+    expect(systemContent).toContain('贴剧情');
+    expect(systemContent).toContain('解读');
+  });
+
+  it('阶段A 失败时，阶段B 降级为逐段解说（无大纲）但主生成仍正常', async () => {
+    // mockReset 清除 beforeEach 的 mockResolvedValueOnce 队列，避免残留大纲被阶段A 消费
+    mockChat.mockReset();
+    // 阶段A 返回非法格式（数组而非对象）→ 降级；阶段B 正常
+    mockChat
+      .mockResolvedValueOnce({ success: true, text: JSON.stringify([{ bad: 'array' }]) })
+      .mockResolvedValue({
+        success: true,
+        text: JSON.stringify([{ shotId: 's_01', text: '降级模式解说', duration: 3.0 }]),
+      });
+    const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    // 主生成仍成功
+    expect(result.shots).toBeDefined();
+    expect(result.shots.length).toBeGreaterThan(0);
+    // 阶段B 的 systemPrompt 不含大纲（降级路径）
+    const systemContent = mockChat.mock.calls[1][0][0].content as string;
+    expect(systemContent).not.toContain('【全局剧情大纲】');
   });
 });

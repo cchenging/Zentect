@@ -129,6 +129,10 @@ async def check_deps():
         'scipy': 'SciPy',
         'kokoro': 'Kokoro-82M (本地 TTS)',
         'misaki': 'Misaki (Kokoro G2P)',
+        # misaki[zh] 的传递依赖（缺任一个 KPipeline 加载即崩溃，必须纳入检查）
+        'ordered_set': 'OrderedSet (misaki 依赖)',
+        'pypinyin': 'Pypinyin (misaki 中文注音)',
+        'cn2an': 'Cn2An (misaki 中文数字转换)',
     }
     deps = {}
     for mod_name, display_name in targets.items():
@@ -169,9 +173,9 @@ async def check_deps():
         'clip': {**_module_ready(['transformers', 'torch']),
                  'display_name': 'Transformers (CLIP 引擎)', 'size': '~100 MB (含 torch)',
                  'needs': ['torch']},
-        'kokoro': {**_module_ready(['kokoro', 'misaki', 'soundfile']),
+        'kokoro': {**_module_ready(['kokoro', 'misaki', 'soundfile', 'ordered_set', 'pypinyin', 'cn2an']),
                    'display_name': 'Kokoro-82M TTS 引擎', 'size': '~360 MB (模型)',
-                   'needs': []},
+                   'needs': ['misaki[zh]']},
     }
 
     return {'deps': deps, 'modules': modules, 'python_executable': sys.executable}
@@ -451,21 +455,48 @@ async def install_dep_stream(task_id: str):
 
 
 def _pip_install_sync(task_id: str, packages: list) -> None:
-    """同步执行 pip install（在线程池中跑）"""
+    """同步执行 pip install（在线程池中跑），安装期间每秒推送当前包进度，避免 UI 长时间无更新"""
     import subprocess
+    import threading
+    import time
     total = len(packages)
     for idx, pkg in enumerate(packages):
         _set_install_progress(task_id, current=pkg, status='downloading',
                              percent=int(idx / total * 100),
                              message=f'[{idx + 1}/{total}] 正在下载安装 {pkg}...')
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 [sys.executable, '-m', 'pip', 'install', pkg,
                  '--progress-bar', 'off', '--no-input'],
-                capture_output=True, text=True, timeout=600
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding='utf-8', errors='replace'
             )
-            if result.returncode != 0:
-                err_msg = result.stderr[-500:] if result.stderr else '未知错误'
+            # 后台线程持续读取 stdout，防止管道缓冲被填满导致 pip 阻塞
+            out_lines: list = []
+            reader = threading.Thread(
+                target=lambda: out_lines.extend(proc.stdout or []),
+                daemon=True
+            )
+            reader.start()
+            # 安装期间每秒推送一次进度（心跳），超时 10 分钟自动终止
+            elapsed = 0
+            timeout_sec = 600
+            while proc.poll() is None:
+                time.sleep(1)
+                elapsed += 1
+                if elapsed >= timeout_sec:
+                    proc.kill()
+                    proc.wait()
+                    _set_install_progress(task_id, status='error',
+                                          error=f'{pkg} 安装超时（>10分钟）',
+                                          message=f'安装 {pkg} 超时')
+                    return
+                _set_install_progress(task_id, current=pkg, status='downloading',
+                                      percent=int(idx / total * 100),
+                                      message=f'[{idx + 1}/{total}] 正在下载安装 {pkg}（已用时 {elapsed} 秒）...')
+            reader.join()
+            if proc.returncode != 0:
+                err_msg = ''.join(out_lines)[-500:] or '未知错误'
                 _set_install_progress(task_id, status='error', error=f'{pkg} 安装失败: {err_msg}',
                                      message=f'安装 {pkg} 失败')
                 return
@@ -474,10 +505,6 @@ def _pip_install_sync(task_id: str, packages: list) -> None:
             _set_install_progress(task_id, installed=installed_list,
                                  percent=int((idx + 1) / total * 100),
                                  message=f'[{idx + 1}/{total}] {pkg} 安装完成')
-        except subprocess.TimeoutExpired:
-            _set_install_progress(task_id, status='error', error=f'{pkg} 安装超时（>10分钟）',
-                                 message=f'安装 {pkg} 超时')
-            return
         except Exception as e:
             _set_install_progress(task_id, status='error', error=f'{pkg} 安装异常: {str(e)}',
                                  message=f'安装 {pkg} 异常')

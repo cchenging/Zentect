@@ -229,6 +229,74 @@ def _detect_scenes_opencv_concurrent(file_path: str, blocks: list, threshold: fl
     return all_changes
 
 
+def _compute_chunk_motion_scores(file_path: str, boundaries_sec: list, min_chunk_duration_sec: float) -> dict:
+    """
+    计算每个切片的运动显著性得分（motionScore）
+    原理：切片内每 0.5 秒采样一帧，求相邻采样帧灰度绝对差的均值，归一化到 0~1
+    - 值越高：画面运动越剧烈（动作戏 / 快速运镜）
+    - 值越低：画面越静态（对话 / 空镜）
+    归一化基准：灰度差 0~255，25 作为"显著运动"的经验分界，超出部分封顶到 1.0
+    性能设计：流式读取（seek 到切片起点后顺序 grab 跳帧），每个切片最多解码 12 帧，
+    不持有 INFERENCE_LOCK（纯 OpenCV 帧差，与模型推理无关，避免与 CLIP 串行卡顿）
+    """
+    import cv2
+    import numpy as np
+
+    motion_scores = {}
+    try:
+        cap = cv2.VideoCapture(file_path)
+        if not cap.isOpened():
+            print("[motion] 无法打开视频，跳过运动显著性计算", file=sys.stderr)
+            return motion_scores
+        fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        if total_frames <= 0 or fps <= 0:
+            cap.release()
+            return motion_scores
+
+        SAMPLE_INTERVAL = max(1, int(fps * 0.5))  # 每 0.5 秒采样一帧
+        SAMPLE_MAX = 12  # 每个切片最多采样 12 帧，控制 CPU 开销
+        for i in range(len(boundaries_sec) - 1):
+            start_sec = boundaries_sec[i]
+            end_sec = boundaries_sec[i + 1]
+            dur_sec = end_sec - start_sec
+            if dur_sec < min_chunk_duration_sec:
+                continue
+
+            start_frame = int(start_sec * fps)
+            end_frame = int(end_sec * fps)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+            prev_gray = None
+            diffs = []
+            frame_idx = start_frame
+            # 流式读取：只解码采样帧，中间帧用 grab 跳过（grab 不解码，远快于 read）
+            while frame_idx < end_frame and len(diffs) < SAMPLE_MAX:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if prev_gray is None:
+                    prev_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                else:
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    diff = float(np.mean(np.abs(gray.astype(np.float32) - prev_gray.astype(np.float32))))
+                    diffs.append(diff)
+                    prev_gray = None
+                for _ in range(SAMPLE_INTERVAL - 1):
+                    if not cap.grab():
+                        break
+                frame_idx += SAMPLE_INTERVAL
+
+            if diffs:
+                mean_diff = sum(diffs) / len(diffs)
+                # 灰度差均值 / 25 → 0~1 归一化（25 以上视为显著运动）
+                motion_scores[i] = min(1.0, mean_diff / 25.0)
+        cap.release()
+    except Exception as e:
+        print(f"[motion] 运动显著性计算失败: {e}", file=sys.stderr)
+    return motion_scores
+
+
 def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec: list, min_chunk_duration_sec: float, media_id: str = "default") -> dict:
     """
     🚀 根据场景切换时间点构建视频切片列表，批量提取封面图 + CLIP 512维视觉语义特征
@@ -252,6 +320,9 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
     boundaries_sec = [0.0] + filtered_changes + [duration_ms / 1000.0]
     chunks = []
 
+    # 计算每个切片的运动显著性得分（帧差法），用于镜头匹配打分与高潮动作截取
+    motion_scores = _compute_chunk_motion_scores(file_path, boundaries_sec, min_chunk_duration_sec)
+
     cover_times = []
     for i in range(len(boundaries_sec) - 1):
         start_ms = round(boundaries_sec[i] * 1000, 1)
@@ -266,6 +337,7 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
 
     cover_paths = {}
     cover_frames_for_clip = []
+    color_histograms = {}
     if cover_times:
         try:
             with INFERENCE_LOCK:
@@ -280,6 +352,16 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
                             cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tofile(cpath)
                             cover_paths[chunk_i] = cpath
                             cover_frames_for_clip.append((chunk_i, frame[:, :, ::-1]))
+                            # 🎨 P1 衔接维度：封面帧 HSV 色相直方图（16 桶归一化），
+                            #   供镜头匹配的"相邻切片色调连续性"检查（字段已预留 colorHistogram）
+                            try:
+                                import numpy as np
+                                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                                hist = cv2.calcHist([hsv], [0], None, [16], [0, 180]).flatten()
+                                total = float(np.sum(hist)) or 1.0
+                                color_histograms[chunk_i] = (hist / total).tolist()
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 cap.release()
@@ -314,6 +396,9 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
                             image_inputs = processor(images=batch_imgs, return_tensors="pt", padding=True).to(AIModels.device)
                             with torch.no_grad():
                                 batch_features = model.get_image_features(**image_inputs)
+                            # 兼容 transformers 新版：get_image_features 返回 BaseModelOutputWithPooling
+                            if hasattr(batch_features, 'pooler_output'):
+                                batch_features = batch_features.pooler_output
                             batch_features = F.normalize(batch_features, p=2, dim=-1)
                             all_features.append(batch_features.cpu().numpy())
                             del image_inputs, batch_features
@@ -347,8 +432,8 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
             "startMs": start_ms,
             "endMs": end_ms,
             "durationMs": chunk_duration_ms,
-            "motionScore": 0.0,
-            "colorHistogram": [],
+            "motionScore": motion_scores.get(i, 0.0),
+            "colorHistogram": color_histograms.get(i, []),
             "coverPath": cover_paths.get(i, ""),
             "visionEmbedding": vision_embeddings.get(i, []),
             "name": f"场景切片 {chunk_idx + 1}"
