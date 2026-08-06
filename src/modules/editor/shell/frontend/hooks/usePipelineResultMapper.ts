@@ -162,6 +162,8 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
         if (matches.length > 0) {
           mappers.setMatchResults(matches.map((m: any) => ({
             shotId: m.shotId || m.id,
+            text: m.text || m.narration || '',
+            keepOriginalAudio: m.keepOriginalAudio === true,
             mediaType: m.mediaType || 'frame',
             mediaId: m.mediaId || m.chunkId || m.frameId || '',
             score: m.score || m.confidence || 0,
@@ -176,6 +178,8 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
         } else if (nodeResult.segments && nodeResult.segments.length > 0) {
           mappers.setMatchResults(nodeResult.segments.map((seg: any, idx: number) => ({
             shotId: seg.shotId || seg.id || `shot_${idx}`,
+            text: seg.text || seg.narration || '',
+            keepOriginalAudio: seg.keepOriginalAudio === true,
             mediaType: seg.mediaType || 'frame',
             mediaId: seg.mediaId || seg.chunkId || seg.frameId || '',
             score: seg.score || seg.confidence || seg.similarity || 0,

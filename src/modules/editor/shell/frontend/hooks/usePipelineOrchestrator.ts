@@ -194,6 +194,7 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
       const step2Final = useStep2Store.getState();
       const step3Final = useStep3Store.getState();
       const step4Final = useStep4Store.getState();
+      const step5Final = useStep5Store.getState();
       const navState = useEditorNavStore.getState();
       if (currentProjectState.projectId) {
         try {
@@ -221,6 +222,11 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
             ttsResults: step4Final.ttsResults,
             ttsEngine: step4Final.ttsEngine,
             ttsVoiceId: step4Final.ttsVoiceId,
+            /** 💥 步骤5 数据持久化：匹配结果/切片池/BGM 节拍，重启后从 metadata 恢复 */
+            matchResults: step5Final.matchResults,
+            videoChunks: step5Final.videoChunks,
+            activeBgm: step5Final.activeBgm,
+            beatTimestamps: step5Final.beatTimestamps,
           });
         } catch (saveErr) {
           console.error('[管线编排器] 步骤完工落盘失败:', saveErr);

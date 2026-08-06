@@ -774,7 +774,9 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       });
       s4.setTtsResults(sanitizedTtsResults);
     }
-    if (typeof s4.setTtsEngine === 'function') s4.setTtsEngine((d.ttsEngine as string) || '');
+    // ttsEngine 是引擎选择偏好：项目未保存（新项目/旧数据）时保持默认 'edge'，而非设为 '' 导致 UI 无选中
+    // 不设 '' 是为了避免「UI 显示无引擎但合成 fallback 到设置默认引擎」的显示/执行不一致
+    if (typeof s4.setTtsEngine === 'function') s4.setTtsEngine((d.ttsEngine as string) || 'edge');
     if (typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((d.ttsVoiceId as string) || '');
 
     // ── Step5Store ──

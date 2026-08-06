@@ -26,11 +26,21 @@ export interface AsrLine {
 /** VLM 帧描述 */
 export interface VlmFrame {
   url: string; description: string; editing: boolean; confirmed: boolean;
+  /** 该帧在视频中的绝对时间（毫秒），来自 VisionExtractStrategy FrameDetail，供步骤5 按时间轴聚合到切片 */
+  timeMs?: number;
+  /** 该帧绝对时间的可读格式，如 "00:12.15" */
+  timeStr?: string;
+  /** 🎭 P0 意境维度：该帧的情绪标签（如：紧张/平静/温馨），来自 FrameDetail.emotion（VLM 结构化输出 emotionalState），供步骤5 做"文案↔画面"情绪匹配 */
+  emotion?: string;
+  /** 🎬 该帧的镜头景别（如：特写/中景/全景），来自 FrameDetail.downstream.shotType，供步骤5 意境/衔接匹配 */
+  shotType?: string;
   /** P0-3：下游瘦身上下文，供 step3 消费 */
   downstream?: {
     action: string;
     emotion: string;
     keywords: string[];
+    /** 🎬 镜头景别（特写/中景/全景等），VLM 结构化输出 */
+    shotType?: string;
   };
   /**
    * 🎭 P0.5 帧级锚定：该帧已检测到的人物名称列表
@@ -44,6 +54,8 @@ export interface VlmFrame {
 export interface ScriptParagraph {
   id: string; shotId?: string; text: string; duration?: number; emotion?: string; editing: boolean;
   audioSafeText?: string; cleanText?: string;
+  /** 原声段落标记：true 表示该段不合成配音，直接使用原片原声（关键台词保留/原声为主策略时由文案生成标记） */
+  keepOriginalAudio?: boolean;
 }
 
 /**
@@ -76,6 +88,10 @@ export interface TtsResult { shotId: string; audioUrl?: string; _failed?: boolea
 export interface MatchResult {
   shotId: string; mediaId: string; thumbnail?: string; score: number;
   confirmed: boolean; appliedSpeedFactor?: number; audioDurationMs?: number; chunkData?: Record<string, unknown>;
+  /** 该段落对应的解说台词（用于卡片与预览展示，语义上即"这段台词匹配这个片段"） */
+  text?: string;
+  /** 原声段落标记：true 表示该段保留原片原声（不配 TTS 配音），匹配锁定在 ASR 原声所在的时间段 */
+  keepOriginalAudio?: boolean;
 }
 
 /** 媒体项 */

@@ -154,6 +154,9 @@ export const IPC_CHANNELS = {
   SYSTEM_GPU_INSTALL_CUDA: 'system:gpu-install-cuda',           // 触发 CUDA 版 torch 安装
   SYSTEM_GPU_INSTALL_PROGRESS: 'system:gpu-install:progress',   // 主进程 → 渲染进程 推送安装进度
 
+  // 🔧 V8: 安装依赖后重启 AI 运行时（让新装的包在 Python 进程中生效）
+  SYSTEM_AI_RUNTIME_RESTART: 'system:ai-runtime-restart',
+
   // --- V1.1 工作流持久化 ---
   WORKFLOW_SAVE: 'workflow:save',
   WORKFLOW_LOAD: 'workflow:load',

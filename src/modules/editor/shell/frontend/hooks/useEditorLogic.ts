@@ -8,6 +8,7 @@ import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 import { resetAllProjectStores } from '@modules/editor/stores/resetAllProjectStores';
 import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
+import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { DraftService } from '@renderer/services/DraftService';
 import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
@@ -99,6 +100,21 @@ export const useEditorHydration = (id: string | undefined) => {
             useStep1Store.getState().setAudioSeparated(true);
           }
 
+          // 💥 步骤5 数据恢复：匹配结果/切片池/BGM 节拍（步骤5 完成时已写入 metadata）
+          const step5State = useStep5Store.getState();
+          if (Array.isArray(projectSnapshot.matchResults) && projectSnapshot.matchResults.length > 0) {
+            step5State.setMatchResults(projectSnapshot.matchResults);
+          }
+          if (Array.isArray(projectSnapshot.videoChunks) && projectSnapshot.videoChunks.length > 0) {
+            step5State.setVideoChunks(projectSnapshot.videoChunks);
+          }
+          if (projectSnapshot.activeBgm && projectSnapshot.activeBgm.id) {
+            step5State.setActiveBgm(projectSnapshot.activeBgm);
+          }
+          if (Array.isArray(projectSnapshot.beatTimestamps) && projectSnapshot.beatTimestamps.length > 0) {
+            step5State.setBeatTimestamps(projectSnapshot.beatTimestamps);
+          }
+
           // 💥 崩溃恢复：检查 IndexedDB 中是否有未同步的 PENDING 草稿
           // 正常关闭流程：SyncDaemon 已将草稿同步至 SQLite 并标记 SYNCED
           // 若仍为 PENDING 说明上次会话异常退出，IndexedDB 中有比 SQLite 更新的数据
@@ -125,6 +141,19 @@ export const useEditorHydration = (id: string | undefined) => {
               }
               if (draftData.audioSeparated != null) {
                 useStep1Store.getState().setAudioSeparated?.(draftData.audioSeparated);
+              }
+              // 步骤5 崩溃恢复：从 PENDING 草稿恢复匹配结果/切片池/BGM 节拍
+              if (Array.isArray(draftData.matchResults) && draftData.matchResults.length > 0) {
+                useStep5Store.getState().setMatchResults(draftData.matchResults);
+              }
+              if (Array.isArray(draftData.videoChunks) && draftData.videoChunks.length > 0) {
+                useStep5Store.getState().setVideoChunks(draftData.videoChunks);
+              }
+              if (draftData.activeBgm && draftData.activeBgm.id) {
+                useStep5Store.getState().setActiveBgm(draftData.activeBgm);
+              }
+              if (Array.isArray(draftData.beatTimestamps) && draftData.beatTimestamps.length > 0) {
+                useStep5Store.getState().setBeatTimestamps(draftData.beatTimestamps);
               }
 
               // 立刻将草稿同步到 SQLite，使其不再是 PENDING 状态
@@ -198,6 +227,7 @@ export const useEditorAutoSave = (id: string | undefined) => {
 
       const projectState = useProjectStore.getState();
       const step1State = useStep1Store.getState();
+      const step5State = useStep5Store.getState();
       const snapshot = {
         shots: projectState.shots,
         aiShots: projectState.aiShots,
@@ -210,6 +240,11 @@ export const useEditorAutoSave = (id: string | undefined) => {
         stepStatuses: pipelineState.stepStatuses,
         stepCompleted: pipelineState.stepCompleted,
         storyboardMode: projectState.storyboardMode,
+        /** 步骤5 数据：崩溃/导航离开时兜底持久化匹配结果 */
+        matchResults: step5State.matchResults,
+        videoChunks: step5State.videoChunks,
+        activeBgm: step5State.activeBgm,
+        beatTimestamps: step5State.beatTimestamps,
       };
       DraftService.saveDraft(id, JSON.stringify(snapshot)).catch(() => {});
     };

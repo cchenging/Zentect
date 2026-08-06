@@ -190,7 +190,7 @@ describe('assembleProjectPayload', () => {
         { id: 'v1', type: 'video', frames: ['frame1.jpg', 'frame2.jpg'] },
       ],
     }, 'p1');
-    expect(result.framePaths).toEqual(['frame1.jpg', 'frame2.jpg']);
+    expect(result.framePaths).toEqual(['magic://p1/frame1.jpg', 'magic://p1/frame2.jpg']);
     expect(result.frameCount).toBe(2);
   });
 
@@ -200,7 +200,7 @@ describe('assembleProjectPayload', () => {
         { id: 'v1', type: 'video', frames: [{ path: 'f1.jpg' }, { filePath: 'f2.jpg' }] },
       ],
     }, 'p1');
-    expect(result.framePaths).toEqual(['f1.jpg', 'f2.jpg']);
+    expect(result.framePaths).toEqual(['magic://p1/f1.jpg', 'magic://p1/f2.jpg']);
   });
 
   it('多视频源合并 framePaths', () => {
@@ -210,7 +210,7 @@ describe('assembleProjectPayload', () => {
         { id: 'v2', type: 'video', frames: ['b.jpg', 'c.jpg'] },
       ],
     }, 'p1');
-    expect(result.framePaths).toEqual(['a.jpg', 'b.jpg', 'c.jpg']);
+    expect(result.framePaths).toEqual(['magic://p1/a.jpg', 'magic://p1/b.jpg', 'magic://p1/c.jpg']);
   });
 
   it('framePaths 降级：DB 无 frames 时从 metadata.framePaths 恢复', () => {
@@ -218,7 +218,16 @@ describe('assembleProjectPayload', () => {
       mediaItems: [],
       framePaths: ['fallback1.jpg', 'fallback2.jpg'],
     }, 'p1');
-    expect(result.framePaths).toEqual(['fallback1.jpg', 'fallback2.jpg']);
+    expect(result.framePaths).toEqual(['magic://p1/fallback1.jpg', 'magic://p1/fallback2.jpg']);
+  });
+
+  it('绝对路径与已有协议的帧路径保持原样', () => {
+    const result = assembleProjectPayload({
+      mediaItems: [
+        { id: 'v1', type: 'video', frames: ['F:\\videos\\f1.jpg', 'magic://p1/nodes/a.jpg', 'https://x.com/b.jpg'] },
+      ],
+    }, 'p1');
+    expect(result.framePaths).toEqual(['F:\\videos\\f1.jpg', 'magic://p1/nodes/a.jpg', 'https://x.com/b.jpg']);
   });
 
   it('frameCount 优先使用 rawData.frameCount', () => {

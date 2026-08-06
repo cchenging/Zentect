@@ -79,11 +79,24 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
   let framePaths: string[] = [];
   const videoItems = mediaItems.filter((m: any) => m.type === 'video');
 
+  /**
+   * 补全帧路径为渲染可用格式：
+   * hydratePaths 会把 DB 中的 magic://{projectId}/ 转成相对路径（nodes/...），
+   * 但渲染 img 需要完整 magic URL（getSafeMediaUrl 无法把项目内相对路径解析成有效地址）。
+   * 相对路径 → magic://{projectId}/{相对路径}；绝对路径 / 已有协议直接透传。
+   */
+  const toMagicFrameUrl = (p: string): string => {
+    if (!p) return '';
+    if (p.startsWith('magic://') || p.startsWith('http://') || p.startsWith('https://') || p.startsWith('data:') || p.startsWith('/') || /^[A-Za-z]:/.test(p)) return p;
+    return `magic://${projectId}/${p}`;
+  };
+
   videoItems.forEach((media: any) => {
     if (media.frames && Array.isArray(media.frames) && media.frames.length > 0) {
       const frames = media.frames
         .map((frame: any) => typeof frame === 'string' ? frame : (frame.path || frame.filePath || frame.thumbnail || ''))
-        .filter(Boolean);
+        .filter(Boolean)
+        .map(toMagicFrameUrl);
       framePaths = [...framePaths, ...frames];
     }
   });
@@ -92,7 +105,7 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
   if (framePaths.length === 0) {
     const metaFrames = rawData.framePaths;
     if (metaFrames && Array.isArray(metaFrames) && metaFrames.length > 0) {
-      framePaths = metaFrames;
+      framePaths = metaFrames.map(toMagicFrameUrl);
     }
   }
 
@@ -172,6 +185,10 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
     ttsEngine: rawData.ttsEngine,
     ttsVoiceId: rawData.ttsVoiceId,
     videoChunks: Array.isArray(rawData.videoChunks) ? rawData.videoChunks : [],
+    // 步骤5 匹配结果 + BGM 节拍（metadata 持久化，重启恢复）
+    matchResults: Array.isArray(rawData.matchResults) ? rawData.matchResults : [],
+    activeBgm: rawData.activeBgm || null,
+    beatTimestamps: Array.isArray(rawData.beatTimestamps) ? rawData.beatTimestamps : [],
     // Canvas
     canvasData: rawData.canvasData,
     // 分镜模式('original' | 'ai'):存于 metadata,需回传给前端 hydrate 恢复

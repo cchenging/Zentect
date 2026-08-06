@@ -72,13 +72,16 @@ export const API = {
     installDep: (packages: string[]) => invokeSafe<{ success: boolean; task_id?: string; message?: string }>(
       IPC_CHANNELS.SYSTEM_INSTALL_DEP, packages
     ),
+    /** 🔧 V8 新增：安装依赖后重启 AI 运行时（stop + start，让新装的 Python 包生效） */
+    restartAiRuntime: () => invokeSafe<{ success: boolean; message: string }>(
+      IPC_CHANNELS.SYSTEM_AI_RUNTIME_RESTART
+    ),
     /** 🔧 V8 新增：注册安装进度监听器（主进程通过 IPC event 推送进度） */
     onInstallDepProgress: (callback: (progress: any) => void) => {
-      const { ipcRenderer } = window.electron as any;
-      if (!ipcRenderer) return () => {};
+      // 通过 preload 暴露的 window.api.ipc 订阅 IPC 事件（window.electron 运行时不存在）
       const handler = (_event: any, progress: any) => callback(progress);
-      ipcRenderer.on(IPC_CHANNELS.SYSTEM_INSTALL_DEP_PROGRESS, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.SYSTEM_INSTALL_DEP_PROGRESS, handler);
+      window.api.ipc.on(IPC_CHANNELS.SYSTEM_INSTALL_DEP_PROGRESS, handler);
+      return () => window.api.ipc.removeListener(IPC_CHANNELS.SYSTEM_INSTALL_DEP_PROGRESS, handler);
     },
 
     /** 🚀 阶段 3 新增：查询 GPU/CUDA 状态 */
@@ -91,11 +94,10 @@ export const API = {
 
     /** 🚀 阶段 3 新增：注册 CUDA 安装进度监听器 */
     onGpuInstallProgress: (callback: (progress: any) => void) => {
-      const { ipcRenderer } = window.electron as any;
-      if (!ipcRenderer) return () => {};
+      // 通过 preload 暴露的 window.api.ipc 订阅 IPC 事件（window.electron 运行时不存在）
       const handler = (_event: any, progress: any) => callback(progress);
-      ipcRenderer.on(IPC_CHANNELS.SYSTEM_GPU_INSTALL_PROGRESS, handler);
-      return () => ipcRenderer.removeListener(IPC_CHANNELS.SYSTEM_GPU_INSTALL_PROGRESS, handler);
+      window.api.ipc.on(IPC_CHANNELS.SYSTEM_GPU_INSTALL_PROGRESS, handler);
+      return () => window.api.ipc.removeListener(IPC_CHANNELS.SYSTEM_GPU_INSTALL_PROGRESS, handler);
     },
   },
 
