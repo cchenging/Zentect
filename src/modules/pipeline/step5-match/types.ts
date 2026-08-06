@@ -35,6 +35,8 @@ export interface StepShotMatchingProps {
   matchResults: MatchResult[];
   videoChunks: VideoChunk[];
   mediaItems: MediaItem[];
+  /** 步骤4 配音结果（shotId → audioUrl），用于预览弹窗同步播放配音音频 */
+  ttsResults: TtsResult[];
   hasBgm: boolean;
   isProcessing: boolean;
   onConfirm: (shotId: string) => void;

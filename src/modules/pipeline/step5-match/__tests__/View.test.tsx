@@ -16,6 +16,11 @@ vi.mock('lucide-react', () => ({
   RefreshCw: (props: any) => React.createElement('span', { 'data-testid': 'icon-refresh', ...props }),
   Film: (props: any) => React.createElement('span', { 'data-testid': 'icon-film', ...props }),
   X: (props: any) => React.createElement('span', { 'data-testid': 'icon-x', ...props }),
+  GripVertical: (props: any) => React.createElement('span', { 'data-testid': 'icon-grip', ...props }),
+  Play: (props: any) => React.createElement('span', { 'data-testid': 'icon-play', ...props }),
+  Pause: (props: any) => React.createElement('span', { 'data-testid': 'icon-pause', ...props }),
+  Volume2: (props: any) => React.createElement('span', { 'data-testid': 'icon-volume2', ...props }),
+  VolumeX: (props: any) => React.createElement('span', { 'data-testid': 'icon-volumex', ...props }),
 }));
 
 vi.mock('../../../../renderer/src/utils/formatUrl', () => ({
@@ -40,7 +45,7 @@ vi.mock('../../../../renderer/src/components/shared', () => ({
     ),
 }));
 
-vi.mock('../../../../renderer/src/components/shared/DragReorderList', () => ({
+vi.mock('../../../../renderer/src/components/shared/drag-reorder-list', () => ({
   DragReorderList: ({ items, renderItem }: any) =>
     React.createElement('div', { 'data-testid': 'drag-list' },
       items.map((item: any, idx: number) =>
@@ -76,6 +81,7 @@ function makeProps(overrides: Partial<StepShotMatchingProps> = {}): StepShotMatc
     matchResults: [],
     videoChunks: [],
     mediaItems: [],
+    ttsResults: [],
     hasBgm: false,
     isProcessing: false,
     onConfirm: vi.fn(),
@@ -141,7 +147,7 @@ describe('StepShotMatchingView', () => {
 
     it('应显示拖拽提示文字', () => {
       renderView({ matchResults: [makeMatchResult()] });
-      expect(screen.getByText('拖拽卡片可调整顺序')).toBeDefined();
+      expect(screen.getByText('拖拽卡片可调整顺序，点击预览可同步播放画面与配音')).toBeDefined();
     });
 
     it('应在 stat-header 中显示匹配数量', () => {
@@ -183,6 +189,102 @@ describe('StepShotMatchingView', () => {
       renderView({ matchResults: [makeMatchResult({ shotId: 's1', score: 0.95 })] });
       const item = screen.getByTestId('drag-item-s1');
       expect(within(item).getByText('95%')).toBeDefined();
+    });
+  });
+
+  // === 台词显示 ===
+
+  describe('台词显示', () => {
+    it('卡片应显示台词文本而非技术化 shotId', () => {
+      renderView({
+        matchResults: [makeMatchResult({ shotId: 'chunk-001', text: '这是一个精彩的打斗场面' })],
+      });
+      const item = screen.getByTestId('drag-item-chunk-001');
+      expect(within(item).getByText('这是一个精彩的打斗场面')).toBeDefined();
+    });
+
+    it('无台词时应回退显示 shotId', () => {
+      renderView({ matchResults: [makeMatchResult({ shotId: 'para_2' })] });
+      const item = screen.getByTestId('drag-item-para_2');
+      expect(within(item).getByText('para_2')).toBeDefined();
+    });
+
+    it('配音时长应显示整数秒（去掉小数点）', () => {
+      renderView({ matchResults: [makeMatchResult({ audioDurationMs: 3520 })] });
+      const item = screen.getByTestId('drag-item-shot-001');
+      expect(within(item).getByText('配音 4s')).toBeDefined();
+    });
+  });
+
+  // === 预览弹窗 ===
+
+  describe('预览弹窗', () => {
+    it('点击"预览"应打开弹窗显示台词与匹配度', () => {
+      renderView({
+        matchResults: [makeMatchResult({ shotId: 's1', text: '预览台词内容', score: 0.92 })],
+      });
+      const item = screen.getByTestId('drag-item-s1');
+      fireEvent.click(within(item).getByText('预览'));
+      expect(screen.getByText('成品预览')).toBeDefined();
+      /** 台词在卡片标题与弹窗正文各出现一次，用 getAllByText 断言存在 */
+      expect(screen.getAllByText('预览台词内容').length).toBeGreaterThanOrEqual(2);
+      expect(screen.getByText('匹配度 92%')).toBeDefined();
+    });
+
+    it('有配音音频时应显示"配音同步播放"', () => {
+      renderView({
+        matchResults: [makeMatchResult({ shotId: 's1', text: '预览台词' })],
+        ttsResults: [{ shotId: 's1', audioUrl: 'magic://local/audio.wav' }],
+      });
+      const item = screen.getByTestId('drag-item-s1');
+      fireEvent.click(within(item).getByText('预览'));
+      expect(screen.getByText('配音同步播放')).toBeDefined();
+    });
+
+    it('无配音音频时应显示"无配音音频"', () => {
+      renderView({
+        matchResults: [makeMatchResult({ shotId: 's1', text: '预览台词' })],
+        ttsResults: [],
+      });
+      const item = screen.getByTestId('drag-item-s1');
+      fireEvent.click(within(item).getByText('预览'));
+      expect(screen.getByText('无配音音频')).toBeDefined();
+    });
+
+    it('关闭按钮应关闭预览弹窗', () => {
+      renderView({
+        matchResults: [makeMatchResult({ shotId: 's1', text: '预览台词' })],
+      });
+      const item = screen.getByTestId('drag-item-s1');
+      fireEvent.click(within(item).getByText('预览'));
+      expect(screen.getByText('成品预览')).toBeDefined();
+      const closeBtn = screen.getByTestId('icon-x').parentElement!;
+      fireEvent.click(closeBtn);
+      expect(screen.queryByText('成品预览')).toBeNull();
+    });
+  });
+
+  // === 原声段落 ===
+
+  describe('原声段落', () => {
+    it('keepOriginalAudio 卡片应显示"原声"标记与原声轨', () => {
+      renderView({
+        matchResults: [makeMatchResult({ shotId: 's1', text: '原声台词', keepOriginalAudio: true })],
+      });
+      const item = screen.getByTestId('drag-item-s1');
+      expect(within(item).getByText('原声')).toBeDefined();
+      expect(within(item).getByText('原声轨')).toBeDefined();
+    });
+
+    it('原声段落预览应显示"原声播放（切片自带音轨）"而非配音', () => {
+      renderView({
+        matchResults: [makeMatchResult({ shotId: 's1', text: '原声台词', keepOriginalAudio: true })],
+        ttsResults: [{ shotId: 's1', audioUrl: 'magic://local/audio.wav' }],
+      });
+      const item = screen.getByTestId('drag-item-s1');
+      fireEvent.click(within(item).getByText('预览'));
+      expect(screen.getByText('原声播放（切片自带音轨）')).toBeDefined();
+      expect(screen.queryByText('配音同步播放')).toBeNull();
     });
   });
 
