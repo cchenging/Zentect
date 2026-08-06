@@ -201,6 +201,8 @@ export class ProjectRepository {
       'extractionConfig', 'vlmFrames', 'scriptParagraphs', 'scriptStyle',
       'speechRate', 'pipelineParams', 'ttsResults', 'ttsEngine', 'ttsVoiceId',
       'videoChunks', 'storyboardMode',
+      // 🔧 步骤5 匹配数据：以 metadata（步骤5 完成时持久化）为准，不让 canvas_data 瞬态快照覆盖
+      'matchResults', 'activeBgm', 'beatTimestamps',
     ]);
     for (const [key, val] of Object.entries(canvasObj)) {
       if (CANVAS_SKIP_KEYS.has(key)) continue;
@@ -380,6 +382,19 @@ export class ProjectRepository {
       }
       if (data.ttsEngine) metadata.ttsEngine = data.ttsEngine;
       if (data.ttsVoiceId) metadata.ttsVoiceId = data.ttsVoiceId;
+      /** 💥 持久化步骤5镜头匹配数据，确保重进项目后匹配结果/切片池/BGM 节拍不丢失 */
+      if (data.matchResults && Array.isArray(data.matchResults) && data.matchResults.length > 0) {
+        metadata.matchResults = ProjectRepository.sanitizeMatchResultsForPersist(data.matchResults);
+      }
+      if (data.videoChunks && Array.isArray(data.videoChunks) && data.videoChunks.length > 0) {
+        metadata.videoChunks = data.videoChunks;
+      }
+      if (data.activeBgm && typeof data.activeBgm === 'object' && data.activeBgm.id) {
+        metadata.activeBgm = data.activeBgm;
+      }
+      if (data.beatTimestamps && Array.isArray(data.beatTimestamps) && data.beatTimestamps.length > 0) {
+        metadata.beatTimestamps = data.beatTimestamps;
+      }
 
       // 保存 mediaItems 到 metadata（因为 media 表主要用于视频，而关键帧和音频是临时的）
       if (data.mediaItems && Array.isArray(data.mediaItems)) {
@@ -597,5 +612,19 @@ export class ProjectRepository {
       console.error('[SQLite 仓储层读盘崩溃]:', error);
       return null;
     }
+  }
+
+  /**
+   * 裁剪匹配结果中的大字段（visionEmbedding/colorHistogram 为 CLIP 计算中间产物，可达 512 维），
+   * 避免写入 metadata 后 JSON 体积臃肿。前端仅消费 id/startMs/endMs/coverPath/filePath 等轻量字段。
+   * @param results 原始匹配结果数组
+   * @returns 裁剪 chunkData 后的匹配结果数组（不修改原数组）
+   */
+  static sanitizeMatchResultsForPersist(results: any[]): any[] {
+    return results.map((m: any) => {
+      if (!m || !m.chunkData || typeof m.chunkData !== 'object') return m;
+      const { visionEmbedding, colorHistogram, ...lightChunkData } = m.chunkData;
+      return { ...m, chunkData: lightChunkData };
+    });
   }
 }

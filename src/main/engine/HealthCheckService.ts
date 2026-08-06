@@ -104,6 +104,15 @@ export class HealthCheckService {
         type: 'local',
         hint: '本地推理引擎，请确认 健康检查 → AI 运行时依赖 中 kokoro 已安装'
       });
+    } else {
+      // 🛑 错就错：配置了未知/已移除的 TTS 引擎（如历史残留 moss）时明确暴露，不静默缺失
+      // 让用户能在 设置 → AI → 语音合成 中重新选择合法引擎
+      results.push({
+        name: 'TTS 配音 (未识别引擎)',
+        available: false,
+        type: 'cloud',
+        hint: `当前配置的 TTS 引擎「${ttsProvider || '(空)'}」无效，请到 设置 → AI → 语音合成 重新选择引擎`
+      });
     }
 
     // LLM — 脚本生成需要

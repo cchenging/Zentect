@@ -91,10 +91,16 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
     manifestPaths: ['clip/config.json', 'clip/model.safetensors', 'clip/preprocessor_config.json'],
     scanPaths: ['clip/model.safetensors', 'huggingface/clip/model.safetensors'],
   },
+  {
+    id: 'chinese_clip', name: 'Chinese-CLIP', displayName: '中文 CLIP 跨模态模型', type: 'vision',
+    description: 'OFA Chinese-CLIP 中文文本-图像匹配（中文文案直编无需翻译，步骤5 语义匹配优先）', version: '1.0',
+    manifestPaths: ['chinese-clip/model.safetensors'],
+    scanPaths: ['chinese-clip/model.safetensors', 'chinese-clip/config.json', 'chinese-clip/tokenizer_config.json'],
+  },
   // === TTS 语音合成 ===
   {
     id: 'kokoro_voices', name: 'Kokoro Voices', displayName: 'Kokoro 中文音色包', type: 'tts',
-    description: 'Kokoro-82M 中文音色文件（voices/*.pt，12 个音色，模型本体由 kokoro 首次运行时自动下载）',
+    description: 'Kokoro-82M 中文音色文件（voices/*.pt，官方 8 个音色，模型本体由 kokoro 首次运行时自动下载）',
     version: '1.0', pythonPkg: 'kokoro',
     manifestPaths: ['kokoro/voices/zf_xiaobei.pt'],
     scanPaths: ['kokoro/voices/zf_xiaobei.pt'],
@@ -186,6 +192,8 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
   //   用户也可手动下载整个目录放到 resources/models/faster_whisper/large-v3/
   faster_whisper_large_v3: { url: 'https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main', file: 'model.bin' },
   clip: { url: 'https://huggingface.co/openai/clip-vit-base-patch32/resolve/main', file: 'model.safetensors' },
+  // 中文 CLIP：多文件模型（config.json/tokenizer/preprocessor 需手动放置或随安装包预装），下载主体权重即可
+  chinese_clip: { url: 'https://huggingface.co/OFA-Sys/chinese-clip-vit-base-patch16/resolve/main', file: 'chinese-clip/model.safetensors' },
   buffalo_l_det_10g: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/det_10g.onnx' },
   buffalo_l_w600k_r50: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/w600k_r50.onnx' },
   buffalo_l_1k3d68: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/1k3d68.onnx' },
@@ -254,11 +262,11 @@ const MODEL_MODULES: ModelModuleDef[] = [
   },
   {
     id: 'clip', category: 'vision', displayName: 'CLIP 跨模态匹配',
-    description: 'OpenAI CLIP 文本-图像匹配（脚本-视频帧对齐核心，需 PyTorch）',
+    description: '中文 CLIP + 英文 CLIP 双模型图文匹配（中文直编优先，步骤5 镜头匹配核心）',
     icon: '🧠', required: 'optional',
-    modelIds: ['clip'],
+    modelIds: ['clip', 'chinese_clip'],
     runtimeId: 'clip',  // 运行时依赖：transformers + torch
-    sizeNote: '~600 MB (模型) + 100 MB (运行时，含 torch)',
+    sizeNote: '~950 MB (模型) + 100 MB (运行时，含 torch)',
   },
   // === TTS 语音合成（1 张卡片）===
   {
@@ -304,10 +312,10 @@ export class ModelService {
   }
 
   /**
-   * 🔧 修复 P0：确保 local_models 表有 seed 数据（V5 细化版 + V8 增 faster_whisper）
+   * 🔧 修复 P0：确保 local_models 表有 seed 数据（V5 细化版 + V8 增 faster_whisper + V10 增 chinese_clip）
    * 迁移逻辑：
-   *   1. 检测旧版粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 17 条
-   *   2. 表为空 → 直接 seed 17 条
+   *   1. 检测旧版粗粒度记录（id 在 LEGACY_MODEL_IDS 中）→ 删除旧记录，重新 seed 18 条
+   *   2. 表为空 → 直接 seed 18 条
    *   3. 已有新记录 → 跳过
    * 旧版 bug：local_models 表永远空表，预装的模型躺在磁盘但代码不知道
    */
@@ -323,11 +331,36 @@ export class ModelService {
           try { this.modelRepo.deleteById(old.id); } catch {}
         }
       } else if (existing && existing.length > 0) {
-        // 已是新版，跳过
+        // 🔧 V10：增量补缺——新版本新增的模型（如 chinese_clip）不会出现在老用户 DB 里，
+        //   只补插缺失的模型记录，避免"已有记录就跳过"导致新模型永远不出现
+        const existingIds = new Set(existing.map(m => m.id));
+        const missing = MODEL_DEFINITIONS.filter(d => !existingIds.has(d.id));
+        if (missing.length > 0) {
+          AppLogger.info(LOG_TAGS.SYSTEM, `[ModelService] 增量补缺 ${missing.length} 条模型记录: ${missing.map(d => d.id).join(', ')}`);
+          for (const def of missing) {
+            try {
+              this.modelRepo.insert({
+                id: def.id,
+                name: def.name,
+                type: def.type,
+                description: def.description,
+                version: def.version,
+                size_bytes: 0,
+                status: 'not_downloaded',
+                download_path: '',
+                remote_url: MODEL_SOURCES[def.id]?.url || '',
+                md5_checksum: '',
+              });
+            } catch (e: any) {
+              AppLogger.warn(LOG_TAGS.SYSTEM, `[ModelService] 增量补缺 ${def.id} 失败: ${e.message}`);
+            }
+          }
+          this.scanDiskModels(true);
+        }
         return;
       }
 
-      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 17 条 V5 细化模型记录');
+      AppLogger.info(LOG_TAGS.SYSTEM, '[ModelService] 开始 seed 18 条 V5 细化模型记录');
       for (const def of MODEL_DEFINITIONS) {
         try {
           this.modelRepo.insert({

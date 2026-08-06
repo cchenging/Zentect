@@ -346,6 +346,10 @@ export class HealthService {
       kokoro: ['Kokoro TTS'],
       misaki: ['Kokoro TTS'],
       soundfile: ['Kokoro TTS', '音频分析'],
+      // misaki[zh] 传递依赖：缺失时 Kokoro 引擎加载崩溃，纳入运行时检查
+      ordered_set: ['Kokoro TTS'],
+      pypinyin: ['Kokoro TTS'],
+      cn2an: ['Kokoro TTS'],
     }
     const pkgDisplayName: Record<string, string> = {
       torch: 'PyTorch',
@@ -357,6 +361,9 @@ export class HealthService {
       kokoro: 'Kokoro',
       misaki: 'Misaki',
       soundfile: 'SoundFile',
+      ordered_set: 'OrderedSet',
+      pypinyin: 'Pypinyin',
+      cn2an: 'Cn2An',
     }
 
     const buildOffline = () => Object.keys(pkgUsedBy).map(name => ({

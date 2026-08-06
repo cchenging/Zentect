@@ -23,6 +23,7 @@ import { PathManager } from '../utils/pathManager';
 import { ExceptionHub } from '../core/ExceptionHub';
 import { ProjectRepository } from '../database/repositories/ProjectRepository';
 import { JobScheduler } from '../core/JobScheduler';
+import { AiRuntimeManager } from '../core/AiRuntimeManager';
 import * as path from 'path';
 import type { PipelinePayload } from '../../shared/types';
 
@@ -540,6 +541,19 @@ export class EngineController {
       }
     });
 
+    // 🔧 V8: 安装依赖后重启 AI 运行时，让新装的 Python 包在进程中生效
+    IpcRouter.handle(IPC_CHANNELS.SYSTEM_AI_RUNTIME_RESTART, async () => {
+      AppLogger.info(LOG_TAGS.SYSTEM, '[ai-runtime-restart] 触发 AI 运行时重启...');
+      try {
+        const result = await AiRuntimeManager.getInstance().restart();
+        AppLogger.info(LOG_TAGS.SYSTEM, `[ai-runtime-restart] 重启${result.success ? '成功' : '失败'}: ${result.message}`);
+        return result;
+      } catch (err: any) {
+        AppLogger.error(LOG_TAGS.SYSTEM, '[ai-runtime-restart] 重启异常', err);
+        return { success: false, message: `重启 AI 运行时异常: ${err.message}` };
+      }
+    });
+
     // 🔧 V6 删除：SYSTEM_GET_DB_DETAIL handler（详情数据已合并到 system:health 响应，无需单独 IPC）
     //   旧版 V7 的 getDatabaseDetail 方法返回表列表/行数等开发信息，V6 已删除
 
@@ -643,19 +657,16 @@ async function getVoicesForEngine(engine: string): Promise<Array<{ id: string; n
       ];
     case 'kokoro':
       // Kokoro-82M 本地中文音色（与前端 VOICE_OPTIONS / 模型管理 voices 目录一致）
+      // 官方 v1.0-zh 仅 8 个音色，与 HF voices/*.pt 一一对应
       return [
         { id: 'zf_xiaobei', name: '小北 (女)', gender: 'female', locale: 'zh-CN' },
         { id: 'zf_xiaoni', name: '小妮 (女)', gender: 'female', locale: 'zh-CN' },
         { id: 'zf_xiaoxiao', name: '小小 (女)', gender: 'female', locale: 'zh-CN' },
         { id: 'zf_xiaoyi', name: '小一 (女)', gender: 'female', locale: 'zh-CN' },
-        { id: 'zf_xiaomo', name: '小莫 (女)', gender: 'female', locale: 'zh-CN' },
-        { id: 'zf_xiaoyou', name: '小悠 (女)', gender: 'female', locale: 'zh-CN' },
         { id: 'zm_yunjian', name: '云健 (男)', gender: 'male', locale: 'zh-CN' },
         { id: 'zm_yunxi', name: '云希 (男)', gender: 'male', locale: 'zh-CN' },
+        { id: 'zm_yunxia', name: '云霞 (男)', gender: 'male', locale: 'zh-CN' },
         { id: 'zm_yunyang', name: '云扬 (男)', gender: 'male', locale: 'zh-CN' },
-        { id: 'zm_yunye', name: '云野 (男)', gender: 'male', locale: 'zh-CN' },
-        { id: 'zm_yunhao', name: '云皓 (男)', gender: 'male', locale: 'zh-CN' },
-        { id: 'zm_yunze', name: '云泽 (男)', gender: 'male', locale: 'zh-CN' },
       ];
     default:
       return [];

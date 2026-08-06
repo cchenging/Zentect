@@ -6,7 +6,7 @@
 //   3. 详情 Modal 显示具体字段（版本/路径/包列表/通道列表等）
 //   4. 修复伪硬编码：所有数据从 system:health 真实获取
 //   5. 字体规范 12px 起步：辅助 12px / 正文 13px / 标题 14-16px / 数值 18px
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2, XCircle, AlertTriangle, Loader2, RefreshCw, ChevronRight, X, Download, Zap,
 } from 'lucide-react';
@@ -103,6 +103,10 @@ export const HealthPage: React.FC = () => {
   const [cudaInstalling, setCudaInstalling] = useState(false);
   const [cudaInstallProgress, setCudaInstallProgress] = useState<GpuInstallProgressState | null>(null);
 
+  /** 🔧 V8 安装进度订阅句柄：进度流结束后或组件卸载时取消，防止监听器泄漏 */
+  const installSubRef = useRef<() => void>(() => {});
+  const gpuInstallSubRef = useRef<() => void>(() => {});
+
   /** 执行健康检查 */
   const fetchHealth = async () => {
     setLoading(true);
@@ -129,21 +133,30 @@ export const HealthPage: React.FC = () => {
       current: null, percent: 0, message: '准备安装...', error: null,
     });
 
-    // 注册 SSE 进度监听
-    const unsubscribe = API.system.onInstallDepProgress((progress: any) => {
+    // 注册 SSE 进度监听：只有收到 done/error 才取消订阅，
+    // 避免在 installDep 返回后过早取消导致安装期间的进度帧全部丢失
+    installSubRef.current = API.system.onInstallDepProgress((progress: any) => {
       setInstallProgress(progress);
       if (progress.status === 'done' || progress.status === 'error') {
-        setInstalling(false);
-        // 安装完成后自动刷新健康检查
-        if (progress.status === 'done') {
-          setTimeout(() => fetchHealth(), 500);
+        // 进度流结束，立即取消订阅
+        installSubRef.current();
+        if (progress.status === 'error') {
+          setInstalling(false);
+          return;
         }
+        // 安装完成：自动重启 AI 运行时让新装的依赖在进程中生效，期间保持进度条显示
+        setInstallProgress(prev => prev ? { ...prev, percent: 100, message: '安装完成，正在重启 AI 运行时...' } : prev);
+        restartAiRuntime().then((ok) => {
+          setInstalling(false);
+          if (ok) setTimeout(() => fetchHealth(), 500);
+        });
       }
     });
 
     try {
       const result = await API.system.installDep(missingPkgs);
       if (!result?.success) {
+        installSubRef.current();
         setInstalling(false);
         setInstallProgress(prev => prev ? {
           ...prev, status: 'error',
@@ -152,14 +165,29 @@ export const HealthPage: React.FC = () => {
         } : null);
       }
     } catch (err: any) {
+      installSubRef.current();
       setInstalling(false);
       setInstallProgress(prev => prev ? {
         ...prev, status: 'error',
         error: err.message, message: err.message,
       } : null);
-    } finally {
-      // 进度流结束后取消订阅（延迟，确保最后一条消息处理完）
-      setTimeout(() => unsubscribe(), 1000);
+    }
+  };
+
+  /** 🔧 V8 安装完成后重启 AI 运行时，让新装的 Python 依赖在进程中生效 */
+  const restartAiRuntime = async (): Promise<boolean> => {
+    try {
+      const res = await API.system.restartAiRuntime();
+      if (!res?.success) throw new Error(res?.message || '未知错误');
+      return true;
+    } catch (err: any) {
+      // 重启失败也要复位安装状态，避免按钮永远卡在"安装中"
+      setInstalling(false);
+      setCudaInstalling(false);
+      const errorMsg = `重启 AI 运行时失败: ${err.message}`;
+      setInstallProgress(prev => prev ? { ...prev, status: 'error', error: errorMsg, message: errorMsg } : prev);
+      setCudaInstallProgress(prev => prev ? { ...prev, status: 'error', error: errorMsg, message: errorMsg } : prev);
+      return false;
     }
   };
 
@@ -200,21 +228,32 @@ export const HealthPage: React.FC = () => {
       current_step: null, error: null,
     });
 
-    // 注册 SSE 进度监听
-    const unsubscribe = API.system.onGpuInstallProgress((progress: any) => {
+    // 注册 SSE 进度监听：只有收到 done/error 才取消订阅，避免进度帧丢失
+    gpuInstallSubRef.current = API.system.onGpuInstallProgress((progress: any) => {
       setCudaInstallProgress(progress);
       if (progress.status === 'done' || progress.status === 'error') {
-        setCudaInstalling(false);
-        // 安装完成后刷新 GPU 状态
-        if (progress.status === 'done') {
-          setTimeout(() => fetchGpuStatus(), 1000);
+        // 进度流结束，立即取消订阅
+        gpuInstallSubRef.current();
+        if (progress.status === 'error') {
+          setCudaInstalling(false);
+          return;
         }
+        // 安装完成：自动重启 AI 运行时让新装的 torch 生效，期间保持进度条显示
+        setCudaInstallProgress(prev => prev ? { ...prev, percent: 100, message: '安装完成，正在重启 AI 运行时...' } : prev);
+        restartAiRuntime().then((ok) => {
+          setCudaInstalling(false);
+          if (ok) {
+            setTimeout(() => fetchGpuStatus(), 500);
+            setTimeout(() => fetchHealth(), 800);
+          }
+        });
       }
     });
 
     try {
       const result = await API.system.installCudaTorch();
       if (!result?.success) {
+        gpuInstallSubRef.current();
         setCudaInstalling(false);
         setCudaInstallProgress(prev => prev ? {
           ...prev, status: 'error',
@@ -223,13 +262,12 @@ export const HealthPage: React.FC = () => {
         } : null);
       }
     } catch (err: any) {
+      gpuInstallSubRef.current();
       setCudaInstalling(false);
       setCudaInstallProgress(prev => prev ? {
         ...prev, status: 'error',
         error: err.message, message: err.message,
       } : null);
-    } finally {
-      setTimeout(() => unsubscribe(), 1000);
     }
   };
 
@@ -285,6 +323,12 @@ export const HealthPage: React.FC = () => {
   };
 
   useEffect(() => { fetchHealth(); fetchGpuStatus(); }, []);
+
+  // 组件卸载时清理进行中的安装进度订阅，防止监听器泄漏
+  useEffect(() => () => {
+    installSubRef.current();
+    gpuInstallSubRef.current();
+  }, []);
 
   /** 获取状态图标 */
   const getStatusIcon = (status: HealthStatus) => {
