@@ -1,11 +1,56 @@
 // Module: pipeline/step4-tts - Pipeline Strategy
 
+import { spawn } from 'child_process';
+import * as fs from 'fs';
 import { BaseNodeStrategy } from '../../../../main/engine/strategies/BaseNodeStrategy';
 import type { ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
 import { AppLogger } from '../../../../main/core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { ttsEngine } from '../../../../main/engine/TTSEngine';
 import { ProviderManager } from '../../../../main/engine/config/ProviderManager';
+import { PathManager } from '../../../../main/utils/pathManager';
+
+/**
+ * 🎵 P2 声画同步：ffprobe 读取配音音频真实时长（秒）
+ * 步骤3 的 duration 是"字数/语速×0.85"估算值（误差可达 20%+），
+ * 步骤5 用它做时长惩罚与变速会导致声画不同步、画面被硬拉变速。
+ * 合成完成后用真实时长回填；读取失败抛错暴露根因（遵循"错就错，不降级"原则，
+ * 不静默回退估算值掩盖 ffprobe/工具链问题）。
+ */
+function probeAudioDurationSec(audioPath: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const ffprobeExe = PathManager.getBinPath('ffprobe.exe');
+    if (!ffprobeExe || !fs.existsSync(ffprobeExe)) {
+      reject(new Error('ffprobe 不可用，无法读取配音真实时长'));
+      return;
+    }
+    if (!audioPath || !fs.existsSync(audioPath)) {
+      reject(new Error(`配音音频文件不存在: ${audioPath}`));
+      return;
+    }
+    const child = spawn(ffprobeExe, ['-v', 'quiet', '-show_entries', 'format=duration', '-of', 'csv=p=0', audioPath], { windowsHide: true });
+    let stdout = '';
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error('ffprobe 读取配音时长超时（10秒）'));
+    }, 10000);
+    child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    child.on('error', (e) => { clearTimeout(timer); reject(e); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(`ffprobe 退出码 ${code}，无法读取配音时长`));
+        return;
+      }
+      const sec = parseFloat(stdout.trim());
+      if (!Number.isFinite(sec) || sec <= 0) {
+        reject(new Error(`ffprobe 返回无效配音时长: "${stdout.trim()}"`));
+        return;
+      }
+      resolve(sec);
+    });
+  });
+}
 
 /** TTS 引擎类型 */
 type TTSProvider = 'doubao' | 'edge' | 'kokoro';
@@ -101,7 +146,14 @@ export class TTSStrategy extends BaseNodeStrategy {
         shotId: s.id || s.shotId || `shot_${idx + 1}`,
         text: s.text || '',
         duration: s.duration || 3,
-      })).filter((s: any) => s.text && s.text.trim().length > 0);
+        keepOriginalAudio: s.keepOriginalAudio === true,
+      }))
+        // 原声段落（keepOriginalAudio）不合成 TTS，直接保留原片原声
+        .filter((s: any) => s.text && s.text.trim().length > 0 && !s.keepOriginalAudio);
+      const originalCount = input.scriptShots.filter((s: any) => s.keepOriginalAudio === true).length;
+      if (originalCount > 0) {
+        AppLogger.info(LOG_TAGS.AI_AGENT, `TTS 跳过 ${originalCount} 段原声段落（保留原片原声），合成 ${shots.length} 段配音`);
+      }
       AppLogger.info(LOG_TAGS.AI_AGENT, `TTS 从 scriptShots 获取到 ${shots.length} 段剧本文本`);
     }
 
@@ -114,7 +166,10 @@ export class TTSStrategy extends BaseNodeStrategy {
               shotId: s.id || s.shotId || `shot_${idx + 1}`,
               text: s.text || '',
               duration: s.duration || 3,
-            })).filter((s: any) => s.text && s.text.trim().length > 0);
+              keepOriginalAudio: s.keepOriginalAudio === true,
+            }))
+              // 原声段落不合成 TTS
+              .filter((s: any) => s.text && s.text.trim().length > 0 && !s.keepOriginalAudio);
           }
           if (shots.length > 0) break;
         }
@@ -141,7 +196,11 @@ export class TTSStrategy extends BaseNodeStrategy {
       // 单段合成执行器
       async (shot, _idx) => {
         const audioPath = await ttsEngine.generateTTS(shot.text, provider, cacheDir, voiceId, speechRate);
-        return { shotId: shot.shotId, text: shot.text, audioPath, duration: shot.duration } as TTSItemResult;
+        // 🎵 P2 声画同步：合成后立即用 ffprobe 读真实音频时长回填（秒），
+        // 替代步骤3 的"字数/语速"估算值，让步骤5 的时长惩罚与变速基于真实声画时长
+        const realDuration = await probeAudioDurationSec(audioPath);
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[TTS] ${shot.shotId} 真实时长 ${realDuration.toFixed(2)}s（预估 ${shot.duration}s，偏差 ${((realDuration - (shot.duration || 0)) / Math.max(realDuration, 0.1) * 100).toFixed(0)}%）`);
+        return { shotId: shot.shotId, text: shot.text, audioPath, duration: realDuration } as TTSItemResult;
       },
       // 进度回调：每完成一段更新进度 + 推送增量结果（settled 是本段结果，直接累计到 completedSoFar）
       (completed, total, idx, settled) => {

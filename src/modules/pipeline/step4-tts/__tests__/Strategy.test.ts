@@ -29,6 +29,45 @@ vi.mock('../../../../main/engine/TTSEngine', () => ({
   },
 }));
 
+// 🎵 P2 声画同步：mock ffprobe 时长读取链路（child_process.spawn 模拟输出真实时长 3.5 秒，fs.existsSync 恒真）
+vi.mock('../../../../main/utils/pathManager', () => ({
+  PathManager: { getBinPath: vi.fn(() => 'ffprobe.exe') },
+}));
+
+vi.mock('fs', async () => ({
+  ...(await vi.importActual('fs') as any),
+  existsSync: vi.fn(() => true),
+}));
+
+vi.mock('child_process', () => ({
+  spawn: vi.fn(() => {
+    const listeners: Record<string, ((...args: any[]) => void)[]> = {};
+    const child: any = {
+      stdout: {
+        on: (ev: string, cb: any) => {
+          listeners[`stdout:${ev}`] = [...(listeners[`stdout:${ev}`] || []), cb];
+        },
+        emit: (ev: string, data?: any) => {
+          (listeners[`stdout:${ev}`] || []).forEach((cb) => cb(data));
+        },
+      },
+      on: (ev: string, cb: any) => {
+        listeners[ev] = [...(listeners[ev] || []), cb];
+      },
+      emit: (ev: string, arg?: any) => {
+        (listeners[ev] || []).forEach((cb) => cb(arg));
+      },
+      kill: vi.fn(),
+    };
+    // 模拟 ffprobe 成功输出真实时长 3.5 秒（stdout data + close code 0）
+    setTimeout(() => {
+      child.stdout.emit('data', Buffer.from('3.5'));
+      child.emit('close', 0);
+    }, 0);
+    return child;
+  }),
+}));
+
 import { ttsEngine } from '../../../../main/engine/TTSEngine';
 
 // 动态导入被测模块（mock 已在顶层设置）
@@ -146,6 +185,8 @@ describe('TTSStrategy', () => {
       expect(result.shots).toHaveLength(1);
       expect(result.shots[0].shotId).toBe('shot_1');
       expect(result.shots[0].audioPath).toBe('/cache/tts_output/tts_edge_abc123.mp3');
+      // 🎵 P2 声画同步：duration 应为 ffprobe 读出的真实时长（3.5s），而非步骤3 预估值
+      expect(result.shots[0].duration).toBe(3.5);
 
       // 验证进度回调
       expect(onProgress).toHaveBeenCalled();

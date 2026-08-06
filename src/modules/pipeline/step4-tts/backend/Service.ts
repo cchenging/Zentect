@@ -11,14 +11,19 @@ import { AppError, ErrorCode } from '@modules/infra/error/AppError'
 export type TTSVendor = 'doubao' | 'edge' | 'kokoro'
 
 export class TTSProvider {
-  /** fallback 链 — 当前仅保留默认引擎 Edge */
+  /**
+   * 按引擎优先级合成（支持首选引擎）
+   * @param preferredProvider 用户明确选择的引擎；指定时只走该引擎（错就错，不静默回退掩盖失败），未指定时兜底默认引擎 edge
+   */
   async synthesizeWithFallback(
     text: string,
     saveDir?: string,
     voiceOverride?: string,
-    rate?: number
+    rate?: number,
+    preferredProvider?: TTSVendor
   ): Promise<{ path: string; provider: TTSVendor }> {
-    const fallbackChain: TTSVendor[] = ['edge'];
+    // 用户指定引擎 → 只用该引擎（失败即抛错暴露）；未指定 → edge 兜底（历史默认，免费无需配置）
+    const fallbackChain: TTSVendor[] = preferredProvider ? [preferredProvider] : ['edge'];
     let lastError: Error | null = null;
 
     for (const provider of fallbackChain) {

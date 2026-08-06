@@ -31,6 +31,45 @@ vi.mock('../../../../main/engine/TTSEngine', () => ({
   },
 }));
 
+// 🎵 P2 声画同步：mock ffprobe 时长读取链路（child_process.spawn 模拟输出真实时长 3.5 秒，fs.existsSync 恒真）
+vi.mock('../../../../main/utils/pathManager', () => ({
+  PathManager: { getBinPath: vi.fn(() => 'ffprobe.exe') },
+}));
+
+vi.mock('fs', async () => ({
+  ...(await vi.importActual('fs') as any),
+  existsSync: vi.fn(() => true),
+}));
+
+vi.mock('child_process', () => ({
+  spawn: vi.fn(() => {
+    const listeners: Record<string, ((...args: any[]) => void)[]> = {};
+    const child: any = {
+      stdout: {
+        on: (ev: string, cb: any) => {
+          listeners[`stdout:${ev}`] = [...(listeners[`stdout:${ev}`] || []), cb];
+        },
+        emit: (ev: string, data?: any) => {
+          (listeners[`stdout:${ev}`] || []).forEach((cb) => cb(data));
+        },
+      },
+      on: (ev: string, cb: any) => {
+        listeners[ev] = [...(listeners[ev] || []), cb];
+      },
+      emit: (ev: string, arg?: any) => {
+        (listeners[ev] || []).forEach((cb) => cb(arg));
+      },
+      kill: vi.fn(),
+    };
+    // 模拟 ffprobe 成功输出真实时长 3.5 秒（stdout data + close code 0）
+    setTimeout(() => {
+      child.stdout.emit('data', Buffer.from('3.5'));
+      child.emit('close', 0);
+    }, 0);
+    return child;
+  }),
+}));
+
 import { ttsEngine } from '../../../../main/engine/TTSEngine';
 import { TTSStrategy } from '../backend/Strategy';
 import { useStep3Store } from '../../stores/useStep3Store';

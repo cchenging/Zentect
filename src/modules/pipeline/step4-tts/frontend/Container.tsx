@@ -27,20 +27,17 @@ const VOICE_OPTIONS: Record<string, TtsVoiceOption[]> = {
     { id: "zh_female_meilinvyou_saturn_bigtts", name: "美女邻居", lang: "中文·女" },
     { id: "zh_male_shaunglangxueke_moon_bigtts", name: "爽朗学客", lang: "中文·男" },
   ],
-  // Kokoro-82M 本地推理引擎（中文音色，与 resources/models/kokoro/voices 对应）
+  // Kokoro-82M 本地推理引擎（官方 v1.0-zh 仅 8 个音色，与 HF voices/*.pt 一一对应）
+  // 注意：勿添加不存在的音色 id（如 zf_xiaomo/zm_yunye），HF 无此文件会导致试听合成 404
   kokoro: [
     { id: "zf_xiaobei", name: "小北", lang: "中文·女" },
     { id: "zf_xiaoni", name: "小妮", lang: "中文·女" },
     { id: "zf_xiaoxiao", name: "小小", lang: "中文·女" },
     { id: "zf_xiaoyi", name: "小一", lang: "中文·女" },
-    { id: "zf_xiaomo", name: "小莫", lang: "中文·女" },
-    { id: "zf_xiaoyou", name: "小悠", lang: "中文·女" },
     { id: "zm_yunjian", name: "云健", lang: "中文·男" },
     { id: "zm_yunxi", name: "云希", lang: "中文·男" },
+    { id: "zm_yunxia", name: "云霞", lang: "中文·男" },
     { id: "zm_yunyang", name: "云扬", lang: "中文·男" },
-    { id: "zm_yunye", name: "云野", lang: "中文·男" },
-    { id: "zm_yunhao", name: "云皓", lang: "中文·男" },
-    { id: "zm_yunze", name: "云泽", lang: "中文·男" },
   ],
 };
 

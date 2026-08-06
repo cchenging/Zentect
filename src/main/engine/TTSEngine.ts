@@ -99,9 +99,12 @@ export class TTSEngine {
 
     const voiceId = shot.voiceId || undefined;
     const rate = typeof shot.speechRate === 'number' && shot.speechRate > 0 ? shot.speechRate : undefined;
+    // 前端透传的用户引擎选择（如 kokoro/doubao）；未指定时 synthesizeWithFallback 内部兜底 edge
+    const preferredProvider: 'doubao' | 'edge' | 'kokoro' | undefined =
+      shot.provider === 'doubao' || shot.provider === 'edge' || shot.provider === 'kokoro' ? shot.provider : undefined;
 
     try {
-      const { path: audioPath, provider } = await ttsProvider.synthesizeWithFallback(text, saveDir, voiceId, rate);
+      const { path: audioPath, provider } = await ttsProvider.synthesizeWithFallback(text, saveDir, voiceId, rate, preferredProvider);
       AppLogger.info(LOG_TAGS.AI_ENGINE, `TTS 合成完成: shot=${shot.id}, provider=${provider}`);
       return { shotId: shot.id, audioPath, provider };
     } catch (err: any) {

@@ -1,7 +1,7 @@
 // Module: pipeline/step4-tts - View
 
-import React, { useRef, useEffect } from "react";
-import { Play, Square, Volume2, Mic, User } from "lucide-react";
+import React, { useRef, useEffect, useState } from "react";
+import { Play, Square, Volume2, Mic, User, ChevronDown, ChevronRight } from "lucide-react";
 import { Badge, Progress, StatHeader, EmptyState } from "@renderer/components/shared";
 import { VoiceCard } from "@renderer/components/shared/VoiceCard";
 import type { ScriptParagraph } from "../../../../shared/types/entities/editor";
@@ -45,10 +45,13 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
   const { ttsEngine, ttsVoiceId, ttsProgress, ttsResults, scriptParagraphs, isProcessing,
     voices, speechRate, previewingVoiceId, playingIdx, successCount, failedCount,
     singleSynthIdx, isSequentialPlaying, sequentialIdx, isPaused,
-    onSetTtsEngine, onSetTtsVoiceId, onSetSpeechRate, onPreview, onVoicePreview, onSynthesize,
+    onSetTtsEngine, onSetTtsVoiceId, onSetSpeechRate, onPreview, onVoicePreview,
     onSingleSynthesize, onSequentialPlay, onSequentialStop } = props;
 
   const currentVoices = voices;
+
+  // 音色选择区折叠状态（默认展开，可折叠节省纵向空间）
+  const [voicesCollapsed, setVoicesCollapsed] = useState(false);
 
   // 顺序播放自动滚动：当前播放段变化时，滚动到对应卡片
   const cardRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -78,18 +81,24 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
         </div>
       </div>
 
-      {/* 音色选择 */}
+      {/* 音色选择（可折叠，默认展开） */}
       <div className="glass-card-sm p-3">
-        <div className="flex items-center gap-2 mb-2 text-[13px] text-muted-foreground"><User size={12} /> 音色选择</div>
-        <div className="grid grid-cols-3 gap-1.5 max-h-[200px] overflow-y-auto">
-          {currentVoices.map((voice) => (
-            <VoiceCard key={voice.id} id={voice.id} name={voice.name} lang={voice.lang}
-              selected={ttsVoiceId === voice.id} isPreviewing={previewingVoiceId === voice.id}
-              // 🔧 修复 TS2322：VoiceCard onSelect 期望 () => void，用箭头函数包装 id 参数
-              onSelect={() => onSetTtsVoiceId(voice.id)} onPreview={onVoicePreview} />
-          ))}
-          {currentVoices.length === 0 && <div className="col-span-3 text-[10px] text-muted-foreground py-1">暂无可用音色</div>}
-        </div>
+        <button onClick={() => setVoicesCollapsed(!voicesCollapsed)}
+          className="w-full flex items-center justify-between gap-2 mb-2 text-[13px] text-muted-foreground cursor-pointer select-none">
+          <span className="flex items-center gap-2"><User size={12} /> 音色选择</span>
+          {voicesCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+        </button>
+        {!voicesCollapsed && (
+          <div className="grid grid-cols-3 gap-1.5 max-h-[200px] overflow-y-auto">
+            {currentVoices.map((voice) => (
+              <VoiceCard key={voice.id} id={voice.id} name={voice.name} lang={voice.lang}
+                selected={ttsVoiceId === voice.id} isPreviewing={previewingVoiceId === voice.id}
+                // 🔧 修复 TS2322：VoiceCard onSelect 期望 () => void，用箭头函数包装 id 参数
+                onSelect={() => onSetTtsVoiceId(voice.id)} onPreview={onVoicePreview} />
+            ))}
+            {currentVoices.length === 0 && <div className="col-span-3 text-[10px] text-muted-foreground py-1">暂无可用音色</div>}
+          </div>
+        )}
       </div>
 
       {/* 语速 */}
@@ -116,7 +125,35 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
       {/* 结果列表 */}
       {scriptParagraphs.length > 0 ? (
         <div className="flex flex-col gap-2">
-          <div className="text-[13px] font-semibold flex items-center gap-2"><Mic size={14} /> 配音列表</div>
+          {/* 配音列表标题行：右侧常驻"全部播放"（连续播放所有已合成段落），支持暂停/继续 + 停止 + 进度 */}
+          <div className="flex items-center justify-between">
+            <div className="text-[13px] font-semibold flex items-center gap-2"><Mic size={14} /> 配音列表</div>
+            <div className="flex items-center gap-1.5">
+              <button onClick={onSequentialPlay} disabled={isProcessing || successCount === 0}
+                title={successCount === 0 ? "请先合成配音，再全部播放" : "连续播放全部已合成段落"}
+                className={`flex items-center justify-center gap-1.5 py-1 px-2.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-50 ${
+                  isSequentialPlaying
+                    ? (isPaused ? "bg-accent/15 text-accent hover:bg-accent/25" : "bg-accent-cyan/20 text-accent-cyan")
+                    : "bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20"
+                }`}>
+                {isSequentialPlaying && !isPaused ? <><Square size={11} /> 暂停</>
+                  : isSequentialPlaying && isPaused ? <><Play size={11} /> 继续</>
+                  : <><Play size={11} /> 全部播放</>}
+              </button>
+              {isSequentialPlaying && (
+                <button onClick={onSequentialStop}
+                  className="flex items-center justify-center gap-1 py-1 px-2 rounded-md text-[12px] bg-muted/20 text-muted-foreground hover:bg-muted/30 font-medium cursor-pointer">
+                  停止
+                </button>
+              )}
+              {/* 播放进度提示：当前段/总段数 */}
+              {isSequentialPlaying && sequentialIdx !== null && (
+                <span className="text-[11px] text-muted-foreground">
+                  第 {String(sequentialIdx + 1).padStart(2, '0')} / {successCount}
+                </span>
+              )}
+            </div>
+          </div>
           {scriptParagraphs.map((p, idx) => {
             // 严格按 id/shotId 匹配，禁止下标回退：避免 ttsResults 残留旧数据时误播试听文案
             // 匹配失败即为 null（UI 显示"待合成"），错误必须以原始形态暴露，不兜底
@@ -202,37 +239,6 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
               </div>
             );
           })}
-          <button onClick={onSynthesize} disabled={isProcessing}
-            className="flex items-center justify-center gap-2 py-2 rounded-md text-[13px] bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 disabled:opacity-50 font-medium cursor-pointer">
-            <Mic size={14} className={isProcessing ? "animate-pulse" : ""} />{isProcessing ? "合成中..." : "开始合成"}
-          </button>
-          {/* 顺序播放控制：仅当有已合成成功的段落时显示，支持播放/暂停切换 + 独立停止 */}
-          {successCount > 0 && (
-            <div className="flex items-center gap-2">
-              <button onClick={onSequentialPlay} disabled={isProcessing}
-                className={`flex items-center justify-center gap-2 py-2 px-3 rounded-md text-[13px] font-medium cursor-pointer transition-all disabled:opacity-50 ${
-                  isSequentialPlaying
-                    ? (isPaused ? "bg-accent/15 text-accent hover:bg-accent/25" : "bg-accent-cyan/20 text-accent-cyan")
-                    : "bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20"
-                }`}>
-                {isSequentialPlaying && !isPaused ? <><Square size={12} /> 暂停</>
-                  : isSequentialPlaying && isPaused ? <><Play size={12} /> 继续</>
-                  : <><Play size={12} /> 顺序播放</>}
-              </button>
-              {isSequentialPlaying && (
-                <button onClick={onSequentialStop}
-                  className="flex items-center justify-center gap-1 py-2 px-3 rounded-md text-[13px] bg-muted/20 text-muted-foreground hover:bg-muted/30 font-medium cursor-pointer">
-                  停止
-                </button>
-              )}
-              {/* 播放进度提示：当前段/总段数 */}
-              {isSequentialPlaying && sequentialIdx !== null && (
-                <span className="text-[11px] text-muted-foreground ml-1">
-                  第 {String(sequentialIdx + 1).padStart(2, '0')} 段 / 共 {successCount} 段
-                </span>
-              )}
-            </div>
-          )}
         </div>
       ) : (
         <EmptyState title="配音待合成" description="文案确认后，TTS 引擎将逐段合成配音" iconType="audio" size="md" className="glass-card-sm" />

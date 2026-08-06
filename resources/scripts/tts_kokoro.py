@@ -24,7 +24,8 @@ from ai_config import MODELS_DIR, INFERENCE_LOCK
 router = APIRouter()
 
 # ============================================================
-# 内置中文音色表（Kokoro v1.0-zh，12 个音色）
+# 内置中文音色表（Kokoro v1.0-zh，官方仅 8 个音色，与 HF voices/*.pt 一一对应）
+# 注意：勿添加不存在的音色 id（如 zf_xiaomo/zm_yunye），HF 无此文件会导致合成 404 失败
 # id 与 HuggingFace voices/*.pt 文件名一致，可手动放置到 resources/models/kokoro/voices/
 # ============================================================
 KOKORO_VOICES = [
@@ -32,14 +33,10 @@ KOKORO_VOICES = [
     {'id': 'zf_xiaoni', 'name': '小妮', 'lang': '中文·女'},
     {'id': 'zf_xiaoxiao', 'name': '小小', 'lang': '中文·女'},
     {'id': 'zf_xiaoyi', 'name': '小一', 'lang': '中文·女'},
-    {'id': 'zf_xiaomo', 'name': '小莫', 'lang': '中文·女'},
-    {'id': 'zf_xiaoyou', 'name': '小悠', 'lang': '中文·女'},
     {'id': 'zm_yunjian', 'name': '云健', 'lang': '中文·男'},
     {'id': 'zm_yunxi', 'name': '云希', 'lang': '中文·男'},
+    {'id': 'zm_yunxia', 'name': '云霞', 'lang': '中文·男'},
     {'id': 'zm_yunyang', 'name': '云扬', 'lang': '中文·男'},
-    {'id': 'zm_yunye', 'name': '云野', 'lang': '中文·男'},
-    {'id': 'zm_yunhao', 'name': '云皓', 'lang': '中文·男'},
-    {'id': 'zm_yunze', 'name': '云泽', 'lang': '中文·男'},
 ]
 
 # 本地音色文件目录（ModelTab 模型管理：一键下载或手动放置）
@@ -70,7 +67,12 @@ class KokoroTTS:
 
     @classmethod
     def synthesize(cls, text: str, voice_id: str, speed: float, out_path: str) -> str:
-        """合成文本为 24kHz WAV 写入 out_path；任一步骤失败都抛错，不做静默降级"""
+        """合成文本为 24kHz WAV 写入 out_path；任一步骤失败都抛错，不做静默降级
+
+        合成后做响度归一化：Kokoro 模型输出平均响度偏低（实测 RMS 约 -26 dBFS），
+        直接使用听起来"声音小"。统一提升到目标 RMS -20 dBFS（语音舒适响度），
+        并用 tanh 软限幅防止增益后峰值削波（保留响度、避免硬削波失真）。
+        """
         import soundfile as sf
 
         with INFERENCE_LOCK:
@@ -84,6 +86,13 @@ class KokoroTTS:
             if not audio_chunks:
                 raise RuntimeError(f'Kokoro 合成结果为空: voice={voice_id}')
             full_audio = torch.cat(audio_chunks)
+
+            # 响度归一化：目标 RMS -20 dBFS；tanh 软限幅压缩增益后峰值（轻声近似线性，重音温和压缩）
+            target_rms = 10 ** (-20 / 20)  # ≈ 0.1（-20 dBFS）
+            current_rms = torch.sqrt(torch.mean(full_audio ** 2))
+            if current_rms > 0:
+                full_audio = torch.tanh(full_audio * (target_rms / current_rms))
+
             os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
             sf.write(out_path, full_audio.numpy(), 24000)
         return out_path
