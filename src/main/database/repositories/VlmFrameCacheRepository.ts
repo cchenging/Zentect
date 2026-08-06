@@ -25,7 +25,7 @@ export class VlmFrameCacheRepository {
   private db = SQLiteConnection.getInstance().getDB();
 
   /** 当前 prompt 版本（修改 prompt 时递增，如 v1 → v2，使旧缓存自动失效） */
-  private static readonly PROMPT_VERSION = 'v1';
+  private static readonly PROMPT_VERSION = 'v2';
 
   /**
    * 批量查询缓存（一次 SQL 拿回多帧结果，避免 N 次 SELECT）

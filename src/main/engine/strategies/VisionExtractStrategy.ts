@@ -7,7 +7,7 @@ import path from 'path';
 import { BaseNodeStrategy } from './BaseNodeStrategy';
 import type { ExecutionContext } from './BaseNodeStrategy';
 import { VisionProcessor } from '../media/VisionProcessor';
-import { LLMFactory } from '../adapters/LLMFactory';
+import { VlmAdapter } from '@modules/pipeline/step2-vision/backend/VlmAdapter';
 import { PromptBuilder } from '../prompts/PromptBuilder';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
@@ -135,8 +135,10 @@ function buildRolesContextPrompt(
   roles?: Array<{ id: string; name: string; avatar?: string; representative?: any; faces?: any[] }>,
 ): string {
   if (!roles || roles.length === 0) return '';
+  // 🔧 修复：自动命名的"角色_N"不注入名单——"角色_2开车"机械出戏，让 VLM 用"男子/女子"泛称，手动命名后自动生效
+  const isAutoNamed = (n: string) => /^角色_\d+$/.test(n || '');
   const roleLines = roles
-    .filter(r => r && r.name)
+    .filter(r => r && r.name && !isAutoNamed(r.name))
     .map(r => {
       // 附加性别/年龄信息（若有），帮助 VLM 更准确匹配画面中的人物
       const rep = r.representative || {};
@@ -169,9 +171,11 @@ export function buildFrameRolesAnchoringPrompt(
   frameRoles?: Record<number, string[]>,
 ): string {
   if (!frameRoles) return '';
+  // 🔧 修复：逐帧锚定同样过滤自动命名的"角色_N"（机械编号出戏），未命名人物交给 VLM 用泛称描述
+  const isAutoNamed = (n: string) => /^角色_\d+$/.test(n || '');
   // 仅当本批次至少有一帧存在角色锚定时才注入，避免无谓 prompt 膨胀
   const lines = batchFrames.map((f, i) => {
-    const names = frameRoles[f.idx];
+    const names = (frameRoles[f.idx] || []).filter(n => !isAutoNamed(n));
     if (names && names.length > 0) {
       return `- 第${i + 1}张（第${f.idx}帧）：${names.join('、')}`;
     }
@@ -364,9 +368,9 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       }
     }
 
-    const { adapter, modelName: resolvedModel } = LLMFactory.createAdapter('visual');
-    /** 💥 修复：优先使用用户在设置中配置的 VLM 模型，不再硬编码 qwen-vl-max */
-    const model = input.modelName || resolvedModel;
+    /** 💥 修复：优先使用用户在设置中配置的 VLM 模型，统一走 VlmAdapter 解析渠道 */
+    const vlmAdapter = new VlmAdapter(input.modelName);
+    const model = vlmAdapter.modelName;
 
     /** 每帧的描述和JSON数据存储（提前声明，供 P1-1/P1-2 使用，避免 TDZ） */
     const frameDescriptions: string[] = new Array(totalFrameCount).fill('');
@@ -485,64 +489,6 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     let globalContext: GlobalSceneContext | null = null;
 
     /**
-     * VLM response_format 能力级别（首次调用检测，后续直接复用，避免重复失败）
-     * 1 = json_schema（最严格，OpenAI/部分服务商支持）
-     * 2 = json_object（多数服务商支持）
-     * 3 = 无 response_format（纯 prompt 约束，兼容所有服务商）
-     */
-    let vlmFormatLevel: 1 | 2 | 3 = 1;
-
-    /**
-     * 按 vlmFormatLevel 调用 VLM
-     * 首次失败自动降级并缓存级别，后续批次直接用有效级别，不重复浪费 API 调用
-     */
-    const callVlmWithFallback = async (
-      msgs: any[], mdl: string, temp: number, fmt: any,
-    ): Promise<string> => {
-      /** 按当前级别构造 options */
-      const buildOpts = (level: 1 | 2 | 3): any => {
-        if (level === 1) return { response_format: fmt };
-        if (level === 2) return { response_format: { type: 'json_object' } };
-        return {};
-      };
-
-      /** 从返回值提取文本 */
-      const extractText = (r: any): string => {
-        if (r && typeof r === 'object') {
-          if (r.success === false) {
-            throw new Error(`VLM 调用失败: ${r.error || '未知错误'}`);
-          }
-          return r.text || '';
-        }
-        return typeof r === 'string' ? r : '';
-      };
-
-      /** 判断是否为 response_format 不兼容错误 */
-      const isFormatError = (e: any): boolean => {
-        const msg = String(e?.message || e);
-        return /response_format|json_schema|json_object|unknown_parameter|400/i.test(msg);
-      };
-
-      // 尝试当前级别，失败则降级（最多降 2 次：1→2→3）
-      while (vlmFormatLevel <= 3) {
-        try {
-          const r = await adapter.chat(msgs, mdl, temp, buildOpts(vlmFormatLevel));
-          return extractText(r);
-        } catch (e: any) {
-          if (vlmFormatLevel < 3 && isFormatError(e)) {
-            AppLogger.warn(LOG_TAGS.AI_AGENT,
-              `[画面描述] VLM 不支持 Level ${vlmFormatLevel}，降级到 Level ${vlmFormatLevel + 1}`);
-            vlmFormatLevel = (vlmFormatLevel + 1) as 1 | 2 | 3;
-            continue;
-          }
-          throw e; // 非格式错误或已到 Level 3，直接抛出
-        }
-      }
-      // 理论上不会走到（while 循环已覆盖）
-      throw new Error('VLM 调用失败: 未知错误');
-    };
-
-    /**
      * P3 Stage 1: 构建全局场景摘要
      * 从待分析帧中均匀采样 4 帧代表帧 → 直接发送 4 张图给 VLM 获取全局场景信息
      * （不拼图，避免与 P2 批次拼图逻辑耦合；全局摘要仅 1 次调用 4 帧，拼图收益微小）
@@ -594,10 +540,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
             },
           },
         };
-        const resultText = await callVlmWithFallback(messages, model, 0.3, summaryFmt);
-
-        const cleaned = resultText.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-        const parsed = JSON.parse(cleaned);
+        const parsed = await vlmAdapter.analyzeJson<any>(messages, 0.3, summaryFmt);
 
         const ctx: GlobalSceneContext = {
           location: parsed.location || '',
@@ -681,7 +624,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           : '3×3 网格图（9 个子图，按 [1]~[9] 编号排列）';
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- 严禁描述背景颜色、家具材质、墙壁、衣服样式等静态杂物\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头），禁止环境描写\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉）\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- visualAtmosphere 仅 2-4 字概括氛围\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体核心动作","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写具体构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
         });
         userContent.push({
           type: 'image_url',
@@ -691,7 +634,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         /** 1x1 模式或拼图降级：多图独立发送 */
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- 严禁描述背景颜色、家具材质、墙壁、衣服样式等静态杂物\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头），禁止环境描写\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉）\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- visualAtmosphere 仅 2-4 字概括氛围\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"narrativeAction":"主体核心动作","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写具体构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
         });
         for (const f of batchFrames) {
           userContent.push({
@@ -719,14 +662,15 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
                 items: {
                   type: 'object',
                   properties: {
-                    narrativeAction: { type: 'string', description: '主体核心动作/视觉变化（聚焦戏剧动作，禁止环境描写）' },
-                    emotionalState: { type: 'string', description: '主体的微表情/情绪（如眼神/咬牙/冷笑）' },
+                    scene: { type: 'string', description: '关键场景/环境（2-6字概括，如"深夜办公室""车内"，画面匹配第一抓手，禁止"无"）' },
+                    narrativeAction: { type: 'string', description: '主体核心动作/状态（聚焦戏剧动作或静态具体状态，禁止"无动作"占位）' },
+                    emotionalState: { type: 'string', description: '主体的微表情/情绪（如眼神/咬牙/冷笑；静态写具体状态，禁止"无表情"占位）' },
                     shotType: { type: 'string', description: '镜头语言：特写|近景|中景|全景', enum: ['特写', '近景', '中景', '全景'] },
-                    visualAtmosphere: { type: 'string', description: '光影/色调/氛围（2-4字概括）' },
-                    spatialRelation: { type: 'string', description: '构图/镜头移动方式' },
+                    visualAtmosphere: { type: 'string', description: '光影/色调/氛围（2-4字概括，禁止"无氛围"占位）' },
+                    spatialRelation: { type: 'string', description: '构图/镜头移动方式（写具体布局如"主体居中"，禁止"无构图"占位）' },
                     keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词（仅动作/情绪/道具，禁止环境词）' },
                   },
-                  required: ['narrativeAction', 'emotionalState', 'shotType'],
+                  required: ['scene', 'narrativeAction', 'emotionalState', 'shotType', 'visualAtmosphere', 'spatialRelation'],
                 },
               },
             },
@@ -736,47 +680,43 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       };
 
       try {
-        const resultText = await callVlmWithFallback(messages, model, 0.2, responseFormat);
+        const parsed = await vlmAdapter.analyzeJson<any>(messages, 0.2, responseFormat);
 
-        /** P0-1：解析 { frames: [...] } 结构（兼容旧版裸数组降级） */
+        /** 从解析结果提取 frames 数组（兼容裸数组 / {frames:[...]} / 单对象三种形态） */
         let parsedItems: any[] = [];
-        try {
-          const cleaned = resultText
-            .replace(/```json\s*/gi, '')
-            .replace(/```\s*/g, '')
-            .trim();
-          const parsed = JSON.parse(cleaned);
-          if (Array.isArray(parsed)) {
-            parsedItems = parsed;
-          } else if (parsed?.frames && Array.isArray(parsed.frames)) {
-            parsedItems = parsed.frames;
-          } else if (typeof parsed === 'object') {
-            parsedItems = [parsed];
-          }
-        } catch {
-          // JSON 解析失败，降级到纯文本
-          parsedItems = [];
+        if (Array.isArray(parsed)) {
+          parsedItems = parsed;
+        } else if (parsed?.frames && Array.isArray(parsed.frames)) {
+          parsedItems = parsed.frames;
+        } else if (typeof parsed === 'object') {
+          parsedItems = [parsed];
+        }
+
+        // 错就错：模型返回帧数不足本批帧数时抛错，拒绝降级解析
+        if (parsedItems.length < batchFrames.length) {
+          throw new Error(
+            `VLM 返回帧数(${parsedItems.length}) < 本批帧数(${batchFrames.length})，模型未按规范输出`,
+          );
         }
 
         /** P0-2：响应式流 — 逐帧写入并立即推送，不等整个批次解析完 */
         for (let i = 0; i < batchFrames.length; i++) {
           const frameIdx = batchFrames[i].idx;
           const parsedItem = parsedItems[i];
-
-          if (parsedItem && typeof parsedItem === 'object') {
-            frameJsonItems[frameIdx] = parsedItem;
-            /** P0-3：构建 UI 显示描述（🎬 shotType 前缀，让 UI 一眼可见镜头语言） */
-            const shotPrefix = parsedItem.shotType ? `【${parsedItem.shotType}】` : '';
-            const parts = [
-              `${shotPrefix}${parsedItem.narrativeAction || ''}`,
-              parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
-              parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
-              parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
-            ].filter(Boolean);
-            frameDescriptions[frameIdx] = parts.join(' ');
-          } else {
-            frameDescriptions[frameIdx] = resultText.trim().split('\n')[i] || '';
+          if (!parsedItem || typeof parsedItem !== 'object') {
+            throw new Error(`VLM 第 ${i + 1} 帧返回非对象数据，拒绝降级解析`);
           }
+          frameJsonItems[frameIdx] = parsedItem;
+          /** P0-3：构建 UI 显示描述（🎬 shotType 前缀 + 场景，让 UI 一眼可见镜头语言与场景） */
+          const shotPrefix = parsedItem.shotType ? `【${parsedItem.shotType}】` : '';
+          const parts = [
+            `${shotPrefix}${parsedItem.narrativeAction || ''}`,
+            parsedItem.scene ? `场景:${parsedItem.scene}` : '',
+            parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
+            parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
+            parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
+          ].filter(Boolean);
+          frameDescriptions[frameIdx] = parts.join(' ');
 
           completedFrames++;
           /** P0-2：每帧解析完立即推送，前端实时渲染打字机效果 */
@@ -788,7 +728,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           });
         }
 
-        AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 批次 ${batchIdx + 1} 完成，覆盖帧 ${startIdx + 1}-${endIdx + 1}/${totalFrameCount}，JSON: ${parsedItems.length > 0 ? '成功' : '降级纯文本'}`);
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 批次 ${batchIdx + 1} 完成，覆盖帧 ${startIdx + 1}-${endIdx + 1}/${totalFrameCount}，JSON: 成功`);
 
         // P1-2: 批次成功后写入 L2 缓存（异步非阻塞，不影响主流程）
         try {
@@ -801,6 +741,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
             const shotPrefix = parsedItem.shotType ? `【${parsedItem.shotType}】` : '';
             const parts = [
               `${shotPrefix}${parsedItem.narrativeAction || ''}`,
+              parsedItem.scene ? `场景:${parsedItem.scene}` : '',
               parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
               parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
               parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
