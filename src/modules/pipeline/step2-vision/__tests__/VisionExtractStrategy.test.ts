@@ -99,7 +99,7 @@ vi.mock('../../../../main/engine/media/ContactSheetBuilder', () => ({
   },
 }));
 
-import { VisionExtractStrategy } from '../../../../main/engine/strategies/VisionExtractStrategy';
+import { VisionExtractStrategy, buildStoryLineFromFrames } from '../../../../main/engine/strategies/VisionExtractStrategy';
 
 // ---------- 测试用例 ----------
 
@@ -991,6 +991,26 @@ describe('VisionExtractStrategy - P0 优化测试', () => {
       // 应有指引说明：已知人物用名称，未知人物用泛称
       expect(promptText).toContain('请使用其名称');
       expect(promptText).toContain('男子/女子');
+    });
+  });
+
+  // 🎬 全片剧情故事线合成测试
+  describe('buildStoryLineFromFrames', () => {
+    it('按时序串联各帧动作，附带景别/运镜/氛围/看点', () => {
+      const frames = [
+        { narrativeAction: '慌张地在抽屉里翻找钥匙', subject: '张三', shotType: '特写', cameraMovement: '推', visualAtmosphere: '悬疑紧张', dramaticConflict: '面临危险' },
+        { narrativeAction: '猛地抬头看向门口', subject: '张三', shotType: '中景', cameraMovement: '固定', visualAtmosphere: '紧绷', dramaticConflict: '发现秘密' },
+        null,
+      ];
+      const line = buildStoryLineFromFrames(frames);
+      expect(line).toContain('镜头1[特写]/推(悬疑紧张): 张三：慌张地在抽屉里翻找钥匙 看点：面临危险');
+      expect(line).toContain('镜头2[中景](紧绷): 张三：猛地抬头看向门口 看点：发现秘密');
+      expect(line).toContain('全片视觉剧情脉络');
+    });
+
+    it('空或无有效动作时返回空字符串', () => {
+      expect(buildStoryLineFromFrames([])).toBe('');
+      expect(buildStoryLineFromFrames([null, { narrativeAction: '' }])).toBe('');
     });
   });
 });

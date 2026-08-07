@@ -87,15 +87,21 @@ function extractKeyVisualAction(shot: any): {
   keyAction: string;
   emotion?: string;
   atmosphere?: string;
+  cameraMovement?: string;
+  dramaticConflict?: string;
+  subject?: string;
   purifiedKeywords: string[];
 } {
   // 1. action 直接取自 VLM 结构化输出（narrativeAction），无需正则清洗
   const rawAction: string = shot?.action || '';
 
-  // 2. 组合镜头语言前缀（如：【特写】死死盯住冰鱼），让 LLM 一眼看到镜头调度
+  // 2. 组合镜头语言前缀（如：【特写/推】死死盯住冰鱼），让 LLM 一眼看到镜头调度
   const shotType: string = shot?.shotType || '';
   const shotPrefix = shotType ? `【${shotType}】` : '';
-  const keyAction = `${shotPrefix}${rawAction}`;
+  // 🎥 运镜附在景别后（如：【特写/推】），静态镜头不冗余标注"固定"
+  const cameraMovement: string = shot?.cameraMovement || '';
+  const cameraSuffix = cameraMovement && cameraMovement !== '固定' ? `/${cameraMovement}` : '';
+  const keyAction = `${shotPrefix}${cameraSuffix}${rawAction}`;
 
   // 3. keywords 噪点过滤：剔除环境/材质/颜色类静态词，仅保留动作/情绪/道具/人物关键词
   // 这是"设计上的多路径"（用户需求明确要求聚焦戏剧冲突），不是防御性兜底
@@ -119,6 +125,9 @@ function extractKeyVisualAction(shot: any): {
     keyAction,
     emotion: shot?.emotion || undefined,
     atmosphere: shot?.atmosphere || shot?.lighting || undefined,
+    cameraMovement: shot?.cameraMovement || undefined,
+    dramaticConflict: shot?.dramaticConflict || undefined,
+    subject: shot?.subject || undefined,
     purifiedKeywords,
   };
 }
@@ -172,6 +181,8 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     let visualShots: any[] = []; // 结构化视觉片段（含 action/emotion/keywords）
     let sceneDescriptions = '';   // 兼容：原始画面描述长文本
     let asrLines: any[] = [];     // ASR 台词行（含时间戳）
+    /** 🎬 全片剧情故事线（各帧 action 时序串联），供剧情理解阶段感知全局剧情 */
+    let storyLine = '';
 
     for (const nodeId of upstreamNodeIds) {
       const busData = context.bus.get(nodeId);
@@ -182,6 +193,9 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       }
       if (!sceneDescriptions && busData.sceneDescriptions) {
         sceneDescriptions = busData.sceneDescriptions;
+      }
+      if (!storyLine && busData.storyLine) {
+        storyLine = busData.storyLine;
       }
       if (asrLines.length === 0) {
         const rawLines = busData.asrLines || busData.lines || [];
@@ -254,9 +268,12 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
         anchoredCharacters,
         asrContext: asrContext ? `原声：${asrContext}` : '',
         visualContext: {
-          keyAction: purifiedVisual.keyAction,           // 蒸馏后的动作（如：【特写】死死盯住冰鱼）
+          keyAction: purifiedVisual.keyAction,           // 蒸馏后的动作（如：【特写/推】死死盯住冰鱼）
           emotion: purifiedVisual.emotion,                // 表情情绪（如：阴沉/咬牙）
           atmosphere: purifiedVisual.atmosphere,          // 氛围（如：压抑对峙）
+          cameraMovement: purifiedVisual.cameraMovement,  // 🎥 运镜（如：推/摇/移）
+          dramaticConflict: purifiedVisual.dramaticConflict, // ⚡ 剧情张力/看点（如：发现秘密）
+          subject: purifiedVisual.subject,                // 👤 画面核心主体（如：张三）
           keywords: purifiedVisual.purifiedKeywords,      // 噑点过滤后的关键词
         },
       });
@@ -331,6 +348,8 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
         .join('\n');
       const outlineUserPrompt = `【角色列表】：
 ${roleLinesForOutline || '（未识别到角色，以片段流中的代称为准）'}
+${storyLine ? `\n【全片剧情故事线】（步骤2视觉分析按时间顺序串联的画面动作脉络，供你理解全局剧情走向）：
+${storyLine}` : ''}
 
 【视频片段流（含时间轴 / 画面描述 / 原声台词）】：
 ${JSON.stringify(contextChunks, null, 2)}

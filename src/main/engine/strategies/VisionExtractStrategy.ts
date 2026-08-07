@@ -69,12 +69,18 @@ export interface FrameDetail {
   emotion: string;
   /** P0-3：下游瘦身字段，供 step3 消费，避免 step3 重新解析长文本
    * 🎬 shotType：镜头语言（特写/近景/中景/全景），供 step3 蒸馏【特写】前缀
+   * 🎥 cameraMovement：运镜方式（固定/推/拉/摇/移），供 step3 感知镜头节奏
+   * ⚡ dramaticConflict：剧情张力/看点，供 step3 提炼解说钩子
+   * 👤 subject：画面核心主体（优先使用角色真实姓名）
    * 💬 asrText：该帧时间区间内匹配到的 ASR 台词，供 step3 直接消费无需重新匹配 */
   downstream?: {
     action: string;
     emotion: string;
     keywords: string[];
     shotType?: string;
+    cameraMovement?: string;
+    dramaticConflict?: string;
+    subject?: string;
     asrText?: string;
   };
   /**
@@ -108,10 +114,15 @@ export interface VisionExtractOutput {
   framePaths?: string[];
   /** 每帧完整信息，含画面描述和关联台词 */
   frames?: FrameDetail[];
+  /**
+   * 🎬 全片剧情故事线（storyLine）：各帧 action 按时序串联后的剧情脉络
+   * 供 step3 感知"开场-发展-冲突-转折"的连贯剧情，避免逐帧碎片化
+   */
+  storyLine?: string;
   /** P0-3：下游瘦身上下文，极简结构化数据，供 step3 直接消费
    * 🎬 shotType/asrText 透传，让 step3 无需重新解析长文本或匹配 ASR */
   downstreamContext?: {
-    shots: { action: string; emotion: string; keywords: string[]; shotType?: string; asrText?: string }[];
+    shots: { action: string; emotion: string; keywords: string[]; shotType?: string; cameraMovement?: string; dramaticConflict?: string; subject?: string; asrText?: string }[];
   };
 }
 
@@ -240,6 +251,33 @@ export function deriveFrameRolesFromFaces(
   }
 
   return hasAnyValidFace ? result : null;
+}
+
+/**
+ * 🎬 全片剧情故事线合成：将各帧的 action 按时序串联，生成连贯的剧情脉络
+ * 供 step3 感知"开场-发展-冲突-转折"的整体剧情，避免逐帧碎片化
+ * 🎥 附带运镜与氛围，让 step3 能感知镜头节奏变化
+ * @param frameJsonItems 每帧 VLM 结构化输出（含 narrativeAction/subject/shotType/cameraMovement/visualAtmosphere/dramaticConflict）
+ * @returns 全片剧情脉络文本；无有效数据时返回空字符串
+ */
+export function buildStoryLineFromFrames(frameJsonItems: (any | null)[]): string {
+  if (!frameJsonItems || frameJsonItems.length === 0) return '';
+  const events: string[] = [];
+  for (let i = 0; i < frameJsonItems.length; i++) {
+    const item = frameJsonItems[i];
+    if (!item || typeof item !== 'object') continue;
+    const action = item.narrativeAction || item.action_event || '';
+    if (!action) continue;
+    const subject = item.subject ? `${item.subject}：` : '';
+    const shotType = item.shotType ? `[${item.shotType}]` : '';
+    // 静态"固定"镜头不冗余标注，保持 storyLine 简洁
+    const camera = item.cameraMovement && item.cameraMovement !== '固定' ? `/${item.cameraMovement}` : '';
+    const atmosphere = item.visualAtmosphere ? `(${item.visualAtmosphere})` : '';
+    const conflict = item.dramaticConflict ? ` 看点：${item.dramaticConflict}` : '';
+    events.push(`镜头${i + 1}${shotType}${camera}${atmosphere}: ${subject}${action}${conflict}`);
+  }
+  if (events.length === 0) return '';
+  return `全片视觉剧情脉络（按时间顺序）：\n${events.join('\n')}`;
 }
 
 export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, VisionExtractOutput> {
@@ -624,7 +662,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           : '3×3 网格图（9 个子图，按 [1]~[9] 编号排列）';
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写具体构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写具体构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
         });
         userContent.push({
           type: 'image_url',
@@ -634,7 +672,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         /** 1x1 模式或拼图降级：多图独立发送 */
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写具体构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写具体构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
         });
         for (const f of batchFrames) {
           userContent.push({
@@ -660,18 +698,21 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
               frames: {
                 type: 'array',
                 items: {
-                  type: 'object',
-                  properties: {
-                    scene: { type: 'string', description: '关键场景/环境（2-6字概括，如"深夜办公室""车内"，画面匹配第一抓手，禁止"无"）' },
-                    narrativeAction: { type: 'string', description: '主体核心动作/状态（聚焦戏剧动作或静态具体状态，禁止"无动作"占位）' },
-                    emotionalState: { type: 'string', description: '主体的微表情/情绪（如眼神/咬牙/冷笑；静态写具体状态，禁止"无表情"占位）' },
-                    shotType: { type: 'string', description: '镜头语言：特写|近景|中景|全景', enum: ['特写', '近景', '中景', '全景'] },
-                    visualAtmosphere: { type: 'string', description: '光影/色调/氛围（2-4字概括，禁止"无氛围"占位）' },
-                    spatialRelation: { type: 'string', description: '构图/镜头移动方式（写具体布局如"主体居中"，禁止"无构图"占位）' },
-                    keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词（仅动作/情绪/道具，禁止环境词）' },
+                    type: 'object',
+                    properties: {
+                      scene: { type: 'string', description: '关键场景/环境（2-6字概括，如"深夜办公室""车内"，画面匹配第一抓手，禁止"无"）' },
+                      subject: { type: 'string', description: '画面核心主体（优先用已知角色真实姓名，如"张三"；无人用泛称，空镜写"空镜头"）' },
+                      narrativeAction: { type: 'string', description: '主体核心动作/状态（聚焦戏剧动作或静态具体状态，禁止"无动作"占位）' },
+                      emotionalState: { type: 'string', description: '主体的微表情/情绪（如眼神/咬牙/冷笑；静态写具体状态，禁止"无表情"占位）' },
+                      shotType: { type: 'string', description: '镜头语言：特写|近景|中景|全景', enum: ['特写', '近景', '中景', '全景'] },
+                      cameraMovement: { type: 'string', description: '运镜方式：固定|推|拉|摇|移', enum: ['固定', '推', '拉', '摇', '移'] },
+                      dramaticConflict: { type: 'string', description: '剧情看点/张力（如"面临危险""发现秘密"；平静写"平静，无冲突"）' },
+                      visualAtmosphere: { type: 'string', description: '光影/色调/氛围（2-4字概括，禁止"无氛围"占位）' },
+                      spatialRelation: { type: 'string', description: '构图/镜头移动方式（写具体布局如"主体居中"，禁止"无构图"占位）' },
+                      keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词（仅动作/情绪/道具，禁止环境词）' },
+                    },
+                    required: ['scene', 'subject', 'narrativeAction', 'emotionalState', 'shotType', 'cameraMovement', 'dramaticConflict', 'visualAtmosphere', 'spatialRelation'],
                   },
-                  required: ['scene', 'narrativeAction', 'emotionalState', 'shotType', 'visualAtmosphere', 'spatialRelation'],
-                },
               },
             },
             required: ['frames'],
@@ -709,12 +750,15 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           frameJsonItems[frameIdx] = parsedItem;
           /** P0-3：构建 UI 显示描述（🎬 shotType 前缀 + 场景，让 UI 一眼可见镜头语言与场景） */
           const shotPrefix = parsedItem.shotType ? `【${parsedItem.shotType}】` : '';
+          const cameraSuffix = parsedItem.cameraMovement && parsedItem.cameraMovement !== '固定' ? `/${parsedItem.cameraMovement}` : '';
           const parts = [
-            `${shotPrefix}${parsedItem.narrativeAction || ''}`,
+            `${shotPrefix}${cameraSuffix}${parsedItem.narrativeAction || ''}`,
             parsedItem.scene ? `场景:${parsedItem.scene}` : '',
+            parsedItem.subject ? `主体:${parsedItem.subject}` : '',
             parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
             parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
             parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
+            parsedItem.dramaticConflict ? `看点:${parsedItem.dramaticConflict}` : '',
           ].filter(Boolean);
           frameDescriptions[frameIdx] = parts.join(' ');
 
@@ -739,17 +783,20 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
             const contentHash = contentHashMap.get(batchFrames[i].path);
             if (!contentHash) continue;
             const shotPrefix = parsedItem.shotType ? `【${parsedItem.shotType}】` : '';
+            const cameraSuffix = parsedItem.cameraMovement && parsedItem.cameraMovement !== '固定' ? `/${parsedItem.cameraMovement}` : '';
             const parts = [
-              `${shotPrefix}${parsedItem.narrativeAction || ''}`,
+              `${shotPrefix}${cameraSuffix}${parsedItem.narrativeAction || ''}`,
               parsedItem.scene ? `场景:${parsedItem.scene}` : '',
+              parsedItem.subject ? `主体:${parsedItem.subject}` : '',
               parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
               parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
               parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
+              parsedItem.dramaticConflict ? `看点:${parsedItem.dramaticConflict}` : '',
             ].filter(Boolean);
             cacheRecords.push({
               frameHash: contentHash,
               modelName: model,
-              promptVersion: 'v2',
+              promptVersion: 'v3',
               resultJson: JSON.stringify(parsedItem),
               description: parts.join(' '),
             });
@@ -902,6 +949,9 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         emotion: jsonItem.emotionalState || jsonItem.emotionTone || '',
         keywords: Array.isArray(jsonItem.keywords) ? jsonItem.keywords : [],
         shotType: jsonItem.shotType || undefined,
+        cameraMovement: jsonItem.cameraMovement || undefined,
+        dramaticConflict: jsonItem.dramaticConflict || undefined,
+        subject: jsonItem.subject || undefined,
         asrText: frameAsrText || undefined,
       } : undefined;
 
@@ -936,11 +986,15 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       shots: frameDetails.map(f => f.downstream || { action: '', emotion: '', keywords: [] }),
     };
 
+    /** 🎬 全片剧情故事线：各帧 action 按时序串联，供 step3 感知"开场-发展-冲突-转折"连贯剧情 */
+    const storyLine = buildStoryLineFromFrames(frameJsonItems);
+
     return {
       framesCount: totalFrameCount,
       sceneDescriptions: frameDescriptions.join('\n'),
       framePaths: frameDetails.map(f => f.url),
       frames: frameDetails,
+      storyLine,
       downstreamContext,
     };
   }
