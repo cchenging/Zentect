@@ -305,8 +305,8 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
             enabled: true,
             mode: config.frames.mode,
             // 🔧 修复 TS2339：frames 配置无 value/density 字段，直接用 sceneThreshold/fps
-            sceneThreshold: config.frames.sceneThreshold ?? 0.28,
-            minFrameInterval: config.frames.minFrameInterval ?? 4,
+            sceneThreshold: config.frames.sceneThreshold ?? 0.25,
+            minFrameInterval: config.frames.minFrameInterval ?? 3.5,
             fps: config.frames.fps ?? 2,
             scale: config.frames.scale ?? 1024,
             quality: config.frames.quality ?? 3,

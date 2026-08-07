@@ -72,7 +72,12 @@ class VlmOptimizedSelectFilter extends VideoFilter {
   }
 
   toString(): string {
-    return `select='gt(scene\\,${this.threshold})+gte(t-prev_selected_t\\,${this.minInterval})'`;
+    // 🎬 电影级智能抽帧（时间物理化）：
+    // 1. isnan(prev_selected_t)：首帧强保 —— prev_selected_t 初始为 NaN，旧版 gte(t-NaN,..) 恒 false 导致整段 0 帧
+    // 2. gte(t-prev_selected_t, minInterval)：时间兜底 —— 叠化/溶接/长镜头场景差值被摊薄，按最大无抽帧间隔兜底补帧
+    // 3. gt(scene, threshold)：场景试别 —— 硬切/转场优先捕捉
+    // 三者 OR 组合，保证任意镜头节奏都能抽到帧。
+    return `select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,${this.minInterval})+gt(scene\\,${this.threshold})'`;
   }
 }
 
@@ -105,6 +110,8 @@ interface ExtractConfig {
   outPoint?: number;
   timePoint?: number;
   threads: number;
+  /** 是否附加 showinfo 滤镜，向 stderr 输出每帧 pts_time（供精确时序元数据） */
+  attachShowinfo?: boolean;
 }
 
 /** 帧模块专用的精简 FFmpeg 命令构建器 */
@@ -131,7 +138,7 @@ class FrameCommandBuilder {
     const {
       videoPath, outputPath, strategy,
       fps, sceneThreshold, minFrameInterval,
-      width, quality, inPoint, outPoint, timePoint, threads,
+      width, quality, inPoint, outPoint, timePoint, threads, attachShowinfo,
     } = config;
 
     const builder = new FrameCommandBuilder();
@@ -189,6 +196,13 @@ class FrameCommandBuilder {
       chain.add(new ScaleFilter(width));
     }
 
+    // 附加 showinfo：向 stderr 输出每帧 pts_time，供精确时序元数据捕获
+    if (attachShowinfo && strategy !== 'PRECISE_SINGLE') {
+      chain.add(new (class extends VideoFilter {
+        toString(): string { return 'showinfo'; }
+      })());
+    }
+
     if (chain.length > 0) {
       builder.videoFilter(chain);
     }
@@ -241,6 +255,7 @@ export function buildExtractCommand(config: {
   outPoint?: number;
   timePoint?: number;
   threads: number;
+  attachShowinfo?: boolean;
 }): string[] {
   return FrameCommandBuilder.buildExtractCommand(config);
 }

@@ -35,11 +35,11 @@ export const FrameExtractConfig: React.FC<FrameExtractConfigProps> = ({ isRunnin
     'UNIFORM': 'UNIFORM_FPS', 'SCENE': 'VLM_OPTIMIZED', 'IFRAME': 'FAST_KEYFRAME',
   };
   const strategy = MODE_MAP[rawMode] || 'VLM_OPTIMIZED';
-  const sceneThreshold = frames.sceneThreshold ?? (frames as any).value ?? 0.28;
+  const sceneThreshold = frames.sceneThreshold ?? (frames as any).value ?? 0.25;
   const fps = frames.fps || 2;
   const scale = frames.scale ?? 1024;
   const quality = frames.quality ?? 3;
-  const minInterval = frames.minFrameInterval ?? 4;
+  const minInterval = frames.minFrameInterval ?? 3.5;
 
   const updateFrames = (patch: Record<string, any>) => {
     if (isRunning) return;

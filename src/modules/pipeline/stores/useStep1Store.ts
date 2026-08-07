@@ -93,11 +93,11 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
   frames: {
     enabled: true,
     mode: 'VLM_OPTIMIZED',
-    sceneThreshold: 0.28,
+    sceneThreshold: 0.25,
     quality: 3,
     fps: 2,
     scale: 1024,
-    minFrameInterval: 4,
+    minFrameInterval: 3.5,
     matrixMode: 'auto',
   },
   audio: { enabled: true, separationMode: 'quality', engine: 'auto' },

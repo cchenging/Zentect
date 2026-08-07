@@ -39,6 +39,22 @@ export interface ExtractFramesResult {
   totalFrames: number;
   /** 处理耗时（毫秒） */
   durationMs: number;
+  /** 追加式后处理产出的精选帧元数据（含 timeMs/清晰度等，未启用后处理时为空） */
+  frameDetails?: FrameDetail[];
+}
+
+/** 单帧质检与元数据（追加式后处理产物） */
+export interface FrameDetail {
+  /** 图片落盘路径 */
+  framePath: string;
+  /** 该帧在原视频中的毫秒时间戳 */
+  timeMs: number;
+  /** 格式化时间戳（如 "00:04.25"） */
+  timeStr: string;
+  /** 清晰度得分（拉普拉斯方差） */
+  qualityScore: number;
+  /** 所属镜头序号 */
+  sceneIndex: number;
 }
 
 export interface ITTSProvider {

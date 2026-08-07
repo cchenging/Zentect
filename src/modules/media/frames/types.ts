@@ -48,6 +48,24 @@ export interface FrameExtractOutput {
   frameCount: number;
 }
 
+/** 单帧质检与元数据（追加式后处理产物，说明见 SmartFramePostProcessor.ts） */
+export interface FrameAssetDetail {
+  /** 图片落盘绝对路径 */
+  framePath: string;
+  /** 该帧在原视频中的毫秒时间戳 */
+  timeMs: number;
+  /** 格式化时间戳（如 "00:04.25"） */
+  timeStr: string;
+  /** 清晰度得分（拉普拉斯方差，越大越清晰） */
+  clarityScore: number;
+  /** 平均亮度（0-255，黑屏检测依据） */
+  lumaScore: number;
+  /** 所属镜头序号 */
+  sceneIndex: number;
+  /** 时间戳是否为估算值（非均匀且无 PTS 时可能不精确） */
+  estimatedTime?: boolean;
+}
+
 /** 抽帧遥测结果（含性能指标） */
 export interface FrameExtractionTelemetry {
   files: string[];
@@ -57,4 +75,6 @@ export interface FrameExtractionTelemetry {
     totalSizeMB: number;
     processingFps: number;
   };
+  /** 追加式后处理产出的精选帧元数据（未启用后处理时为空数组） */
+  frameDetails?: FrameAssetDetail[];
 }

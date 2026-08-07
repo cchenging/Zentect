@@ -143,8 +143,8 @@ export class MediaController {
       const telemetry = await VideoProcessor.extractFrames(physicalPath, framesDir, mediaId, {
         strategy: resolvedStrategy,
         fps: fps || 2,
-        sceneThreshold: sceneThreshold || 0.28,
-        minFrameInterval: minFrameInterval || 4,
+        sceneThreshold: sceneThreshold || 0.25,
+        minFrameInterval: minFrameInterval || 3.5,
         scale: scale ?? 1024,
         quality: quality || 3,
         timePoint,

@@ -27,6 +27,14 @@ describe('buildExtractCommand', () => {
       expect(vfArg).toContain('gte(t-prev_selected_t');
     });
 
+    it('应包含 isnan(prev_selected_t) 首帧强保（修复 NaN 导致的 0 帧 BUG）', () => {
+      const args = buildExtractCommand({ ...baseConfig, strategy: 'VLM_OPTIMIZED' });
+      const vfArg = args.find(a => a === '-vf') ? args[args.indexOf('-vf') + 1] : '';
+      expect(vfArg).toContain('isnan(prev_selected_t)');
+      // 三个条件是 OR 组合：首帧强保 + 时间兜底 + 场景
+      expect(String(vfArg).split('+').length).toBeGreaterThanOrEqual(3);
+    });
+
     it('应包含 vsync=vfr', () => {
       const args = buildExtractCommand({ ...baseConfig, strategy: 'VLM_OPTIMIZED' });
       expect(args).toContain('-vsync');

@@ -56,6 +56,8 @@ export interface ExtractOptions {
   inPoint?: number;
   outPoint?: number;
   abortSignal?: AbortSignal;
+  /** 追加式后处理：清晰度/黑屏过滤 + 静态去重 + 时序元数据（默认关闭，非破坏） */
+  postProcess?: boolean;
 }
 
 // ──────────────────────────────────────────────
@@ -149,12 +151,13 @@ export class FrameExtractionService {
       fps = 2,
       scale = 1024,
       quality = 3,
-      sceneThreshold = 0.28,
-      minFrameInterval = 4,
+      sceneThreshold = 0.25,
+      minFrameInterval = 3.5,
       timePoint,
       inPoint,
       outPoint,
       abortSignal,
+      postProcess = false,
     } = options;
 
     const strategy = resolveStrategy(options.strategy || 'VLM_OPTIMIZED');
@@ -211,6 +214,8 @@ export class FrameExtractionService {
       outPoint,
       timePoint,
       threads: 0,
+      // 后处理启用时附加 showinfo，捕获每帧精确 PTS
+      attachShowinfo: postProcess && strategy !== 'PRECISE_SINGLE',
     });
 
     return new Promise((resolve, reject) => {
@@ -218,9 +223,21 @@ export class FrameExtractionService {
       const child = spawn(ffmpegExe, args);
 
       let stderrLog = '';
+      // 🎭 后处理时序元数据：累积 showinfo 输出的 pts_time（秒）
+      const ptsSeconds: number[] = [];
       child.stderr.on('data', (data: Buffer) => {
-        stderrLog += data.toString();
+        const text = data.toString();
+        stderrLog += text;
         if (stderrLog.length > 2048) stderrLog = stderrLog.slice(-2048);
+        if (postProcess) {
+          const matches = text.match(/pts_time:([0-9.]+)/g);
+          if (matches) {
+            for (const m of matches) {
+              const sec = parseFloat(m.replace('pts_time:', ''));
+              if (!Number.isNaN(sec)) ptsSeconds.push(sec);
+            }
+          }
+        }
       });
 
       if (abortSignal) {
@@ -250,17 +267,41 @@ export class FrameExtractionService {
             .map(f => path.join(safeOutputDir, f))
             .sort();
 
+          // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重 + 时序元数据
+          // 会直接删除被丢弃的帧文件，返回的 files 即为精选后的帧
+          let keptFiles = files;
+          let frameDetails: import('../types').FrameAssetDetail[] = [];
+          if (postProcess && files.length > 0) {
+            const { SmartFramePostProcessor } = require('./SmartFramePostProcessor');
+            const ptsMs = ptsSeconds.map(s => Math.round(s * 1000));
+            const result = await SmartFramePostProcessor.process(files, {
+              strategy,
+              fps,
+              timePoint,
+              ptsMs: ptsMs.length === files.length ? ptsMs : undefined,
+            });
+            keptFiles = result.kept.map(d => d.framePath);
+            frameDetails = result.kept;
+            if (result.dropped.length > 0) {
+              console.log(
+                `[FrameExtraction] 后处理过滤 ${result.dropped.length}/${files.length} 帧: ` +
+                result.dropped.map(d => d.reason).join('; '),
+              );
+            }
+          }
+
           const fileStats = await Promise.all(
-            files.map(f => fs.promises.stat(f).catch(() => ({ size: 0 }))),
+            keptFiles.map(f => fs.promises.stat(f).catch(() => ({ size: 0 }))),
           );
           const totalSizeBytes = fileStats.reduce((acc, curr) => acc + curr.size, 0);
-          const frameCount = files.length;
+          const frameCount = keptFiles.length;
           const totalSizeMB = Number((totalSizeBytes / (1024 * 1024)).toFixed(2));
           const processingFps = durationMs > 0 ? Number((frameCount / (durationMs / 1000)).toFixed(2)) : 0;
 
           resolve({
-            files,
+            files: keptFiles,
             metrics: { durationMs, frameCount, totalSizeMB, processingFps },
+            frameDetails,
           });
         } catch {
           resolve(emptyTelemetry);

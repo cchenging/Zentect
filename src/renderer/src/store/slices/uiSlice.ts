@@ -150,7 +150,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
 
   extractionConfig: {
     targetLanguage: 'zh-CN',
-    frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, fps: 2, scale: 1024, minFrameInterval: 4 },
+    frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.25, quality: 3, fps: 2, scale: 1024, minFrameInterval: 3.5 },
     audio: { enabled: true, engine: 'auto' },
     whisper: { enabled: true, engine: 'sensevoice' },
     faces: { enabled: true, engine: 'insightface' }
