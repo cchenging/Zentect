@@ -224,6 +224,8 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               pronoun: r.pronoun,
               description: r.description,
               voiceId: r.voice_id,
+              /** 🎭 P1.5 角色主次分级：从 DB tier 列恢复标注 */
+              tier: r.tier || undefined,
               mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
             };
           });
@@ -334,6 +336,8 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
                 representative: avatarAbs ? { facePath: avatarAbs } : null,
                 faces: [], avatar: r.avatar, avatarPath: avatarAbs,
                 pronoun: r.pronoun, description: r.description, voiceId: r.voice_id,
+                /** 🎭 P1.5 角色主次分级：从 DB tier 列恢复标注 */
+                tier: r.tier || undefined,
                 mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
               };
             });
@@ -432,12 +436,14 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           let telemetryResult = await frameService.extractFrames(mediaPath, framesDir, mediaId, {
             strategy,
             fps: framesConfig.fps || config.frameFps || 2,
-            sceneThreshold: framesConfig.sceneThreshold || 0.28,
-            minFrameInterval: framesConfig.minFrameInterval || 4,
+            sceneThreshold: framesConfig.sceneThreshold || 0.25,
+            minFrameInterval: framesConfig.minFrameInterval || 3.5,
             scale: framesConfig.scale || 1024,
             quality: framesConfig.quality || 3,
             timePoint: framesConfig.timePoint,
             abortSignal: signal,
+            // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重 + timeMs 元数据
+            postProcess: true,
           });
 
           const needsFallback = (strategy === 'VLM_OPTIMIZED' || strategy === 'scene')
@@ -453,6 +459,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               scale: framesConfig.scale || 1024,
               quality: framesConfig.quality || 3,
               abortSignal: signal,
+              postProcess: true,
             });
           }
 
@@ -650,7 +657,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
              * 噪声点是无法归类的低质量人脸检测（模糊/侧脸/远距离），
              * 作为独立角色展示无意义，反而干扰用户识别真实角色。
              * 只有当 unknown 是唯一结果时才保留（避免完全无角色）。 */
-            const roleEntries = Object.entries(roleGroups).filter(([clusterId]) => {
+            const noUnknownEntries = Object.entries(roleGroups).filter(([clusterId]) => {
               if (clusterId === 'role_unknown' && Object.keys(roleGroups).length > 1) {
                 AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
                   `[Step1] 过滤 role_unknown 噪声点 (${roleGroups[clusterId].length}张人脸)，保留 ${Object.keys(roleGroups).length - 1} 个有效角色`,
@@ -659,18 +666,49 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               }
               return true;
             });
+
+            /** 🎭 P1.5 角色主次分级：为主角/配角/路人标注 tier
+             * 痛点：低频路人簇（一闪而过的群演）若直接丢弃则完全不可见，若被当独立角色又淹没主角。
+             * 分级规则（tier）：
+             *   - 'main'      主要角色：出现频次 >= minRoleFaces（缺省 3）的簇；
+             *   - 'supporting'配角：出现频次 >= 2 的簇（比路人多，但不够主角）；
+             *   - 'extra'     背景路人：只出现 1 次的簇，前端折叠进"背景路人"组，不喧宾夺主。
+             * 兜底保底：若没有任何簇达到 main 阈值，则保留频次最高的簇并升为 main（避免完全无主角）。
+             * @note minRoleFaces 可经 config.faces.minRoleFaces 配置，缺省 3（对应"出现>=3次"）。 */
+            const minRoleFaces = (
+              typeof config.faces === 'object' && config.faces
+              && (config.faces as any).minRoleFaces !== undefined
+            ) ? (config.faces as any).minRoleFaces : 3;
+            const baseEntries = noUnknownEntries.length > 0 ? noUnknownEntries : Object.entries(roleGroups);
+            const maxFaces = baseEntries.reduce((m, [, g]) => Math.max(m, g.length), 0);
+            const hasMain = baseEntries.some(([, g]) => g.length >= minRoleFaces);
+            /** 计算单个簇的主次分级（main / supporting / extra） */
+            const tierOf = ([, groupFaces]: [string, any[]]): 'main' | 'supporting' | 'extra' => {
+              if (groupFaces.length >= minRoleFaces) return 'main';          // 主角色
+              if (groupFaces.length === maxFaces && maxFaces > 0 && !hasMain) return 'main'; // 兜底：无 main 时最高频簇升为 main
+              if (groupFaces.length >= 2) return 'supporting';               // 配角
+              return 'extra';                                                // 背景路人
+            };
             /** 💥 关键修复：角色 ID 全局唯一化
              * 旧版 bug：clusterId 是 "role_0"/"role_1"/"role_unknown"，跨项目会重复
              *   → roles 表 id 是 PRIMARY KEY（全局唯一），第二个项目插入时 UNIQUE constraint failed
              * 修复：id 前缀加上 mediaId，确保跨项目、跨媒体全局唯一 */
-            roles = roleEntries.map(([clusterId, groupFaces]) => {
+            roles = baseEntries.map(([clusterId, groupFaces]) => {
               /** 💥 修复黑头像：统一提取 facePath（Python 返回 face_path 绝对路径）
                * 同时设置 representative.facePath 和顶层 avatarPath，
                * 确保三条下游路径（SSE 实时结果/线性向导/DB 重读）都能拿到头像路径 */
               const facePath = groupFaces[0].face_path || groupFaces[0].facePath || '';
+              const tier = tierOf([clusterId, groupFaces]);
+              if (tier === 'extra') {
+                AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+                  `[Step1] 标注路人簇 ${clusterId}（${groupFaces.length}张 < ${minRoleFaces}），折叠进背景路人组`,
+                  { mediaId });
+              }
               return {
                 id: `${mediaId}_${clusterId}`,
                 name: `角色_${clusterId.replace('role_', '')}`,
+                /** 🎭 角色主次分级：main 主角 / supporting 配角 / extra 背景路人 */
+                tier,
                 faceCount: groupFaces.length,
                 /** representative.facePath 供 PipelineResultWriter 读取并存入 DB avatar 字段 */
                 representative: {

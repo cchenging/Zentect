@@ -31,6 +31,13 @@ def _error(msg: str, code: str = "AI_PROCESS_FAILED") -> dict:
 class VisionReq(BaseModel):
     image_paths: List[str]
     output_dir: str
+    # 🎭 四重质量门禁参数（可调，缺省用经验最优值）
+    #   洋葱式过滤：先尺寸 → 再姿态角 → 再清晰度 → 再置信度，
+    #   提前剔除低质量人脸，避免脏向量进入聚类污染角色识别
+    min_size: float = 60          # 人脸 BBox 最小边长（px），小于视为背景路人
+    max_pose_angle: float = 30    # 俯仰/偏航角上限（度），过滤大侧脸/低头抬头脸
+    min_clarity: float = 100      # 拉普拉斯方差下限，过滤运动模糊脸
+    min_confidence: float = 0.85  # 检测置信度下限（InsightFace det_score）
 
 class FaceFeature(BaseModel):
     face_id: str
@@ -59,15 +66,23 @@ class LoadClustersRequest(BaseModel):
 # ==========================================
 @router.post("/api/vision")
 def api_vision(req: VisionReq):
-    """人脸检测 + 特征提取（带全局推理锁保护，防止并发原生库崩溃）"""
+    """人脸检测 + 特征提取（带全局推理锁保护，防止并发原生库崩溃）
+
+    四重质量门禁（洋葱式过滤，任一不合格直接丢弃该人脸）：
+      ① 尺寸：边长 < min_size(60px) 视为背景路人
+      ② 姿态角：yaw/pitch > max_pose_angle(30°) 的大侧脸/低头抬头脸剔除
+      ③ 清晰度：ROI 拉普拉斯方差 < min_clarity(100) 的运动模糊脸剔除
+      ④ 置信度：det_score < min_confidence(0.85) 的低置信检测剔除
+    """
     import cv2
     try:
         with INFERENCE_LOCK:
             app_face = AIModels.get_face_app()
             results = []
-            # 💥 诊断日志：统计检测总数与过滤数
+            # 💥 诊断日志：统计检测总数与各门禁过滤数
             total_detected = 0
             total_kept = 0
+            gate_stats = {"size": 0, "pose": 0, "clarity": 0, "confidence": 0}
             for frame_index, img_path in enumerate(req.image_paths):
                 if not os.path.exists(img_path):
                     continue
@@ -78,42 +93,78 @@ def api_vision(req: VisionReq):
                 face_data = []
                 for i, face in enumerate(faces):
                     box = face.bbox.astype(int).tolist()
-                    # 💥 过滤过小的人脸：边长 < 40 像素的低质量检测
-                    # 过小人脸通常是远景/模糊/侧脸，embedding 质量差，
-                    # 进入聚类后会拉扯簇心或形成噪声点，反而降低角色识别准确率
+
+                    # ① 尺寸门禁：过滤过小/远景模糊脸
                     box_w = max(0, box[2] - box[0])
                     box_h = max(0, box[3] - box[1])
-                    if box_w < 40 or box_h < 40:
+                    if box_w < req.min_size or box_h < req.min_size:
+                        gate_stats["size"] += 1
                         continue
+
+                    # ② 姿态角门禁：过滤大侧脸/低头抬头脸（pose = [pitch, yaw, roll]）
+                    #    侧脸/极端角度下 embedding 失真，易被聚类成新角色
+                    pose = getattr(face, 'pose', None)
+                    if pose is not None:
+                        pitch = float(pose[0])
+                        yaw = float(pose[1])
+                        if abs(yaw) > req.max_pose_angle or abs(pitch) > req.max_pose_angle:
+                            gate_stats["pose"] += 1
+                            continue
+
                     face_img = img[max(0, box[1]):box[3], max(0, box[0]):box[2]]
-                    if face_img.size > 0:
-                        face_filename = f"{os.path.splitext(os.path.basename(img_path))[0]}_{i}.jpg"
-                        face_save_path = os.path.join(req.output_dir, face_filename)
-                        cv2.imencode('.jpg', face_img)[1].tofile(face_save_path)
+                    if face_img.size == 0:
+                        continue
 
-                        gender_val = 1
-                        if isinstance(face.sex, str):
-                            gender_val = 1 if face.sex.upper() == 'M' else 0
-                        elif face.sex is not None:
-                            gender_val = int(face.sex)
+                    # ③ 清晰度门禁：ROI 拉普拉斯方差，过滤运动撕裂/失焦模糊脸
+                    gray_roi = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+                    clarity = float(cv2.Laplacian(gray_roi, cv2.CV_64F).var())
+                    if clarity < req.min_clarity:
+                        gate_stats["clarity"] += 1
+                        continue
 
-                        age_val = int(float(face.age)) if face.age is not None else 0
+                    # ④ 置信度门禁：过滤低置信度检测
+                    det_score = float(getattr(face, 'det_score', 1.0))
+                    if det_score < req.min_confidence:
+                        gate_stats["confidence"] += 1
+                        continue
 
-                        face_data.append({
-                            "id": face_filename,
-                            "face_path": face_save_path,
-                            "bbox": box,
-                            "gender": gender_val,
-                            "age": age_val,
-                            "embedding": face.embedding.tolist(),
-                            # 🎭 P0.5 帧级锚定：补 frame/frame_index 字段
-                            # 让下游能知道该人脸来自哪一帧，构建 frameRoles 映射
-                            "frame": img_path,
-                            "frame_index": frame_index
-                        })
+                    face_filename = f"{os.path.splitext(os.path.basename(img_path))[0]}_{i}.jpg"
+                    face_save_path = os.path.join(req.output_dir, face_filename)
+                    cv2.imencode('.jpg', face_img)[1].tofile(face_save_path)
+
+                    gender_val = 1
+                    if isinstance(face.sex, str):
+                        gender_val = 1 if face.sex.upper() == 'M' else 0
+                    elif face.sex is not None:
+                        gender_val = int(face.sex)
+
+                    age_val = int(float(face.age)) if face.age is not None else 0
+
+                    face_data.append({
+                        "id": face_filename,
+                        "face_path": face_save_path,
+                        "bbox": box,
+                        "gender": gender_val,
+                        "age": age_val,
+                        "embedding": face.embedding.tolist(),
+                        # 🎭 质量门禁原始值：供下游聚类/角色分级参考
+                        "pose": [float(x) for x in pose] if pose is not None else None,
+                        "det_score": det_score,
+                        "clarity": clarity,
+                        # 🎭 P0.5 帧级锚定：补 frame/frame_index 字段
+                        # 让下游能知道该人脸来自哪一帧，构建 frameRoles 映射
+                        "frame": img_path,
+                        "frame_index": frame_index
+                    })
                 total_kept += len(face_data)
                 results.append({"frame": img_path, "frame_index": frame_index, "faces": face_data})
-            print(f"[vision] 本批 {len(req.image_paths)} 帧: 检测 {total_detected} 张, 保留 {total_kept} 张 (过滤小脸 {total_detected - total_kept})", file=sys.stdout)
+            filtered = sum(gate_stats.values())
+            print(
+                f"[vision] 本批 {len(req.image_paths)} 帧: 检测 {total_detected} 张, 保留 {total_kept} 张 "
+                f"(过滤 {filtered} 张: 尺寸{gate_stats['size']} 姿态{gate_stats['pose']} "
+                f"清晰度{gate_stats['clarity']} 置信度{gate_stats['confidence']})",
+                file=sys.stdout,
+            )
         return {"success": True, "data": results}
     except Exception as e:
         traceback.print_exc()

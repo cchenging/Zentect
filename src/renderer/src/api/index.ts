@@ -226,8 +226,8 @@ export const API = {
       invokeSafe(IPC_CHANNELS.ROLE_LIST, projectId),
     updateVoice: (id: string, voiceId: string) =>
       invokeSafe(IPC_CHANNELS.ROLE_UPDATE_VOICE, { id, voiceId }),
-    /** 🎭 P0.5+ 更新角色信息（名称/代词/描述/头像） */
-    update: (id: string, fields: { name?: string; pronoun?: string; description?: string; avatar?: string }) =>
+    /** 🎭 P0.5+ 更新角色信息（名称/代词/描述/头像/tier 分级） */
+    update: (id: string, fields: { name?: string; pronoun?: string; description?: string; avatar?: string; tier?: 'main' | 'supporting' | 'extra' }) =>
       invokeSafe(IPC_CHANNELS.ROLE_UPDATE, { id, fields }),
     /** 🎭 P0.5+ 合并角色：source 合并到 target */
     merge: (sourceRoleId: string, targetRoleId: string, projectId: string) =>

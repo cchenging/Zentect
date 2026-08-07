@@ -14,6 +14,8 @@ export interface RoleRecord {
   merged_roles: string | null;
   /** 🎭 P1 全局人物 ID（关联 global_characters.id，可空） */
   global_character_id: string | null;
+  /** 🎭 P1.5 角色主次分级：main 主角 / supporting 配角 / extra 背景路人（持久化标注） */
+  tier: string | null;
   create_time: string;
   update_time: string;
   is_deleted: number;
@@ -47,7 +49,7 @@ export class RoleRepository {
   }
 
   /** 更新角色信息 */
-  update(id: string, fields: Partial<Pick<RoleRecord, 'name' | 'voice_id' | 'pronoun' | 'description' | 'avatar' | 'faces_json'>>): void {
+  update(id: string, fields: Partial<Pick<RoleRecord, 'name' | 'voice_id' | 'pronoun' | 'description' | 'avatar' | 'faces_json' | 'tier'>>): void {
     const sets: string[] = [];
     const params: Record<string, unknown> = { id };
 
@@ -57,6 +59,7 @@ export class RoleRepository {
     if (fields.description !== undefined) { sets.push('description = @description'); params.description = fields.description; }
     if (fields.avatar !== undefined) { sets.push('avatar = @avatar'); params.avatar = fields.avatar; }
     if (fields.faces_json !== undefined) { sets.push('faces_json = @facesJson'); params.facesJson = fields.faces_json; }
+    if (fields.tier !== undefined) { sets.push('tier = @tier'); params.tier = fields.tier; }
 
     if (sets.length === 0) return;
 

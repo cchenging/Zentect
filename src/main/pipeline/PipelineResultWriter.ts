@@ -194,6 +194,8 @@ export class PipelineResultWriter {
           pronoun: r.pronoun,
           description: r.description,
           voiceId: r.voice_id,
+          /** 🎭 P1.5 角色主次分级：从 DB tier 列恢复（main/supporting/extra） */
+          tier: r.tier || undefined,
           mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
         };
       });
@@ -243,6 +245,8 @@ export class PipelineResultWriter {
             facesJson,
             // 🎭 P1 全局人物注册中心：持久化 global_character_id（聚类后自动匹配写入）
             globalCharacterId: role.globalCharacterId || null,
+            /** 🎭 P1.5 角色主次分级：持久化 tier（main/supporting/extra），跨会话保留标注 */
+            tier: role.tier || '',
           });
         }
       });

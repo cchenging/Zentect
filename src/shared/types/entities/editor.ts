@@ -121,12 +121,26 @@ export interface FaceFeature {
   gender?: string;
   /** 年龄估计 */
   age?: number;
-  /** 人脸框坐标 */
+  /** 人脸框坐标 [x1, y1, x2, y2] */
   bbox?: number[];
   /** 所属帧索引（用于帧级角色锚定） */
   frameIndex?: number;
   /** 所属帧路径 */
   frame?: string;
+  /**
+   * 🎭 四重质量门禁的原始值（Python 端 /api/vision 返回，供下游聚类/角色分级/UI 质检展示）
+   * 运行时数据已存在，此处补齐类型契约，让 TS 静态层面可见可消费。
+   * 统一约定：数字字段缺省时视为"未采集"（undefined），不设默认值。
+   */
+
+  /** 姿态角 [pitch, yaw, roll]（度），大侧脸/低头抬头脸在提取前已被 30° 门禁过滤 */
+  pose?: number[];
+  /** InsightFace 检测置信度（0~1，运行时字段名 det_score），低于 0.85 的低置信检测已被过滤 */
+  det_score?: number;
+  /** ROI 拉普拉斯方差（清晰度），低于 100 的运动模糊脸已被过滤 */
+  clarity?: number;
+  /** 512 维 ArcFace 归一化特征向量，用于聚类与跨项目人物匹配 */
+  embedding?: number[];
 }
 
 /** 角色 */
@@ -144,6 +158,8 @@ export interface Role {
 
   /** 聚类 ID（媒体内唯一，如 role_0），非全局人物标识 */
   systemId?: string;
+  /** 🎭 角色主次分级：main 主角 / supporting 配角 / extra 背景路人（服务端自动标注，前端按此分组展示） */
+  tier?: 'main' | 'supporting' | 'extra';
   /** 角色头像路径 */
   avatar?: string;
   /** 代词（他/她/它） */

@@ -131,6 +131,8 @@ export class ProjectRepository {
           facesJson: r.faces_json || JSON.stringify({ representative: null, faces: [], faceCount: 0 }),
           // 🎭 P1 全局人物注册中心：复制工程时保持 global_character_id 关联（同一人物跨项目复用）
           globalCharacterId: r.global_character_id || null,
+          // 🎭 P1.5 角色主次分级：复制工程时原样搬运 tier 标注
+          tier: r.tier || '',
         });
       }
 
@@ -272,6 +274,8 @@ export class ProjectRepository {
         voiceId: r.voice_id, mergedRoles: r.merged_roles ? JSON.parse(r.merged_roles) : [],
         /** 🎭 P1 全局人物注册中心：读回 global_character_id（可空） */
         globalCharacterId: r.global_character_id || undefined,
+        /** 🎭 P1.5 角色主次分级：读回 tier 标注（main/supporting/extra），供前端分组展示 */
+        tier: r.tier || undefined,
       };
     });
 

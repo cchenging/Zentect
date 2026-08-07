@@ -1,7 +1,7 @@
 // Module: pipeline/step1-material - View
 
 import React, { useEffect, useState } from "react";
-import { Edit3, Music, Play, UndoDot, RotateCcw, Square, AlertTriangle, GitMerge, Split, Trash2, X, Globe } from "lucide-react";
+import { Edit3, Music, Play, UndoDot, RotateCcw, Square, AlertTriangle, GitMerge, Split, Trash2, X, Globe, Users } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "@renderer/components/shared";
 import { FrameExtractConfig } from "./components/FrameExtractConfig";
@@ -75,6 +75,36 @@ const DurationBadge: React.FC<{
   return null;
 };
 
+/**
+ * 🎭 P1.5 角色分级徽章：显示 主角/配角/背景路人 标注
+ * - main      主角：金色强调
+ * - supporting配角：紫色强调
+ * - extra     背景路人：灰色弱化
+ * - 未标注    ：显示「未标注」，点击可补标
+ * 点击徽章可循环切换分级（手动标注），持久化到 DB tiers 列。
+ */
+const TierBadge: React.FC<{
+  tier?: 'main' | 'supporting' | 'extra';
+  onClick?: (e: React.MouseEvent) => void;
+}> = ({ tier, onClick }) => {
+  const config: Record<string, { label: string; cls: string }> = {
+    main: { label: '主角', cls: 'bg-accent/15 text-accent border-accent/30' },
+    supporting: { label: '配角', cls: 'bg-accent-purple/15 text-accent-purple border-accent-purple/30' },
+    extra: { label: '背景路人', cls: 'bg-muted/40 text-muted-foreground border-border/40' },
+  };
+  const c = tier ? config[tier] : { label: '未标注', cls: 'bg-muted/20 text-muted-foreground/70 border-dashed border-border/40' };
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onClick?.(e); }}
+      title={tier ? `当前：${c.label}（点击切换分级）` : '点击标注角色分级（主角/配角/背景路人）'}
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border leading-none cursor-pointer hover:opacity-80 transition-opacity ${c.cls}`}
+    >
+      {c.label}
+    </button>
+  );
+};
+
 export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> = (props) => {
   const { t } = useI18n();
   const {
@@ -92,6 +122,18 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
   const [expandedRole, setExpandedRole] = useState<string | null>(roles[0]?.id ?? null);
   /** 🎭 P0.5+ 合并模式：mergeSourceId 非 null 时进入"选择目标"模式，点击其他角色完成合并 */
   const [mergeSourceId, setMergeSourceId] = useState<string | null>(null);
+  /** 🎭 背景路人折叠区：extra 级角色默认收纳，点击展开查看 */
+  const [showExtras, setShowExtras] = useState(false);
+  /** 🎭 角色主次分组：main 主角 + supporting 配角平铺主体区，extra 背景路人折叠收纳 */
+  const mainRoles = roles.filter((r) => r.tier !== 'extra');
+  const extraRoles = roles.filter((r) => r.tier === 'extra');
+  /** 🎭 P1.5 手动标注：点击分级徽章循环切换 main→supporting→extra→main，并持久化 */
+  const cycleTier = (role: any) => {
+    const order: Array<'main' | 'supporting' | 'extra'> = ['main', 'supporting', 'extra'];
+    const cur = role.tier as 'main' | 'supporting' | 'extra' | undefined;
+    const next = order[(order.indexOf(cur as 'main' | 'supporting' | 'extra') + 1) % order.length];
+    onUpdateRole(role.id, { tier: next });
+  };
 
   const parseTime = (timeStr: string): number => {
     if (!timeStr) return 0;
@@ -248,7 +290,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
               </div>
             )}
             <div className="grid grid-cols-3 gap-3">
-              {roles.map((role) => {
+              {mainRoles.map((role) => {
                 /** 提取角色属性：gender(1=男/0=女)、age、出现次数 */
                 const rep = role.representative || {};
                 const gender = rep.gender ?? role.gender;
@@ -303,12 +345,16 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                         )}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <input
-                          value={role.name}
-                          onChange={(e) => onUpdateRole(role.id, { name: e.target.value })}
-                          onClick={(e) => e.stopPropagation()}
-                          className="text-[14px] font-medium bg-transparent outline-none border-b border-transparent focus:border-accent/30 w-full"
-                        />
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            value={role.name}
+                            onChange={(e) => onUpdateRole(role.id, { name: e.target.value })}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-[14px] font-medium bg-transparent outline-none border-b border-transparent focus:border-accent/30 w-full min-w-0"
+                          />
+                          {/* 🎭 P1.5 角色分级标注徽章：显示并支持手动切换 主角/配角 */}
+                          <TierBadge tier={role.tier} onClick={() => cycleTier(role)} />
+                        </div>
                         <div className="flex flex-col gap-0.5 mt-1 text-[11px] text-muted-foreground">
                           {faceCount > 0 && <span>出现 {faceCount} 次</span>}
                           {gender !== undefined && gender !== null && <span>{gender === 1 ? '男' : '女'}</span>}
@@ -398,6 +444,38 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                 );
               })}
             </div>
+            {/* 🎭 P1.5 背景路人折叠区：extra 级角色（只出现1次）收纳于此，不喧宾夺主 */}
+            {extraRoles.length > 0 && (
+              <div className="rounded-lg border border-dashed border-border/30 bg-muted/20 overflow-hidden">
+                <button
+                  onClick={() => setShowExtras((v) => !v)}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-muted-foreground hover:bg-muted/40 transition-colors cursor-pointer"
+                >
+                  <Users size={13} className="shrink-0 text-muted-foreground/70" />
+                  <span className="flex-1 text-left">背景路人（{extraRoles.length}）</span>
+                  <span className={`transition-transform ${showExtras ? 'rotate-180' : ''}`}>▾</span>
+                </button>
+                {showExtras && (
+                  <div className="grid grid-cols-4 gap-2 px-2 pb-2">
+                    {extraRoles.map((role) => {
+                      const faceUrl = role.avatarPath || role.representative?.facePath;
+                      const faceCount = role.faceCount ?? (role.faces?.length || 0);
+                      return (
+                        <div key={role.id} className="rounded-lg bg-bg-secondary border border-border/20 p-1.5 flex flex-col items-center gap-1">
+                          <div className="w-12 h-12 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
+                            {faceUrl && <img src={getSafeMediaUrl(faceUrl)} className="w-full h-full object-cover" />}
+                          </div>
+                          <span className="text-[10px] text-muted-foreground truncate w-full text-center">{role.name}</span>
+                          {/* 🎭 P1.5 路人徽章：点击可循环切换分级（升级为配角/主角） */}
+                          <TierBadge tier={role.tier} onClick={() => cycleTier(role)} />
+                          <span className="text-[9px] text-muted-foreground/60">{faceCount}次</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
         {facesStatus === "completed" && roles.length === 0 && (

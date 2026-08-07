@@ -349,12 +349,13 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       ),
     }));
     // 🎭 P0.5+ 持久化到 DB（仅更新允许的字段，fire-and-forget）
-    const { name, pronoun, description, avatar } = updates as any;
+    const { name, pronoun, description, avatar, tier } = updates as any;
     const fields: any = {};
     if (name !== undefined) fields.name = name;
     if (pronoun !== undefined) fields.pronoun = pronoun;
     if (description !== undefined) fields.description = description;
     if (avatar !== undefined) fields.avatar = avatar;
+    if (tier !== undefined) fields.tier = tier;
     if (Object.keys(fields).length > 0) {
       API.roles.update(id, fields).catch(() => {
         // 持久化失败不阻断 UI，用户可在重试中恢复

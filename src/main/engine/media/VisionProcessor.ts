@@ -6,6 +6,18 @@ import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { PythonClient } from '../PythonClient';
 
+/** 人脸质量门禁配置（透传给 Python 端 /api/vision 四重过滤） */
+export interface VisionQualityGate {
+  /** 人脸 BBox 最小边长（px），过滤背景路人/远景小脸 */
+  minSize?: number;
+  /** 俯仰/偏航角上限（度），过滤大侧脸/低头抬头脸 */
+  maxPoseAngle?: number;
+  /** 拉普拉斯方差下限，过滤运动模糊脸 */
+  minClarity?: number;
+  /** 检测置信度下限 */
+  minConfidence?: number;
+}
+
 export class VisionProcessor {
   /**
    * 极速抽取关键帧，供视觉大模型 (VLM) 分析
@@ -69,9 +81,10 @@ export class VisionProcessor {
    * @param frames 帧图片路径列表
    * @param facesDir 人脸输出目录
    * @param signal 取消信号（Fix 10）
+   * @param qualityGate 可选，四重质量门禁配置（缺省用 Python 端经验最优值）
    * @returns 检测到的人脸角色列表
    */
-  public static async scanFaces(frames: string[], facesDir: string, signal?: AbortSignal): Promise<any[]> {
+  public static async scanFaces(frames: string[], facesDir: string, signal?: AbortSignal, qualityGate?: VisionQualityGate): Promise<any[]> {
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: scanning ${frames.length} frames`);
 
     if (!frames || frames.length === 0) {
@@ -101,7 +114,12 @@ export class VisionProcessor {
         try {
           const response = await pythonClient.call('/api/vision', {
             image_paths: batch,
-            output_dir: facesDir
+            output_dir: facesDir,
+            // 🎭 四重质量门禁：仅透传显式配置项，未配置的用 Python 端默认值
+            ...(qualityGate?.minSize !== undefined ? { min_size: qualityGate.minSize } : {}),
+            ...(qualityGate?.maxPoseAngle !== undefined ? { max_pose_angle: qualityGate.maxPoseAngle } : {}),
+            ...(qualityGate?.minClarity !== undefined ? { min_clarity: qualityGate.minClarity } : {}),
+            ...(qualityGate?.minConfidence !== undefined ? { min_confidence: qualityGate.minConfidence } : {}),
           }, signal);
           // 🔧 修复 P0-3：Python 返回 {success, data: [{frame, faces: [...]}, ...]}
           //   data 是数组而非对象，需 flatMap 展平所有帧的人脸
