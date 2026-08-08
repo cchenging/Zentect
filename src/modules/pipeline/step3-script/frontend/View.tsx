@@ -29,7 +29,7 @@ import {
   SelectValue,
 } from "@renderer/components/ui/select";
 import { Slider } from "@renderer/components/ui/slider";
-import type { PipelineParams } from "../../../shared/types/entities/editor";
+import type { PipelineParams } from "../../../../shared/types/entities/editor";
 import type { StepScriptGenerationProps } from "../types";
 
 /** 语速选项 */
@@ -105,7 +105,7 @@ const HelpTip: React.FC<{ text: string }> = ({ text }) => (
   <span className="relative inline-flex items-center group cursor-help shrink-0 ml-1">
     <HelpCircle size={13} className="text-muted-foreground/50 hover:text-accent transition-colors" />
     <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap px-2.5 py-1.5 rounded-lg
-      bg-bg-tertiary/95 border border-border/60 text-[11px] text-foreground shadow-2xl z-50 backdrop-blur-md
+      bg-bg-tertiary/95 border border-border/60 text-[12px] text-foreground shadow-2xl z-50 backdrop-blur-md
       opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all pointer-events-none
       translate-y-1 group-hover:translate-y-0">
       {text}
@@ -141,7 +141,7 @@ function SegmentedControl<T extends string>({
             key={opt.value}
             onClick={() => !disabled && !isLocked && onChange(opt.value)}
             disabled={disabled || isLocked}
-            className={`flex-1 min-w-[70px] py-1.5 px-2 rounded-lg text-[12px] font-medium transition-all duration-200
+            className={`flex-1 min-w-[70px] py-1.5 px-2 rounded-lg text-[13px] font-medium transition-all duration-200
               flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap select-none
               ${isSelected
                 ? "bg-accent/15 text-accent border border-accent/30 shadow-sm font-semibold"
@@ -152,7 +152,7 @@ function SegmentedControl<T extends string>({
           >
             {isLocked && <Lock size={11} className="shrink-0 text-amber-500" />}
             {Icon && <Icon size={12} className={isSelected ? "text-accent" : "text-muted-foreground"} />}
-            {opt.emoji && <span className="text-[11px]">{opt.emoji}</span>}
+            {opt.emoji && <span className="text-[12px]">{opt.emoji}</span>}
             <span>{opt.label}</span>
             {opt.fill && (
               <div className="w-8 h-1 bg-border/40 rounded-full overflow-hidden ml-1 hidden sm:block">
@@ -194,7 +194,7 @@ function CustomSelect({
     <Select value={value} onValueChange={onChange} disabled={disabled}>
       <SelectTrigger
         className={`${
-          size === "sm" ? "h-7 text-[11px] px-2" : "h-9 text-[12.5px] font-medium px-3"
+          size === "sm" ? "h-7 text-[12px] px-2" : "h-9 text-[12.5px] font-medium px-3"
         } border-border/40 bg-bg-tertiary/80 text-foreground hover:border-accent/60 data-[state=open]:border-accent/60 focus:ring-1 focus:ring-accent/30 rounded-xl transition-all`}
       >
         <SelectValue placeholder={placeholder} />
@@ -204,7 +204,7 @@ function CustomSelect({
           <SelectItem
             key={opt.value}
             value={opt.value}
-            className="text-[12px] cursor-pointer focus:bg-accent/15 focus:text-accent data-[highlighted]:bg-accent/15 data-[highlighted]:text-accent rounded-lg transition-colors"
+            className="text-[13px] cursor-pointer focus:bg-accent/15 focus:text-accent data-[highlighted]:bg-accent/15 data-[highlighted]:text-accent rounded-lg transition-colors"
           >
             {opt.label}
           </SelectItem>
@@ -245,7 +245,7 @@ function CustomSlider({
         step={step}
         disabled={disabled}
       />
-      <span className="font-mono text-[11px] text-accent w-10 text-right tabular-nums shrink-0">
+      <span className="font-mono text-[12px] text-accent w-10 text-right tabular-nums shrink-0">
         {value}{unit}
       </span>
     </div>
@@ -306,7 +306,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             </div>
             <div>
               <h3 className="text-[14px] font-semibold text-foreground tracking-wide">AI 脚本控制台</h3>
-              <p className="text-[11px] text-muted-foreground/80">精细化调控解说语气、声画比率与网感节奏</p>
+              <p className="text-[12px] text-muted-foreground/80">精细化调控解说语气、声画比率与网感节奏</p>
             </div>
           </div>
           {scriptParagraphs.length > 0 && (
@@ -323,7 +323,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
           <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
             {/* 风格选择器 */}
             <div className="md:col-span-6 flex flex-col gap-1.5">
-              <label className="text-[12px] font-medium text-muted-foreground flex items-center">
+              <label className="text-[13px] font-medium text-muted-foreground flex items-center">
                 <Tv2 size={12} className="mr-1.5 text-accent" />
                 创作风格预设
                 <HelpTip text={TOOLTIPS.style} />
@@ -340,11 +340,11 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             {/* 语速选择器 */}
             <div className="md:col-span-6 flex flex-col gap-1.5">
               <div className="flex items-center justify-between">
-                <label className="text-[12px] font-medium text-muted-foreground flex items-center">
+                <label className="text-[13px] font-medium text-muted-foreground flex items-center">
                   <Gauge size={12} className="mr-1.5 text-accent" />
                   解说语速
                 </label>
-                <Badge variant="accent" className="text-[10px] font-mono py-0 px-1.5">
+                <Badge variant="accent" className="text-[12px] font-mono py-0 px-1.5">
                   {speechRate} 字/秒 · 约 {estimatedDuration}s
                 </Badge>
               </div>
@@ -354,7 +354,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
                     key={opt.value}
                     onClick={() => onSetSpeechRate(opt.value)}
                     disabled={isGenerating}
-                    className={`py-1 text-[11px] font-mono rounded-lg transition-all cursor-pointer text-center
+                    className={`py-1 text-[12px] font-mono rounded-lg transition-all cursor-pointer text-center
                       ${speechRate === opt.value
                         ? "bg-accent/20 text-accent font-bold border border-accent/30 shadow-xs"
                         : "text-muted-foreground hover:text-foreground"}`}
@@ -372,7 +372,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
             {/* 叙事视角 */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-[12px] font-medium text-muted-foreground/90 flex items-center">
+              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
                 <AlignLeft size={12} className="mr-1 text-accent/80" />
                 叙事视角
               </span>
@@ -386,7 +386,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
 
             {/* 信息层次 */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-[12px] font-medium text-muted-foreground/90 flex items-center">
+              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
                 信息层次
                 <HelpTip text={TOOLTIPS.infoLevel} />
               </span>
@@ -400,7 +400,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
 
             {/* 解说密度 */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-[12px] font-medium text-muted-foreground/90 flex items-center">
+              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
                 解说密度 (时长填充)
                 <HelpTip text={TOOLTIPS.narrationDensity} />
               </span>
@@ -415,7 +415,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
 
             {/* 原声策略 */}
             <div className="flex flex-col gap-1.5">
-              <span className="text-[12px] font-medium text-muted-foreground/90 flex items-center">
+              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
                 <Volume2 size={12} className="mr-1 text-accent/80" />
                 原声保留策略
                 <HelpTip text={TOOLTIPS.originalAudioStrategy} />
@@ -431,7 +431,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
 
           {/* 冲突提示 */}
           {isDensityLocked && (
-            <div className="inline-flex items-center gap-2 text-[11px] text-amber-500/90 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 animate-fade-in">
+            <div className="inline-flex items-center gap-2 text-[12px] text-amber-500/90 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 animate-fade-in">
               <AlertTriangle size={13} className="shrink-0" />
               <span>原声为主策略生效中：解说密度已锁定为标准模式，避免音轨冲突。</span>
             </div>
@@ -442,7 +442,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
           {/* 3. 节奏模式与情绪基调 */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
             <div className="flex flex-col gap-1.5">
-              <span className="text-[12px] font-medium text-muted-foreground/90">句式节奏</span>
+              <span className="text-[13px] font-medium text-muted-foreground/90">句式节奏</span>
               <SegmentedControl
                 options={RHYTHM_OPTIONS}
                 value={pipelineParams.rhythmMode}
@@ -452,7 +452,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <span className="text-[12px] font-medium text-muted-foreground/90 flex items-center">
+              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
                 <Smile size={12} className="mr-1 text-accent/80" />
                 情绪基调
               </span>
@@ -468,7 +468,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
           {/* 4. 微调滑块 */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
             <div className="flex flex-col gap-1">
-              <div className="flex justify-between items-center text-[11px] text-muted-foreground">
+              <div className="flex justify-between items-center text-[12px] text-muted-foreground">
                 <span className="flex items-center">
                   黄金 3 秒 Hook 钩子强度
                   <HelpTip text={TOOLTIPS.hookIntensity} />
@@ -483,7 +483,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             </div>
 
             <div className="flex flex-col gap-1">
-              <div className="flex justify-between items-center text-[11px] text-muted-foreground">
+              <div className="flex justify-between items-center text-[12px] text-muted-foreground">
                 <span className="flex items-center">
                   声画权重 (画面 vs 台词)
                   <HelpTip text={TOOLTIPS.audioVisualWeight} />
@@ -505,10 +505,10 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
         <div className="flex items-center justify-between px-1">
           <div className="flex items-center gap-2">
             <SlidersHorizontal size={14} className="text-accent" />
-            <h4 className="text-[13px] font-semibold text-foreground">解说文案流 (Script Paragraphs)</h4>
+            <h4 className="text-[14px] font-semibold text-foreground">解说文案流 (Script Paragraphs)</h4>
           </div>
           {scriptParagraphs.length > 0 && (
-            <span className="text-[11px] text-muted-foreground">
+            <span className="text-[12px] text-muted-foreground">
               共计 <span className="font-mono text-accent font-semibold">{totalChars}</span> 字
             </span>
           )}
@@ -530,11 +530,11 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
                   {/* Card Header */}
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded-md bg-accent/10 border border-accent/20 text-accent font-mono text-[11px] font-semibold">
+                      <span className="px-2 py-0.5 rounded-md bg-accent/10 border border-accent/20 text-accent font-mono text-[12px] font-semibold">
                         第 {String(index + 1).padStart(2, '0')} 段
                       </span>
                       {p.duration && (
-                        <span className="text-[11px] text-muted-foreground font-mono">
+                        <span className="text-[12px] text-muted-foreground font-mono">
                           {Number(p.duration).toFixed(1)}s
                         </span>
                       )}
@@ -555,7 +555,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
                       </div>
 
                       {p.emotion && (
-                        <Badge variant="accent" className="text-[10px] px-2 py-0.5 rounded-md">
+                        <Badge variant="accent" className="text-[12px] px-2 py-0.5 rounded-md">
                           {p.emotion}
                         </Badge>
                       )}
@@ -572,7 +572,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
                   />
 
                   {/* Card Footer */}
-                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/15 text-[11px]">
+                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/15 text-[12px]">
                     <button
                       onClick={() => { setMatchingParagraphId(pId); onMatchVision(pId); }}
                       disabled={!vlmFrames.length || matchingParagraphId === pId}

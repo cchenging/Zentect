@@ -51,7 +51,7 @@ export const PreviewMonitor: React.FC<PreviewMonitorProps> = ({
       {onReplaceClick && (
         <button
           onClick={onReplaceClick}
-          className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-1 bg-[var(--bg-main)]/80 border border-[var(--border)]/50 rounded text-[10px] text-[var(--text-secondary)] hover:bg-[var(--bg-main)]/60 hover:text-[var(--text-primary)] transition-colors cursor-pointer backdrop-blur-sm"
+          className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-1 bg-[var(--bg-main)]/80 border border-[var(--border)]/50 rounded text-[12px] text-[var(--text-secondary)] hover:bg-[var(--bg-main)]/60 hover:text-[var(--text-primary)] transition-colors cursor-pointer backdrop-blur-sm"
           title="替换当前视频（删除旧视频及衍生数据后导入新视频）"
         >
           <RefreshCw size={10} />

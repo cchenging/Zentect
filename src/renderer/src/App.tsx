@@ -77,6 +77,7 @@ function App() {
       mq.addEventListener('change', listener);
       return () => mq.removeEventListener('change', listener);
     }
+    return undefined;
   }, [mode]);
 
   // ==========================================================
@@ -110,7 +111,7 @@ function App() {
     (async () => {
       try {
         // ⚡ 单次批量获取所有设置，消灭 3 次独立 getSetting IPC 调用
-        const settings = await API.settingsExt.getAll().catch(() => ({}));
+        const settings = await API.settingsExt.getAll().catch(() => ({} as Record<string, any>));
         const hasAnyKey = !!(settings.deepseekKey || settings.qwenKey || settings.doubaoKey || settings.openaiKey);
         if (!hasAnyKey) {
           useNotificationCenter.getState().addNotification({

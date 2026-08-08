@@ -102,14 +102,14 @@ export const AudioSeparationConfig: React.FC<AudioSeparationConfigProps> = ({ is
               `}
             >
               <opt.Icon size={14} strokeWidth={isSelected ? 2.4 : 1.8} />
-              <span className="text-[11px] font-semibold leading-tight">{opt.label}</span>
-              <span className={`text-[9px] leading-tight ${isSelected ? 'text-accent/70' : 'opacity-50'}`}>{opt.desc}</span>
+              <span className="text-[12px] font-semibold leading-tight">{opt.label}</span>
+              <span className={`text-[11px] leading-tight ${isSelected ? 'text-accent/70' : 'opacity-60'}`}>{opt.desc}</span>
             </button>
           );
         })}
       </div>
 
-      <p className="text-[9px] text-muted-foreground/60 leading-relaxed bg-muted/30 p-2 rounded border border-border/30">
+      <p className="text-[11px] text-muted-foreground/70 leading-relaxed bg-muted/30 p-2 rounded border border-border/30">
         {activeHint}
       </p>
     </div>

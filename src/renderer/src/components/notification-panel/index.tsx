@@ -41,7 +41,7 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ className }) => {
       >
         <Bell size={17} />
         {unreadCount > 0 && (
-          <span className="absolute top-1 right-1 min-w-[16px] h-4 flex items-center justify-center rounded-full bg-accent-rose text-white text-[9px] font-bold px-1 leading-none">
+          <span className="absolute top-1 right-1 min-w-[16px] h-4 flex items-center justify-center rounded-full bg-accent-rose text-white text-[11px] font-bold px-1 leading-none">
             {unreadCount > 99 ? '99+' : unreadCount}
           </span>
         )}
@@ -56,16 +56,16 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ className }) => {
             <div className="flex items-center justify-between px-4 py-3 border-b border-border/30 shrink-0">
               <div className="flex items-center gap-2">
                 <Bell size={15} className="text-accent" />
-                <span className="text-[13px] font-semibold text-foreground">通知中心</span>
+                <span className="text-[14px] font-semibold text-foreground">通知中心</span>
                 {unreadCount > 0 && (
-                  <span className="text-[10px] text-muted-foreground">{unreadCount} 条未读</span>
+                  <span className="text-[12px] text-muted-foreground">{unreadCount} 条未读</span>
                 )}
               </div>
               <div className="flex items-center gap-1">
                 {unreadCount > 0 && (
                   <button
                     onClick={markAllRead}
-                    className="flex items-center gap-1 px-2 py-1 text-[10px] text-accent-cyan hover:text-accent-cyan hover:bg-accent-cyan/5 rounded-md transition-colors cursor-pointer outline-none"
+                    className="flex items-center gap-1 px-2 py-1 text-[12px] text-accent-cyan hover:text-accent-cyan hover:bg-accent-cyan/5 rounded-md transition-colors cursor-pointer outline-none"
                     title="全部已读"
                   >
                     <Check size={12} /> 全部已读
@@ -74,7 +74,7 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ className }) => {
                 {notifications.length > 0 && (
                   <button
                     onClick={clearAll}
-                    className="flex items-center gap-1 px-2 py-1 text-[10px] text-muted-foreground hover:text-accent-rose hover:bg-accent-rose/5 rounded-md transition-colors cursor-pointer outline-none"
+                    className="flex items-center gap-1 px-2 py-1 text-[12px] text-muted-foreground hover:text-accent-rose hover:bg-accent-rose/5 rounded-md transition-colors cursor-pointer outline-none"
                     title="全部清除"
                   >
                     <Trash2 size={12} /> 清除
@@ -94,8 +94,8 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ className }) => {
               {notifications.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 px-4">
                   <Bell size={28} className="text-muted-foreground/30 mb-3" />
-                  <span className="text-[12px] text-muted-foreground">暂无通知</span>
-                  <span className="text-[10px] text-muted-foreground/60 mt-1">新通知将在此显示</span>
+                  <span className="text-[13px] text-muted-foreground">暂无通知</span>
+                  <span className="text-[12px] text-muted-foreground/60 mt-1">新通知将在此显示</span>
                 </div>
               ) : (
                 <div className="flex flex-col">
@@ -116,12 +116,12 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ className }) => {
                         <div className={cn('w-1.5 h-1.5 rounded-full mt-1.5 shrink-0', config.text.replace('text-', 'bg-'))} />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between gap-2">
-                            <span className={cn('text-[12px] font-medium truncate', !item.read ? 'text-foreground' : 'text-muted-foreground')}>
+                            <span className={cn('text-[13px] font-medium truncate', !item.read ? 'text-foreground' : 'text-muted-foreground')}>
                               {item.title}
                             </span>
-                            <span className="text-[9px] text-muted-foreground/60 shrink-0">{formatTime(item.timestamp)}</span>
+                            <span className="text-[11px] text-muted-foreground/60 shrink-0">{formatTime(item.timestamp)}</span>
                           </div>
-                          <p className={cn('text-[11px] mt-0.5 line-clamp-2', !item.read ? 'text-foreground/80' : 'text-muted-foreground/70')}>
+                          <p className={cn('text-[12px] mt-0.5 line-clamp-2', !item.read ? 'text-foreground/80' : 'text-muted-foreground/70')}>
                             {item.message}
                           </p>
                           {/* 操作按钮 */}
@@ -131,7 +131,7 @@ const NotificationPanel: React.FC<NotificationPanelProps> = ({ className }) => {
                                 <button
                                   key={idx}
                                   className={cn(
-                                    'px-2.5 py-0.5 rounded-md text-[10px] font-medium transition-colors cursor-pointer outline-none',
+                                    'px-2.5 py-0.5 rounded-md text-[12px] font-medium transition-colors cursor-pointer outline-none',
                                     action.intent === 'primary' ? 'bg-accent/10 text-accent hover:bg-accent/20' : 'bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80'
                                   )}
                                   onClick={(e) => {

@@ -110,7 +110,15 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  无描述切片退化为纯图像语义。
      *  🎭 P0 意境维度：同步聚合帧情绪/景别为切片情绪标签（chunk.emotion/shotType），
      *  供 daemon 做"文案情绪↔画面情绪"匹配（文案段落 emotion 来自步骤3 LLM 生成，帧 emotion 来自步骤2 VLM 结构化输出）。 */
-    const frameDescs: { timeMs: number; description: string; emotion?: string; shotType?: string }[] = task.frameDescriptions || [];
+    const frameDescs: { timeMs: number; description: string; emotion?: string; shotType?: string; characters?: string[] }[] = (task.frameDescriptions || []).map((f: any) => ({
+      timeMs: f.timeMs,
+      description: f.description,
+      emotion: f.emotion,
+      shotType: f.shotType,
+      /** 🎭 P1 角色组合匹配：读取帧的角色集合（VLM 结构化输出），供切片做角色去重聚合 */
+      characters: Array.isArray(f?.downstream?.characters) ? f.downstream.characters
+        : (Array.isArray(f?.characters) ? f.characters : undefined),
+    }));
     if (frameDescs.length > 0 && videoChunks.length > 0) {
       const sortedDescs = [...frameDescs].sort((a, b) => a.timeMs - b.timeMs);
       for (const chunk of videoChunks) {
@@ -139,6 +147,15 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (shotTypeCounts.size > 0) {
           chunk.shotType = [...shotTypeCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
         }
+        /** 🎭 P1 角色组合匹配：切片角色集合 = 时间窗内各帧出现角色的去重并集（任意帧出现即计入），
+         *  供 KM 端与 Query 段落的 characters 做契合度匹配（软加成）。无角色帧不影响统计，切片无角色则不写入。 */
+        const chunkRoleSet = new Set<string>();
+        for (const f of windowFrames) {
+          for (const r of (f.characters || [])) {
+            if (typeof r === 'string' && r.trim()) chunkRoleSet.add(r.trim());
+          }
+        }
+        if (chunkRoleSet.size > 0) chunk.characters = [...chunkRoleSet];
       }
       const withDesc = videoChunks.filter((c) => (c.description || '').trim().length > 0).length;
       const withEmotion = videoChunks.filter((c) => (c.emotion || '').trim().length > 0).length;
@@ -160,6 +177,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         audioDurationMs,
         /** 🎭 P0 意境维度：段落情绪标签（步骤3 LLM 生成），daemon 端与切片情绪做相容度匹配 */
         emotion: s.emotion || '',
+        /** 🎭 P1 角色组合匹配：本段解说词期望出现的人物名集合（步骤3 透传的 chunk 锚定角色），
+         *  daemon 端与切片角色集合做契合度匹配（软加成，未命中不惩罚） */
+        characters: Array.isArray(s.characters) ? s.characters : [],
         /** 原声段落：不参与语义匹配，按 ASR 时间轴锁定原片时间段 */
         keepOriginalAudio: s.keepOriginalAudio === true,
       };

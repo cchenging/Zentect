@@ -48,6 +48,8 @@ export interface GeneratedShot {
   emotion?: string;
   /** 原声段落标记：文案生成按原声策略标记"留原声"的段落（keep_key/original_main），下游 TTS 跳过合成、匹配锁定原片时间段 */
   keepOriginalAudio?: boolean;
+  /** 🎭 P1 角色组合匹配：本段解说词对应的视频片段中出现的人物名集合（来自 step2 VLM 角色锚定），透传到步骤5 Query 端做角色契合匹配 */
+  characters?: string[];
 }
 
 /** 风格到 Prompt 指令的映射（重写：去掉废话文学，改为专业解说方向） */
@@ -90,6 +92,11 @@ function extractKeyVisualAction(shot: any): {
   cameraMovement?: string;
   dramaticConflict?: string;
   subject?: string;
+  primarySubject?: string;
+  secondarySubjects?: string[];
+  interaction?: string;
+  shotStyle?: string;
+  characters?: string[];
   purifiedKeywords: string[];
 } {
   // 1. action 直接取自 VLM 结构化输出（narrativeAction），无需正则清洗
@@ -128,6 +135,12 @@ function extractKeyVisualAction(shot: any): {
     cameraMovement: shot?.cameraMovement || undefined,
     dramaticConflict: shot?.dramaticConflict || undefined,
     subject: shot?.subject || undefined,
+    // 👥 P0 多人物关系建模透传：供 LLM 理解主宾关系，避免"房间里两个人"式废话
+    primarySubject: shot?.primarySubject || undefined,
+    secondarySubjects: Array.isArray(shot?.secondarySubjects) ? shot.secondarySubjects : undefined,
+    interaction: shot?.interaction || undefined,
+    shotStyle: shot?.shotStyle || undefined,
+    characters: Array.isArray(shot?.characters) ? shot.characters : undefined,
     purifiedKeywords,
   };
 }
@@ -274,6 +287,12 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
           cameraMovement: purifiedVisual.cameraMovement,  // 🎥 运镜（如：推/摇/移）
           dramaticConflict: purifiedVisual.dramaticConflict, // ⚡ 剧情张力/看点（如：发现秘密）
           subject: purifiedVisual.subject,                // 👤 画面核心主体（如：张三）
+          // 👥 P0 多人物关系建模：主焦点/陪体/交互/场景分类/角色集合，供 LLM 写主宾明确、有张力的旁白
+          primarySubject: purifiedVisual.primarySubject,  // 👥 主焦点（如：张三）
+          secondarySubjects: purifiedVisual.secondarySubjects, // 👥 陪体（如：["李四"]）
+          interaction: purifiedVisual.interaction,        // 🤝 交互动作（如：张三举枪质问角落里的李四）
+          shotStyle: purifiedVisual.shotStyle,            // 🎬 场景分类（如：双人对峙）
+          characters: purifiedVisual.characters,          // 🎭 角色集合（供 step3 角色锚定/step5 组合过滤）
           keywords: purifiedVisual.purifiedKeywords,      // 噑点过滤后的关键词
         },
       });
@@ -554,7 +573,7 @@ ${roleMapLines.join('\n')}
     onProgress(93, '正在执行三级敏感词扫描...');
 
     const lexiconFilter = new LexiconFilter();
-    const parsedShots: GeneratedShot[] = rawShots.map((raw) => {
+    const parsedShots: GeneratedShot[] = rawShots.map((raw, idx) => {
       const scanResult = lexiconFilter.scan(raw.text || '');
 
       // 节奏模式影响分镜时长 — 短句快切缩短，长句舒缓加长，长短交替不变
@@ -580,6 +599,9 @@ ${roleMapLines.join('\n')}
         duration: paceAdjustedDuration,
         /** 原声段落透传：keep_key/original_main 模式下 LLM 标记的 keepOriginalAudio 原样保留 */
         keepOriginalAudio: raw.keepOriginalAudio === true,
+        /** 🎭 P1 角色组合匹配：本段解说词对应的 chunk 锚定角色（LLM 每个 chunk 输出一段解说，按下标一一对应）。
+         *  空数组表示该片段无可辨识人物，是合法状态；下标越界（LLM 多输出）时同样置空，不掩盖。 */
+        characters: contextChunks[idx]?.anchoredCharacters || [],
       } as GeneratedShot;
     });
 

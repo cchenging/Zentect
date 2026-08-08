@@ -111,24 +111,26 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
 
       case PipelineNodeType.SCRIPT: {
         const paragraphs = nodeResult.paragraphs || nodeResult.shots || [];
-        if (paragraphs.length > 0) {
-          /** 确保 id 唯一：当 shotId 重复时追加索引后缀，避免编辑时多段联动 */
-          const idCountMap: Record<string, number> = {};
-          mappers.setScriptParagraphs(paragraphs.map((p: any, idx: number) => {
-            const baseId = p.id || p.shotId || `para_${idx}`;
-            const count = (idCountMap[baseId] || 0) + 1;
-            idCountMap[baseId] = count;
-            const uniqueId = count > 1 ? `${baseId}_${idx}` : baseId;
-            return {
-              id: uniqueId,
-              text: p.text || p.content || p.narration || '',
-              shotId: p.shotId,
-              duration: p.duration,
-              emotion: p.emotion || '',
-              editing: false
-            };
-          }));
-        }
+        /** 🛑 遵循"错就错，不兜底"：无条件写回，禁止 if(length>0) 守卫
+         *  旧实现守卫会导致：当后端返回空数组（生成失败/生成为空）时，setScriptParagraphs 不被调用，
+         *  残留旧文案被 UI 误显示为"已生成"，掩盖了重新生成失败的真实情况。空就是空，让 UI 显示"解说文案待生成"。 */
+        /** 确保 id 唯一：当 shotId 重复时追加索引后缀，避免编辑时多段联动 */
+        const idCountMap: Record<string, number> = {};
+        mappers.setScriptParagraphs(paragraphs.map((p: any, idx: number) => {
+          const baseId = p.id || p.shotId || `para_${idx}`;
+          const count = (idCountMap[baseId] || 0) + 1;
+          idCountMap[baseId] = count;
+          const uniqueId = count > 1 ? `${baseId}_${idx}` : baseId;
+          return {
+            id: uniqueId,
+            text: p.text || p.content || p.narration || '',
+            shotId: p.shotId,
+            duration: p.duration,
+            emotion: p.emotion || '',
+            characters: Array.isArray(p.characters) ? p.characters : (Array.isArray(p.anchoredCharacters) ? p.anchoredCharacters : undefined),
+            editing: false
+          };
+        }));
         break;
       }
 

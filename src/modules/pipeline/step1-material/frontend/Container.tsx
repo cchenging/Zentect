@@ -14,7 +14,6 @@ import { StepMaterialAnalysisView } from "./View";
 
 export const StepMaterialAnalysis: React.FC = () => {
   const asrLines = useStep1Store((s) => s.asrLines);
-  const frameCount = useStep1Store((s) => s.frameCount);
   const audioSeparated = useStep1Store((s) => s.audioSeparated);
   const vocalsIsFallback = useStep1Store((s) => s.vocalsIsFallback);
   const step1SubStepProgresses = useStep1Store((s) => s.subStepProgresses);
@@ -42,6 +41,9 @@ export const StepMaterialAnalysis: React.FC = () => {
   const mediaItems = useProjectStore((s) => s.mediaItems);
   const roles = useProjectStore((s) => s.roles);
   const extractedData = useProjectStore((s) => s.extractedData);
+  /** 步骤1 关键帧数统一从 extractedData.framePaths 派生，与成果素材(关键帧Tab)同源，
+   *  避免旧版 useStep1Store.frameCount 与 framePaths 写入时序不一致导致两边数字不同 */
+  const frameCount = extractedData?.framePaths?.length ?? 0;
   const updateRole = useProjectStore((s) => s.updateRole);
   const mergeRoles = useProjectStore((s) => s.mergeRoles);
   const unmergeRole = useProjectStore((s) => s.unmergeRole);

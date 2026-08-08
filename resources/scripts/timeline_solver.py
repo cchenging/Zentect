@@ -28,6 +28,9 @@ class KMMatchQuery(BaseModel):
     audioDurationMs: float = 0
     """🎭 P0 意境维度：段落情绪标签（如：紧张/平静/温馨），来自步骤3 文案生成的 emotion 字段，用于与切片情绪做相容度匹配"""
     emotion: str = ''
+    """🎭 P1 角色组合匹配：本段解说词期望出现的人物名集合（步骤3 透传的 chunk 锚定角色），
+    用于 Query 端与切片角色集合做契合度匹配（软加成：未命中不惩罚）"""
+    characters: List[str] = []
 
 
 class KMMatchReq(BaseModel):
@@ -134,19 +137,40 @@ def _extract_pooler(features):
     return features.pooler_output if hasattr(features, 'pooler_output') else features
 
 
-def _compute_combined_score(sem_score: float, duration_penalty: float, motion_score: float,
-                            emotion_score: float = 0.5) -> float:
+def _compute_role_score(query_roles, chunk_roles) -> float:
     """
-    多因子综合打分：0.4 文本语义 + 0.2 情绪意境 + 0.15 画面运动 + 0.25 时长契合
+    🎭 P1 角色契合度（软加成）：只加分不惩罚。
+    - Query（query_roles）或 Chunk（chunk_roles）任一方无角色名单 → 中性 0.5（该维度无信息，不参与加分也不惩罚）
+    - 双方都有 → 命中率 = 交集数量 / Query 角色数（以解说段落期望角色为基准，优先主角命中；
+      切片缺少某路人角色不扣分——"优先不排除"，避免因角色误识别导致匹配失败）
+    """
+    query_roles = [r for r in (query_roles or []) if isinstance(r, str) and r.strip()]
+    chunk_roles = [r for r in (chunk_roles or []) if isinstance(r, str) and r.strip()]
+    if not query_roles or not chunk_roles:
+        return 0.5
+    query_set = set(query_roles)
+    chunk_set = set(chunk_roles)
+    hit = sum(1 for r in query_set if r in chunk_set)
+    return hit / len(query_set)
+
+
+def _compute_combined_score(sem_score: float, duration_penalty: float, motion_score: float,
+                            emotion_score: float = 0.5, role_score: float = 0.5) -> float:
+    """
+    多因子综合打分：0.35 文本语义 + 0.2 情绪意境 + 0.15 画面运动 + 0.25 时长契合 + 0.05 角色契合
     - 语义：CLIP 图文余弦相似度归一化到 0~1
     - 情绪：文案情绪与切片情绪相容度（0~1，任一方缺失给中性 0.5）
     - 运动：切片 motionScore（0~1），画面运动越显著越贴合解说节奏
     - 时长：语音与切片时长契合度（exp 衰减，0~1）
+    - 角色：解说期望角色与切片出现角色的契合度（0~1，任一方缺失给中性 0.5）
     权重设计防止"只看文字匹配，却选中一个时长严重不匹配、被强拉变速的怪异画面"；
     🎭 P0 意境维度：引入情绪项后语义权重从 0.5 降至 0.4，让"画面情绪符合文案意境"参与决策
     （情绪全缺失时 emotion_score=0.5 贡献常数 0.1，其余维度权重与旧权重接近，排序基本不变）。
+    🎭 P1 角色维度：语义权重由 0.4 微降至 0.35，让出 0.05 给角色契合——软加成，命中主角加分、
+    未命中仅中性值，不因角色信息缺失或误识别而破坏既有匹配排序。
     """
-    return 0.4 * sem_score + 0.2 * emotion_score + 0.15 * motion_score + 0.25 * duration_penalty
+    return 0.35 * sem_score + 0.2 * emotion_score + 0.15 * motion_score \
+        + 0.25 * duration_penalty + 0.05 * role_score
 
 
 def _call_llm_translate(texts: list, api_key: str, api_base: str, model: str) -> list:
@@ -300,12 +324,13 @@ def _call_vlm_rerank(script_text: str, candidate_covers: list,
 
 def _apply_vlm_rerank(results: list, queries, video_chunks: list,
                       valid_chunk_indices: list, semantic_sim,
-                      emotion_sim, n_queries: int, api_key: str, api_base: str,
+                      emotion_sim, role_sim, n_queries: int, api_key: str, api_base: str,
                       model: str = "gpt-4o") -> list:
     """
     对置信度低于 VLM_CONFIDENCE_THRESHOLD 的匹配结果，收集 top-3 候选切片，
     调用 VLM 二次裁决，替换低置信度匹配。
     🎭 P0 意境维度：新增 emotion_sim 参数，候选打分与 KM 主体一致计入情绪相容度。
+    🎭 P1 角色契合度：新增 role_sim 参数，候选打分与 KM 主体一致计入角色命中。
     """
     import numpy as np
 
@@ -381,7 +406,10 @@ def _apply_vlm_rerank(results: list, queries, video_chunks: list,
             # 🎭 P0 意境维度：候选打分与 KM 主体一致计入情绪相容度
             emotion_score = float(emotion_sim[qi, ci_idx])
 
-            combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score)
+            # 🎭 P1 角色契合度：候选打分与 KM 主体一致计入角色命中
+            role_score = float(role_sim[qi, ci_idx])
+
+            combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score, role_score)
             scores.append((ci_idx, ci, combined_score))
 
         scores.sort(key=lambda x: x[2], reverse=True)
@@ -482,12 +510,13 @@ def _continuity_penalty(prev_chunk: dict, next_chunk: dict) -> float:
 
 
 def _apply_continuity_rerank(results: list, queries, video_chunks: list,
-                             valid_chunk_indices: list, semantic_sim, emotion_sim) -> list:
+                             valid_chunk_indices: list, semantic_sim, emotion_sim, role_sim) -> list:
     """
     🎬 P1 衔接流畅性重排：对成品时间轴相邻匹配对做连续性检查（色调/景别/情绪），
     连续性差（惩罚超阈值）的边界，从该段文案的时间块候选池中替换为
     "内容可接受（综合分不低于原切片 90%）且衔接更自然"的未占用切片。
     局部替换，不动全局 KM 解；保持全局排他（不引入已占用切片）。
+    🎭 P1 角色契合度：新增 role_sim 参数，候选打分与 KM 主体一致计入角色命中。
     """
     import numpy as np
 
@@ -561,13 +590,14 @@ def _apply_continuity_rerank(results: list, queries, video_chunks: list,
             chunk = video_chunks[valid_chunk_indices[ci_idx]]
             sem = max(0.0, min(1.0, (float(semantic_sim[qi, ci_idx]) + 1.0) / 2.0))
             emo = float(emotion_sim[qi, ci_idx])
+            role = float(role_sim[qi, ci_idx])
             motion = max(0.0, min(1.0, float(chunk.get("motionScore") or 0.0)))
             dur = 1.0
             vdur = chunk.get("durationMs", 0)
             if audio_dur_ms > 0 and vdur > 0:
                 d = abs(vdur - audio_dur_ms) / max(audio_dur_ms, 1)
                 dur = float(np.exp(-d * 2)) if vdur < audio_dur_ms else float(np.exp(-d * 0.5))
-            return _compute_combined_score(sem, dur, motion, emo), chunk
+            return _compute_combined_score(sem, dur, motion, emo, role), chunk
 
         cur_score, _ = _score(cur_ci_idx)
 
@@ -872,6 +902,20 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     print(f"[KM] 情绪匹配就绪：{q_with_emotion}/{n_queries} 段文案带情绪，{c_with_emotion}/{len(valid_chunk_indices)} 切片带情绪",
           file=sys.stderr)
 
+    # 🎭 P1 角色组合匹配：构建 Query 角色 ↔ 切片角色契合度矩阵 (n_queries, n_chunks)
+    #    Query 角色来自步骤3 透传的 chunk 锚定角色（query.characters），切片角色来自步骤2 帧角色按时间轴聚合（chunk.characters）
+    query_roles = [[r for r in (q.characters or []) if isinstance(r, str) and r.strip()] for q in req.queries]
+    chunk_roles = [[r for r in (video_chunks[ci].get("characters") or []) if isinstance(r, str) and r.strip()]
+                   for ci in valid_chunk_indices]
+    role_sim = np.zeros((n_queries, len(valid_chunk_indices)), dtype=np.float64)
+    for qi in range(n_queries):
+        for ci_idx in range(len(valid_chunk_indices)):
+            role_sim[qi, ci_idx] = _compute_role_score(query_roles[qi], chunk_roles[ci_idx])
+    q_with_role = sum(1 for r in query_roles if r)
+    c_with_role = sum(1 for r in chunk_roles if r)
+    print(f"[KM] 角色匹配就绪：{q_with_role}/{n_queries} 段文案带角色，{c_with_role}/{len(valid_chunk_indices)} 切片带角色",
+          file=sys.stderr)
+
     BLOCK_DURATION_MS = 300000
     results = []
     current_timeline_ms = 0
@@ -939,7 +983,10 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                 # 🎭 P0 意境维度：文案情绪与切片情绪相容度
                 emotion_score = float(emotion_sim[qi, ci_idx])
 
-                combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score)
+                # 🎭 P1 角色契合度：解说期望角色与切片出现角色的命中率（软加成）
+                role_score = float(role_sim[qi, ci_idx])
+
+                combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score, role_score)
                 local_cost[lqi, lci] = -combined_score
 
         if local_n_queries > local_n_chunks:
@@ -1014,7 +1061,9 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                         best_dur_pen = float(np.exp(-d * 2)) if video_dur_ms < audio_dur_ms else float(np.exp(-d * 0.5))
                     # 🎭 P0 意境维度：变速重选同样计入情绪相容度，避免为了时长丢弃意境更贴合的切片
                     best_emotion = float(emotion_sim[qi, chunk_rank[best_ci]])
-                    combined_score = _compute_combined_score(best_sem, best_dur_pen, best_motion, best_emotion)
+                    # 🎭 P1 角色契合度：变速重选同样计入角色命中，避免为了时长丢弃角色更贴合的切片
+                    best_role = float(role_sim[qi, chunk_rank[best_ci]])
+                    combined_score = _compute_combined_score(best_sem, best_dur_pen, best_motion, best_emotion, best_role)
 
             speed_factor = 1.0
             if final_video_duration_ms > 0 and video_dur_ms > 0:
@@ -1040,7 +1089,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     if req.vlmApiKey and req.vlmApiBase and req.vlmApiModel:
         results = _apply_vlm_rerank(
             results, req.queries, video_chunks, valid_chunk_indices,
-            semantic_sim, emotion_sim, n_queries,
+            semantic_sim, emotion_sim, role_sim, n_queries,
             req.vlmApiKey, req.vlmApiBase, req.vlmApiModel,
         )
 
@@ -1049,7 +1098,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     if len(results) > 1:
         results = _apply_continuity_rerank(
             results, req.queries, video_chunks, valid_chunk_indices,
-            semantic_sim, emotion_sim,
+            semantic_sim, emotion_sim, role_sim,
         )
 
     return {"success": True, "results": results}

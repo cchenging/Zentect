@@ -10,13 +10,16 @@ export class ASRParser implements INodeParser {
       return null;
     }
 
+    // 🔧 node.data.params 的索引签名是 unknown，先收窄为 Record 再读取可选配置
+    const params = (node.data?.params ?? {}) as Record<string, any>;
+
     return {
       nodeId: node.id,
       actionType: 'asr',
       label: node.data?.label || '台词识别',
       params: {
-        engine: node.data?.params?.engine ?? 'whisper',
-        language: node.data?.params?.language ?? 'zh',
+        engine: params.engine ?? 'whisper',
+        language: params.language ?? 'zh',
       },
       dependsOn: upstreamContext.dependsOn || [],
       mergedInputs: {

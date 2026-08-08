@@ -5,6 +5,7 @@
 import React, { useCallback } from "react";
 import { useStep3Store } from "../../stores/useStep3Store";
 import { useStep2Store } from "../../stores/useStep2Store";
+import { useStep1Store } from "../../stores/useStep1Store";
 import { usePipelineStore } from "@renderer/store/usePipelineStore";
 import { useProjectStore } from "@modules/editor/stores/useProjectStore";
 import { API } from "@renderer/api";
@@ -13,70 +14,7 @@ import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOr
 import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
 import { diffParagraphs, applyDiffUpdate } from "@modules/editor/shell/utils/scriptDiffTree";
 import { StepScriptGenerationView } from "./View";
-
-/**
- * 爆破切分器：将超过 18 字的长段落按标点符号自动拆分为爆款微短句
- * 防止 LLM 偶发输出长段落导致 TTS 朗读超时与画面张冠李戴
- * @param rawShots LLM 原始返回的分镜数组
- * @returns 拆分后的短句分镜数组（每个子句至少 1.2 秒）
- */
-function breakLongParagraphs(
-  rawShots: Array<{ id?: string; shotId?: string; text?: string; duration?: number; emotion?: string }>
-): Array<{ id: string; shotId?: string; text: string; duration: number; emotion?: string }> {
-  const result: Array<{ id: string; shotId?: string; text: string; duration: number; emotion?: string }> = [];
-
-  rawShots.forEach((p, idx) => {
-    const rawText = (p.text || "").trim();
-    const baseDuration = p.duration || 3;
-
-    // 字数 <= 18 已是短句，直接保留
-    if (rawText.length <= 18) {
-      result.push({
-        id: p.id || p.shotId || `para_${idx}`,
-        shotId: p.shotId,
-        text: rawText,
-        duration: baseDuration,
-        emotion: p.emotion || "",
-      });
-      return;
-    }
-
-    // 字数 > 18，按标点（逗号/句号/感叹号/问号/分号）微拆分
-    const sentences = rawText
-      .split(/([，,！!？?；;。])/)
-      .reduce((acc: string[], val, i, arr) => {
-        if (i % 2 === 0) {
-          const nextPunct = arr[i + 1] || "";
-          if (val.trim()) acc.push(val.trim() + nextPunct);
-        }
-        return acc;
-      }, [])
-      .filter((s) => s.length > 0);
-
-    // 按字数比例分配时长，每个子句至少 1.2 秒
-    const totalChars = rawText.length || 1;
-    const subParagraphs = sentences.map((sent, sIdx) => {
-      const subDuration = parseFloat(((sent.length / totalChars) * baseDuration).toFixed(1));
-      return {
-        id: `${p.id || p.shotId || `para_${idx}`}_sub_${sIdx + 1}`,
-        shotId: p.shotId,
-        text: sent,
-        duration: Math.max(1.2, subDuration),
-        emotion: p.emotion || "",
-      };
-    });
-    // 归一化缩放：若 1.2s 保底导致子句总时长 > 父时长，按比例缩放回父时长
-    const rawTotalDuration = subParagraphs.reduce((sum, s) => sum + s.duration, 0);
-    if (rawTotalDuration > baseDuration) {
-      subParagraphs.forEach((sub) => {
-        sub.duration = parseFloat(((sub.duration / rawTotalDuration) * baseDuration).toFixed(1));
-      });
-    }
-    result.push(...subParagraphs);
-  });
-
-  return result;
-}
+import { breakLongParagraphs } from "./breakLongParagraphs";
 
 export const StepScriptGeneration: React.FC = () => {
   const scriptParagraphs = useStep3Store((s) => s.scriptParagraphs);
@@ -120,7 +58,14 @@ export const StepScriptGeneration: React.FC = () => {
           pipelineParams: step3State.pipelineParams,
           visionResult: {
             sceneDescriptions: step2State.vlmFrames?.map((f: any) => f.description || "").filter(Boolean).join("\n") || "",
+            // 🎭 P0 修复：透传 vlmFrames 完整数据（含 downstream 结构化字段），与 executeStep 保持一致的参数注入
+            frames: step2State.vlmFrames || [],
           },
+          // 🎭 P0 修复：注入 audioResult（ASR 台词）与 roles（统一人物名），与 executeStep 保持一致
+          audioResult: {
+            lines: useStep1Store.getState().asrLines || [],
+          },
+          roles: projectState.roles || [],
         },
       }));
       const result = await API.engine.runPipeline({
@@ -143,6 +88,9 @@ export const StepScriptGeneration: React.FC = () => {
               shotId: p.shotId,
               duration: p.duration,
               emotion: p.emotion || "",
+              /** 🎭 P1 角色组合匹配：透传步骤3 生成的角色名单，供爆破切分器子句继承 */
+              characters: Array.isArray(p.characters) ? p.characters
+                : (Array.isArray(p.anchoredCharacters) ? p.anchoredCharacters : undefined),
             };
           });
           // 爆破切分器：将超长段落按标点拆分为卡点短句，再补充 editing 状态
@@ -158,6 +106,26 @@ export const StepScriptGeneration: React.FC = () => {
       }
       pipelineState.setStepCompleted(3, true);
       pipelineState.setStepStatus(3, "completed");
+
+      // 🔧 修复：重新生成后持久化步骤3状态与文案，避免只改内存、重开项目后丢失
+      // 旧版 bug：handleRegenerate 只更新了内存中的 scriptParagraphs 与 stepStatuses，
+      //           未调用 saveData，导致 DB 中 scriptParagraphs 仍是旧文案，重启/重开即丢失。
+      const finalStep3State = useStep3Store.getState();
+      const finalProjectState = useProjectStore.getState();
+      if (finalProjectState.projectId) {
+        try {
+          await API.project.saveData(finalProjectState.projectId, {
+            scriptParagraphs: finalStep3State.scriptParagraphs,
+            scriptStyle: finalStep3State.scriptStyle,
+            speechRate: finalStep3State.speechRate,
+            pipelineParams: finalStep3State.pipelineParams,
+            stepStatuses: pipelineState.stepStatuses,
+            stepCompleted: pipelineState.stepCompleted,
+          });
+        } catch (saveErr) {
+          console.error("[步骤3] 重新生成后落盘失败:", saveErr);
+        }
+      }
     } catch (err: any) {
       pipelineState.setStepStatus(3, "failed");
       pipelineState.setPipelineError(err?.message || "文案生成失败");

@@ -222,7 +222,7 @@ export const ModelTab: React.FC = () => {
       {/* 🔧 修复 P0-2：全局 toast 提示，替代无反馈的 alert */}
       {toast && (
         <div className={`
-          fixed top-4 right-4 z-50 max-w-md px-4 py-2.5 rounded-lg border shadow-lg text-[12px] font-medium animate-fade-in
+          fixed top-4 right-4 z-50 max-w-md px-4 py-2.5 rounded-lg border shadow-lg text-[13px] font-medium animate-fade-in
           ${toast.type === 'success'
             ? 'bg-accent-green/15 border-accent-green/30 text-accent-green'
             : toast.type === 'error'
@@ -280,7 +280,7 @@ export const ModelTab: React.FC = () => {
       {loading && (
         <div className="flex items-center justify-center py-20">
           <Loader2 size={24} className="animate-spin text-accent" />
-          <span className="ml-3 text-[12px] text-muted-foreground">扫描磁盘...</span>
+          <span className="ml-3 text-[13px] text-muted-foreground">扫描磁盘...</span>
         </div>
       )}
 
@@ -303,7 +303,7 @@ export const ModelTab: React.FC = () => {
 
       {/* 空状态 */}
       {!loading && filteredModules.length === 0 && (
-        <div className="text-center py-10 text-[12px] text-muted-foreground/60">
+        <div className="text-center py-10 text-[13px] text-muted-foreground/60">
           该分类下暂无模块
         </div>
       )}
@@ -361,7 +361,7 @@ const ModuleCardView: React.FC<{
           <div className="text-xl leading-none mt-0.5">{module.icon}</div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
-              <div className="text-[13px] font-semibold text-foreground truncate">{module.displayName}</div>
+              <div className="text-[14px] font-semibold text-foreground truncate">{module.displayName}</div>
               {module.required === 'builtin' && (
                 <span className="text-xs px-1.5 py-0.5 rounded bg-accent-green/15 text-accent-green font-medium">
                   必装·内置

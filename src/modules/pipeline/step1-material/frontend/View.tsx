@@ -98,7 +98,7 @@ const TierBadge: React.FC<{
       type="button"
       onClick={(e) => { e.stopPropagation(); onClick?.(e); }}
       title={tier ? `当前：${c.label}（点击切换分级）` : '点击标注角色分级（主角/配角/背景路人）'}
-      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border leading-none cursor-pointer hover:opacity-80 transition-opacity ${c.cls}`}
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[12px] font-medium border leading-none whitespace-nowrap shrink-0 cursor-pointer hover:opacity-80 transition-opacity ${c.cls}`}
     >
       {c.label}
     </button>
@@ -174,7 +174,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
     <div className="flex flex-col gap-1">
       {/* 1. 关键帧提取 */}
       <CollapsibleCard expanded={expandedSubSteps.frames} onExpandedChange={() => toggleSubStep("frames")}
-        title={<><StatusIcon status={framesStatus === "idle" ? "pending" : framesStatus} /><span className={`text-[13px] font-semibold ${framesStatus === "completed" ? "text-accent-green" : framesStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.frames.title"]}</span></>}
+        title={<><StatusIcon status={framesStatus === "idle" ? "pending" : framesStatus} /><span className={`text-[14px] font-semibold ${framesStatus === "completed" ? "text-accent-green" : framesStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.frames.title"]}</span></>}
         extra={<>
           <span className="text-[13px] text-muted-foreground">{framesStatus === "completed" ? (t["editor.step1.frames.statusDone"]?.replace("{count}", String(frameCount)) || '') : statusText(framesStatus, "editor.step1.frames.statusRunning", "frames", "editor.step1.frames.statusFail", "editor.step1.frames.statusIdle")}</span>
           <DurationBadge status={framesStatus} timing={subStepTimings.frames} progress={subStepProgresses.frames || 0} durationLabel={t["editor.step1.durationLabel"]} remainingLabel={t["editor.step1.remainingLabel"]} preparingLabel={t["editor.step1.preparingLabel"]} />
@@ -188,7 +188,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
 
       {/* 2. 音频分离 */}
       <CollapsibleCard expanded={expandedSubSteps.audio} onExpandedChange={() => toggleSubStep("audio")}
-        title={<><StatusIcon status={audioStatus === "idle" ? "pending" : audioStatus} /><span className={`text-[13px] font-semibold ${audioStatus === "completed" ? "text-accent-green" : audioStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.audio.title"]}</span></>}
+        title={<><StatusIcon status={audioStatus === "idle" ? "pending" : audioStatus} /><span className={`text-[14px] font-semibold ${audioStatus === "completed" ? "text-accent-green" : audioStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.audio.title"]}</span></>}
         extra={<>
           <span className="text-[13px] text-muted-foreground">{audioStatus === "completed" ? t["editor.step1.audio.separated"] : statusText(audioStatus, "editor.step1.audio.statusRunning", "audio", "editor.step1.audio.statusFailed", "editor.step1.audio.statusIdle")}</span>
           <DurationBadge status={audioStatus} timing={subStepTimings.audio} progress={subStepProgresses.audio || 0} durationLabel={t["editor.step1.durationLabel"]} remainingLabel={t["editor.step1.remainingLabel"]} preparingLabel={t["editor.step1.preparingLabel"]} />
@@ -228,7 +228,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
 
       {/* 3. ASR 台词识别 */}
       <CollapsibleCard expanded={expandedSubSteps.whisper} onExpandedChange={() => toggleSubStep("whisper")}
-        title={<><StatusIcon status={whisperStatus === "idle" ? "pending" : whisperStatus} /><span className={`text-[13px] font-semibold ${whisperStatus === "completed" ? "text-accent-green" : whisperStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.asr.title"]}</span></>}
+        title={<><StatusIcon status={whisperStatus === "idle" ? "pending" : whisperStatus} /><span className={`text-[14px] font-semibold ${whisperStatus === "completed" ? "text-accent-green" : whisperStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.asr.title"]}</span></>}
         extra={<>
           {whisperStatus === "completed" ? <StatHeader value={asrLines.length} unit={t["editor.step1.asr.sentenceCount"]?.replace("{count}", String(asrLines.length)) || ''} secondary={t["editor.step1.asr.confirmedCount"]?.replace("{count}", String(confirmed)) || ''} /> : <span className="text-[13px] text-muted-foreground">{statusText(whisperStatus, "editor.step1.asr.statusRunning", "whisper", "editor.step1.asr.statusFailed", "editor.step1.asr.statusIdle")}</span>}
           <DurationBadge status={whisperStatus} timing={subStepTimings.whisper} progress={subStepProgresses.whisper || 0} durationLabel={t["editor.step1.durationLabel"]} remainingLabel={t["editor.step1.remainingLabel"]} preparingLabel={t["editor.step1.preparingLabel"]} />
@@ -264,7 +264,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
 
       {/* 4. 人物识别 */}
       <CollapsibleCard expanded={expandedSubSteps.faces} onExpandedChange={() => toggleSubStep("faces")}
-        title={<><StatusIcon status={facesStatus === "idle" ? "pending" : facesStatus} /><span className={`text-[13px] font-semibold ${facesStatus === "completed" ? "text-accent-purple" : facesStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.faces.title"]}</span></>}
+        title={<><StatusIcon status={facesStatus === "idle" ? "pending" : facesStatus} /><span className={`text-[14px] font-semibold ${facesStatus === "completed" ? "text-accent-purple" : facesStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.faces.title"]}</span></>}
         extra={<>
           <span className="text-[13px] text-muted-foreground">{facesStatus === "completed" ? (t["editor.step1.faces.statusDone"]?.replace("{count}", String(roles.length)) || '') : statusText(facesStatus, "editor.step1.faces.statusRunning", "faces", "editor.step1.faces.statusFailed", "editor.step1.faces.statusIdle")}</span>
           <DurationBadge status={facesStatus} timing={subStepTimings.faces} progress={subStepProgresses.faces || 0} durationLabel={t["editor.step1.durationLabel"]} remainingLabel={t["editor.step1.remainingLabel"]} preparingLabel={t["editor.step1.preparingLabel"]} />
@@ -355,10 +355,10 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                           {/* 🎭 P1.5 角色分级标注徽章：显示并支持手动切换 主角/配角 */}
                           <TierBadge tier={role.tier} onClick={() => cycleTier(role)} />
                         </div>
-                        <div className="flex flex-col gap-0.5 mt-1 text-[11px] text-muted-foreground">
+                        <div className="flex flex-col gap-0.5 mt-1 text-[12px] text-muted-foreground">
                           {faceCount > 0 && <span>出现 {faceCount} 次</span>}
                           {gender !== undefined && gender !== null && <span>{gender === 1 ? '男' : '女'}</span>}
-                          {age > 0 && <span>约 {age} 岁</span>}
+                          {typeof age === 'number' && age > 0 && <span>约 {age} 岁</span>}
                           {mergedRoles.length > 0 && <span className="text-accent/80">已合并 {mergedRoles.length} 个角色</span>}
                           {/* 🎭 P1 全局人物注册中心：显示「已匹配全局人物」标记，点击可查看跨项目关联 */}
                           {globalCharacterId && (
@@ -465,10 +465,10 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                           <div className="w-12 h-12 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
                             {faceUrl && <img src={getSafeMediaUrl(faceUrl)} className="w-full h-full object-cover" />}
                           </div>
-                          <span className="text-[10px] text-muted-foreground truncate w-full text-center">{role.name}</span>
+                          <span className="text-[12px] text-muted-foreground truncate w-full text-center">{role.name}</span>
                           {/* 🎭 P1.5 路人徽章：点击可循环切换分级（升级为配角/主角） */}
                           <TierBadge tier={role.tier} onClick={() => cycleTier(role)} />
-                          <span className="text-[9px] text-muted-foreground/60">{faceCount}次</span>
+                          <span className="text-[11px] text-muted-foreground/70">{faceCount}次</span>
                         </div>
                       );
                     })}

@@ -163,8 +163,8 @@ export const PlayerControls: React.FC = () => {
       </div>
 
       <div className="flex items-center gap-2 font-mono tabular-nums tracking-wider whitespace-nowrap min-w-max">
-        <span className="text-[var(--foreground)] text-[11px] font-semibold shrink-0">{formatTimecode(currentTime)}</span>
-        <span className="text-[var(--muted-foreground)] text-[10px] shrink-0">/ {formatTimecode(displayDuration)}</span>
+        <span className="text-[var(--foreground)] text-[12px] font-semibold shrink-0">{formatTimecode(currentTime)}</span>
+        <span className="text-[var(--muted-foreground)] text-[12px] shrink-0">/ {formatTimecode(displayDuration)}</span>
       </div>
 
       <div className="flex-1" />
@@ -177,13 +177,13 @@ export const PlayerControls: React.FC = () => {
         </PopoverTrigger>
         <PopoverContent align="end" sideOffset={8} className="w-[200px] p-4 z-50 flex flex-col gap-4 bg-[var(--bg-tertiary)] border-[var(--border-default)]">
           <div className="flex justify-between items-center">
-            <span className="text-[var(--foreground)] text-[11px] font-medium">{t.editor?.zoom_title || '画布缩放'}</span>
-            <span className="font-mono text-[10px] text-[var(--muted-foreground)] bg-black/40 border border-[var(--border-default)] px-1.5 py-0.5 rounded">{isCanvasFit ? t.editor?.zoom_fit_short || '自适应' : `${canvasZoom}%`}</span>
+            <span className="text-[var(--foreground)] text-[12px] font-medium">{t.editor?.zoom_title || '画布缩放'}</span>
+            <span className="font-mono text-[12px] text-[var(--muted-foreground)] bg-black/40 border border-[var(--border-default)] px-1.5 py-0.5 rounded">{isCanvasFit ? t.editor?.zoom_fit_short || '自适应' : `${canvasZoom}%`}</span>
           </div>
           <Slider value={[isCanvasFit ? 100 : canvasZoom]} min={25} max={400} step={1} onValueChange={handleZoomSliderChange} className="w-full cursor-pointer" />
           <div className="flex gap-2 mt-1">
-             <Button variant={isCanvasFit ? "default" : "outline"} size="sm" onClick={() => { setIsCanvasFit(true); setCanvasZoom(100); }} className={`flex-1 h-7 text-[10px] ${isCanvasFit ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-[var(--muted-foreground)] border-[var(--border-default)] hover:bg-muted hover:text-[var(--foreground)]'}`}>{t.editor?.zoom_fit || '自适应'}</Button>
-             <Button variant={!isCanvasFit && canvasZoom === 100 ? "default" : "outline"} size="sm" onClick={() => { setIsCanvasFit(false); setCanvasZoom(100); }} className={`flex-1 h-7 text-[10px] ${!isCanvasFit && canvasZoom === 100 ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-[var(--muted-foreground)] border-[var(--border-default)] hover:bg-muted hover:text-[var(--foreground)]'}`}>{t.editor?.zoom_100 || '100%'}</Button>
+             <Button variant={isCanvasFit ? "default" : "outline"} size="sm" onClick={() => { setIsCanvasFit(true); setCanvasZoom(100); }} className={`flex-1 h-7 text-[12px] ${isCanvasFit ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-[var(--muted-foreground)] border-[var(--border-default)] hover:bg-muted hover:text-[var(--foreground)]'}`}>{t.editor?.zoom_fit || '自适应'}</Button>
+             <Button variant={!isCanvasFit && canvasZoom === 100 ? "default" : "outline"} size="sm" onClick={() => { setIsCanvasFit(false); setCanvasZoom(100); }} className={`flex-1 h-7 text-[12px] ${!isCanvasFit && canvasZoom === 100 ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-[var(--muted-foreground)] border-[var(--border-default)] hover:bg-muted hover:text-[var(--foreground)]'}`}>{t.editor?.zoom_100 || '100%'}</Button>
           </div>
         </PopoverContent>
       </Popover>
@@ -199,7 +199,7 @@ export const PlayerControls: React.FC = () => {
         <DropdownMenuContent align="end" sideOffset={8} className="w-32 z-50 bg-[var(--bg-tertiary)] border-[var(--border-default)]">
           {['16:9','9:16','4:3','1:1'].map(opt => (
             <DropdownMenuItem key={opt} onClick={() => setProjectRatio(opt as any)} className={`flex items-center justify-between cursor-pointer focus:bg-muted ${projectRatio === opt ? 'text-primary font-medium' : 'text-[var(--foreground)]/80'}`}>
-              <span className="text-[11px]">{opt}</span>
+              <span className="text-[12px]">{opt}</span>
               {projectRatio === opt && <Check size={12} className="text-primary" />}
             </DropdownMenuItem>
           ))}
@@ -224,8 +224,8 @@ export const PlayerControls: React.FC = () => {
         </PopoverTrigger>
         <PopoverContent align="end" sideOffset={8} className="w-[140px] p-3 z-50 flex flex-col gap-2 bg-[var(--bg-tertiary)] border-[var(--border-default)]">
           <div className="flex justify-between items-center">
-            <span className="text-[var(--foreground)] text-[11px] font-medium">音量</span>
-            <span className="font-mono text-[10px] text-[var(--muted-foreground)]">{isMuted ? '0' : volume}%</span>
+            <span className="text-[var(--foreground)] text-[12px] font-medium">音量</span>
+            <span className="font-mono text-[12px] text-[var(--muted-foreground)]">{isMuted ? '0' : volume}%</span>
           </div>
           <Slider value={[isMuted ? 0 : volume]} min={0} max={100} step={1} onValueChange={handleVolumeChange} className="w-full cursor-pointer" />
         </PopoverContent>

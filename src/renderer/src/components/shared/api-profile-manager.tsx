@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Plus, Check, Trash2, Edit2, X, Zap, Wifi, Loader2 } from "lucide-react";
 
 export interface ApiProfileData {
@@ -103,8 +103,8 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
     setShowForm(true);
   };
 
-  const inputClass = "flex-1 text-[11px] px-2 py-1 rounded bg-bg-secondary border border-border/30 outline-none focus:border-accent/40";
-  const labelClass = "text-[10px] text-muted-foreground font-medium w-16 shrink-0 text-right";
+  const inputClass = "flex-1 text-[12px] px-2 py-1 rounded bg-bg-secondary border border-border/30 outline-none focus:border-accent/40";
+  const labelClass = "text-[12px] text-muted-foreground font-medium w-16 shrink-0 text-right";
 
   return (
     <div className="mt-2">
@@ -114,23 +114,23 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
           {profiles.map((p) => {
             const status = testStatus[p.id || ""];
             return (
-              <div key={p.id} className={`px-2.5 py-2 rounded-md text-[11px] border transition-all ${
+              <div key={p.id} className={`px-2.5 py-2 rounded-md text-[12px] border transition-all ${
                 p.isActive ? "border-accent/50 bg-accent/5" : "border-border/20 bg-bg-secondary/50"
               }`}>
                 <div className="flex items-center gap-2">
                   <span className={`w-2 h-2 rounded-full shrink-0 ${p.isActive ? "bg-accent" : "bg-muted-foreground/30"}`} />
                   <span className="flex-1 truncate font-medium">{p.name}</span>
                   {p.isActive && (
-                    <span className="text-[9px] text-accent bg-accent/10 px-1.5 py-0.5 rounded">当前生效</span>
+                    <span className="text-[11px] text-accent bg-accent/10 px-1.5 py-0.5 rounded">当前生效</span>
                   )}
                   {p.models && p.models.length > 0 && (
-                    <span className="text-[9px] text-muted-foreground">{p.models.length} 模型</span>
+                    <span className="text-[11px] text-muted-foreground">{p.models.length} 模型</span>
                   )}
                 </div>
                 <div className="flex items-center gap-2 mt-1.5 ml-4">
                   {/* 测试连接 */}
                   <button onClick={() => handleTest(p)} disabled={status === "testing"}
-                    className={`flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded transition-colors cursor-pointer ${
+                    className={`flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded transition-colors cursor-pointer ${
                       status === "success" ? "text-accent-green" :
                       status === "failed" ? "text-accent-rose" :
                       status === "testing" ? "text-muted-foreground" :
@@ -144,16 +144,16 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
                   </button>
                   {/* 激活 */}
                   {!p.isActive && (
-                    <button onClick={() => handleActivate(p.id!)} className="flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded text-muted-foreground hover:text-accent transition-colors cursor-pointer">
+                    <button onClick={() => handleActivate(p.id!)} className="flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded text-muted-foreground hover:text-accent transition-colors cursor-pointer">
                       <Zap size={10} /> 设为生效
                     </button>
                   )}
                   {/* 编辑 */}
-                  <button onClick={() => startEdit(p)} className="text-[9px] px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
+                  <button onClick={() => startEdit(p)} className="text-[11px] px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
                     <Edit2 size={10} />
                   </button>
                   {/* 删除 */}
-                  <button onClick={() => handleDelete(p.id!)} className="text-[9px] px-1.5 py-0.5 rounded text-muted-foreground hover:text-accent-rose transition-colors cursor-pointer">
+                  <button onClick={() => handleDelete(p.id!)} className="text-[11px] px-1.5 py-0.5 rounded text-muted-foreground hover:text-accent-rose transition-colors cursor-pointer">
                     <Trash2 size={10} />
                   </button>
                 </div>
@@ -166,7 +166,7 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
       {/* 添加配置按钮 */}
       {!showForm && (
         <button onClick={startNew}
-          className="mt-1.5 flex items-center gap-1 text-[10px] text-muted-foreground hover:text-accent transition-colors cursor-pointer">
+          className="mt-1.5 flex items-center gap-1 text-[12px] text-muted-foreground hover:text-accent transition-colors cursor-pointer">
           <Plus size={11} /> 添加配置
         </button>
       )}
@@ -175,7 +175,7 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
       {showForm && editing && (
         <div className="mt-1 p-3 rounded-md border border-border/30 bg-bg-secondary/30 flex flex-col gap-2">
           <div className="flex items-center justify-between mb-1">
-            <span className="text-[11px] font-semibold text-foreground">{editing.id ? "编辑配置" : "新增配置"}</span>
+            <span className="text-[12px] font-semibold text-foreground">{editing.id ? "编辑配置" : "新增配置"}</span>
             <button onClick={() => { setShowForm(false); setEditing(null); }}
               className="text-muted-foreground hover:text-foreground cursor-pointer"><X size={13} /></button>
           </div>
@@ -212,7 +212,7 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
           </div>
 
           <button onClick={handleSave}
-            className="self-end text-[11px] px-4 py-1 rounded-md bg-accent text-white font-medium hover:brightness-110 transition-all cursor-pointer">
+            className="self-end text-[12px] px-4 py-1 rounded-md bg-accent text-white font-medium hover:brightness-110 transition-all cursor-pointer">
             保存
           </button>
         </div>
@@ -220,7 +220,7 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
 
       {/* 空状态 */}
       {profiles.length === 0 && !showForm && (
-        <div className="text-[10px] text-muted-foreground/60 mt-1">
+        <div className="text-[12px] text-muted-foreground/60 mt-1">
           暂无保存的配置，点击「添加配置」创建。
         </div>
       )}

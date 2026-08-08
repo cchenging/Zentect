@@ -84,7 +84,7 @@ export const RenameModal: React.FC<RenameModalProps> = ({ visible, project, onCl
             autoFocus
           />
           {/* 💥 优雅的就地错误提示 */}
-          {errorMsg && <span className="text-[11px] text-destructive px-1">{errorMsg}</span>}
+          {errorMsg && <span className="text-[12px] text-destructive px-1">{errorMsg}</span>}
         </div>
 
         <DialogFooter className="gap-3 sm:justify-end mt-2">

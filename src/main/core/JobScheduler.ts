@@ -447,6 +447,14 @@ export class JobScheduler {
               description: role.description || role.label || roleName,
               voiceId: role.voiceId || null,
               mergedRoles: JSON.stringify(role.mergedRoles || []),
+              // 🔧 补齐 INSERT_ROLE_FULL 缺失参数：facesJson / globalCharacterId / tier
+              facesJson: JSON.stringify({
+                representative: role.representative || null,
+                faces: role.faces || [],
+                faceCount: role.faceCount ?? (role.faces?.length || 0),
+              }),
+              globalCharacterId: role.globalCharacterId || null,
+              tier: role.tier || null,
             });
           }
         }

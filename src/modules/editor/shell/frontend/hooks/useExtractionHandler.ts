@@ -251,7 +251,7 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
           await API.project.saveData(latestProjectState.projectId, {
             shots: latestProjectState.shots, aiShots: latestProjectState.aiShots,
             roles: latestProjectState.roles, mediaItems: latestProjectState.mediaItems,
-            asrLines: useStep1Store.getState().asrLines, frameCount: useStep1Store.getState().frameCount,
+            asrLines: useStep1Store.getState().asrLines, frameCount: latestProjectState.extractedData?.framePaths?.length || 0,
             framePaths: latestProjectState.extractedData?.framePaths || [],
             audioSeparated: useStep1Store.getState().audioSeparated,
             subStepStatuses: freshPipelineState.subStepStatuses,

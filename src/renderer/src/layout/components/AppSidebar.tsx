@@ -40,7 +40,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ className = "" }) => {
     <aside className={`${className} flex flex-col bg-card select-none z-20`}>
       {/* 品牌区：与标题栏齐平 */}
       <div className={`${UI_CONFIG.TOPBAR_HEIGHT_CLASS} flex items-center px-4 shrink-0 gap-3 border-b border-border/50 bg-bg-deep/50 [-webkit-app-region:drag]`}>
-        <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-accent to-accent-purple flex items-center justify-center text-white font-bold text-[11px] shadow-md shadow-accent/20 [-webkit-app-region:no-drag] animate-breathe">
+        <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-accent to-accent-purple flex items-center justify-center text-white font-bold text-[12px] shadow-md shadow-accent/20 [-webkit-app-region:no-drag] animate-breathe">
           Z
         </div>
         {!isSidebarExpanded && (
@@ -104,7 +104,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ className = "" }) => {
                 <span className="text-[13px] font-semibold text-foreground truncate">
                   {isLoggedIn ? userInfo?.username : (t.user?.unlogged_title || '未登录')}
                 </span>
-                <span className="text-[10px] text-muted-foreground truncate">
+                <span className="text-[12px] text-muted-foreground truncate">
                   {isLoggedIn ? vipLabel : (t.user?.unlogged_desc || '点击登录账号')}
                 </span>
               </div>
@@ -117,7 +117,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ className = "" }) => {
               {isLoggedIn ? (
                 <>
                   {/* VIP 升级/状态 */}
-                  <div className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold tracking-wide transition-all
+                  <div className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] font-bold tracking-wide transition-all
                     ${userInfo?.vipLevel === 'free'
                       ? 'bg-accent-warm/10 text-accent-warm border border-accent-warm/20 hover:bg-accent-warm/20'
                       : 'bg-accent/10 text-accent border border-accent/20'}`}
@@ -138,7 +138,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ className = "" }) => {
               ) : (
                 <button
                   onClick={() => openAuthModal('login')}
-                  className="flex-1 h-8 rounded-lg bg-gradient-to-r from-accent to-accent-purple text-white text-[11px] font-semibold shadow-md shadow-accent/20 hover:shadow-accent/30 hover:brightness-110 transition-all cursor-pointer outline-none flex items-center justify-center gap-1.5"
+                  className="flex-1 h-8 rounded-lg bg-gradient-to-r from-accent to-accent-purple text-white text-[12px] font-semibold shadow-md shadow-accent/20 hover:shadow-accent/30 hover:brightness-110 transition-all cursor-pointer outline-none flex items-center justify-center gap-1.5"
                 >
                   <LogIn size={13} /> 登录
                 </button>

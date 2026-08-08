@@ -56,7 +56,7 @@ export const StepVisionDescriptionView: React.FC<StepVisionDescriptionProps> = (
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <div className="text-[13px] font-semibold">VLM 画面描述</div>
+        <div className="text-[14px] font-semibold">VLM 画面描述</div>
         {vlmFrames.length > 0 && (
           <StatHeader value={vlmFrames.length} unit="帧已分析" secondary={`已确认 ${vlmFrames.filter((f) => f.confirmed).length} 帧`} />
         )}
@@ -66,10 +66,10 @@ export const StepVisionDescriptionView: React.FC<StepVisionDescriptionProps> = (
       {onSetMatrixMode && (
         <div className="glass-card-sm p-2.5 flex flex-col gap-1.5">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+            <span className="text-[12px] text-muted-foreground flex items-center gap-1">
               <Grid2x2 size={11} /> 视觉分析模式
             </span>
-            <span className="text-[9px] text-muted-foreground/60">控制 VLM 拼图策略</span>
+            <span className="text-[11px] text-muted-foreground/60">控制 VLM 拼图策略</span>
           </div>
           <div className="grid grid-cols-4 gap-1">
             {MATRIX_OPTIONS.map((opt) => {
@@ -89,12 +89,12 @@ export const StepVisionDescriptionView: React.FC<StepVisionDescriptionProps> = (
                   title={`${opt.label}（${opt.desc}）`}
                 >
                   <opt.Icon size={14} strokeWidth={isSelected ? 2.2 : 1.8} />
-                  <span className="text-[10px] font-semibold leading-tight">{opt.label}</span>
+                  <span className="text-[12px] font-semibold leading-tight">{opt.label}</span>
                 </button>
               );
             })}
           </div>
-          <p className="text-[10px] text-muted-foreground/70 leading-relaxed">
+          <p className="text-[12px] text-muted-foreground/70 leading-relaxed">
             {matrixMode === 'auto' && '根据帧间隔自动选择 2x2/3x3，平衡 Token 与细节'}
             {matrixMode === '2x2' && '4 帧拼图，最省 Token，适合解说/影视/Vlog'}
             {matrixMode === '3x3' && '9 帧拼图，高密度捕捉，适合游戏/运动/快剪'}
@@ -111,7 +111,7 @@ export const StepVisionDescriptionView: React.FC<StepVisionDescriptionProps> = (
                 {frame.url ? (
                   <img src={getSafeMediaUrl(frame.url)} className="w-full h-full object-cover" />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center text-[10px] text-muted-foreground">帧 {idx + 1}</div>
+                  <div className="w-full h-full flex items-center justify-center text-[12px] text-muted-foreground">帧 {idx + 1}</div>
                 )}
                 <div className="absolute inset-0 bg-black/30 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center">
                   <Maximize2 size={16} className="text-white" />
@@ -129,13 +129,13 @@ export const StepVisionDescriptionView: React.FC<StepVisionDescriptionProps> = (
                     {frame.description || "点击添加描述"}
                   </div>
                 )}
-                <div className="text-[10px] text-muted-foreground">帧 {idx + 1}</div>
+                <div className="text-[12px] text-muted-foreground">帧 {idx + 1}</div>
               </div>
             </div>
           ))}
           {storyLineText && (
             <div className="p-3 rounded-lg bg-gradient-to-br from-accent-purple/10 via-accent/5 to-transparent border border-accent-purple/20">
-              <div className="text-[13px] font-semibold mb-2 flex items-center gap-2 text-accent-purple">
+              <div className="text-[14px] font-semibold mb-2 flex items-center gap-2 text-accent-purple">
                 <BookOpen size={14} /> 故事脉络
               </div>
               <div className="text-[13px] text-foreground leading-relaxed whitespace-pre-wrap">{storyLineText}</div>

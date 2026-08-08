@@ -150,11 +150,11 @@ export default function ShotCard({ shot, index, isSelected, roles, onSelect, onD
                   onBlur={handleSave}
                   onKeyDown={handleKeyDown}
                   onClick={(e) => e.stopPropagation()}
-                  className="w-full h-full min-h-[48px] text-[11px] leading-[15px] bg-[var(--bg-secondary)] border border-[var(--accent)] rounded-md p-1 resize-none outline-none text-[var(--text-primary)]"
+                  className="w-full h-full min-h-[48px] text-[12px] leading-[15px] bg-[var(--bg-secondary)] border border-[var(--accent)] rounded-md p-1 resize-none outline-none text-[var(--text-primary)]"
                 />
               ) : (
                 <p
-                  className="text-[11px] leading-[15px] text-[var(--text-primary)] line-clamp-2 min-h-[30px] cursor-text"
+                  className="text-[12px] leading-[15px] text-[var(--text-primary)] line-clamp-2 min-h-[30px] cursor-text"
                   onDoubleClick={handleDoubleClick}
                 >
                   {displayText || '未配置台词'}
@@ -162,13 +162,13 @@ export default function ShotCard({ shot, index, isSelected, roles, onSelect, onD
               )}
 
               {roleName && (
-                <span className="inline-block text-[10px] px-1.5 py-0.5 rounded bg-[var(--accent)]/15 text-[var(--accent)] truncate w-fit max-w-full">
+                <span className="inline-block text-[12px] px-1.5 py-0.5 rounded bg-[var(--accent)]/15 text-[var(--accent)] truncate w-fit max-w-full">
                   {roleName}
                 </span>
               )}
 
               {(duration || emotion) && (
-                <div className="flex items-center gap-2 mt-auto text-[10px] text-[var(--text-tertiary)]">
+                <div className="flex items-center gap-2 mt-auto text-[12px] text-[var(--text-tertiary)]">
                   {duration && <span>{duration}</span>}
                   {emotion && <span className="capitalize">{emotion}</span>}
                 </div>

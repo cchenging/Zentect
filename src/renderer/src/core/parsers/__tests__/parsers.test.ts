@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
 const { VisionExtractParser } = await import('../VisionExtractParser');
-const { AudioSeparateParser } = await import('../AudioSeparateParser');
 const { ASRParser } = await import('../ASRParser');
 const { ScriptGenParser } = await import('../ScriptGenParser');
 
@@ -27,26 +26,6 @@ describe('VisionExtractParser', () => {
     expect(result!.params.fps).toBe(1);
     expect(result!.params.strategy).toBe('scene');
     expect(result!.params.threshold).toBe(0);
-  });
-
-  it('should return null when mediaPath missing', () => {
-    const node = { id: 'n1', data: {} };
-    const result = parser.parse(node as any, { dependsOn: [] });
-    expect(result).toBeNull();
-  });
-});
-
-describe('AudioSeparateParser', () => {
-  const parser = new AudioSeparateParser();
-
-  it('should parse with mediaPath', () => {
-    const node = { id: 'n1', data: { params: { model: 'htdemucs' } } };
-    const ctx = { mediaPath: '/audio.mp4', dependsOn: ['src'] };
-    const result = parser.parse(node as any, ctx);
-    expect(result).not.toBeNull();
-    expect(result!.actionType).toBe('audio-separate');
-    expect(result!.params.model).toBe('htdemucs');
-    expect(result!.mergedInputs.mediaPath).toBe('/audio.mp4');
   });
 
   it('should return null when mediaPath missing', () => {

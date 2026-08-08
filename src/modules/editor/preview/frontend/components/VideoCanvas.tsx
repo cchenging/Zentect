@@ -111,7 +111,7 @@ export const VideoCanvas = () => {
               className="h-14 aspect-video bg-[var(--bg-secondary)] rounded border border-[var(--border-default)] hover:border-accent cursor-pointer transition-all flex-shrink-0 overflow-hidden relative group"
              >
                 <img src={getSafeMediaUrl(shot.coverPath || shot.imagePath)} className="w-full h-full object-cover opacity-60 group-hover:opacity-100" />
-                <span className="absolute bottom-0.5 right-1 text-[9px] font-mono text-[var(--muted-foreground)] bg-black/40 px-1 rounded">
+                <span className="absolute bottom-0.5 right-1 text-[11px] font-mono text-[var(--muted-foreground)] bg-black/40 px-1 rounded">
                   {idx + 1} 
                 </span>
              </div>

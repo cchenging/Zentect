@@ -66,6 +66,7 @@ import { HomeView } from '../frontend/View';
 
 const defaultProps = {
   filteredProjects: [] as any[],
+  loading: false,
   searchText: '',
   onSearchChange: vi.fn(),
   onCreateProject: vi.fn(),

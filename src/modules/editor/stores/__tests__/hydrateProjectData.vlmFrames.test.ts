@@ -323,7 +323,8 @@ describe('hydrateProjectData - vlmFrames 恢复行为', () => {
       aiShots: [],
       asrLines: [{ id: 'asr1', text: '项目A的台词' }],
       frameCount: 100,
-      framePaths: ['/frame_A_001.jpg'],
+      // 统一数据源：frameCount 以 framePaths 为真相源派生，故这里提供与 frameCount 一致的 100 条路径
+      framePaths: Array.from({ length: 100 }, (_, i) => `/frame_A_${String(i + 1).padStart(3, '0')}.jpg`),
       vlmFrames: buildTestVlmFrames(),
       subStepStatuses: { frames: 'completed', audio: 'completed', whisper: 'completed', faces: 'completed' },
     });

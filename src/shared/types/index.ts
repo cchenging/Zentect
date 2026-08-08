@@ -83,6 +83,8 @@ export interface PipelineTask {
   scriptShots?: any[];
   ttsDurations?: number[];
   bgmInfo?: any;
+  /** 该节点执行完成后的输出结果，供下游节点作为上游上下文合并 */
+  result?: any;
 }
 
 export interface PipelinePayload {
@@ -111,8 +113,8 @@ export interface TaskProgressPayload {
  * 5. 其他原有类型保持兼容
  */
 export interface Project { id: string; name: string; createdAt: number; updatedAt: number; cover?: string; }
-export interface Shot { id: string; mediaId: string; imagePath: string; text: string; originalText?: string; visionText?: string; start: number; end: number; duration: number; linkedRoleId?: string; audioPath?: string; ttsText?: string; aiText?: string; audioDuration?: number; audioEmotion?: string; contextFrames?: string[]; roleId?: string; originalRoleId?: string; matchedStart?: number; coverPath?: string; reasoning?: string; characters?: any[]; camera?: string; alignStrategy?: string; type?: string; filePath?: string; }
-export interface Role { id: string; systemId: string; name: string; avatar: string; mergedRoles?: Role[]; pronoun?: string; description?: string; voiceId?: string; mediaId?: string; }
+export interface Shot { id: string; mediaId: string; imagePath: string; text: string; originalText?: string; visionText?: string; start: number; end: number; duration: number; linkedRoleId?: string; audioPath?: string; ttsText?: string; aiText?: string; audioDuration?: number; audioEmotion?: string; contextFrames?: string[]; roleId?: string; originalRoleId?: string; matchedStart?: number; coverPath?: string; reasoning?: string; characters?: any[]; camera?: string; alignStrategy?: string; type?: string; filePath?: string; pipelineStatus?: string; scriptPayload?: any; }
+export interface Role { id: string; systemId?: string; name: string; avatar?: string; mergedRoles?: Role[]; pronoun?: string; description?: string; voiceId?: string; mediaId?: string; }
 
 export type UnifiedTaskStatus = typeof DICT.TASK_STATUS[keyof typeof DICT.TASK_STATUS];
 

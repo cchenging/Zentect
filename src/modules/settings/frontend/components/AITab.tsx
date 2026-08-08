@@ -528,10 +528,10 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                       </div>
                       <div className="flex flex-col gap-px min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="text-[13px] font-medium text-foreground truncate">{displayName}</span>
-                          {p.alias && <span className="text-[10px] text-muted-foreground/60 truncate">({providerName})</span>}
+                          <span className="text-[14px] font-medium text-foreground truncate">{displayName}</span>
+                          {p.alias && <span className="text-[12px] text-muted-foreground/60 truncate">({providerName})</span>}
                         </div>
-                        <span className="text-[10px] text-muted-foreground">
+                        <span className="text-[12px] text-muted-foreground">
                           {modelList.length} 个模型
                         </span>
                       </div>
@@ -566,7 +566,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         {/* 分组 1：LLM 云模型节点 — 2 列网格，紧凑展示 */}
         <div className="mb-3">
           <div className="flex items-center gap-2 mb-2 px-1">
-            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">云模型</span>
+            <span className="text-[12px] font-medium text-muted-foreground uppercase tracking-wide">云模型</span>
             <div className="flex-1 h-px bg-[var(--border)]/50" />
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -581,8 +581,8 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-base shrink-0">{node.icon}</span>
                     <div className="flex-1 min-w-0">
-                      <div className="text-[12px] font-medium text-foreground truncate">{node.label}</div>
-                      <div className="text-[10px] text-muted-foreground truncate">{node.desc}</div>
+                      <div className="text-[13px] font-medium text-foreground truncate">{node.label}</div>
+                      <div className="text-[12px] text-muted-foreground truncate">{node.desc}</div>
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -591,7 +591,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                       if (!val) { handleBindingChange(node.taskType, null, ''); return; }
                       const opt = modelOptions.find((o) => o.modelName === val);
                       handleBindingChange(node.taskType, opt?.profileId || null, val);
-                    }} className="flex-1 text-[11px] px-2 py-1 rounded bg-[var(--bg-tertiary)] border border-[var(--border)] text-foreground outline-none cursor-pointer hover:border-accent/40 min-w-0">
+                    }} className="flex-1 text-[12px] px-2 py-1 rounded bg-[var(--bg-tertiary)] border border-[var(--border)] text-foreground outline-none cursor-pointer hover:border-accent/40 min-w-0">
                       <option value="">未绑定</option>
                       {modelOptions.map((opt) => (
                         <option key={`${opt.profileId}:${opt.modelName}`} value={opt.modelName}>
@@ -600,7 +600,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                       ))}
                     </select>
                     {boundProviderName && currentModel && (
-                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-accent/10 text-accent shrink-0 max-w-[70px] truncate" title={boundProviderName}>
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-accent/10 text-accent shrink-0 max-w-[70px] truncate" title={boundProviderName}>
                         {boundProviderName}
                       </span>
                     )}
@@ -614,7 +614,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         {/* 分组 2：本地引擎节点 — 单列，保持原有 select 宽度 */}
         <div className="mb-3">
           <div className="flex items-center gap-2 mb-2 px-1">
-            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">本地引擎</span>
+            <span className="text-[12px] font-medium text-muted-foreground uppercase tracking-wide">本地引擎</span>
             <div className="flex-1 h-px bg-[var(--border)]/50" />
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -626,12 +626,12 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-base shrink-0">{node.icon}</span>
                     <div className="flex-1 min-w-0">
-                      <div className="text-[12px] font-medium text-foreground truncate">{node.label}</div>
-                      <div className="text-[10px] text-muted-foreground truncate">{node.desc}</div>
+                      <div className="text-[13px] font-medium text-foreground truncate">{node.label}</div>
+                      <div className="text-[12px] text-muted-foreground truncate">{node.desc}</div>
                     </div>
                   </div>
                   <select value={currentVal} onChange={(e) => handleBindingChange(node.taskType, null, e.target.value)}
-                    className="text-[11px] px-2 py-1 rounded bg-[var(--bg-tertiary)] border border-[var(--border)] text-foreground outline-none cursor-pointer hover:border-accent/40">
+                    className="text-[12px] px-2 py-1 rounded bg-[var(--bg-tertiary)] border border-[var(--border)] text-foreground outline-none cursor-pointer hover:border-accent/40">
                     <option value="">未绑定</option>
                     {options.map((opt: string) => (<option key={opt} value={opt}>{opt}</option>))}
                   </select>
@@ -647,11 +647,11 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-base shrink-0">{node.icon}</span>
               <div className="flex-1 min-w-0">
-                <div className="text-[12px] font-medium text-foreground truncate">{node.label}</div>
-                <div className="text-[10px] text-muted-foreground truncate">{node.desc}</div>
+                <div className="text-[13px] font-medium text-foreground truncate">{node.label}</div>
+                <div className="text-[12px] text-muted-foreground truncate">{node.desc}</div>
               </div>
             </div>
-            <span className="text-[11px] text-muted-foreground italic shrink-0">{(node as any).hint}</span>
+            <span className="text-[12px] text-muted-foreground italic shrink-0">{(node as any).hint}</span>
           </div>
         ))}
       </section>
@@ -741,7 +741,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                   {/* 🔧 修复：编辑模式下始终允许修改（用户可能切换 region/代理/转发地址） */}
                   {/* 仅「新增预设供应商」时只读（自动填入 preset.baseUrl），新增 custom 和编辑模式都可改 */}
                   <input className={`w-full px-2.5 py-1.5 rounded-md border bg-[var(--input)] text-[13px] outline-none focus:border-accent transition-colors ${formErrors.baseUrl ? 'border-[var(--accent-rose)]' : 'border-[var(--border)]'} ${isBaseUrlReadOnly ? 'text-muted-foreground' : 'text-foreground'}`} value={formBaseUrl} onChange={(e) => { setFormBaseUrl(e.target.value); if (formErrors.baseUrl) setFormErrors(prev => { const n = {...prev}; delete n.baseUrl; return n; }); }} readOnly={isBaseUrlReadOnly} placeholder="https://api.example.com/v1" />
-                  {formErrors.baseUrl && <span className="text-[10px] text-[var(--accent-rose)] mt-1 block">{formErrors.baseUrl}</span>}
+                  {formErrors.baseUrl && <span className="text-[12px] text-[var(--accent-rose)] mt-1 block">{formErrors.baseUrl}</span>}
                 </div>
                 <div className="mb-3.5">
                   <label className="text-xs text-muted-foreground block mb-1.5">API Key <span className="text-[var(--accent-rose)]">*</span></label>
@@ -753,7 +753,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                     </button>
                   </div>
                   {/* 🔧 修复：编辑模式回填真实 Key，不再需要"Key 已保存"提示 */}
-                  {formErrors.apiKey && <span className="text-[10px] text-[var(--accent-rose)] mt-1 block">{formErrors.apiKey}</span>}
+                  {formErrors.apiKey && <span className="text-[12px] text-[var(--accent-rose)] mt-1 block">{formErrors.apiKey}</span>}
                   {!isCustom && (PROVIDER_CONFIGS as any)[selectedProvider]?.keyUrl && (
                     <a className="inline-flex items-center gap-1 text-xs text-accent mt-1 cursor-pointer hover:underline" href="#" onClick={(e) => { e.preventDefault(); window.open((PROVIDER_CONFIGS as any)[selectedProvider].keyUrl, '_blank'); }}>
                       <ExternalLink size={11} /> 获取 API Key
@@ -768,7 +768,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                       type="button"
                       onClick={handleFetchModels}
                       disabled={fetchingModels || !formApiKey.trim() || !formBaseUrl.trim()}
-                      className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border border-accent/30 text-accent hover:bg-accent/5 transition-colors cursor-pointer outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="flex items-center gap-1 text-[12px] px-2 py-0.5 rounded border border-accent/30 text-accent hover:bg-accent/5 transition-colors cursor-pointer outline-none disabled:opacity-40 disabled:cursor-not-allowed"
                       title="用当前 API Key 调用 /models 接口，拉取账户实际可用的模型列表"
                     >
                       {fetchingModels ? '拉取中...' : '拉取模型'}
@@ -777,7 +777,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                   {isCustom ? (
                     <>
                       <textarea className={`w-full px-2.5 py-1.5 rounded-md border bg-[var(--input)] text-[13px] text-foreground outline-none focus:border-accent resize-y min-h-[64px] leading-relaxed ${formErrors.models ? 'border-[var(--accent-rose)]' : 'border-[var(--border)]'}`} placeholder={`输入模型名称，每行一个，如：\ngpt-4o\nclaude-sonnet-4`} value={customModelsText} onChange={(e) => { setCustomModelsText(e.target.value); if (formErrors.models) setFormErrors(prev => { const n = {...prev}; delete n.models; return n; }); }} />
-                      <div className="text-[11px] text-muted-foreground mt-1">每行一个模型名称</div>
+                      <div className="text-[12px] text-muted-foreground mt-1">每行一个模型名称</div>
                     </>
                   ) : (
                     <div className={`border rounded-md bg-[var(--input)] ${formErrors.models ? 'border-[var(--accent-rose)]' : 'border-[var(--border)]'}`}>
@@ -792,13 +792,13 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                           <label key={model} className={`flex items-center gap-2 px-2.5 py-1.5 cursor-pointer text-[13px] transition-colors hover:bg-[var(--bg-hover)] ${formModels.includes(model) ? 'bg-accent/8' : ''}`}>
                             <input type="checkbox" checked={formModels.includes(model)} onChange={() => { togglePresetModel(model); if (formErrors.models) setFormErrors(prev => { const n = {...prev}; delete n.models; return n; }); }} className="accent-[var(--accent)]" />
                             {model}
-                            <span className="text-[10px] text-muted-foreground ml-auto">自定义</span>
+                            <span className="text-[12px] text-muted-foreground ml-auto">自定义</span>
                           </label>
                         ))}
                       </div>
                       {/* 🔧 修复：预设模式下也允许追加自定义模型 */}
                       <div className="border-t border-[var(--border)] p-2">
-                        <input className="w-full px-2 py-1 text-[12px] bg-transparent text-foreground outline-none border border-[var(--border)] rounded focus:border-accent" placeholder="追加自定义模型名，回车添加" onKeyDown={(e) => {
+                        <input className="w-full px-2 py-1 text-[13px] bg-transparent text-foreground outline-none border border-[var(--border)] rounded focus:border-accent" placeholder="追加自定义模型名，回车添加" onKeyDown={(e) => {
                           if (e.key === 'Enter') {
                             e.preventDefault();
                             const val = (e.target as HTMLInputElement).value.trim();
@@ -811,10 +811,10 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                       </div>
                     </div>
                   )}
-                  {formErrors.models && <span className="text-[10px] text-[var(--accent-rose)] mt-1 block">{formErrors.models}</span>}
+                  {formErrors.models && <span className="text-[12px] text-[var(--accent-rose)] mt-1 block">{formErrors.models}</span>}
                   {/* 拉取结果提示 */}
                   {fetchHint && (
-                    <div className={`text-[11px] mt-1 ${fetchHint.startsWith('✓') ? 'text-[var(--accent-green)]' : 'text-muted-foreground'}`}>{fetchHint}</div>
+                    <div className={`text-[12px] mt-1 ${fetchHint.startsWith('✓') ? 'text-[var(--accent-green)]' : 'text-muted-foreground'}`}>{fetchHint}</div>
                   )}
                 </div>
                 <div className="flex items-center justify-between mt-5 pt-4 border-t border-[var(--border)]">
@@ -835,7 +835,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                     </div>
                     {/* 🔧 修复：失败时显示具体原因，帮助用户排查 */}
                     {testStatus === 'fail' && testFailReason && (
-                      <span className="text-[10px] text-[var(--accent-rose)]/70 max-w-[280px] truncate" title={testFailReason}>{testFailReason}</span>
+                      <span className="text-[12px] text-[var(--accent-rose)]/70 max-w-[280px] truncate" title={testFailReason}>{testFailReason}</span>
                     )}
                   </div>
                   <div className="flex gap-2">

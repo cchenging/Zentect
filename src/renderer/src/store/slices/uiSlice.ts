@@ -12,12 +12,13 @@ import { AppNotifier } from '../../core/AppNotifier';
 import type { EditorState, UISlice } from '../storeTypes';
 
 // 🔧 类型只读导入：编译期擦除，不会触发运行时加载
-import type { useProjectStore as UseProjectStoreType } from '@modules/editor/stores/useProjectStore';
-import type { usePlayerStore as UsePlayerStoreType } from '@modules/editor/stores/usePlayerStore';
+// 动态 import() 返回的是模块命名空间，需通过 .useProjectStore / .usePlayerStore 访问实际的 zustand store
+type ProjectStoreModuleT = typeof import('@modules/editor/stores/useProjectStore');
+type PlayerStoreModuleT = typeof import('@modules/editor/stores/usePlayerStore');
 
 // 🔧 模块级缓存：首次调用动态 import，后续同步访问已加载的模块
-let _projectStoreMod: typeof UseProjectStoreType | null = null;
-let _playerStoreMod: typeof UsePlayerStoreType | null = null;
+let _projectStoreMod: ProjectStoreModuleT | null = null;
+let _playerStoreMod: PlayerStoreModuleT | null = null;
 
 /** 懒加载 useProjectStore（首次调用触发动态 import，后续返回缓存） */
 const getProjectStore = async () => {
@@ -229,7 +230,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
     set({ selectedItemId: null, selectedItemType: null });
     // 🔧 动态加载 playerStore，避免同步拉入 editor 模块
     getPlayerStore().then((mod) => {
-      mod?.getState().resetState();
+      mod?.usePlayerStore.getState().resetState();
     }).catch(() => {});
   },
 
@@ -271,7 +272,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
 
       // 🔧 动态加载 projectStore，避免同步拉入 editor 模块
       const projectStore = await getProjectStore();
-      const projectId = projectStore?.getState().projectId;
+      const projectId = projectStore?.useProjectStore.getState().projectId;
       if (!projectId) {
         AppNotifier.error('项目ID不存在');
         set({ workflowState: 'idle' });
@@ -279,13 +280,13 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
       }
 
       const newItems = await API.media.import(projectId, paths);
-      projectStore?.getState().addMediaItems(newItems);
+      projectStore?.useProjectStore.getState().addMediaItems(newItems);
 
       if (newItems.length > 0) {
          get().selectItem(newItems[0].id, 'media');
          // 🔧 动态加载 playerStore
          const playerStore = await getPlayerStore();
-         playerStore?.getState().setActivePlaySource(newItems[0]);
+         playerStore?.usePlayerStore.getState().setActivePlaySource(newItems[0]);
       }
 
       set({ workflowState: 'finetuning', pipelineMessage: '导入完成' });

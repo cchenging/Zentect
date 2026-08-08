@@ -232,7 +232,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
   return (
     <>
-      <Button size="sm" onClick={handleOpen} className="h-7 px-3 font-semibold shadow-sm text-[11px] rounded">
+      <Button size="sm" onClick={handleOpen} className="h-7 px-3 font-semibold shadow-sm text-[12px] rounded">
         {t.export.topbar_export}
       </Button>
 
@@ -398,11 +398,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     <Input
                       readOnly
                       value={currentExportPath}
-                      className="flex-1 text-[11px] font-mono text-muted-foreground bg-background h-7"
+                      className="flex-1 text-[12px] font-mono text-muted-foreground bg-background h-7"
                     />
                     <Button
                       variant="outline"
-                      className="h-7 px-3 text-[11px]"
+                      className="h-7 px-3 text-[12px]"
                       onClick={async () => {
                         const newPath = await API.system.openDirectory();
                         if (newPath) {
@@ -415,7 +415,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                       更改
                     </Button>
                   </div>
-                  <span className="text-[10px] text-muted-foreground">
+                  <span className="text-[12px] text-muted-foreground">
                     成片将保存在此目录下的【当前工程名】文件夹中。
                   </span>
                 </div>
@@ -429,7 +429,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                   <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
                     <div className="h-full bg-accent rounded-full transition-all duration-300" style={{ width: `${exportProgress}%` }} />
                   </div>
-                  <span className="text-[11px] text-accent font-medium">{Math.round(exportProgress)}%</span>
+                  <span className="text-[12px] text-accent font-medium">{Math.round(exportProgress)}%</span>
                 </div>
               )}
               <div className="flex justify-end gap-3">

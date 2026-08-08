@@ -177,15 +177,15 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRe
       {/* 💥 美学重构 3：苹果级紧凑排版，用圆点 (●) 分割，拒绝松散 */}
       <div className="flex flex-col px-0.5 gap-1" onClick={() => onClick(project.id)}>
         <span 
-          className="w-full block text-[13px] font-semibold tracking-tight leading-tight text-foreground/90 group-hover:text-primary transition-colors"
+          className="w-full block text-[14px] font-semibold tracking-tight leading-tight text-foreground/90 group-hover:text-primary transition-colors"
           title={project.name}
         >
           {displayName}
         </span>
         
-        <div className="flex items-center text-muted-foreground/70 text-[11px] font-medium tracking-wide">
+        <div className="flex items-center text-muted-foreground/70 text-[12px] font-medium tracking-wide">
           <span>{formatBytes(project.size)}</span>
-          <span className="mx-1.5 text-[8px] opacity-40">●</span>
+          <span className="mx-1.5 text-[11px] opacity-40">●</span>
           <span>{formatDurationStandard(project.duration || 0)}</span>
         </div>
       </div>

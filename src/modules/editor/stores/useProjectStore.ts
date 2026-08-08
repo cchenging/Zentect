@@ -20,37 +20,6 @@ import { useStep4Store } from '../../pipeline/stores/useStep4Store';
 import { useStep5Store } from '../../pipeline/stores/useStep5Store';
 import { useEditorNavStore } from './useEditorNavStore';
 
-/** 步骤1 的 4 个子任务 key（cluster/semantic 属于步骤2，不参与步骤1状态推导） */
-const STEP1_SUBSTEPS = ['frames', 'audio', 'whisper', 'faces'] as const;
-
-/**
- * 根据子任务状态推导步骤1总状态（统一逻辑，供 hydrate 自动修正使用）
- * - 全 completed → 'completed' + stepCompleted=true
- * - 任一 failed → 'failed' + stepCompleted=false
- * - 部分完成无失败 → 'idle' + stepCompleted=false
- * - 全 idle / 无数据 → 'idle' + stepCompleted=false
- */
-function deriveStep1Status(subStepStatuses: Record<string, string> | undefined): {
-  stepStatus: 'completed' | 'failed' | 'idle';
-  stepCompleted: boolean;
-} {
-  if (!subStepStatuses || typeof subStepStatuses !== 'object') {
-    return { stepStatus: 'idle', stepCompleted: false };
-  }
-  const step1Values = STEP1_SUBSTEPS
-    .map(k => subStepStatuses[k])
-    .filter(v => v !== undefined && v !== null);
-  if (step1Values.length === 0) {
-    return { stepStatus: 'idle', stepCompleted: false };
-  }
-  const hasFailed = step1Values.some(v => v === 'failed');
-  const allCompleted = step1Values.length === STEP1_SUBSTEPS.length
-    && step1Values.every(v => v === 'completed');
-  if (allCompleted) return { stepStatus: 'completed', stepCompleted: true };
-  if (hasFailed) return { stepStatus: 'failed', stepCompleted: false };
-  return { stepStatus: 'idle', stepCompleted: false };
-}
-
 /** 💥 工业级减法：防抖影子保存器，防止主进程磁盘 I/O 被高频更新锁死 */
 let shadowSaveTimer: any = null;
 const debouncedShadowSave = (projectId: string, getShots: () => any, getAiShots: () => any) => {
@@ -393,7 +362,9 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     });
 
     // 🎭 P0.5+ 持久化到 DB
-    API.roles.merge(sourceRoleId, targetRoleId, state.projectId).catch(() => {});
+    if (state.projectId) {
+      API.roles.merge(sourceRoleId, targetRoleId, state.projectId).catch(() => {});
+    }
   },
 
   unmergeRole: (sourceRoleId, targetRoleId) => {
@@ -442,7 +413,9 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
           : shot
       ),
     }));
-    API.roles.delete(id, state.projectId).catch(() => {});
+    if (state.projectId) {
+      API.roles.delete(id, state.projectId).catch(() => {});
+    }
   },
 
   applyAudioDomino: (shotId, audioPath, rawAudioDuration, strategy, target = 'shots') => {
@@ -656,7 +629,10 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     const mediaItems = Array.isArray(d.mediaItems) ? d.mediaItems : [];
     const asrLines = Array.isArray(d.asrLines) ? d.asrLines : [];
     const framePaths = Array.isArray(d.framePaths) ? d.framePaths : [];
-    const frameCount = d.frameCount || framePaths.length || 0;
+    // 🛑 统一数据源：framePaths 为真相源，frameCount 优先由其长度派生，避免 DB 中
+    //   frameCount 与 framePaths 不一致（如旧版 TEST_FRAME_LIMIT 残留 frameCount=10 而 framePaths=84）
+    //   导致步骤1 与成果素材显示不同的帧数。d.frameCount 仅作旧数据兼容回退。
+    const frameCount = framePaths.length || d.frameCount || 0;
 
     // ── PipelineStore ──
     const ps = usePipelineStore.getState();

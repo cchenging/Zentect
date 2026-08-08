@@ -10,14 +10,17 @@ export class VisionExtractParser implements INodeParser {
       return null;
     }
 
+    // 🔧 node.data.params 的索引签名是 unknown，先收窄为 Record 再读取可选配置
+    const params = (node.data?.params ?? {}) as Record<string, any>;
+
     return {
       nodeId: node.id,
       actionType: 'vision-extract',
       label: node.data?.label || '视觉抽帧',
       params: {
-        fps: node.data?.params?.fps ?? 1,
-        threshold: node.data?.params?.threshold ?? 0,
-        strategy: node.data?.params?.strategy ?? 'scene',
+        fps: params.fps ?? 1,
+        threshold: params.threshold ?? 0,
+        strategy: params.strategy ?? 'scene',
       },
       dependsOn: upstreamContext.dependsOn || [],
       mergedInputs: {

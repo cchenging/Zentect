@@ -84,7 +84,7 @@ export class SmartFramePostProcessor {
       .convolve(this.LAPLACIAN_KERNEL)
       .toBuffer();
     const stats = await sharp(convolved).stats();
-    const stddev = stats.channels[0].stddev ?? 0;
+    const stddev = stats.channels[0].stdev ?? 0;
     return Math.round(stddev * stddev);
   }
 
@@ -106,7 +106,7 @@ export class SmartFramePostProcessor {
    */
   static async computeHash(filePath: string): Promise<string> {
     // 8x8 灰度原始像素
-    const { data, info } = await sharp(filePath)
+    const { data } = await sharp(filePath)
       .greyscale()
       .resize(8, 8, { fit: 'fill' })
       .raw()

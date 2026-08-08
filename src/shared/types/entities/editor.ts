@@ -41,6 +41,24 @@ export interface VlmFrame {
     keywords: string[];
     /** 🎬 镜头景别（特写/中景/全景等），VLM 结构化输出 */
     shotType?: string;
+    /** 🎥 运镜方式（固定/推/拉/摇/移），VLM 结构化输出 */
+    cameraMovement?: string;
+    /** ⚡ 剧情张力/看点，供 step3 提炼解说钩子 */
+    dramaticConflict?: string;
+    /** 👤 画面核心主体（优先使用已知角色真实姓名） */
+    subject?: string;
+    /** 👥 多人物主焦点：画面中核心叙事人物（优先角色名，如"张三"） */
+    primarySubject?: string;
+    /** 👥 多人物陪体列表：辅助/次要人物（如 ["李四"]），背景路人不入此列 */
+    secondarySubjects?: string[];
+    /** 🤝 人物间交互动作：谁对谁做了什么（15字内动词主导，如"张三举枪质问角落里的李四"） */
+    interaction?: string;
+    /** 🎬 多人物场景分类：单人/双人对峙/过肩镜头/群戏/主角+背景人群 */
+    shotStyle?: string;
+    /** 🎭 该帧出现的角色名集合（primary + secondary + 可辨识路人），供 step3/step5 角色组合过滤 */
+    characters?: string[];
+    /** 💬 该帧时间区间内匹配到的 ASR 台词，供 step3 直接消费无需重新匹配 */
+    asrText?: string;
   };
   /**
    * 🎭 P0.5 帧级锚定：该帧已检测到的人物名称列表
@@ -56,6 +74,13 @@ export interface ScriptParagraph {
   audioSafeText?: string; cleanText?: string;
   /** 原声段落标记：true 表示该段不合成配音，直接使用原片原声（关键台词保留/原声为主策略时由文案生成标记） */
   keepOriginalAudio?: boolean;
+  /**
+   * 🎭 P1 角色组合匹配：本段解说词所对应的视频片段中出现的人物名集合。
+   * 来源：步骤2 VLM 角色锚定（downstream.characters），经步骤3 按 chunk 透传、前端持久化到本字段。
+   * 步骤5 以此为 Query 端角色名单，与切片（Chunk 端）角色集合做契合度匹配（软加成，未命中不惩罚）。
+   * 用户手动修改本段解说后，前端更新此字段，步骤5 重新匹配即可实时感知。
+   */
+  characters?: string[];
 }
 
 /**
@@ -92,6 +117,10 @@ export interface MatchResult {
   text?: string;
   /** 原声段落标记：true 表示该段保留原片原声（不配 TTS 配音），匹配锁定在 ASR 原声所在的时间段 */
   keepOriginalAudio?: boolean;
+  /** 该镜头在最终合成时间线上的绝对起点（ms），用于预览定位画面 */
+  videoTimelineStartMs?: number;
+  /** 该镜头在最终合成时间线上的绝对终点（ms），用于预览定位画面 */
+  videoTimelineEndMs?: number;
 }
 
 /** 媒体项 */
@@ -180,6 +209,13 @@ export interface Role {
   faceCount?: number;
   /** 🎭 P1 全局人物注册中心：绑定的全局人物 ID */
   globalCharacterId?: string;
+  /**
+   * 性别（1=男/0=女/unknown=未知）
+   * 兼容 role.gender 直接访问（与 representative.gender 二选一，前端取并集）
+   */
+  gender?: number | string;
+  /** 年龄估计（前端展示用，与 representative.age 二选一） */
+  age?: number;
 }
 
 /**

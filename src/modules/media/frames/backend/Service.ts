@@ -10,6 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { FrameStrategy, FrameExtractionTelemetry } from '../types';
 import { buildExtractCommand } from './Strategy';
+import { SmartFramePostProcessor } from './SmartFramePostProcessor';
 
 // ──────────────────────────────────────────────
 // 外部依赖注入接口
@@ -272,13 +273,14 @@ export class FrameExtractionService {
           let keptFiles = files;
           let frameDetails: import('../types').FrameAssetDetail[] = [];
           if (postProcess && files.length > 0) {
-            const { SmartFramePostProcessor } = require('./SmartFramePostProcessor');
             const ptsMs = ptsSeconds.map(s => Math.round(s * 1000));
+            // ptsSeconds 不含文件名配对，仅当数量一致时才作为精确时间戳使用
+            const exactPtsMs = files.length > 0 && ptsMs.length === files.length ? ptsMs : undefined;
             const result = await SmartFramePostProcessor.process(files, {
               strategy,
               fps,
               timePoint,
-              ptsMs: ptsMs.length === files.length ? ptsMs : undefined,
+              ptsMs: exactPtsMs,
             });
             keptFiles = result.kept.map(d => d.framePath);
             frameDetails = result.kept;
@@ -303,7 +305,9 @@ export class FrameExtractionService {
             metrics: { durationMs, frameCount, totalSizeMB, processingFps },
             frameDetails,
           });
-        } catch {
+        } catch (err) {
+          // 错就错：后处理失败必须暴露，禁止静默返回空帧掩盖根因
+          console.error('[FrameExtraction] 抽帧/后处理失败，返回空结果:', err);
           resolve(emptyTelemetry);
         }
       });

@@ -22,7 +22,7 @@ const SaveStatus: React.FC = () => {
     <div className="flex items-center gap-1.5 [-webkit-app-region:no-drag]">
       {saveStatus === 'saving' && <Loader2 size={12} className="animate-spin text-accent" />}
       {saveStatus === 'saved' && <div className="w-1.5 h-1.5 rounded-full bg-accent-green" />}
-      <span className="text-[11px] text-muted-foreground">
+      <span className="text-[12px] text-muted-foreground">
         {saveStatus === 'saving' ? '保存中...' : `已保存${lastSavedTime ? ` ${lastSavedTime}` : ''}`}
       </span>
     </div>
@@ -63,7 +63,7 @@ export const TopBar: React.FC = React.memo(() => {
         <div className="flex items-center gap-3 [-webkit-app-region:no-drag]">
           <button
             onClick={() => navigate('/')}
-            className="w-7 h-7 rounded-lg bg-gradient-to-br from-accent to-accent-purple flex items-center justify-center text-white font-bold text-[11px] shrink-0 hover:brightness-110 transition-all cursor-pointer outline-none shadow-sm shadow-accent/20"
+            className="w-7 h-7 rounded-lg bg-gradient-to-br from-accent to-accent-purple flex items-center justify-center text-white font-bold text-[12px] shrink-0 hover:brightness-110 transition-all cursor-pointer outline-none shadow-sm shadow-accent/20"
             title="返回首页"
           >
             Z

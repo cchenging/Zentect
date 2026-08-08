@@ -35,8 +35,8 @@ const PropertyBar: React.FC<PropertyBarProps> = ({ className }) => {
         <>
           <div className="flex items-center gap-1.5">
             <User size={13} className="text-muted-foreground" />
-            <span className="text-[10px] text-muted-foreground">角色</span>
-            <span className="text-[11px] font-medium text-foreground">
+            <span className="text-[12px] text-muted-foreground">角色</span>
+            <span className="text-[12px] font-medium text-foreground">
               {roleName || '未分配'}
             </span>
           </div>
@@ -45,8 +45,8 @@ const PropertyBar: React.FC<PropertyBarProps> = ({ className }) => {
 
           <div className="flex items-center gap-1.5">
             <Clock size={13} className="text-muted-foreground" />
-            <span className="text-[10px] text-muted-foreground">时长</span>
-            <span className="text-[11px] font-medium text-foreground">
+            <span className="text-[12px] text-muted-foreground">时长</span>
+            <span className="text-[12px] font-medium text-foreground">
               {selectedShot.duration || '00:05'}
             </span>
           </div>
@@ -55,8 +55,8 @@ const PropertyBar: React.FC<PropertyBarProps> = ({ className }) => {
 
           <div className="flex items-center gap-1.5">
             <Mic size={13} className="text-muted-foreground" />
-            <span className="text-[10px] text-muted-foreground">语速</span>
-            <span className="text-[11px] font-medium text-foreground">
+            <span className="text-[12px] text-muted-foreground">语速</span>
+            <span className="text-[12px] font-medium text-foreground">
               {(selectedShot as any).audioEmotion || (selectedShot as any).speed || '正常'}
             </span>
           </div>
@@ -65,13 +65,13 @@ const PropertyBar: React.FC<PropertyBarProps> = ({ className }) => {
 
           <div className="flex items-center gap-1.5 flex-1 min-w-0">
             <Info size={13} className="text-muted-foreground shrink-0" />
-            <span className="text-[11px] text-muted-foreground truncate">
+            <span className="text-[12px] text-muted-foreground truncate">
               {((selectedShot as any).aiText || (selectedShot as any).text || '暂无台词')}
             </span>
           </div>
         </>
       ) : (
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-2 text-[12px] text-muted-foreground">
           <Info size={13} className="opacity-50" />
           <span>点击卡片查看属性</span>
         </div>

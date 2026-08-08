@@ -53,7 +53,7 @@ export const VoiceCard: React.FC<VoiceCardProps> = ({ name, selected, isPreviewi
 
       {/* 语言标识 */}
       {lang && (
-        <span className="text-[10px] text-muted-foreground/70 truncate">{lang}</span>
+        <span className="text-[12px] text-muted-foreground/70 truncate">{lang}</span>
       )}
 
       {/* 试听按钮：始终可见（一键试听），hover 时高亮 */}

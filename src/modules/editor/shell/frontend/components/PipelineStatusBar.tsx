@@ -23,11 +23,11 @@ export const PipelineStatusBar: React.FC = () => {
   return (
     <>
       <div className="flex items-center gap-3 px-4 py-1.5 border-b border-border/30 shrink-0">
-        <span className="text-[11px] text-muted-foreground shrink-0">当前: {pipelineNode || '待启动'}</span>
+        <span className="text-[12px] text-muted-foreground shrink-0">当前: {pipelineNode || '待启动'}</span>
         <Progress value={pipelineProgress} color="accent" size="sm" className="flex-1" />
-        <span className="text-[11px] text-accent font-medium shrink-0">{pipelineProgress}%</span>
+        <span className="text-[12px] text-accent font-medium shrink-0">{pipelineProgress}%</span>
         {pipelineRunning && (
-          <button onClick={handleAbort} className="text-[11px] text-accent-rose hover:underline cursor-pointer outline-none shrink-0">
+          <button onClick={handleAbort} className="text-[12px] text-accent-rose hover:underline cursor-pointer outline-none shrink-0">
             中止
           </button>
         )}
@@ -36,8 +36,8 @@ export const PipelineStatusBar: React.FC = () => {
       {pipelineError && (
         <div className="flex items-center gap-2 px-4 py-2 bg-accent-rose/10 border-b border-accent-rose/20 shrink-0">
           <AlertTriangle size={14} className="text-accent-rose shrink-0" />
-          <span className="text-[11px] text-accent-rose flex-1">{pipelineError}</span>
-          <button onClick={() => resetPipeline()} className="text-[11px] text-accent-rose hover:underline cursor-pointer outline-none">
+          <span className="text-[12px] text-accent-rose flex-1">{pipelineError}</span>
+          <button onClick={() => resetPipeline()} className="text-[12px] text-accent-rose hover:underline cursor-pointer outline-none">
             关闭
           </button>
         </div>

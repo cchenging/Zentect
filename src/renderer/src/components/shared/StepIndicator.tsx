@@ -66,10 +66,10 @@ export const StepIndicator: React.FC<StepIndicatorProps> = ({
           <div key={step.id} className="flex items-center">
             <button onClick={() => onStepClick?.(stepId)}
               className={`flex items-center gap-1.5 cursor-pointer outline-none ${colorClass}`}>
-              <div className={`w-[22px] h-[22px] rounded-md flex items-center justify-center text-[11px] font-bold ${bgClass}`}>
+              <div className={`w-[22px] h-[22px] rounded-md flex items-center justify-center text-[12px] font-bold ${bgClass}`}>
                 {isDone ? <StatusIcon status="completed" size={12} /> : isRunning ? <StatusIcon status="running" size={12} /> : stepId}
               </div>
-              <span className="text-[11px] font-medium hidden xl:inline">{step.label}</span>
+              <span className="text-[12px] font-medium hidden xl:inline">{step.label}</span>
             </button>
             {i < steps.length - 1 && (
               <div className={`w-7 h-px mx-1 ${stepId < currentStep ? 'bg-accent-green/40' : 'bg-border/30'}`} />

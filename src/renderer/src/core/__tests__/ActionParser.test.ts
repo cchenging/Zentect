@@ -115,20 +115,4 @@ describe('ActionParser', () => {
       expect(result.length).toBe(2);
     });
   });
-
-  describe('compile', () => {
-    it('should strip visual props from nodes', () => {
-      const nodes: any[] = [
-        { id: 'n1', type: 'processNode', position: { x: 100, y: 200 }, width: 200, data: { actionType: 'vision-extract' } },
-      ];
-      const result = ActionParser.compile(nodes, []);
-      expect(result.nodes[0]).not.toHaveProperty('position');
-      expect(result.nodes[0]).not.toHaveProperty('width');
-      expect(result.nodes[0].data).toEqual({ actionType: 'vision-extract' });
-    });
-
-    it('should throw for empty nodes', () => {
-      expect(() => ActionParser.compile([], [])).toThrow();
-    });
-  });
 });

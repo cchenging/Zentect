@@ -53,7 +53,7 @@ vi.mock('../../../../main/engine/media/VisionProcessor', () => ({
 
 /** P1-1 Mock: PerceptualHasher — 默认所有帧都不同（动态），不触发去重 */
 const { mockBatchComputePHash, mockIsStaticShot, mockBatchComputeContentHash } = vi.hoisted(() => ({
-  mockBatchComputePHash: vi.fn(() => []),
+  mockBatchComputePHash: vi.fn<() => Array<{ framePath: string; hash: bigint }>>(() => []),
   mockIsStaticShot: vi.fn(() => false),
   mockBatchComputeContentHash: vi.fn(() => new Map()),
 }));
@@ -85,10 +85,10 @@ vi.mock('../../../../main/database/repositories/VlmFrameCacheRepository', () => 
 
 /** P2 Mock: ContactSheetBuilder — 默认不拼图（返回 null 表示降级为 1x1） */
 const { mockSheetBuild, mockSheetCleanup, mockSheetCellCount, mockSheetAutoLayout } = vi.hoisted(() => ({
-  mockSheetBuild: vi.fn(() => null),
+  mockSheetBuild: vi.fn<(frames: any[], layout: string, cacheDir: string) => { gridPath: string; frameIndices: number[]; layout: string } | null>(() => null),
   mockSheetCleanup: vi.fn(),
   mockSheetCellCount: vi.fn((layout: string) => (layout === '2x2' ? 4 : layout === '3x3' ? 9 : 1)),
-  mockSheetAutoLayout: vi.fn(() => '3x3' as const),
+  mockSheetAutoLayout: vi.fn<() => string>(() => '3x3'),
 }));
 vi.mock('../../../../main/engine/media/ContactSheetBuilder', () => ({
   ContactSheetBuilder: {
@@ -315,13 +315,86 @@ describe('VisionExtractStrategy - P0 优化测试', () => {
       expect(result.frames[0].downstream.keywords).toEqual([]);
       expect(result.downstreamContext.shots[0].keywords).toEqual([]);
     });
+
+    it('多人物关系字段应透传到 downstream 与 downstreamContext.shots', async () => {
+      const multiPersonResponse = JSON.stringify({
+        frames: [
+          {
+            scene: '室内',
+            subject: '张三',
+            primarySubject: '张三',
+            secondarySubjects: ['李四'],
+            interaction: '张三举枪质问角落里的李四',
+            shotStyle: '双人对峙',
+            characters: ['张三', '李四'],
+            narrativeAction: '张三举枪质问李四',
+            emotionalState: '阴沉',
+            keywords: ['张三', '李四', '对峙'],
+          },
+          {
+            scene: '室内',
+            subject: '张三',
+            primarySubject: '张三',
+            secondarySubjects: ['李四'],
+            interaction: '张三举枪质问角落里的李四',
+            shotStyle: '双人对峙',
+            characters: ['张三', '李四'],
+            narrativeAction: '张三举枪质问李四',
+            emotionalState: '阴沉',
+            keywords: ['张三', '李四', '对峙'],
+          },
+          {
+            scene: '室内',
+            subject: '张三',
+            primarySubject: '张三',
+            secondarySubjects: ['李四'],
+            interaction: '张三举枪质问角落里的李四',
+            shotStyle: '双人对峙',
+            characters: ['张三', '李四'],
+            narrativeAction: '张三举枪质问李四',
+            emotionalState: '阴沉',
+            keywords: ['张三', '李四', '对峙'],
+          },
+        ],
+      });
+      const { input, context, onProgress } = buildInput(multiPersonResponse);
+
+      const result = await (strategy as any).performTask(input, context, '/tmp/cache', onProgress);
+
+      const shot0 = result.downstreamContext.shots[0];
+      expect(shot0.primarySubject).toBe('张三');
+      expect(shot0.secondarySubjects).toEqual(['李四']);
+      expect(shot0.interaction).toBe('张三举枪质问角落里的李四');
+      expect(shot0.shotStyle).toBe('双人对峙');
+      expect(shot0.characters).toEqual(['张三', '李四']);
+
+      const frameDownstream = result.frames[0].downstream;
+      expect(frameDownstream.primarySubject).toBe('张三');
+      expect(frameDownstream.secondarySubjects).toEqual(['李四']);
+      expect(frameDownstream.interaction).toBe('张三举枪质问角落里的李四');
+      expect(frameDownstream.shotStyle).toBe('双人对峙');
+      expect(frameDownstream.characters).toEqual(['张三', '李四']);
+    });
+
+    it('VLM 未返回多人物字段时，downstream 应透传 undefined 而非默认值', async () => {
+      const { input, context, onProgress } = buildInput(STANDARD_RESPONSE);
+
+      const result = await (strategy as any).performTask(input, context, '/tmp/cache', onProgress);
+
+      const shot0 = result.downstreamContext.shots[0];
+      expect(shot0.primarySubject).toBeUndefined();
+      expect(shot0.secondarySubjects).toBeUndefined();
+      expect(shot0.interaction).toBeUndefined();
+      expect(shot0.shotStyle).toBeUndefined();
+      expect(shot0.characters).toBeUndefined();
+    });
   });
 
   // ========== 综合 ==========
 
   describe('综合行为', () => {
-    it('测试模式应限制只分析前 10 帧', async () => {
-      // 构造 15 帧输入
+    it('应完整分析全部输入帧，不做帧数截断', async () => {
+      // 构造 15 帧输入，验证不再受测试阶段帧数限制
       const framePaths = Array.from({ length: 15 }, (_, i) => `/test/frame${i + 1}.jpg`);
       const input = {
         mediaId: 'test-media',
@@ -332,7 +405,7 @@ describe('VisionExtractStrategy - P0 优化测试', () => {
       const onProgress = vi.fn();
 
       const response15 = JSON.stringify({
-        frames: Array.from({ length: 10 }, (_, i) => ({
+        frames: Array.from({ length: 15 }, (_, i) => ({
           narrativeAction: `动作${i + 1}`,
           emotionalState: '平静',
           keywords: [`关键词${i + 1}`],
@@ -342,9 +415,9 @@ describe('VisionExtractStrategy - P0 优化测试', () => {
 
       const result = await (strategy as any).performTask(input, context, '/tmp/cache', onProgress);
 
-      // 应只分析 10 帧
-      expect(result.framesCount).toBe(10);
-      expect(result.frames).toHaveLength(10);
+      // 应完整分析全部 15 帧
+      expect(result.framesCount).toBe(15);
+      expect(result.frames).toHaveLength(15);
     });
   });
 
@@ -991,6 +1064,25 @@ describe('VisionExtractStrategy - P0 优化测试', () => {
       // 应有指引说明：已知人物用名称，未知人物用泛称
       expect(promptText).toContain('请使用其名称');
       expect(promptText).toContain('男子/女子');
+    });
+
+    it('多人物规则应包含 primarySubject/secondarySubjects/interaction/shotStyle 强制项', async () => {
+      const { input, context, onProgress } = buildInput(STANDARD_RESPONSE);
+      (input as any).roles = [{ id: 'r1', name: '张三' }, { id: 'r2', name: '李四' }];
+
+      await (strategy as any).performTask(input, context, '/tmp/cache', onProgress);
+
+      const promptText = mockChat.mock.calls[0][0][0].content[0].text;
+      // 多人物规则：必须确定唯一主焦点
+      expect(promptText).toContain('多人物规则');
+      expect(promptText).toContain('primarySubject');
+      expect(promptText).toContain('secondarySubjects');
+      expect(promptText).toContain('interaction');
+      expect(promptText).toContain('shotStyle');
+      // 严禁罗列外观
+      expect(promptText).toContain('禁止分别罗列');
+      // 背景路人忽略
+      expect(promptText).toContain('背景路人');
     });
   });
 

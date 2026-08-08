@@ -18,7 +18,8 @@ import { useI18n } from '../store/useI18n';
 import { AppNotifier } from './AppNotifier';
 
 // 🔧 类型只读导入：编译期擦除，不会触发运行时加载
-import type { useProjectStore as UseProjectStoreType } from '@modules/editor/stores/useProjectStore';
+// 动态 import() 返回的是模块命名空间，需通过 .useProjectStore 访问实际的 zustand store
+type ProjectStoreModuleT = typeof import('@modules/editor/stores/useProjectStore');
 
 export const IPCBridge: React.FC = () => {
   const { t } = useI18n();
@@ -28,7 +29,7 @@ export const IPCBridge: React.FC = () => {
 
     // 🔧 动态 import：让 editor 模块成为按需编译的 chunk，不进入首屏 bundle
     //   类型断言确保后续调用有正确的类型推导
-    let projectStoreModule: typeof UseProjectStoreType | null = null;
+    let projectStoreModule: ProjectStoreModuleT | null = null;
     const ensureProjectStore = async () => {
       if (!projectStoreModule) {
         try {
@@ -44,7 +45,7 @@ export const IPCBridge: React.FC = () => {
     const handlePipelineError = async (_event: any, payload: any) => {
       const { shotId, titleKey, promptKey } = payload;
       const store = await ensureProjectStore();
-      const updateShot = store?.getState().updateShot;
+      const updateShot = store?.useProjectStore.getState().updateShot;
 
       if (shotId && updateShot) {
         updateShot(shotId, { pipelineStatus: 'error' });
@@ -52,7 +53,7 @@ export const IPCBridge: React.FC = () => {
 
       if (titleKey || promptKey) {
         AppNotifier.error(
-          `${t(titleKey) || titleKey || ''}\n${t(promptKey) || promptKey || ''}`
+          `${t[titleKey as keyof typeof t] || titleKey || ''}\n${t[promptKey as keyof typeof t] || promptKey || ''}`
         );
       }
     };
@@ -65,7 +66,7 @@ export const IPCBridge: React.FC = () => {
       try {
         const parsedContent = JSON.parse(safeText);
         const store = await ensureProjectStore();
-        const updateShot = store?.getState().updateShot;
+        const updateShot = store?.useProjectStore.getState().updateShot;
         if (updateShot) {
           updateShot(shotId, { scriptPayload: parsedContent });
         }
@@ -79,7 +80,7 @@ export const IPCBridge: React.FC = () => {
       if (!payload) return;
       const store = await ensureProjectStore();
       if (!store) return;
-      const storeState = store.getState();
+      const storeState = store.useProjectStore.getState();
 
       console.log('[IPCBridge 核心总线] 捕获主进程算力波段信号:', payload.type || payload);
 

@@ -234,7 +234,8 @@ export const useEditorAutoSave = (id: string | undefined) => {
         roles: projectState.roles,
         mediaItems: projectState.mediaItems,
         asrLines: step1State.asrLines,
-        frameCount: step1State.frameCount,
+        // 统一数据源：frameCount 从 framePaths 派生
+        frameCount: projectState.extractedData?.framePaths?.length || 0,
         audioSeparated: step1State.audioSeparated,
         subStepStatuses: pipelineState.subStepStatuses,
         stepStatuses: pipelineState.stepStatuses,

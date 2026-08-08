@@ -72,6 +72,7 @@ export interface FrameDetail {
    * 🎥 cameraMovement：运镜方式（固定/推/拉/摇/移），供 step3 感知镜头节奏
    * ⚡ dramaticConflict：剧情张力/看点，供 step3 提炼解说钩子
    * 👤 subject：画面核心主体（优先使用角色真实姓名）
+   * 👥 primarySubject/secondarySubjects/interaction/shotStyle/characters：多人物关系建模，供 step3 主宾理解、step5 角色组合过滤
    * 💬 asrText：该帧时间区间内匹配到的 ASR 台词，供 step3 直接消费无需重新匹配 */
   downstream?: {
     action: string;
@@ -81,6 +82,11 @@ export interface FrameDetail {
     cameraMovement?: string;
     dramaticConflict?: string;
     subject?: string;
+    primarySubject?: string;
+    secondarySubjects?: string[];
+    interaction?: string;
+    shotStyle?: string;
+    characters?: string[];
     asrText?: string;
   };
   /**
@@ -120,19 +126,33 @@ export interface VisionExtractOutput {
    */
   storyLine?: string;
   /** P0-3：下游瘦身上下文，极简结构化数据，供 step3 直接消费
-   * 🎬 shotType/asrText 透传，让 step3 无需重新解析长文本或匹配 ASR */
+   * 🎬 shotType/asrText 透传，让 step3 无需重新解析长文本或匹配 ASR
+   * 👥 primarySubject/secondarySubjects/interaction/shotStyle/characters：多人物关系建模，供 step3 主宾理解、step5 角色组合过滤 */
   downstreamContext?: {
-    shots: { action: string; emotion: string; keywords: string[]; shotType?: string; cameraMovement?: string; dramaticConflict?: string; subject?: string; asrText?: string }[];
+    shots: {
+      action: string;
+      emotion: string;
+      keywords: string[];
+      shotType?: string;
+      cameraMovement?: string;
+      dramaticConflict?: string;
+      subject?: string;
+      primarySubject?: string;
+      secondarySubjects?: string[];
+      interaction?: string;
+      shotStyle?: string;
+      characters?: string[];
+      asrText?: string;
+    }[];
   };
 }
 
-/** VLM 并发批次路数（🧪 测试阶段降为 1 避免限流，正式上线可调回 2-3） */
-const CONCURRENT_VLM = 1;
+/** VLM 并发批次路数（按模型限流与并发配额取平衡值） */
+const CONCURRENT_VLM = 3;
 /** 🔧 fail fast：连续失败达到此阈值时终止整批任务，避免无效 API 调用 */
 const FAIL_FAST_THRESHOLD = 3;
 /** 单次 VLM 调用最大图片数（按 qwen3.7-plus 2048 / flash-plus 系列 256 取保守值 256） */
-// 🧪 测试阶段临时限制为 10 张/次，验证描述质量后再放开回 256
-const MAX_BATCH_IMAGES = 10;
+const MAX_BATCH_IMAGES = 256;
 
 /**
  * 构建人物名单注入段（用于 VLM prompt）
@@ -376,12 +396,6 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     }
 
     let allFrames = physicalFrames;
-    // 🧪 测试阶段：仅取前 10 帧验证 VLM 描述效果，调试完移除 .slice(0, 10) 放开
-    const TEST_FRAME_LIMIT = 10;
-    if (allFrames.length > TEST_FRAME_LIMIT) {
-      allFrames = allFrames.slice(0, TEST_FRAME_LIMIT);
-      AppLogger.warn(LOG_TAGS.AI_AGENT, `[画面描述] 🧪 测试模式：仅分析前 ${TEST_FRAME_LIMIT} 帧（实际抽取 ${physicalFrames.length} 帧）`);
-    }
     const totalFrameCount = allFrames.length;
 
     /** 计算每帧的估算时间点 */
@@ -662,7 +676,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           : '3×3 网格图（9 个子图，按 [1]~[9] 编号排列）';
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写具体构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问角落里的李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- characters 写该帧出现的所有角色名（主焦点+陪体+可辨识角色，优先用已知角色真实姓名）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","characters":["角色名1"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
         });
         userContent.push({
           type: 'image_url',
@@ -672,7 +686,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         /** 1x1 模式或拼图降级：多图独立发送 */
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写具体构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问角落里的李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- characters 写该帧出现的所有角色名（主焦点+陪体+可辨识角色，优先用已知角色真实姓名）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","characters":["角色名1"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
         });
         for (const f of batchFrames) {
           userContent.push({
@@ -702,16 +716,22 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
                     properties: {
                       scene: { type: 'string', description: '关键场景/环境（2-6字概括，如"深夜办公室""车内"，画面匹配第一抓手，禁止"无"）' },
                       subject: { type: 'string', description: '画面核心主体（优先用已知角色真实姓名，如"张三"；无人用泛称，空镜写"空镜头"）' },
+                      // 👥 P0 多人物关系建模：主焦点/陪体/交互/场景分类/角色集合
+                      primarySubject: { type: 'string', description: '多人物主焦点：画面中核心叙事人物（优先用已知角色真实姓名，如"张三"；单人画面同 subject）' },
+                      secondarySubjects: { type: 'array', items: { type: 'string' }, description: '多人物陪体列表：辅助/次要人物（如 ["李四"]）；背景路人/群众禁止入此列' },
+                      interaction: { type: 'string', description: '人物间交互动作：谁对谁做了什么（15字内动词主导，如"张三举枪质问角落里的李四"；单人画面写该人物的动作）' },
+                      shotStyle: { type: 'string', description: '多人物场景分类：单人|双人对峙|过肩镜头|群戏|主角+背景人群', enum: ['单人', '双人对峙', '过肩镜头', '群戏', '主角+背景人群'] },
+                      characters: { type: 'array', items: { type: 'string' }, description: '该帧出现的所有角色名集合（主焦点+陪体+可辨识路人；优先用已知角色名）' },
                       narrativeAction: { type: 'string', description: '主体核心动作/状态（聚焦戏剧动作或静态具体状态，禁止"无动作"占位）' },
                       emotionalState: { type: 'string', description: '主体的微表情/情绪（如眼神/咬牙/冷笑；静态写具体状态，禁止"无表情"占位）' },
                       shotType: { type: 'string', description: '镜头语言：特写|近景|中景|全景', enum: ['特写', '近景', '中景', '全景'] },
                       cameraMovement: { type: 'string', description: '运镜方式：固定|推|拉|摇|移', enum: ['固定', '推', '拉', '摇', '移'] },
                       dramaticConflict: { type: 'string', description: '剧情看点/张力（如"面临危险""发现秘密"；平静写"平静，无冲突"）' },
                       visualAtmosphere: { type: 'string', description: '光影/色调/氛围（2-4字概括，禁止"无氛围"占位）' },
-                      spatialRelation: { type: 'string', description: '构图/镜头移动方式（写具体布局如"主体居中"，禁止"无构图"占位）' },
-                      keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词（仅动作/情绪/道具，禁止环境词）' },
+                      spatialRelation: { type: 'string', description: '人物空间位置/构图（如"张三前景居主体，李四后景阴影中"；禁止"无构图"占位）' },
+                      keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词（仅动作/情绪/道具/人物，禁止环境词）' },
                     },
-                    required: ['scene', 'subject', 'narrativeAction', 'emotionalState', 'shotType', 'cameraMovement', 'dramaticConflict', 'visualAtmosphere', 'spatialRelation'],
+                    required: ['scene', 'subject', 'primarySubject', 'secondarySubjects', 'interaction', 'shotStyle', 'narrativeAction', 'emotionalState', 'shotType', 'cameraMovement', 'dramaticConflict', 'visualAtmosphere', 'spatialRelation'],
                   },
               },
             },
@@ -952,6 +972,12 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         cameraMovement: jsonItem.cameraMovement || undefined,
         dramaticConflict: jsonItem.dramaticConflict || undefined,
         subject: jsonItem.subject || undefined,
+        // 👥 P0 多人物关系建模：主焦点/陪体/交互动作/场景分类/角色集合
+        primarySubject: jsonItem.primarySubject || undefined,
+        secondarySubjects: Array.isArray(jsonItem.secondarySubjects) ? jsonItem.secondarySubjects : undefined,
+        interaction: jsonItem.interaction || undefined,
+        shotStyle: jsonItem.shotStyle || undefined,
+        characters: Array.isArray(jsonItem.characters) ? jsonItem.characters : undefined,
         asrText: frameAsrText || undefined,
       } : undefined;
 

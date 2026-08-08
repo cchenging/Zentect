@@ -148,6 +148,9 @@ export class MediaController {
         scale: scale ?? 1024,
         quality: quality || 3,
         timePoint,
+        // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重，与 step1 管线保持一致，
+        //   避免长镜头静态画面按 minFrameInterval 兜底抽出的重复帧污染 DB
+        postProcess: true,
       });
 
       /** 结果写 DB — 帧路径转为 magic:// 协议 */

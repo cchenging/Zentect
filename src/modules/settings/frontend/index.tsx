@@ -14,8 +14,8 @@ import { WindowControls } from '@renderer/components/window-controls';
 export const Settings: React.FC = () => {
   const navigate = useNavigate();
   const {
-    config, activeTab, setActiveTab, updateConfig, saveConfig,
-    testAIConnection, testTTS, isTesting, isSaving, modelPool,
+    config, activeTab, setActiveTab, updateConfig,
+    testAIConnection, testTTS, isTesting, modelPool,
     apiProfiles, profileBindings,
   } = useSettingsManager();
 

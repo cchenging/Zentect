@@ -33,7 +33,7 @@ function makeInput(overrides: Partial<Step3Input> = {}): Step3Input {
 
 /** 构造模拟的 LLM 返回 JSON */
 function makeLLMResponse(
-  shots: Array<{ shotId?: string; text?: string; duration?: number }>,
+  shots: Array<{ shotId?: string; text?: string; duration?: number; keepOriginalAudio?: boolean }>,
 ): string {
   return JSON.stringify(shots);
 }

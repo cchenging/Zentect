@@ -2,70 +2,60 @@
 
 import { describe, it, expect } from 'vitest';
 import { PROVIDER_CONFIGS } from '../backend/AiConfigService';
-import type { ProviderConfig } from '../types';
 
 describe('AiConfigService', () => {
   describe('PROVIDER_CONFIGS', () => {
+    // PROVIDER_CONFIGS 为 Record<id, ProviderConfig>，转数组便于断言
+    const providers = Object.values(PROVIDER_CONFIGS) as Array<{
+      id: string; name: string; fullName: string;
+      baseUrl: string; models: string[]; keyUrl: string;
+    }>;
+
     it('应包含 5 个预设供应商', () => {
-      expect(PROVIDER_CONFIGS).toHaveLength(5);
+      expect(providers).toHaveLength(5);
     });
 
     it('每个供应商应有唯一 ID', () => {
-      const ids = PROVIDER_CONFIGS.map((p) => p.id);
+      const ids = providers.map((p) => p.id);
       const uniqueIds = new Set(ids);
       expect(uniqueIds.size).toBe(ids.length);
     });
 
     it('每个供应商应包含所有必填字段', () => {
-      const requiredFields: (keyof ProviderConfig)[] = [
-        'id', 'name', 'keyField', 'modelsField',
-        'baseURL', 'link', 'color', 'hasBaseUrl',
+      const requiredFields: Array<'id' | 'name' | 'fullName' | 'baseUrl' | 'models' | 'keyUrl'> = [
+        'id', 'name', 'fullName', 'baseUrl', 'models', 'keyUrl',
       ];
 
-      for (const provider of PROVIDER_CONFIGS) {
+      for (const provider of providers) {
         for (const field of requiredFields) {
           expect(provider[field], `${provider.id} 缺少字段 ${field}`).toBeDefined();
         }
       }
     });
 
-    it('非 hasBaseUrl 的供应商应有有效的 baseURL', () => {
-      const withoutBaseUrl = PROVIDER_CONFIGS.filter((p) => !p.hasBaseUrl);
-      for (const provider of withoutBaseUrl) {
-        expect(provider.baseURL.length).toBeGreaterThan(0);
-        expect(provider.baseURL).toMatch(/^https?:\/\//);
+    it('每个供应商应至少提供一个模型', () => {
+      for (const provider of providers) {
+        expect(provider.models.length).toBeGreaterThan(0);
       }
     });
 
-    it('openai 供应商 hasBaseUrl 应为 true 且 baseURL 为空', () => {
-      const openai = PROVIDER_CONFIGS.find((p) => p.id === 'openai');
-      expect(openai).toBeDefined();
-      expect(openai!.hasBaseUrl).toBe(true);
-      expect(openai!.baseURL).toBe('');
-    });
-
-    it('所有供应商应有有效的 keyField 和 modelsField', () => {
-      for (const provider of PROVIDER_CONFIGS) {
-        expect(provider.keyField.length).toBeGreaterThan(0);
-        expect(provider.modelsField.length).toBeGreaterThan(0);
+    it('非 custom 供应商应有有效的 baseUrl', () => {
+      const nonCustom = providers.filter((p) => p.id !== 'custom');
+      for (const provider of nonCustom) {
+        expect(provider.baseUrl.length).toBeGreaterThan(0);
+        expect(provider.baseUrl).toMatch(/^https?:\/\//);
       }
     });
 
-    it('所有供应商应有有效的 color（HEX 格式）', () => {
-      for (const provider of PROVIDER_CONFIGS) {
-        expect(provider.color).toMatch(/^#[0-9a-fA-F]{6}$/);
-      }
+    it('custom（OpenAI 兼容）供应商应允许空 baseUrl', () => {
+      const custom = providers.find((p) => p.id === 'custom');
+      expect(custom).toBeDefined();
+      expect(custom!.baseUrl).toBe('');
     });
 
-    it('所有供应商应有有效的 link', () => {
-      for (const provider of PROVIDER_CONFIGS) {
-        expect(provider.link).toMatch(/^https?:\/\//);
-      }
-    });
-
-    it('应包含 deepseek、qwen、tencent、doubao、openai', () => {
-      const expectedIds = ['deepseek', 'qwen', 'tencent', 'doubao', 'openai'];
-      const actualIds = PROVIDER_CONFIGS.map((p) => p.id).sort();
+    it('应包含 doubao、deepseek、qwen、hunyuan、custom', () => {
+      const expectedIds = ['doubao', 'deepseek', 'qwen', 'hunyuan', 'custom'];
+      const actualIds = providers.map((p) => p.id).sort();
       expect(actualIds.sort()).toEqual(expectedIds.sort());
     });
   });

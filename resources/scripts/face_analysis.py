@@ -37,7 +37,7 @@ class VisionReq(BaseModel):
     min_size: float = 60          # 人脸 BBox 最小边长（px），小于视为背景路人
     max_pose_angle: float = 30    # 俯仰/偏航角上限（度），过滤大侧脸/低头抬头脸
     min_clarity: float = 100      # 拉普拉斯方差下限，过滤运动模糊脸
-    min_confidence: float = 0.85  # 检测置信度下限（InsightFace det_score）
+    min_confidence: float = 0.70  # 检测置信度下限（InsightFace det_score）
 
 class FaceFeature(BaseModel):
     face_id: str
@@ -72,7 +72,7 @@ def api_vision(req: VisionReq):
       ① 尺寸：边长 < min_size(60px) 视为背景路人
       ② 姿态角：yaw/pitch > max_pose_angle(30°) 的大侧脸/低头抬头脸剔除
       ③ 清晰度：ROI 拉普拉斯方差 < min_clarity(100) 的运动模糊脸剔除
-      ④ 置信度：det_score < min_confidence(0.85) 的低置信检测剔除
+      ④ 置信度：det_score < min_confidence(0.70) 的低置信检测剔除
     """
     import cv2
     try:

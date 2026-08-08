@@ -282,6 +282,37 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
     expect(userContent).toContain('平静');
     expect(userContent).not.toContain('应该被忽略的长文本');
   });
+
+  it('多人物关系字段应透传到 visualContext 供 LLM 消费', async () => {
+    const input = buildInput([{ id: 'r1', name: '张三' }]);
+    // 多人物结构化数据：主焦点/陪体/交互/场景分类/角色集合
+    input.visionResult = {
+      downstreamContext: {
+        shots: [
+          {
+            action: '张三举枪质问李四',
+            emotion: '阴沉',
+            keywords: ['张三', '李四', '对峙'],
+            subject: '张三',
+            primarySubject: '张三',
+            secondarySubjects: ['李四'],
+            interaction: '张三举枪质问角落里的李四',
+            shotStyle: '双人对峙',
+            characters: ['张三', '李四'],
+          },
+        ],
+      },
+    };
+
+    await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
+
+    const userContent = mockChat.mock.calls[1][0][1].content;
+    // 多人物交互动作应进入 LLM 上下文，而非被丢弃
+    expect(userContent).toContain('张三举枪质问角落里的李四');
+    expect(userContent).toContain('双人对峙');
+    expect(userContent).toContain('张三');
+    expect(userContent).toContain('李四');
+  });
 });
 
 // ========== 🎬 两阶段"剧情驱动"解说改造测试 ==========

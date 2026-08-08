@@ -91,7 +91,7 @@ const CollapsibleCard = React.forwardRef<HTMLDivElement, CollapsibleCardProps>(
           )}
 
           {/* 标题内容 */}
-          <div className="flex-1 min-w-0 text-[12px] font-medium">{title}</div>
+          <div className="flex-1 min-w-0 text-[14px] font-medium">{title}</div>
 
           {/* 右侧附加区域 */}
           {extra && <div className="flex-shrink-0">{extra}</div>}

@@ -64,7 +64,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <div className="text-[13px] font-semibold">TTS 配音合成</div>
+        <div className="text-[14px] font-semibold">TTS 配音合成</div>
         {scriptParagraphs.length > 0 && <StatHeader value={scriptParagraphs.length} unit="段文案" secondary={ENGINE_LABELS[ttsEngine] || ttsEngine} />}
       </div>
 
@@ -96,7 +96,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
                 // 🔧 修复 TS2322：VoiceCard onSelect 期望 () => void，用箭头函数包装 id 参数
                 onSelect={() => onSetTtsVoiceId(voice.id)} onPreview={onVoicePreview} />
             ))}
-            {currentVoices.length === 0 && <div className="col-span-3 text-[10px] text-muted-foreground py-1">暂无可用音色</div>}
+            {currentVoices.length === 0 && <div className="col-span-3 text-[12px] text-muted-foreground py-1">暂无可用音色</div>}
           </div>
         )}
       </div>
@@ -105,18 +105,18 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
       <div className="glass-card-sm p-3">
         <div className="flex items-center gap-2 mb-2 text-[13px] text-muted-foreground"><Volume2 size={12} /> 语速调节</div>
         <div className="flex items-center gap-3">
-          <span className="text-[10px] text-muted-foreground">0.5x</span>
+          <span className="text-[12px] text-muted-foreground">0.5x</span>
           <input type="range" min={0.5} max={2.0} step={0.1} value={speechRate}
             onChange={(e) => onSetSpeechRate(parseFloat(e.target.value))}
             className="flex-1 h-1 accent-accent-cyan disabled:opacity-40" />
-          <span className="text-[10px] text-accent-cyan font-mono w-8 text-right">{speechRate.toFixed(1)}x</span>
+          <span className="text-[12px] text-accent-cyan font-mono w-8 text-right">{speechRate.toFixed(1)}x</span>
         </div>
       </div>
 
       {/* 进度 */}
       {scriptParagraphs.length > 0 && <Progress value={ttsProgress} color="cyan" size="sm" showLabel />}
       {ttsResults.length > 0 && (
-        <div className="flex items-center gap-3 text-[10px]">
+        <div className="flex items-center gap-3 text-[12px]">
           <span className="text-accent-green">{successCount} 段成功</span>
           {failedCount > 0 && <span className="text-accent-rose">{failedCount} 段失败</span>}
         </div>
@@ -127,11 +127,11 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
         <div className="flex flex-col gap-2">
           {/* 配音列表标题行：右侧常驻"全部播放"（连续播放所有已合成段落），支持暂停/继续 + 停止 + 进度 */}
           <div className="flex items-center justify-between">
-            <div className="text-[13px] font-semibold flex items-center gap-2"><Mic size={14} /> 配音列表</div>
+            <div className="text-[14px] font-semibold flex items-center gap-2"><Mic size={14} /> 配音列表</div>
             <div className="flex items-center gap-1.5">
               <button onClick={onSequentialPlay} disabled={isProcessing || successCount === 0}
                 title={successCount === 0 ? "请先合成配音，再全部播放" : "连续播放全部已合成段落"}
-                className={`flex items-center justify-center gap-1.5 py-1 px-2.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-50 ${
+                className={`flex items-center justify-center gap-1.5 py-1 px-2.5 rounded-md text-[13px] font-medium cursor-pointer transition-all disabled:opacity-50 ${
                   isSequentialPlaying
                     ? (isPaused ? "bg-accent/15 text-accent hover:bg-accent/25" : "bg-accent-cyan/20 text-accent-cyan")
                     : "bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20"
@@ -142,13 +142,13 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
               </button>
               {isSequentialPlaying && (
                 <button onClick={onSequentialStop}
-                  className="flex items-center justify-center gap-1 py-1 px-2 rounded-md text-[12px] bg-muted/20 text-muted-foreground hover:bg-muted/30 font-medium cursor-pointer">
+                  className="flex items-center justify-center gap-1 py-1 px-2 rounded-md text-[13px] bg-muted/20 text-muted-foreground hover:bg-muted/30 font-medium cursor-pointer">
                   停止
                 </button>
               )}
               {/* 播放进度提示：当前段/总段数 */}
               {isSequentialPlaying && sequentialIdx !== null && (
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-[12px] text-muted-foreground">
                   第 {String(sequentialIdx + 1).padStart(2, '0')} / {successCount}
                 </span>
               )}
@@ -178,7 +178,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
                 }`}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-accent font-mono shrink-0">第 {String(idx + 1).padStart(2, '0')} 段</span>
+                    <span className="text-[12px] text-accent font-mono shrink-0">第 {String(idx + 1).padStart(2, '0')} 段</span>
                     <Badge variant={
                       status === "completed" ? "success"
                       : status === "synthesizing" ? "accent"
@@ -190,7 +190,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
                         : status === "failed" ? "失败"
                         : "待合成"}
                     </Badge>
-                    {durationStr && <span className="text-[10px] text-muted-foreground">{durationStr}</span>}
+                    {durationStr && <span className="text-[12px] text-muted-foreground">{durationStr}</span>}
                     {/* 合成中显示脉冲动画点，增强用户感知 */}
                     {isSynthesizing && (
                       <span className="flex items-center gap-0.5 ml-1">
@@ -203,7 +203,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
                     {isSequentialCurrent && (
                       <span className="flex items-center gap-1 ml-1 text-accent">
                         <Volume2 size={11} className={isPaused ? "" : "animate-pulse"} />
-                        <span className="text-[10px]">{isPaused ? "已暂停" : "播放中"}</span>
+                        <span className="text-[12px]">{isPaused ? "已暂停" : "播放中"}</span>
                       </span>
                     )}
                   </div>

@@ -153,7 +153,7 @@ const UserSettings: React.FC = () => {
                       <button
                         onClick={handleChangeAvatar}
                         disabled={isChangingAvatar}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border/50 text-[11px] text-muted-foreground hover:text-foreground hover:border-accent/40 transition-all cursor-pointer outline-none disabled:opacity-50"
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border/50 text-[12px] text-muted-foreground hover:text-foreground hover:border-accent/40 transition-all cursor-pointer outline-none disabled:opacity-50"
                       >
                         <Image size={13} />
                         {isChangingAvatar ? '更改中...' : '更换头像'}
@@ -167,12 +167,12 @@ const UserSettings: React.FC = () => {
                   <div className="text-sm font-semibold mb-4">账户信息</div>
                   <div className="flex flex-col gap-4">
                     <div className="flex items-center justify-between">
-                      <span className="text-[12px] text-muted-foreground">用户名</span>
-                      <span className="text-[12px] font-medium">{userInfo?.username || '-'}</span>
+                      <span className="text-[13px] text-muted-foreground">用户名</span>
+                      <span className="text-[13px] font-medium">{userInfo?.username || '-'}</span>
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-[12px] text-muted-foreground">VIP 等级</span>
-                      <span className={`text-[12px] font-medium ${
+                      <span className="text-[13px] text-muted-foreground">VIP 等级</span>
+                      <span className={`text-[13px] font-medium ${
                         userInfo?.vipLevel === 'ultra' ? 'text-accent-purple' :
                         userInfo?.vipLevel === 'pro' ? 'text-accent' : 'text-muted-foreground'
                       }`}>
@@ -182,8 +182,8 @@ const UserSettings: React.FC = () => {
                     </div>
                     {userInfo?.vipExpireAt && (
                       <div className="flex items-center justify-between">
-                        <span className="text-[12px] text-muted-foreground">VIP 到期</span>
-                        <span className="text-[12px] font-medium">{new Date(userInfo.vipExpireAt).toLocaleDateString('zh-CN')}</span>
+                        <span className="text-[13px] text-muted-foreground">VIP 到期</span>
+                        <span className="text-[13px] font-medium">{new Date(userInfo.vipExpireAt).toLocaleDateString('zh-CN')}</span>
                       </div>
                     )}
                   </div>
@@ -198,7 +198,7 @@ const UserSettings: React.FC = () => {
 
                 <div className="glass-card-sm p-5">
                   <div className="text-sm font-semibold mb-1">修改密码</div>
-                  <div className="text-[11px] text-muted-foreground mb-5">修改后需使用新密码重新登录</div>
+                  <div className="text-[12px] text-muted-foreground mb-5">修改后需使用新密码重新登录</div>
 
                   <div className="flex flex-col gap-4">
                     {/* 旧密码 */}
@@ -265,7 +265,7 @@ const UserSettings: React.FC = () => {
                     </FormField>
 
                     {passwordError && newPassword && (
-                      <div className="text-[10px] text-accent-rose">{passwordError}</div>
+                      <div className="text-[12px] text-accent-rose">{passwordError}</div>
                     )}
 
                     <Button

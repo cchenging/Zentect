@@ -23,7 +23,7 @@ const FormField: React.FC<FormFieldProps> = ({ label, error, valid, required, ch
       {label && (
         <div className="flex items-center gap-1">
           <span className="text-xs text-foreground font-medium">{label}</span>
-          {required && <span className="text-accent-rose text-[10px]">*</span>}
+          {required && <span className="text-accent-rose text-[12px]">*</span>}
         </div>
       )}
       <div className="relative">
@@ -33,13 +33,13 @@ const FormField: React.FC<FormFieldProps> = ({ label, error, valid, required, ch
         )}
       </div>
       {error && (
-        <div className="flex items-center gap-1 text-[10px] text-accent-rose animate-fade-in">
+        <div className="flex items-center gap-1 text-[12px] text-accent-rose animate-fade-in">
           <AlertCircle size={10} />
           <span>{error}</span>
         </div>
       )}
       {hint && !error && (
-        <span className="text-[10px] text-muted-foreground">{hint}</span>
+        <span className="text-[12px] text-muted-foreground">{hint}</span>
       )}
     </div>
   )

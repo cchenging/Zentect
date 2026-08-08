@@ -220,7 +220,7 @@ export default function Editor() {
           <div className="glass-card overflow-hidden flex flex-col flex-1 min-h-0">
             <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border/30 shrink-0">
               <span className="text-[12px] font-semibold">{activeMediaTab === 'video' ? '视频' : activeMediaTab === 'audio' ? '音频' : activeMediaTab === 'chunks' ? '视频切片' : '关键帧'}</span>
-              <span className="text-[10px] text-muted-foreground">共 {activeCount} 项</span>
+              <span className="text-[12px] text-muted-foreground">共 {activeCount} 项</span>
             </div>
             <div className="flex items-center gap-1 px-3.5 pt-1.5 pb-0 shrink-0">
               {MEDIA_TABS.map(tab => (
@@ -230,16 +230,16 @@ export default function Editor() {
                   }`}>
                   {tab.icon && <tab.icon size={12} />}{tab.label}
                   {tab.key === 'video' && videoCount > 0 && (
-                    <span className="ml-0.5 text-[9px] opacity-60">({videoCount})</span>
+                    <span className="ml-0.5 text-[11px] opacity-60">({videoCount})</span>
                   )}
                   {tab.key === 'audio' && audioCount > 0 && (
-                    <span className="ml-0.5 text-[9px] opacity-60">({audioCount})</span>
+                    <span className="ml-0.5 text-[11px] opacity-60">({audioCount})</span>
                   )}
                   {tab.key === 'chunks' && chunkCount > 0 && (
-                    <span className="ml-0.5 text-[9px] opacity-60">({chunkCount})</span>
+                    <span className="ml-0.5 text-[11px] opacity-60">({chunkCount})</span>
                   )}
                   {tab.key === 'frames' && frameCount > 0 && (
-                    <span className="ml-0.5 text-[9px] opacity-60">({frameCount})</span>
+                    <span className="ml-0.5 text-[11px] opacity-60">({frameCount})</span>
                   )}
                 </button>
               ))}
@@ -261,18 +261,18 @@ export default function Editor() {
                           />
                           {/* 切片时长标签 */}
                           {item.endMs != null && item.startMs != null && (
-                            <span className="absolute bottom-1 right-1 bg-black/75 px-1.5 py-0.5 rounded text-[9px] font-mono text-white">
+                            <span className="absolute bottom-1 right-1 bg-black/75 px-1.5 py-0.5 rounded text-[11px] font-mono text-white">
                               {((item.endMs - item.startMs) / 1000).toFixed(1)}s
                             </span>
                           )}
                           {/* 运动显著性标签 */}
                           {item.motionScore > 0.3 && (
-                            <span className="absolute top-1 left-1 bg-amber-500/80 px-1 py-0.5 rounded text-[8px] text-white font-semibold">
+                            <span className="absolute top-1 left-1 bg-amber-500/80 px-1 py-0.5 rounded text-[11px] text-white font-semibold">
                               动态
                             </span>
                           )}
                         </div>
-                        <div className="text-[10px] font-medium mt-1 text-center truncate px-1 text-muted-foreground group-hover:text-foreground">
+                        <div className="text-[12px] font-medium mt-1 text-center truncate px-1 text-muted-foreground group-hover:text-foreground">
                           {item.name || `分镜切片-${(item.id || '').substring(0, 4)}`}
                         </div>
                       </div>
@@ -287,9 +287,9 @@ export default function Editor() {
                         onClick={() => setActivePlaySource(item)}>
                         <img src={getSafeMediaUrl(item.filePath)} className="w-full h-full object-cover group-hover:opacity-90 transition-opacity" loading="lazy" alt={item.name} />
                         {/* 序号 - 左上 */}
-                        <span className="absolute top-0.5 left-0.5 text-[8px] bg-black/70 text-white/90 px-1 font-mono rounded font-bold">#{index + 1}</span>
+                        <span className="absolute top-0.5 left-0.5 text-[11px] bg-black/70 text-white/90 px-1 font-mono rounded font-bold">#{index + 1}</span>
                         {/* 时间码 - 右下 */}
-                        <span className="absolute bottom-0.5 right-0.5 text-[7px] bg-black/70 text-emerald-300 px-1 font-mono rounded">{formatFrameTime(index)}</span>
+                        <span className="absolute bottom-0.5 right-0.5 text-[11px] bg-black/70 text-emerald-300 px-1 font-mono rounded">{formatFrameTime(index)}</span>
                       </div>
                     ))}
                   </div>
@@ -307,11 +307,11 @@ export default function Editor() {
                         ) : (
                           <Image size={20} className="text-muted-foreground/30" />
                         )}
-                        <span className="absolute top-1.5 right-1.5 text-[8px] px-1 py-0.5 rounded bg-black/50 text-white/70">
+                        <span className="absolute top-1.5 right-1.5 text-[11px] px-1 py-0.5 rounded bg-black/50 text-white/70">
                           {item.type === 'audio' ? '音频' : item.type === 'video' ? '视频' : '帧'}
                         </span>
                         {item.duration && (
-                          <span className="absolute bottom-1.5 right-1.5 text-[8px] px-1 py-0.5 rounded bg-black/50 text-white/70">
+                          <span className="absolute bottom-1.5 right-1.5 text-[11px] px-1 py-0.5 rounded bg-black/50 text-white/70">
                             {formatTime(item.duration)}
                           </span>
                         )}
@@ -328,7 +328,7 @@ export default function Editor() {
                   <div className="glass-card-sm p-4 flex flex-col items-center justify-center text-muted-foreground min-w-[120px]">
                     <Check size={20} className="opacity-30 mb-2" />
                     <span className="text-[11px]">暂无成功文件</span>
-                    <span className="text-[9px] opacity-60 mt-1">执行管线后将在此展示</span>
+                    <span className="text-[11px] opacity-60 mt-1">执行管线后将在此展示</span>
                   </div>
                 </div>
               )}

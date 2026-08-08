@@ -26,7 +26,13 @@ export enum PipelineMode {
 }
 
 interface PipelineOrchestratorResult {
-  executeStep: (step: number) => Promise<void>;
+  /**
+   * 执行指定步骤的管线。
+   * @param step 步骤号（1~5）
+   * @param forceRun 是否强制重新执行。用户主动点击"启动"时为 true（即使该步骤已完成也重新生成）；
+   *                 自动流水中由 executeStep 自动前进时省略（false），已完成步骤会被跳过。
+   */
+  executeStep: (step: number, forceRun?: boolean) => Promise<void>;
   startCurrentStep: () => Promise<void>;
   triggerQuickPipeline: () => Promise<void>;
   executeWithContext: () => Promise<void>;
@@ -64,16 +70,19 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
     AppNotifier.success('前端状态已强制重置！');
   }, []);
 
-  const executeStep = useCallback(async (step: number) => {
+  const executeStep = useCallback(async (step: number, forceRun = false) => {
     const ps = pipelineStore.getState();
     const projectState = useProjectStore.getState();
     if (!projectState.projectId) return;
 
-    // 🔧 修复：步骤2-5已完成的跳过逻辑（与步骤1一致）
-    // 如果当前步骤已完成，直接跳到下一步，避免重新执行
-    // 必须在 setStepStatus('running') 之前检查，否则状态已被覆盖
+    // 🔧 修复：步骤2-5已完成的跳过逻辑
+    // 仅在【自动流水线自动前进】时（forceRun=false），已完成步骤才直接跳到下一步避免重复执行。
+    // 旧版 bug：用户主动点击"启动"（forceRun=true）时若处于自动模式，本分支会直接跳到下一步，
+    //           导致"没有重新生成"（用户期望重跑自己选中的步骤，却被强行跳走）。
+    // 现在：用户主动启动 → 强制重新执行；自动前进 → 已完成步骤跳过。
     const currentStepStatus = ps.stepStatuses[step - 1];
-    if (currentStepStatus === 'completed' && step < 5) {
+    const isAutoMode = useEditorNavStore.getState().isAutoMode;
+    if (!forceRun && isAutoMode && currentStepStatus === 'completed' && step < 5) {
       AppNotifier.info(`步骤${step}已完成，跳转至下一步`);
       useEditorNavStore.getState().setCurrentStep(step + 1);
       return;
@@ -204,7 +213,8 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
             roles: currentProjectState.roles,
             mediaItems: currentProjectState.mediaItems,
             asrLines: step1State.asrLines,
-            frameCount: step1State.frameCount,
+            // 统一数据源：frameCount 从 framePaths 派生，保证存库一致
+            frameCount: currentProjectState.extractedData?.framePaths?.length || 0,
             framePaths: currentProjectState.extractedData?.framePaths || [],
             audioSeparated: step1State.audioSeparated,
             subStepStatuses: ps.subStepStatuses,
@@ -329,7 +339,8 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
       return;
     }
 
-    await executeStep(currentStep);
+    // 用户主动点击"启动"：forceRun=true，即使该步骤已完成也强制重新生成
+    await executeStep(currentStep, true);
   }, [executeStep]);
 
   const triggerQuickPipeline = useCallback(async () => {

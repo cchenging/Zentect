@@ -440,6 +440,8 @@ export class ProjectRepository {
             }),
             // 🎭 P1 全局人物注册中心：持久化 global_character_id（可空）
             globalCharacterId: role.globalCharacterId || null,
+            // 🎭 角色主次分级：持久化 tier（main/supporting/extra），缺失时降级为 null
+            tier: role.tier || null,
           });
         }
       }

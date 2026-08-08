@@ -153,7 +153,7 @@ const ShowCard: React.FC<{
       <div className="aspect-video rounded-lg bg-gradient-to-br from-accent/10 to-accent-purple/10 flex items-center justify-center mb-3 relative">
         <Film size={32} className="text-accent/40" />
         {/* 集数角标 */}
-        <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-black/40 backdrop-blur-sm text-white text-[11px] font-medium">
+        <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-black/40 backdrop-blur-sm text-white text-[12px] font-medium">
           {show.episodeCount} 集
         </div>
       </div>
@@ -166,7 +166,7 @@ const ShowCard: React.FC<{
         {show.description && (
           <div className="text-xs text-muted-foreground line-clamp-2">{show.description}</div>
         )}
-        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground/70">
+        <div className="flex items-center gap-1.5 text-[12px] text-muted-foreground/70">
           <Calendar size={11} />
           <span>{formatDate(show.updateTime || show.createTime || '')}</span>
         </div>
@@ -327,7 +327,7 @@ const DetailDialog: React.FC<{
                     </div>
                   </div>
                   {/* 状态标签 */}
-                  <span className="text-[11px] text-muted-foreground/70 shrink-0">{proj.status}</span>
+                  <span className="text-[12px] text-muted-foreground/70 shrink-0">{proj.status}</span>
                 </div>
               ))}
             </div>
