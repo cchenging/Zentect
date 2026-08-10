@@ -7,7 +7,7 @@ export { StepPanel } from './frontend/components/StepPanel';
 export { PipelineStatusBar } from './frontend/components/PipelineStatusBar';
 export { PropertyBar } from './frontend/components/PropertyBar';
 
-export { useEditorHydration, useEditorAutoSave, useSyncDaemon } from './frontend/hooks/useEditorLogic';
+export { useEditorHydration, useEditorAutoSave, useSyncDaemon, useCurrentStepPersistence } from './frontend/hooks/useEditorLogic';
 export { useStepRunner } from './frontend/hooks/useStepRunner';
 export { usePipelineOrchestrator, PipelineMode } from './frontend/hooks/usePipelineOrchestrator';
 export { useResizablePanel } from './frontend/hooks/useResizablePanel';

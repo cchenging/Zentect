@@ -13,7 +13,7 @@ import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
 import { TopBar } from '@modules/editor/shell';
 import { API } from '@renderer/api';
-import { useEditorHydration, useEditorAutoSave, useSyncDaemon } from '@modules/editor/shell';
+import { useEditorHydration, useEditorAutoSave, useSyncDaemon, useCurrentStepPersistence } from '@modules/editor/shell';
 import { useKeyboardShortcuts } from '@modules/editor/shell';
 import { usePipelineExecutor } from '@modules/editor/shell';
 import { useResizablePanel } from '@modules/editor/shell';
@@ -34,6 +34,7 @@ export default function Editor() {
   /** 编辑器核心 Hooks */
   useEditorHydration(id);
   useEditorAutoSave(id);
+  useCurrentStepPersistence(id);
   useSyncDaemon();
   useKeyboardShortcuts();
   usePipelineExecutor();

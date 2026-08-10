@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useStore } from '@renderer/store/useStore';
 import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
 import { resetAllProjectStores } from '@modules/editor/stores/resetAllProjectStores';
 import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
@@ -12,6 +13,7 @@ import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { DraftService } from '@renderer/services/DraftService';
 import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
+import { API } from '@renderer/api';
 import { AppNotifier } from '@renderer/core/AppNotifier';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 
@@ -259,6 +261,29 @@ export const useEditorAutoSave = (id: string | undefined) => {
       // 组件卸载时（导航离开）也触发一次保存
       handleBeforeUnload();
     };
+  }, [id]);
+};
+
+/**
+ * 持久化当前步骤：只要 currentStep 变化就立即写入数据库。
+ * 修复重开项目「默认回到步骤4」 bug：
+ *   旧版只在 executeStep（步骤执行完成）时 saveData 持久化 currentStep，
+ *   手动模式点「下一步」/点击步骤指示器只更新内存 state，未写库，
+ *   重开项目 hydrate 从数据库读回旧值 → 默认回到上一次执行完成的步骤。
+ * 订阅 setCurrentStep 唯一变更入口，覆盖下一步按钮、步骤点击、自动递进全部路径。
+ */
+export const useCurrentStepPersistence = (id: string | undefined) => {
+  useEffect(() => {
+    if (!id) return;
+    // zustand v4 subscribe 返回退订函数；回调 (state, prevState)
+    const unsub = useEditorNavStore.subscribe((state, prev) => {
+      if (state.currentStep !== prev?.currentStep) {
+        API.project.saveData(id, { currentStep: state.currentStep }).catch(() => {
+          console.error('[useCurrentStepPersistence] 持久化当前步骤失败', state.currentStep);
+        });
+      }
+    });
+    return unsub;
   }, [id]);
 };
 
