@@ -23,12 +23,17 @@ export interface MetaInfoInput {
  * 关键必填字段：draft_id / draft_name / draft_fold_path / draft_root_path /
  * draft_removable_storage_device / draft_new_version / draft_timeline_materials_size_ / tm_duration。
  *
+ * 重要：所有 tm_* 时间字段单位统一为微秒。
+ * - Date.now() 返回的是毫秒（13 位），必须乘以 1000 换算为微秒（16 位）。
+ * - 若误用毫秒，剪映会把该草稿当成 1970 年初的古董，在时间倒序列表中永远压底。
+ *
  * @param input 元数据解析输入
  * @returns draft_meta_info.json 对象
  */
 export function resolveMetaInfo(input: MetaInfoInput): Record<string, unknown> {
   const { draftFolder, jianyingRoot, draftName, draftContent } = input;
   const draftId = String(draftContent.id || '');
+  const nowUs = Date.now() * 1000;
 
   return {
     cloud_package_completed_time: '',
@@ -66,8 +71,8 @@ export function resolveMetaInfo(input: MetaInfoInput): Record<string, unknown> {
     draft_type: '',
     tm_draft_cloud_completed: '',
     tm_draft_cloud_modified: 0,
-    tm_draft_create: Date.now(),
-    tm_draft_modified: Date.now(),
+    tm_draft_create: nowUs,
+    tm_draft_modified: nowUs,
     tm_draft_removed: 0,
     tm_duration: Number(draftContent.duration) || 0,
   };
