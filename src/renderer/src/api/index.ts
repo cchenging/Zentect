@@ -155,6 +155,12 @@ export const API = {
     subtitle: (payload: any) => invokeSafe(IPC_CHANNELS.EXPORT_SUBTITLE, payload),
     /** 文案 TXT 导出 */
     txt: (payload: any) => invokeSafe(IPC_CHANNELS.EXPORT_TXT, payload),
+    /** 订阅导出进度（EXPORT_PROGRESS 通道），返回取消订阅函数 */
+    onProgress: (listener: (p: { projectId: string; percent: number; step: string }) => void) => {
+      const handler = (_: unknown, data: any) => listener(data);
+      window.api.ipc.on(IPC_CHANNELS.EXPORT_PROGRESS, handler);
+      return () => window.api.ipc.removeListener(IPC_CHANNELS.EXPORT_PROGRESS, handler);
+    },
   },
 
   project: {

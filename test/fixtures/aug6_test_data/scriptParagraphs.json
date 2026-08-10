@@ -1,0 +1,236 @@
+[
+  {
+    "id": "s_01",
+    "text": "平静，是风暴的前奏。",
+    "shotId": "s_01",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_02",
+    "text": "Chiudi il becco.",
+    "shotId": "s_02",
+    "duration": 2,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_03",
+    "text": "FIIIIIIIII...",
+    "shotId": "s_03",
+    "duration": 1,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_04",
+    "text": "水里，出事了。[pause: 500ms]",
+    "shotId": "s_04",
+    "duration": 3,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_05",
+    "text": "救援者嘶吼：上岸！",
+    "shotId": "s_05",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_06",
+    "text": "Uscite dall'acqua!",
+    "shotId": "s_06",
+    "duration": 1,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_07",
+    "text": "可水中的人，还在原地。",
+    "shotId": "s_07",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_08",
+    "text": "Squalo!",
+    "shotId": "s_08",
+    "duration": 1,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_09",
+    "text": "恐慌，瞬间点燃。",
+    "shotId": "s_09",
+    "duration": 3,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_10",
+    "text": "Non preoccuparti, non ci sono squali qui!",
+    "shotId": "s_10",
+    "duration": 3,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_11",
+    "text": "可真正杀机，是溺水。",
+    "shotId": "s_11",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_12",
+    "text": "小妹的体力，被海水吞掉。",
+    "shotId": "s_12",
+    "duration": 5,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_13",
+    "text": "救援者嘶吼：快游！",
+    "shotId": "s_13",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_14",
+    "text": "Avanti! Forza, dai, nuoto!",
+    "shotId": "s_14",
+    "duration": 2,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_15",
+    "text": "她已经，没有力气回应。",
+    "shotId": "s_15",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_16",
+    "text": "Aiuto!",
+    "shotId": "s_16",
+    "duration": 1,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_17",
+    "text": "“救命”从喉咙里崩出。[tone: shocked]",
+    "shotId": "s_17",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_18",
+    "text": "救援者，不再等待。",
+    "shotId": "s_18",
+    "duration": 3,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_19",
+    "text": "他冲进水中，一把抓住。",
+    "shotId": "s_19",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_20",
+    "text": "Ti tengo! Ti tengo, forza!",
+    "shotId": "s_20",
+    "duration": 1,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_21",
+    "text": "这句话，是希望。[pause: 400ms]",
+    "shotId": "s_21",
+    "duration": 3,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_22",
+    "text": "上岸后，小妹惊魂未定。",
+    "shotId": "s_22",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_23",
+    "text": "Grazie a tutti.",
+    "shotId": "s_23",
+    "duration": 2,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_24",
+    "text": "这场拔河，人赢了。",
+    "shotId": "s_24",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_25",
+    "text": "回头看，那句“闭嘴”。",
+    "shotId": "s_25",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  },
+  {
+    "id": "s_26",
+    "text": "是命运齿轮转动的预警。",
+    "shotId": "s_26",
+    "duration": 4,
+    "emotion": "",
+    "characters": [],
+    "editing": false
+  }
+]

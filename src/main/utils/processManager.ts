@@ -139,4 +139,7 @@ export class ProcessManager {
   }
 }
 
-app.on('before-quit', () => ProcessManager.killAll());
+// 仅在 Electron 主进程运行时注册退出钩子；node/vitest 环境下 app 不存在则跳过
+if (typeof app !== 'undefined' && app && typeof app.on === 'function') {
+  app.on('before-quit', () => ProcessManager.killAll());
+}

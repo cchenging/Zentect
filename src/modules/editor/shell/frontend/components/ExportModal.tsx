@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { useProjectStore } from '@modules/editor/stores/useProjectStore';
+import { useStore } from '@renderer/store/useStore';
 import { useStep3Store } from '@modules/pipeline/stores/useStep3Store';
 import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
 import { formatDurationStandard } from '@renderer/utils/timeUtils';
@@ -19,6 +20,7 @@ export const ExportModal: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [currentExportPath, setCurrentExportPath] = useState('');
+  const [coverError, setCoverError] = useState(false);
 
   const [exportVideo, setExportVideo] = useState(true);
   const [exportJianying, setExportJianying] = useState(false);
@@ -31,7 +33,14 @@ export const ExportModal: React.FC = () => {
   const [videoFormat, setVideoFormat] = useState('mp4');
   const [exportRatio, setExportRatio] = useState<'16:9' | '9:16'>('16:9');
   const [videoRes, setVideoRes] = useState<'4k' | '2k' | '1080p' | '720p'>('1080p');
+  const [videoFps, setVideoFps] = useState<'30' | '60'>('30');
+  const [previewMode, setPreviewMode] = useState(false);
+  const [subtitleMode, setSubtitleMode] = useState<'none' | 'burn' | 'file' | 'both'>('both');
   const [audioFormat, setAudioFormat] = useState('mp3');
+  /** 完成后打开：'none'=不打开 / 'folder'=打开文件夹 / 'player'=用系统播放器播放成片 */
+  const [afterOpen, setAfterOpen] = useState<'none' | 'folder' | 'player'>('none');
+  /** 导出范围：'all'=全部片段 / 'selected'=仅导出当前选中的片段 */
+  const [exportRange, setExportRange] = useState<'all' | 'selected'>('all');
 
   const { coverUrl, currentDuration, exactResolutionStr, estimatedSizeMB } = useMemo(() => {
     if (!open) return { coverUrl: '', currentDuration: 0, exactResolutionStr: '1920x1080', estimatedSizeMB: '0.0 MB' };
@@ -42,7 +51,8 @@ export const ExportModal: React.FC = () => {
     let url = '';
     if (activeShots.length > 0 && mediaArray.length > 0) {
       const firstMedia = mediaArray.find((m) => m.id === activeShots[0].mediaId) || mediaArray[0];
-      if (firstMedia) url = getSafeMediaUrl(firstMedia.filePath);
+      // 封面优先用 coverPath/thumbnail（图片素材），避免用视频文件路径渲染导致缩略图损坏
+      if (firstMedia) url = getSafeMediaUrl(firstMedia.coverPath || firstMedia.thumbnail || firstMedia.filePath);
     }
     const dur = activeShots.length > 0 ? activeShots[activeShots.length - 1].end : 0;
     const resMap = {
@@ -73,6 +83,7 @@ export const ExportModal: React.FC = () => {
     }
     const paths = await API.system.getPaths();
     setCurrentExportPath(paths.exports);
+    setCoverError(false);
     setOpen(true);
   };
 
@@ -154,7 +165,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       const state = useProjectStore.getState();
       const isAiExport = state.storyboardMode === 'ai';
       const targetShots = isAiExport ? state.aiShots : state.shots;
-      if (isAiExport && targetShots.find((s) => s.aiText && !s.audioPath))
+
+      // 导出范围：选中片段时仅导出当前在时间线上选中的镜头
+      let scopedShots = targetShots;
+      let selectedShotIds: string[] = [];
+      if (exportRange === 'selected') {
+        const sel = useStore.getState();
+        const selectedShot = sel.selectedItemType === 'shot' && sel.selectedItemId
+          ? targetShots.find((s) => s.id === sel.selectedItemId)
+          : null;
+        if (!selectedShot) {
+          AppNotifier.warn('请先在时间线上选中要导出的片段');
+          setIsExporting(false);
+          return;
+        }
+        scopedShots = [selectedShot];
+        selectedShotIds = [selectedShot.id];
+      }
+
+      if (isAiExport && scopedShots.find((s) => s.aiText && !s.audioPath))
         throw new Error('存在未配音台词，拒绝渲染。');
       const [exactWidth, exactHeight] = exactResolutionStr.split('x').map(Number);
       const payload = {
@@ -162,14 +191,21 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         projectName: state.projectName || '',
         ratio: exportRatio,
         resolution: videoRes,
+        fps: Number(videoFps),
+        preview: previewMode,
+        subtitleMode,
         exactWidth,
         exactHeight,
-        shots: JSON.parse(JSON.stringify(targetShots)),
+        shots: JSON.parse(JSON.stringify(scopedShots)),
         mediaItems: JSON.parse(JSON.stringify(state.mediaItems)),
         isAiMode: isAiExport,
-        activeShots: JSON.parse(JSON.stringify(targetShots)),
+        activeShots: JSON.parse(JSON.stringify(scopedShots)),
         subtitleFormat,
         audioFormat,
+        exportPath: currentExportPath,
+        // 导出范围参数：后端按 selectedShotIds 过滤待渲染镜头
+        exportRange,
+        selectedShotIds,
       };
 
       const tasks: Promise<any>[] = [];
@@ -180,8 +216,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       /** 字幕导出：前端生成字幕内容，通过 IPC 写入文件 */
       if (exportSubtitle) {
         const subtitleContent = subtitleFormat === 'ass'
-          ? generateASS(targetShots, state.projectName || 'untitled')
-          : generateSRT(targetShots);
+          ? generateASS(scopedShots, state.projectName || 'untitled')
+          : generateSRT(scopedShots);
         tasks.push(API.export.subtitle({
           ...payload,
           content: subtitleContent,
@@ -199,21 +235,35 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         }));
       }
 
-      /** 模拟导出进度 */
-      const progressInterval = setInterval(() => {
-        setExportProgress(prev => Math.min(prev + Math.random() * 15, 90));
-      }, 500);
-      let intervalCleared = false;
+      /** 订阅真实导出进度（EXPORT_PROGRESS 通道），按 projectId 过滤并发任务 */
+      const unsubscribe = API.export.onProgress(({ projectId, percent }) => {
+        if (projectId !== payload.projectId) return;
+        setExportProgress(percent);
+      });
 
       try {
-        await Promise.all(tasks);
-        clearInterval(progressInterval);
-        intervalCleared = true;
+        const results = await Promise.all(tasks);
         setExportProgress(100);
         AppNotifier.success('TASK_EXPORT_SUCCESS');
         setOpen(false);
+        // S9 完成后打开：根据用户选择打开文件夹或播放成片
+        if (afterOpen !== 'none') {
+          const output = results.find(
+            (r) => r && typeof r === 'object' && (r as any).outputPath,
+          ) as any;
+          const target = output?.outputPath;
+          if (target) {
+            if (afterOpen === 'folder') {
+              // 打开成片所在文件夹
+              await API.system.openPath(target.replace(/[\\/][^\\/]*$/, ''));
+            } else {
+              // 用系统默认播放器播放成片
+              await API.system.openPath(target);
+            }
+          }
+        }
       } finally {
-        if (!intervalCleared) clearInterval(progressInterval);
+        unsubscribe();
       }
     } catch (e: any) {
       AppNotifier.error(e.message);
@@ -259,10 +309,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             <div className="flex flex-row h-[340px] bg-background">
               <div className="w-[220px] border-r border-border p-4 overflow-y-auto shrink-0 flex flex-col bg-muted/10">
                 <div className="w-full aspect-video bg-black/50 rounded border border-border mb-4 overflow-hidden flex items-center justify-center shrink-0 shadow-inner">
-                  {coverUrl ? (
-                    <img src={coverUrl} alt="Cover" className="w-full h-full object-cover" />
+                  {coverUrl && !coverError ? (
+                    <img
+                      src={coverUrl}
+                      alt="Cover"
+                      className="w-full h-full object-cover"
+                      onError={() => setCoverError(true)}
+                    />
                   ) : (
-                    <span className="text-muted-foreground text-caption">{t.editor?.signal_lost}</span>
+                    <AppIcon name="Film" size={28} className="text-muted-foreground/40" />
                   )}
                 </div>
                 <h6 className="text-foreground m-0 mb-4 text-body break-all font-medium">{projectName}</h6>
@@ -325,6 +380,38 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         <SelectItem value="2k">{t.export.res_2k}</SelectItem>
                         <SelectItem value="1080p">{t.export.res_1080p}</SelectItem>
                         <SelectItem value="720p">{t.export.res_720p}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-center">
+                    <span className="text-muted-foreground text-caption w-14 shrink-0">{t.export.video_fps}</span>
+                    <Select value={videoFps} onValueChange={(v) => setVideoFps(v as any)}>
+                      <SelectTrigger className="w-[160px] h-7 text-caption"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="30">30 fps</SelectItem>
+                        <SelectItem value="60">60 fps</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-center">
+                    <span className="text-muted-foreground text-caption w-14 shrink-0">{t.export.video_preview}</span>
+                    <Select value={previewMode ? 'on' : 'off'} onValueChange={(v) => setPreviewMode(v === 'on')}>
+                      <SelectTrigger className="w-[160px] h-7 text-caption"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="off">{t.export.preview_off}</SelectItem>
+                        <SelectItem value="on">{t.export.preview_on}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-center">
+                    <span className="text-muted-foreground text-caption w-14 shrink-0">{t.export.video_subtitle}</span>
+                    <Select value={subtitleMode} onValueChange={(v) => setSubtitleMode(v as any)}>
+                      <SelectTrigger className="w-[160px] h-7 text-caption"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">{t.export.subtitle_none}</SelectItem>
+                        <SelectItem value="burn">{t.export.subtitle_burn}</SelectItem>
+                        <SelectItem value="file">{t.export.subtitle_file}</SelectItem>
+                        <SelectItem value="both">{t.export.subtitle_both}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -391,6 +478,37 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                   onCheckedChange={setExportTxt}
                   label="解说文案 (TXT)"
                 />
+
+                <div className="h-[1px] bg-border w-full" />
+
+                {/* S8 导出范围 */}
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-foreground font-medium text-caption">{t.export.export_range}</span>
+                    <Select value={exportRange} onValueChange={(v) => setExportRange(v as any)}>
+                      <SelectTrigger className="w-[160px] h-7 text-caption"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">{t.export.export_range_all}</SelectItem>
+                        <SelectItem value="selected">{t.export.export_range_selected}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                {/* S9 完成后打开 */}
+                <div className="flex flex-col gap-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-foreground font-medium text-caption">{t.export.after_open}</span>
+                    <Select value={afterOpen} onValueChange={(v) => setAfterOpen(v as any)}>
+                      <SelectTrigger className="w-[160px] h-7 text-caption"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">{t.export.after_open_none}</SelectItem>
+                        <SelectItem value="folder">{t.export.after_open_folder}</SelectItem>
+                        <SelectItem value="player">{t.export.after_open_player}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
 
                 <div className="flex flex-col gap-2 mt-2 p-3 bg-muted/30 border border-border rounded-md">
                   <span className="text-muted-foreground text-caption font-medium">视频保存位置</span>

@@ -83,7 +83,6 @@ import face_analysis
 import semantic_engine
 import timeline_solver
 import video_analyzer
-import jianying_export
 import tts_kokoro
 
 app.include_router(audio_pipeline.router)
@@ -91,7 +90,6 @@ app.include_router(face_analysis.router)
 app.include_router(semantic_engine.router)
 app.include_router(timeline_solver.router)
 app.include_router(video_analyzer.router)
-app.include_router(jianying_export.router)
 app.include_router(tts_kokoro.router)
 
 print(f"[AI Daemon] ✅ 所有业务路由注册成功！共 {len(app.routes)} 条路由", file=sys.stderr)

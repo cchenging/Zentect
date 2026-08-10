@@ -12,8 +12,9 @@ export class ExportController {
       return await this.exportService.exportVideo(payload, event.sender);
     });
 
-    IpcRouter.handle(IPC_CHANNELS.EXPORT_JIANYING, async (_, payload) => {
-      return await this.exportService.exportToJianYing(payload);
+    IpcRouter.handle(IPC_CHANNELS.EXPORT_JIANYING, async (event, payload) => {
+      // 传递 sender，使剪映导出也能推送真实进度
+      return await this.exportService.exportToJianYing(payload, event.sender);
     });
   }
 }

@@ -1,0 +1,402 @@
+{
+  "id": "proj_1786021445479_kfwtnf",
+  "name": "26年8月6日",
+  "mediaItems": [
+    {
+      "id": "media_1786021450592_xsgsgvdu9",
+      "type": "video",
+      "name": "8月6日无字幕测试视频.mp4",
+      "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+      "coverPath": "thumbnails/media_1786021450592_xsgsgvdu9.jpg",
+      "duration": 239.281995,
+      "status": "parsed",
+      "cover": "thumbnails/media_1786021450592_xsgsgvdu9.jpg",
+      "extractedAudio": "nodes/step1-media_1786021450592_xsgsgvdu9/frames/audio/audio_media_1786021450592_xsgsgvdu9_16k.wav",
+      "extractedVocals": "nodes/step1-media_1786021450592_xsgsgvdu9/frames/audio/separated/vocals.wav",
+      "extractedBgm": "nodes/step1-media_1786021450592_xsgsgvdu9/frames/audio/separated/bgm.wav",
+      "extractedText": [
+        {
+          "start": "00:01",
+          "startMs": 1000,
+          "end": "00:03",
+          "endMs": 3000,
+          "text": "Chiudi il becco.",
+          "originalText": "Chiudi il becco.",
+          "editing": false
+        },
+        {
+          "start": "00:58",
+          "startMs": 58000,
+          "end": "00:59",
+          "endMs": 59000,
+          "text": "FIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "originalText": "FIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "editing": false
+        },
+        {
+          "start": "00:59",
+          "startMs": 59000,
+          "end": "01:00",
+          "endMs": 60000,
+          "text": "Fermi!",
+          "originalText": "Fermi!",
+          "editing": false
+        },
+        {
+          "start": "01:00",
+          "startMs": 60000,
+          "end": "01:01",
+          "endMs": 61000,
+          "text": "Fermateli!",
+          "originalText": "Fermateli!",
+          "editing": false
+        },
+        {
+          "start": "01:02",
+          "startMs": 62000,
+          "end": "01:03",
+          "endMs": 63000,
+          "text": "Uscite dall 'acqua!",
+          "originalText": "Uscite dall 'acqua!",
+          "editing": false
+        },
+        {
+          "start": "01:05",
+          "startMs": 65000,
+          "end": "01:05",
+          "endMs": 65000,
+          "text": "Uscite!",
+          "originalText": "Uscite!",
+          "editing": false
+        },
+        {
+          "start": "01:06",
+          "startMs": 66000,
+          "end": "01:07",
+          "endMs": 67000,
+          "text": "Fermi!",
+          "originalText": "Fermi!",
+          "editing": false
+        },
+        {
+          "start": "01:10",
+          "startMs": 70000,
+          "end": "01:12",
+          "endMs": 72000,
+          "text": "Tornate indietro!",
+          "originalText": "Tornate indietro!",
+          "editing": false
+        },
+        {
+          "start": "01:13",
+          "startMs": 73000,
+          "end": "01:13",
+          "endMs": 73000,
+          "text": "Squalo!",
+          "originalText": "Squalo!",
+          "editing": false
+        },
+        {
+          "start": "01:14",
+          "startMs": 74000,
+          "end": "01:17",
+          "endMs": 77000,
+          "text": "Non preoccuparti, non ci sono squali qui!",
+          "originalText": "Non preoccuparti, non ci sono squali qui!",
+          "editing": false
+        },
+        {
+          "start": "01:18",
+          "startMs": 78000,
+          "end": "01:19",
+          "endMs": 79000,
+          "text": "Fermi!",
+          "originalText": "Fermi!",
+          "editing": false
+        },
+        {
+          "start": "01:21",
+          "startMs": 81000,
+          "end": "01:23",
+          "endMs": 83000,
+          "text": "Uscite dall 'acqua!",
+          "originalText": "Uscite dall 'acqua!",
+          "editing": false
+        },
+        {
+          "start": "01:23",
+          "startMs": 83000,
+          "end": "01:24",
+          "endMs": 84000,
+          "text": "Uscite!",
+          "originalText": "Uscite!",
+          "editing": false
+        },
+        {
+          "start": "01:25",
+          "startMs": 85000,
+          "end": "01:26",
+          "endMs": 86000,
+          "text": "Indietro, chiamate aiuto!",
+          "originalText": "Indietro, chiamate aiuto!",
+          "editing": false
+        },
+        {
+          "start": "01:31",
+          "startMs": 91000,
+          "end": "01:31",
+          "endMs": 91000,
+          "text": "Sì.",
+          "originalText": "Sì.",
+          "editing": false
+        },
+        {
+          "start": "02:04",
+          "startMs": 124000,
+          "end": "02:04",
+          "endMs": 124000,
+          "text": "Avanti!",
+          "originalText": "Avanti!",
+          "editing": false
+        },
+        {
+          "start": "02:04",
+          "startMs": 124000,
+          "end": "02:06",
+          "endMs": 126000,
+          "text": "Forza, dai, nuoto!",
+          "originalText": "Forza, dai, nuoto!",
+          "editing": false
+        },
+        {
+          "start": "02:06",
+          "startMs": 126000,
+          "end": "02:07",
+          "endMs": 127000,
+          "text": "Coraggio!",
+          "originalText": "Coraggio!",
+          "editing": false
+        },
+        {
+          "start": "02:07",
+          "startMs": 127000,
+          "end": "02:09",
+          "endMs": 129000,
+          "text": "Nuota, dai, sbrigati!",
+          "originalText": "Nuota, dai, sbrigati!",
+          "editing": false
+        },
+        {
+          "start": "02:09",
+          "startMs": 129000,
+          "end": "02:10",
+          "endMs": 130000,
+          "text": "Forza!",
+          "originalText": "Forza!",
+          "editing": false
+        },
+        {
+          "start": "02:13",
+          "startMs": 133000,
+          "end": "02:14",
+          "endMs": 134000,
+          "text": "Andiamo, ti aiuto io!",
+          "originalText": "Andiamo, ti aiuto io!",
+          "editing": false
+        },
+        {
+          "start": "02:14",
+          "startMs": 134000,
+          "end": "02:16",
+          "endMs": 136000,
+          "text": "Ti aiuto io, forza!",
+          "originalText": "Ti aiuto io, forza!",
+          "editing": false
+        },
+        {
+          "start": "02:16",
+          "startMs": 136000,
+          "end": "02:16",
+          "endMs": 136000,
+          "text": "Forza!",
+          "originalText": "Forza!",
+          "editing": false
+        },
+        {
+          "start": "02:54",
+          "startMs": 174000,
+          "end": "02:55",
+          "endMs": 175000,
+          "text": "Aiuto!",
+          "originalText": "Aiuto!",
+          "editing": false
+        },
+        {
+          "start": "02:56",
+          "startMs": 176000,
+          "end": "02:57",
+          "endMs": 177000,
+          "text": "Aiutami!",
+          "originalText": "Aiutami!",
+          "editing": false
+        },
+        {
+          "start": "02:59",
+          "startMs": 179000,
+          "end": "02:59",
+          "endMs": 179000,
+          "text": "Vieni! Aiuto!",
+          "originalText": "Vieni! Aiuto!",
+          "editing": false
+        },
+        {
+          "start": "03:00",
+          "startMs": 180000,
+          "end": "03:00",
+          "endMs": 180000,
+          "text": "Ti tengo!",
+          "originalText": "Ti tengo!",
+          "editing": false
+        },
+        {
+          "start": "03:00",
+          "startMs": 180000,
+          "end": "03:01",
+          "endMs": 181000,
+          "text": "Ti tengo, forza!",
+          "originalText": "Ti tengo, forza!",
+          "editing": false
+        },
+        {
+          "start": "03:02",
+          "startMs": 182000,
+          "end": "03:02",
+          "endMs": 182000,
+          "text": "Ci sono io!",
+          "originalText": "Ci sono io!",
+          "editing": false
+        },
+        {
+          "start": "03:04",
+          "startMs": 184000,
+          "end": "03:05",
+          "endMs": 185000,
+          "text": "Sì, ti ho preso!",
+          "originalText": "Sì, ti ho preso!",
+          "editing": false
+        },
+        {
+          "start": "03:05",
+          "startMs": 185000,
+          "end": "03:05",
+          "endMs": 185000,
+          "text": "Andiamo!",
+          "originalText": "Andiamo!",
+          "editing": false
+        },
+        {
+          "start": "03:53",
+          "startMs": 233000,
+          "end": "03:55",
+          "endMs": 235000,
+          "text": "Grazie a tutti.",
+          "originalText": "Grazie a tutti.",
+          "editing": false
+        }
+      ],
+      "frames": [
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000001.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000002.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000003.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000004.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000005.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000007.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000008.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000009.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000011.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000012.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000013.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000015.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000017.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000018.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000019.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000020.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000022.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000024.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000025.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000026.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000027.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000029.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000033.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000035.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000036.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000040.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000045.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000046.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000048.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000049.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000051.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000052.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000053.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000054.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000056.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000057.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000058.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000059.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000060.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000061.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000062.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000064.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000065.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000067.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000068.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000069.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000070.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000071.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000075.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000076.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000078.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000079.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000081.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000082.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000083.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000086.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000087.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000088.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000089.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000090.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000091.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000092.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000093.jpg",
+        "nodes/step1-media_1786021450592_xsgsgvdu9/frames/frames/frame_00000096.jpg"
+      ],
+      "frameCount": 64,
+      "width": 1920,
+      "height": 1080,
+      "fps": 30
+    },
+    {
+      "id": "8c1ba15f-a2e2-4c82-9f95-b008af2f6fb5",
+      "type": "audio",
+      "sourceType": "vocals",
+      "fileName": "分离人声",
+      "name": "分离人声",
+      "filePath": "nodes/step1-media_1786021450592_xsgsgvdu9/frames/audio/separated/vocals.wav",
+      "projectId": "proj_1786021445479_kfwtnf",
+      "mediaId": "media_1786021450592_xsgsgvdu9",
+      "createdAt": "2026-08-06T13:09:09.595Z"
+    },
+    {
+      "id": "67001384-74e2-4f03-86b6-09263c0645fd",
+      "type": "audio",
+      "sourceType": "bgm",
+      "fileName": "分离背景音",
+      "name": "分离背景音",
+      "filePath": "nodes/step1-media_1786021450592_xsgsgvdu9/frames/audio/separated/bgm.wav",
+      "projectId": "proj_1786021445479_kfwtnf",
+      "mediaId": "media_1786021450592_xsgsgvdu9",
+      "createdAt": "2026-08-06T13:09:09.595Z"
+    }
+  ],
+  "activeBgm": null
+}

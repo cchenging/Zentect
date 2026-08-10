@@ -4,6 +4,8 @@ import { SettingsRepository } from '../database/repositories/SettingsRepository'
 import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
+import type { SubtitleStyle } from '../../modules/export/jianying/types';
+import { DEFAULT_SUBTITLE_STYLE } from '../../modules/export/jianying/types';
 
 /** 默认设置值字典 */
 const DEFAULT_SETTINGS: Record<string, string> = {
@@ -145,5 +147,23 @@ export class SettingsService {
       throw new AppError(ErrorCode.FS_PATH_INVALID, '语言值不能为空');
     }
     this.setSetting('language', lang);
+  }
+
+  /** 获取剪映字幕样式（缺省返回默认样式） */
+  public getSubtitleStyle(): SubtitleStyle {
+    const stored = this.repo.get<any>('subtitleStyle', null) as SubtitleStyle | null;
+    if (!stored || typeof stored !== 'object') return { ...DEFAULT_SUBTITLE_STYLE };
+    // 用默认值补齐缺失字段，保证结构完整
+    return { ...DEFAULT_SUBTITLE_STYLE, ...stored };
+  }
+
+  /** 设置剪映字幕样式 */
+  public setSubtitleStyle(style: Partial<SubtitleStyle>): void {
+    if (!style || typeof style !== 'object') {
+      throw new AppError(ErrorCode.FS_PATH_INVALID, '字幕样式内容不能为空');
+    }
+    const merged: SubtitleStyle = { ...this.getSubtitleStyle(), ...style };
+    this.setSetting('subtitleStyle', JSON.stringify(merged));
+    AppLogger.info(LOG_TAGS.SYSTEM, '剪映字幕样式已更新');
   }
 }

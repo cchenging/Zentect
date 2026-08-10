@@ -1,0 +1,184 @@
+[
+  {
+    "shotId": "s_01",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841917_563ed5de.mp3",
+    "duration": 3,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_02",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841723_83df4b22.mp3",
+    "duration": 2.112,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_03",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841782_96be7d06.mp3",
+    "duration": 1.992,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_04",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841959_5eb2c31a.mp3",
+    "duration": 4.536,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_05",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841957_004f0059.mp3",
+    "duration": 2.808,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_06",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841843_764e8d7a.mp3",
+    "duration": 1.944,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_07",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165843264_ca54abee.mp3",
+    "duration": 3.12,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_08",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165842869_76abb0e9.mp3",
+    "duration": 1.584,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_09",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165843085_746658f1.mp3",
+    "duration": 2.712,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_10",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165843569_854209ae.mp3",
+    "duration": 3.864,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_11",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165843253_d1ab3cef.mp3",
+    "duration": 2.952,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_12",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165843436_c27707e1.mp3",
+    "duration": 3.312,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_13",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844062_4062155c.mp3",
+    "duration": 2.928,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_14",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844492_11455283.mp3",
+    "duration": 4.104,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_15",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844362_6e513263.mp3",
+    "duration": 3.048,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_16",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844547_53003d74.mp3",
+    "duration": 1.512,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_17",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844592_2b130031.mp3",
+    "duration": 4.512,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_18",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844720_9ca38f25.mp3",
+    "duration": 2.712,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_19",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165845330_87dfd726.mp3",
+    "duration": 2.952,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_20",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165846184_6cc5b1de.mp3",
+    "duration": 3.792,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_21",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165845901_22af46f1.mp3",
+    "duration": 4.968,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_22",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165845775_eab980f9.mp3",
+    "duration": 3.408,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_23",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165845587_65e4d4c8.mp3",
+    "duration": 2.016,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_24",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165845965_db931d97.mp3",
+    "duration": 2.832,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_25",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165846695_e57c8fa7.mp3",
+    "duration": 2.832,
+    "_failed": false,
+    "_error": ""
+  },
+  {
+    "shotId": "s_26",
+    "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165846728_c99ddde0.mp3",
+    "duration": 3.024,
+    "_failed": false,
+    "_error": ""
+  }
+]

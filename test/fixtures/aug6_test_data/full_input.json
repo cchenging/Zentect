@@ -1,0 +1,1318 @@
+{
+  "projectId": "proj_1786021445479_kfwtnf",
+  "shots": [
+    {
+      "id": "shot_1786164004140_0",
+      "mediaId": "",
+      "text": "Chiudi il becco.",
+      "originalText": "Chiudi il becco.",
+      "aiText": "Chiudi il becco.",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 1,
+      "end": 3,
+      "duration": 2
+    },
+    {
+      "id": "shot_1786164004140_1",
+      "mediaId": "",
+      "text": "FIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "originalText": "FIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "aiText": "FIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 58,
+      "end": 59,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_2",
+      "mediaId": "",
+      "text": "Fermi!",
+      "originalText": "Fermi!",
+      "aiText": "Fermi!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 59,
+      "end": 60,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_3",
+      "mediaId": "",
+      "text": "Fermateli!",
+      "originalText": "Fermateli!",
+      "aiText": "Fermateli!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 60,
+      "end": 61,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_4",
+      "mediaId": "",
+      "text": "Uscite dall 'acqua!",
+      "originalText": "Uscite dall 'acqua!",
+      "aiText": "Uscite dall 'acqua!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 62,
+      "end": 63,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_5",
+      "mediaId": "",
+      "text": "Uscite!",
+      "originalText": "Uscite!",
+      "aiText": "Uscite!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 65,
+      "end": 65,
+      "duration": 3
+    },
+    {
+      "id": "shot_1786164004140_6",
+      "mediaId": "",
+      "text": "Fermi!",
+      "originalText": "Fermi!",
+      "aiText": "Fermi!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 66,
+      "end": 67,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_7",
+      "mediaId": "",
+      "text": "Tornate indietro!",
+      "originalText": "Tornate indietro!",
+      "aiText": "Tornate indietro!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 70,
+      "end": 72,
+      "duration": 2
+    },
+    {
+      "id": "shot_1786164004140_8",
+      "mediaId": "",
+      "text": "Squalo!",
+      "originalText": "Squalo!",
+      "aiText": "Squalo!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 73,
+      "end": 73,
+      "duration": 3
+    },
+    {
+      "id": "shot_1786164004140_9",
+      "mediaId": "",
+      "text": "Non preoccuparti, non ci sono squali qui!",
+      "originalText": "Non preoccuparti, non ci sono squali qui!",
+      "aiText": "Non preoccuparti, non ci sono squali qui!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 74,
+      "end": 77,
+      "duration": 3
+    },
+    {
+      "id": "shot_1786164004140_10",
+      "mediaId": "",
+      "text": "Fermi!",
+      "originalText": "Fermi!",
+      "aiText": "Fermi!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 78,
+      "end": 79,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_11",
+      "mediaId": "",
+      "text": "Uscite dall 'acqua!",
+      "originalText": "Uscite dall 'acqua!",
+      "aiText": "Uscite dall 'acqua!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 81,
+      "end": 83,
+      "duration": 2
+    },
+    {
+      "id": "shot_1786164004140_12",
+      "mediaId": "",
+      "text": "Uscite!",
+      "originalText": "Uscite!",
+      "aiText": "Uscite!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 83,
+      "end": 84,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_13",
+      "mediaId": "",
+      "text": "Indietro, chiamate aiuto!",
+      "originalText": "Indietro, chiamate aiuto!",
+      "aiText": "Indietro, chiamate aiuto!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 85,
+      "end": 86,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_14",
+      "mediaId": "",
+      "text": "Sì.",
+      "originalText": "Sì.",
+      "aiText": "Sì.",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 91,
+      "end": 91,
+      "duration": 3
+    },
+    {
+      "id": "shot_1786164004140_15",
+      "mediaId": "",
+      "text": "Avanti!",
+      "originalText": "Avanti!",
+      "aiText": "Avanti!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 124,
+      "end": 124,
+      "duration": 3
+    },
+    {
+      "id": "shot_1786164004140_16",
+      "mediaId": "",
+      "text": "Forza, dai, nuoto!",
+      "originalText": "Forza, dai, nuoto!",
+      "aiText": "Forza, dai, nuoto!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 124,
+      "end": 126,
+      "duration": 2
+    },
+    {
+      "id": "shot_1786164004140_17",
+      "mediaId": "",
+      "text": "Coraggio!",
+      "originalText": "Coraggio!",
+      "aiText": "Coraggio!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 126,
+      "end": 127,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_18",
+      "mediaId": "",
+      "text": "Nuota, dai, sbrigati!",
+      "originalText": "Nuota, dai, sbrigati!",
+      "aiText": "Nuota, dai, sbrigati!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 127,
+      "end": 129,
+      "duration": 2
+    },
+    {
+      "id": "shot_1786164004140_19",
+      "mediaId": "",
+      "text": "Forza!",
+      "originalText": "Forza!",
+      "aiText": "Forza!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 129,
+      "end": 130,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_20",
+      "mediaId": "",
+      "text": "Andiamo, ti aiuto io!",
+      "originalText": "Andiamo, ti aiuto io!",
+      "aiText": "Andiamo, ti aiuto io!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 133,
+      "end": 134,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_21",
+      "mediaId": "",
+      "text": "Ti aiuto io, forza!",
+      "originalText": "Ti aiuto io, forza!",
+      "aiText": "Ti aiuto io, forza!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 134,
+      "end": 136,
+      "duration": 2
+    },
+    {
+      "id": "shot_1786164004140_22",
+      "mediaId": "",
+      "text": "Forza!",
+      "originalText": "Forza!",
+      "aiText": "Forza!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 136,
+      "end": 136,
+      "duration": 3
+    },
+    {
+      "id": "shot_1786164004140_23",
+      "mediaId": "",
+      "text": "Aiuto!",
+      "originalText": "Aiuto!",
+      "aiText": "Aiuto!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 174,
+      "end": 175,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_24",
+      "mediaId": "",
+      "text": "Aiutami!",
+      "originalText": "Aiutami!",
+      "aiText": "Aiutami!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 176,
+      "end": 177,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_25",
+      "mediaId": "",
+      "text": "Vieni! Aiuto!",
+      "originalText": "Vieni! Aiuto!",
+      "aiText": "Vieni! Aiuto!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 179,
+      "end": 179,
+      "duration": 3
+    },
+    {
+      "id": "shot_1786164004140_26",
+      "mediaId": "",
+      "text": "Ti tengo!",
+      "originalText": "Ti tengo!",
+      "aiText": "Ti tengo!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 180,
+      "end": 180,
+      "duration": 3
+    },
+    {
+      "id": "shot_1786164004140_27",
+      "mediaId": "",
+      "text": "Ti tengo, forza!",
+      "originalText": "Ti tengo, forza!",
+      "aiText": "Ti tengo, forza!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 180,
+      "end": 181,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_28",
+      "mediaId": "",
+      "text": "Ci sono io!",
+      "originalText": "Ci sono io!",
+      "aiText": "Ci sono io!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 182,
+      "end": 182,
+      "duration": 3
+    },
+    {
+      "id": "shot_1786164004140_29",
+      "mediaId": "",
+      "text": "Sì, ti ho preso!",
+      "originalText": "Sì, ti ho preso!",
+      "aiText": "Sì, ti ho preso!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 184,
+      "end": 185,
+      "duration": 1
+    },
+    {
+      "id": "shot_1786164004140_30",
+      "mediaId": "",
+      "text": "Andiamo!",
+      "originalText": "Andiamo!",
+      "aiText": "Andiamo!",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 185,
+      "end": 185,
+      "duration": 3
+    },
+    {
+      "id": "shot_1786164004140_31",
+      "mediaId": "",
+      "text": "Grazie a tutti.",
+      "originalText": "Grazie a tutti.",
+      "aiText": "Grazie a tutti.",
+      "coverPath": "",
+      "audioPath": "",
+      "start": 233,
+      "end": 235,
+      "duration": 2
+    }
+  ],
+  "matchResults": [
+    {
+      "shotId": "s_01",
+      "text": "注意听，这声尖叫，绝不简单。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_070",
+      "score": 0.6325,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_070_cover.jpg",
+      "chunkData": {
+        "id": "chunk_070",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 212966.7,
+        "endMs": 216933.3,
+        "durationMs": 3966.5999999999767,
+        "motionScore": 0.26184224128723144,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_070_cover.jpg",
+        "name": "场景切片 71"
+      },
+      "audioDurationMs": 3888,
+      "videoTimelineStartMs": 0,
+      "videoTimelineEndMs": 3888,
+      "appliedSpeedFactor": 1.02,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_02",
+      "text": "FIIIIII!!!",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_018",
+      "score": 0.6913,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_018_cover.jpg",
+      "chunkData": {
+        "id": "chunk_018",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 56966.7,
+        "endMs": 59000,
+        "durationMs": 2033.300000000003,
+        "motionScore": 0.7594871520996094,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_018_cover.jpg",
+        "name": "场景切片 19"
+      },
+      "audioDurationMs": 1776,
+      "videoTimelineStartMs": 3888,
+      "videoTimelineEndMs": 5664,
+      "appliedSpeedFactor": 1.145,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_03",
+      "text": "海滩，瞬间从天堂变地狱。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_035",
+      "score": 0.7271,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_035_cover.jpg",
+      "chunkData": {
+        "id": "chunk_035",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 89333.3,
+        "endMs": 93000,
+        "durationMs": 3666.699999999997,
+        "motionScore": 0.9851195526123047,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_035_cover.jpg",
+        "name": "场景切片 36"
+      },
+      "audioDurationMs": 3480,
+      "videoTimelineStartMs": 5664,
+      "videoTimelineEndMs": 9144,
+      "appliedSpeedFactor": 1.054,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_04",
+      "text": "人群像退潮一样，疯狂往回跑。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_041",
+      "score": 0.6388,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_041_cover.jpg",
+      "chunkData": {
+        "id": "chunk_041",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 105100,
+        "endMs": 109066.7,
+        "durationMs": 3966.699999999997,
+        "motionScore": 0.31990364551544187,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_041_cover.jpg",
+        "name": "场景切片 42"
+      },
+      "audioDurationMs": 3936,
+      "videoTimelineStartMs": 9144,
+      "videoTimelineEndMs": 13080,
+      "appliedSpeedFactor": 1.008,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_05",
+      "text": "所有人都在吼：离开水！",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_053",
+      "score": 0.7187,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_053_cover.jpg",
+      "chunkData": {
+        "id": "chunk_053",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 152933.3,
+        "endMs": 156000,
+        "durationMs": 3066.7000000000116,
+        "motionScore": 0.9966257858276367,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_053_cover.jpg",
+        "name": "场景切片 54"
+      },
+      "audioDurationMs": 3240,
+      "videoTimelineStartMs": 13080,
+      "videoTimelineEndMs": 16320,
+      "appliedSpeedFactor": 0.947,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_06",
+      "text": "Squalo!",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_063",
+      "score": 0.7497,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_063_cover.jpg",
+      "chunkData": {
+        "id": "chunk_063",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 183466.7,
+        "endMs": 185066.7,
+        "durationMs": 1600,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_063_cover.jpg",
+        "name": "场景切片 64"
+      },
+      "audioDurationMs": 1584,
+      "videoTimelineStartMs": 16320,
+      "videoTimelineEndMs": 17904,
+      "appliedSpeedFactor": 1.01,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_07",
+      "text": "有人轻声安慰，这里没有鲨鱼。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_048",
+      "score": 0.7306,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_048_cover.jpg",
+      "chunkData": {
+        "id": "chunk_048",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 127166.7,
+        "endMs": 130900,
+        "durationMs": 3733.300000000003,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_048_cover.jpg",
+        "name": "场景切片 49"
+      },
+      "audioDurationMs": 3552,
+      "videoTimelineStartMs": 17904,
+      "videoTimelineEndMs": 21456,
+      "appliedSpeedFactor": 1.051,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_08",
+      "text": "大家以为虚惊一场，危险却盯上了小妹。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_071",
+      "score": 0.7086,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_071_cover.jpg",
+      "chunkData": {
+        "id": "chunk_071",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 216933.3,
+        "endMs": 221600,
+        "durationMs": 4666.700000000012,
+        "motionScore": 0.8908529281616211,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_071_cover.jpg",
+        "name": "场景切片 72"
+      },
+      "audioDurationMs": 4200,
+      "videoTimelineStartMs": 21456,
+      "videoTimelineEndMs": 25656,
+      "appliedSpeedFactor": 1.111,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_09",
+      "text": "局势，从混乱升级为救人了。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_062",
+      "score": 0.7323,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_062_cover.jpg",
+      "chunkData": {
+        "id": "chunk_062",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 179733.3,
+        "endMs": 183466.7,
+        "durationMs": 3733.4000000000233,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_062_cover.jpg",
+        "name": "场景切片 63"
+      },
+      "audioDurationMs": 3504,
+      "videoTimelineStartMs": 25656,
+      "videoTimelineEndMs": 29160,
+      "appliedSpeedFactor": 1.065,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_10",
+      "text": "救援者已经下水，拼命朝小妹游去。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_006",
+      "score": 0.6094,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_006_cover.jpg",
+      "chunkData": {
+        "id": "chunk_006",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 15100,
+        "endMs": 19066.7,
+        "durationMs": 3966.7000000000007,
+        "motionScore": 0.16567178726196288,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_006_cover.jpg",
+        "name": "场景切片 7"
+      },
+      "audioDurationMs": 4032,
+      "videoTimelineStartMs": 29160,
+      "videoTimelineEndMs": 33192,
+      "appliedSpeedFactor": 0.984,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_11",
+      "text": "加油声，一浪高过一浪。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_045",
+      "score": 0.6933,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_045_cover.jpg",
+      "chunkData": {
+        "id": "chunk_045",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 119633.3,
+        "endMs": 122500,
+        "durationMs": 2866.699999999997,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_045_cover.jpg",
+        "name": "场景切片 46"
+      },
+      "audioDurationMs": 3216,
+      "videoTimelineStartMs": 33192,
+      "videoTimelineEndMs": 36408,
+      "appliedSpeedFactor": 0.891,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_12",
+      "text": "Aiuto!",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_052",
+      "score": 0.7418,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_052_cover.jpg",
+      "chunkData": {
+        "id": "chunk_052",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 151433.3,
+        "endMs": 152933.3,
+        "durationMs": 1500,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_052_cover.jpg",
+        "name": "场景切片 53"
+      },
+      "audioDurationMs": 1512,
+      "videoTimelineStartMs": 36408,
+      "videoTimelineEndMs": 37920,
+      "appliedSpeedFactor": 0.992,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_13",
+      "text": "她呛水了，挣扎着，沉下去。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_044",
+      "score": 0.7312,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_044_cover.jpg",
+      "chunkData": {
+        "id": "chunk_044",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 115500,
+        "endMs": 119633.3,
+        "durationMs": 4133.300000000003,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_044_cover.jpg",
+        "name": "场景切片 45"
+      },
+      "audioDurationMs": 3864,
+      "videoTimelineStartMs": 37920,
+      "videoTimelineEndMs": 41784,
+      "appliedSpeedFactor": 1.07,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_14",
+      "text": "Ti tengo! Ti tengo, forza!",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_067",
+      "score": 0.7104,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_067_cover.jpg",
+      "chunkData": {
+        "id": "chunk_067",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 189900,
+        "endMs": 194800,
+        "durationMs": 4900,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_067_cover.jpg",
+        "name": "场景切片 68"
+      },
+      "audioDurationMs": 3792,
+      "videoTimelineStartMs": 41784,
+      "videoTimelineEndMs": 45576,
+      "appliedSpeedFactor": 1.15,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_15",
+      "text": "这一抓，抓住了她最后的希望。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_059",
+      "score": 0.6774,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_059_cover.jpg",
+      "chunkData": {
+        "id": "chunk_059",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 171100,
+        "endMs": 174666.7,
+        "durationMs": 3566.7000000000116,
+        "motionScore": 0.5896842002868652,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_059_cover.jpg",
+        "name": "场景切片 60"
+      },
+      "audioDurationMs": 3552,
+      "videoTimelineStartMs": 45576,
+      "videoTimelineEndMs": 49128,
+      "appliedSpeedFactor": 1.004,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_16",
+      "text": "拖着小妹，救援者拼了命往回游。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_008",
+      "score": 0.7267,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_008_cover.jpg",
+      "chunkData": {
+        "id": "chunk_008",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 21333.3,
+        "endMs": 25100,
+        "durationMs": 3766.7000000000007,
+        "motionScore": 0.9633872413635254,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_008_cover.jpg",
+        "name": "场景切片 9"
+      },
+      "audioDurationMs": 3840,
+      "videoTimelineStartMs": 49128,
+      "videoTimelineEndMs": 52968,
+      "appliedSpeedFactor": 0.981,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_17",
+      "text": "她的脚，终于踩到了沙子。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_061",
+      "score": 0.7443,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_061_cover.jpg",
+      "chunkData": {
+        "id": "chunk_061",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 176566.7,
+        "endMs": 179733.3,
+        "durationMs": 3166.5999999999767,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_061_cover.jpg",
+        "name": "场景切片 62"
+      },
+      "audioDurationMs": 3168,
+      "videoTimelineStartMs": 52968,
+      "videoTimelineEndMs": 56136,
+      "appliedSpeedFactor": 1,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_18",
+      "text": "上岸了，所有人都围了上来。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_017",
+      "score": 0.6847,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_017_cover.jpg",
+      "chunkData": {
+        "id": "chunk_017",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 51733.3,
+        "endMs": 56966.7,
+        "durationMs": 5233.399999999994,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_017_cover.jpg",
+        "name": "场景切片 18"
+      },
+      "audioDurationMs": 3408,
+      "videoTimelineStartMs": 56136,
+      "videoTimelineEndMs": 59544,
+      "appliedSpeedFactor": 1.15,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_19",
+      "text": "Grazie a tutti.",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_033",
+      "score": 0.7354,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_033_cover.jpg",
+      "chunkData": {
+        "id": "chunk_033",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 84833.3,
+        "endMs": 86900,
+        "durationMs": 2066.699999999997,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_033_cover.jpg",
+        "name": "场景切片 34"
+      },
+      "audioDurationMs": 2016,
+      "videoTimelineStartMs": 59544,
+      "videoTimelineEndMs": 61560,
+      "appliedSpeedFactor": 1.025,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_20",
+      "text": "一句谢谢，让所有焦急都烟消云散。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_057",
+      "score": 0.6308,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_057_cover.jpg",
+      "chunkData": {
+        "id": "chunk_057",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 164666.7,
+        "endMs": 169000,
+        "durationMs": 4333.299999999988,
+        "motionScore": 0.32601860523223875,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_057_cover.jpg",
+        "name": "场景切片 58"
+      },
+      "audioDurationMs": 4176,
+      "videoTimelineStartMs": 61560,
+      "videoTimelineEndMs": 65736,
+      "appliedSpeedFactor": 1.038,
+      "confirmed": false
+    },
+    {
+      "shotId": "s_21",
+      "text": "海边恢复了平静，只有心跳还在加速。",
+      "keepOriginalAudio": false,
+      "mediaType": "video_chunk",
+      "mediaId": "chunk_042",
+      "score": 0.7364,
+      "thumbnail": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_042_cover.jpg",
+      "chunkData": {
+        "id": "chunk_042",
+        "filePath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+        "startMs": 109066.7,
+        "endMs": 113766.7,
+        "durationMs": 4700,
+        "motionScore": 1,
+        "coverPath": "F:\\Tools\\Zentect\\data\\projects\\proj_1786021445479_kfwtnf\\nodes\\match-1\\frames\\video_chunks\\chunk_042_cover.jpg",
+        "name": "场景切片 43"
+      },
+      "audioDurationMs": 4104,
+      "videoTimelineStartMs": 65736,
+      "videoTimelineEndMs": 69840,
+      "appliedSpeedFactor": 1.145,
+      "confirmed": false
+    }
+  ],
+  "ttsResults": [
+    {
+      "shotId": "s_01",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841917_563ed5de.mp3",
+      "duration": 3,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_02",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841723_83df4b22.mp3",
+      "duration": 2.112,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_03",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841782_96be7d06.mp3",
+      "duration": 1.992,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_04",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841959_5eb2c31a.mp3",
+      "duration": 4.536,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_05",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841957_004f0059.mp3",
+      "duration": 2.808,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_06",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165841843_764e8d7a.mp3",
+      "duration": 1.944,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_07",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165843264_ca54abee.mp3",
+      "duration": 3.12,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_08",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165842869_76abb0e9.mp3",
+      "duration": 1.584,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_09",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165843085_746658f1.mp3",
+      "duration": 2.712,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_10",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165843569_854209ae.mp3",
+      "duration": 3.864,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_11",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165843253_d1ab3cef.mp3",
+      "duration": 2.952,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_12",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165843436_c27707e1.mp3",
+      "duration": 3.312,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_13",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844062_4062155c.mp3",
+      "duration": 2.928,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_14",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844492_11455283.mp3",
+      "duration": 4.104,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_15",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844362_6e513263.mp3",
+      "duration": 3.048,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_16",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844547_53003d74.mp3",
+      "duration": 1.512,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_17",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844592_2b130031.mp3",
+      "duration": 4.512,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_18",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165844720_9ca38f25.mp3",
+      "duration": 2.712,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_19",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165845330_87dfd726.mp3",
+      "duration": 2.952,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_20",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165846184_6cc5b1de.mp3",
+      "duration": 3.792,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_21",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165845901_22af46f1.mp3",
+      "duration": 4.968,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_22",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165845775_eab980f9.mp3",
+      "duration": 3.408,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_23",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165845587_65e4d4c8.mp3",
+      "duration": 2.016,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_24",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165845965_db931d97.mp3",
+      "duration": 2.832,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_25",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165846695_e57c8fa7.mp3",
+      "duration": 2.832,
+      "_failed": false,
+      "_error": ""
+    },
+    {
+      "shotId": "s_26",
+      "audioUrl": "magic://local/F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/tts-1/frames/tts_edge_1786165846728_c99ddde0.mp3",
+      "duration": 3.024,
+      "_failed": false,
+      "_error": ""
+    }
+  ],
+  "scriptParagraphs": [
+    {
+      "id": "s_01",
+      "text": "平静，是风暴的前奏。",
+      "shotId": "s_01",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_02",
+      "text": "Chiudi il becco.",
+      "shotId": "s_02",
+      "duration": 2,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_03",
+      "text": "FIIIIIIIII...",
+      "shotId": "s_03",
+      "duration": 1,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_04",
+      "text": "水里，出事了。[pause: 500ms]",
+      "shotId": "s_04",
+      "duration": 3,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_05",
+      "text": "救援者嘶吼：上岸！",
+      "shotId": "s_05",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_06",
+      "text": "Uscite dall'acqua!",
+      "shotId": "s_06",
+      "duration": 1,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_07",
+      "text": "可水中的人，还在原地。",
+      "shotId": "s_07",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_08",
+      "text": "Squalo!",
+      "shotId": "s_08",
+      "duration": 1,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_09",
+      "text": "恐慌，瞬间点燃。",
+      "shotId": "s_09",
+      "duration": 3,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_10",
+      "text": "Non preoccuparti, non ci sono squali qui!",
+      "shotId": "s_10",
+      "duration": 3,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_11",
+      "text": "可真正杀机，是溺水。",
+      "shotId": "s_11",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_12",
+      "text": "小妹的体力，被海水吞掉。",
+      "shotId": "s_12",
+      "duration": 5,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_13",
+      "text": "救援者嘶吼：快游！",
+      "shotId": "s_13",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_14",
+      "text": "Avanti! Forza, dai, nuoto!",
+      "shotId": "s_14",
+      "duration": 2,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_15",
+      "text": "她已经，没有力气回应。",
+      "shotId": "s_15",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_16",
+      "text": "Aiuto!",
+      "shotId": "s_16",
+      "duration": 1,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_17",
+      "text": "“救命”从喉咙里崩出。[tone: shocked]",
+      "shotId": "s_17",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_18",
+      "text": "救援者，不再等待。",
+      "shotId": "s_18",
+      "duration": 3,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_19",
+      "text": "他冲进水中，一把抓住。",
+      "shotId": "s_19",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_20",
+      "text": "Ti tengo! Ti tengo, forza!",
+      "shotId": "s_20",
+      "duration": 1,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_21",
+      "text": "这句话，是希望。[pause: 400ms]",
+      "shotId": "s_21",
+      "duration": 3,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_22",
+      "text": "上岸后，小妹惊魂未定。",
+      "shotId": "s_22",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_23",
+      "text": "Grazie a tutti.",
+      "shotId": "s_23",
+      "duration": 2,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_24",
+      "text": "这场拔河，人赢了。",
+      "shotId": "s_24",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_25",
+      "text": "回头看，那句“闭嘴”。",
+      "shotId": "s_25",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    },
+    {
+      "id": "s_26",
+      "text": "是命运齿轮转动的预警。",
+      "shotId": "s_26",
+      "duration": 4,
+      "emotion": "",
+      "characters": [],
+      "editing": false
+    }
+  ],
+  "bgmPath": "F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf/nodes/step1-media_1786021450592_xsgsgvdu9/frames/audio/separated/bgm.wav",
+  "mediaPath": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4",
+  "outputDir": "C:\\Users\\chengcheng\\Downloads\\Video\\8月6日无字幕测试视频.mp4"
+}

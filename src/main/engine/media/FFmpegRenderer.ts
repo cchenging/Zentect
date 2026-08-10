@@ -18,6 +18,14 @@ export interface RenderJob {
   subtitlePath?: string;                // 可选字幕 SRT 文件路径
   outputDir: string;                    // 输出目录
   outputName?: string;                  // 输出文件名（不含扩展名）
+  /** 目标帧率（30 / 60），缺省保持源帧率 */
+  fps?: number;
+  /** 分辨率档（4k / 2k / 1080p / 720p），缺省 1080p */
+  resolution?: string;
+  /** 画幅比例（16:9 / 9:16），缺省 16:9 */
+  ratio?: string;
+  /** 预览模式：低码率快速导出 */
+  preview?: boolean;
   onProgress?: (progress: RenderProgress) => void;
 }
 
@@ -121,7 +129,7 @@ export class FFmpegRenderer {
 
       // 步骤 4: 合成最终 MP4
       this.reportProgress(job, 60, '合成最终 MP4', 0);
-      await this.composeFinalVideo(videoOnlyPath, audioMixPath, job.subtitlePath, outputPath);
+      await this.composeFinalVideo(videoOnlyPath, audioMixPath, job.subtitlePath, outputPath, job);
       if (this.isAborted) return this.fail(outputPath, '用户中止');
 
       // 步骤 5: 清理临时文件
@@ -429,6 +437,7 @@ export class FFmpegRenderer {
     audioPath: string | null,
     subtitlePath: string | undefined,
     outputPath: string,
+    job?: RenderJob,
   ): Promise<void> {
     const args: string[] = ['-y', '-i', videoPath];
 
@@ -438,6 +447,10 @@ export class FFmpegRenderer {
 
     // 视频编码参数
     const videoFilter: string[] = [];
+    // 画幅 + 分辨率：按目标档位缩放并裁剪到精确比例
+    const { width, height } = resolveOutputSize(job?.resolution, job?.ratio);
+    videoFilter.push(`scale=${width}:${height}:force_original_aspect_ratio=decrease,crop=${width}:${height}`);
+
     if (subtitlePath && fs.existsSync(subtitlePath)) {
       // 烧录字幕（路径需要转义冒号）
       const escapedSubPath = subtitlePath.replace(/\\/g, '/').replace(/:/g, '\\:');
@@ -448,7 +461,14 @@ export class FFmpegRenderer {
       args.push('-vf', videoFilter.join(','));
     }
 
-    args.push('-c:v', 'libx264', '-preset', 'medium', '-crf', '23');
+    // 预览模式：低码率快速导出；否则标准质量
+    const preset = job?.preview ? 'ultrafast' : 'medium';
+    const crf = job?.preview ? '28' : '23';
+    // 目标帧率：缺省保持源帧率
+    if (job?.fps) {
+      args.push('-r', String(job.fps));
+    }
+    args.push('-c:v', 'libx264', '-preset', preset, '-crf', crf);
 
     if (audioPath) {
       args.push('-c:a', 'aac', '-b:a', '192k', '-map', '0:v:0', '-map', '1:a:0');

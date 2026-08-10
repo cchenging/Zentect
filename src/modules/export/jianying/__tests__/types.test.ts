@@ -8,6 +8,7 @@ describe('Jianying Export Types', () => {
     it('应包含所有必填字段', () => {
       const input: JianyingExportInput = {
         projectId: 'proj-001',
+        shots: [],
         matchResults: [
           {
             shotId: 'shot-1',
@@ -45,6 +46,7 @@ describe('Jianying Export Types', () => {
     it('matchResults 支持完整的 MatchResultItem 字段', () => {
       const input: JianyingExportInput = {
         projectId: 'proj-002',
+        shots: [],
         matchResults: [
           {
             shotId: 'shot-2',
@@ -72,6 +74,7 @@ describe('Jianying Export Types', () => {
     it('ttsResults 支持 _failed 和 _error 字段', () => {
       const input: JianyingExportInput = {
         projectId: 'proj-003',
+        shots: [],
         matchResults: [],
         ttsResults: [
           { shotId: 'shot-3', _failed: true, _error: 'TTS服务超时' },
@@ -89,6 +92,7 @@ describe('Jianying Export Types', () => {
     it('bgmPath 可以为 undefined', () => {
       const input: JianyingExportInput = {
         projectId: 'proj-004',
+        shots: [],
         matchResults: [],
         ttsResults: [],
         scriptParagraphs: [],

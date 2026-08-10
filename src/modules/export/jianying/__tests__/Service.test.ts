@@ -22,10 +22,11 @@ vi.mock('crypto', async (importOriginal) => {
 });
 
 // === Mock fs ===
-const { mockFsExistsSync, mockFsMkdirSync, mockFsWriteFileSync } = vi.hoisted(() => ({
+const { mockFsExistsSync, mockFsMkdirSync, mockFsWriteFileSync, mockFsRmSync } = vi.hoisted(() => ({
   mockFsExistsSync: vi.fn(),
   mockFsMkdirSync: vi.fn(),
   mockFsWriteFileSync: vi.fn(),
+  mockFsRmSync: vi.fn(),
 }));
 
 vi.mock('fs', async (importOriginal) => {
@@ -35,6 +36,7 @@ vi.mock('fs', async (importOriginal) => {
     existsSync: mockFsExistsSync,
     mkdirSync: mockFsMkdirSync,
     writeFileSync: mockFsWriteFileSync,
+    rmSync: mockFsRmSync,
   };
 });
 
@@ -48,6 +50,7 @@ describe('JianyingExportService', () => {
     mockFsExistsSync.mockReturnValue(true);
     mockFsMkdirSync.mockImplementation(() => undefined);
     mockFsWriteFileSync.mockImplementation(() => undefined);
+    mockFsRmSync.mockImplementation(() => undefined);
   });
 
   afterEach(() => {
@@ -84,10 +87,10 @@ describe('JianyingExportService', () => {
       },
     ];
 
-    it('应返回 version 6 的草稿结构', () => {
+    it('应返回 version 360000 的草稿结构', () => {
       const draft = JianyingExportService.compileDraft(baseShots, 'C:/media/video.mp4');
 
-      expect(draft).toHaveProperty('version', 6);
+      expect(draft).toHaveProperty('version', 360000);
       expect(draft).toHaveProperty('id');
       expect(draft).toHaveProperty('fps', 30);
       expect(draft).toHaveProperty('duration');
@@ -96,11 +99,27 @@ describe('JianyingExportService', () => {
       expect(draft).toHaveProperty('canvas_config');
     });
 
-    it('canvas_config 应为 1080x1920 16:9', () => {
+    it('canvas_config 应为 1080x1920 original（与剪映原生草稿一致）', () => {
       const draft = JianyingExportService.compileDraft(baseShots, 'C:/media/video.mp4');
 
       const cc = (draft as any).canvas_config;
-      expect(cc).toEqual({ height: 1080, width: 1920, ratio: '16:9' });
+      expect(cc).toEqual({ height: 1080, width: 1920, ratio: 'original' });
+    });
+
+    it('relationships 应为数组（剪映原生草稿为数组，非对象）', () => {
+      const draft = JianyingExportService.compileDraft(baseShots, 'C:/media/video.mp4');
+
+      expect(Array.isArray((draft as any).relationships)).toBe(true);
+    });
+
+    it('轨道名应与剪映一致（video→main / audio→audio / text→subs）', () => {
+      const draft = JianyingExportService.compileDraft(baseShots, 'C:/media/video.mp4', 'C:/music/bgm.mp3');
+
+      const tracks = (draft as any).tracks as any[];
+      expect(tracks[0].name).toBe('main');
+      expect(tracks[1].name).toBe('audio');
+      expect(tracks[2].name).toBe('audio');
+      expect(tracks[3].name).toBe('subs');
     });
 
     it('应生成 4 条轨道（video / audio-bgm / audio-tts / text）', () => {
@@ -220,6 +239,103 @@ describe('JianyingExportService', () => {
       const materials = (draft as any).materials;
       expect(materials.videos[0].path).toBe('C:/media/video.mp4');
     });
+
+    it('buildCompileShots 应以 scriptParagraphs 为主数据源，matchResults/ttsResults 按 shotId 补充切片与配音', () => {
+      const input = {
+        projectId: 'p',
+        scriptParagraphs: [
+          { id: 's1', shotId: 's1', text: '第一段解说', duration: 4 },
+          { id: 's2', shotId: 's2', text: '第二段解说', duration: 3 },
+        ] as any[],
+        matchResults: [
+          { shotId: 's1', mediaId: 'm1', thumbnail: '/thumb1.jpg', audioDurationMs: 4000, chunkData: { filePath: 'C:/chunk/s1.mp4', startMs: 1000, endMs: 5000 }, appliedSpeedFactor: 1.1 },
+        ] as any[],
+        ttsResults: [
+          { shotId: 's1', audioUrl: 'C:/tts/s1.mp3', duration: 4.2 },
+        ] as any[],
+        shots: [] as any[],
+        outputDir: 'C:/out',
+      };
+
+      const shots = JianyingExportService.buildCompileShots(input as any);
+
+      expect(shots).toHaveLength(2);
+      // s1：主数据源段落字段 + 切片补充 + 配音取 TTS
+      expect(shots[0].id).toBe('s1');
+      expect(shots[0].text).toBe('第一段解说');
+      expect(shots[0].aiText).toBe('第一段解说');
+      expect(shots[0].originalText).toBe('第一段解说');
+      expect(shots[0].audioPath).toBe('C:/tts/s1.mp3'); // TTS 配音路径
+      expect(shots[0].chunkData).toEqual({ filePath: 'C:/chunk/s1.mp4', startMs: 1000, endMs: 5000 });
+      expect(shots[0].mediaId).toBe('m1');
+      expect(shots[0].imagePath).toBe('/thumb1.jpg');
+      expect(shots[0].duration).toBe(4.2); // TTS duration 优先
+      expect(shots[0].start).toBe(1); // chunk.startMs 1000ms → 1s
+      // s2：无 match/tts，回落段落 duration 且无配音
+      expect(shots[1].id).toBe('s2');
+      expect(shots[1].text).toBe('第二段解说');
+      expect(shots[1].audioPath).toBeUndefined();
+      expect(shots[1].duration).toBe(3);
+    });
+
+    it('buildCompileShots 无 TTS/匹配时，返回空数组（主循环为 scriptParagraphs，非 shots）', () => {
+      const input = {
+        projectId: 'p',
+        scriptParagraphs: [] as any[],
+        shots: [{ id: 's1', start: 2, end: 7, duration: 5 }] as any[],
+        matchResults: [] as any[],
+        ttsResults: [] as any[],
+        outputDir: 'C:/out',
+      };
+
+      const shots = JianyingExportService.buildCompileShots(input as any);
+      expect(shots).toHaveLength(0);
+    });
+
+    it('buildCompileShots breakLongParagraphs 切分后子句 id!=shotId，配音应按唯一 id 匹配（回归：配音轨缺失）', () => {
+      const input = {
+        projectId: 'p',
+        // 长句被切分成两个子句：id 唯一，shotId 共享父级 s1
+        scriptParagraphs: [
+          { id: 's1_sub_1', shotId: 's1', text: '第一句解说', duration: 2 },
+          { id: 's1_sub_2', shotId: 's1', text: '第二句解说', duration: 2 },
+        ] as any[],
+        matchResults: [
+          { shotId: 's1', mediaId: 'm1', chunkData: { filePath: 'C:/chunk/s1.mp4', startMs: 0, endMs: 4000 }, audioDurationMs: 4000 },
+        ] as any[],
+        // TTS 结果以 s.id 作为 shotId（= 子句唯一 id），与 shotId 不同
+        ttsResults: [
+          { shotId: 's1_sub_1', audioUrl: 'C:/tts/s1_sub_1.mp3', duration: 2.1 },
+          { shotId: 's1_sub_2', audioUrl: 'C:/tts/s1_sub_2.mp3', duration: 1.9 },
+        ] as any[],
+        shots: [] as any[],
+        outputDir: 'C:/out',
+      };
+
+      const shots = JianyingExportService.buildCompileShots(input as any);
+
+      // 两个子句都应取到各自配音，而非因 shotId 不匹配而丢失配音轨
+      expect(shots).toHaveLength(2);
+      expect(shots[0].audioPath).toBe('C:/tts/s1_sub_1.mp3');
+      expect(shots[1].audioPath).toBe('C:/tts/s1_sub_2.mp3');
+    });
+
+    it('buildCompileShots 段落无 shotId 时回退 id，且无配音返回 undefined', () => {
+      const input = {
+        projectId: 'p',
+        scriptParagraphs: [{ id: 's1', text: '解说', duration: 5 }] as any[],
+        matchResults: [] as any[],
+        ttsResults: [] as any[],
+        shots: [] as any[],
+        outputDir: 'C:/out',
+      };
+
+      const shots = JianyingExportService.buildCompileShots(input as any);
+      expect(shots).toHaveLength(1);
+      expect(shots[0].id).toBe('s1');
+      expect(shots[0].duration).toBe(5);
+      expect(shots[0].audioPath).toBeUndefined();
+    });
   });
 
   // ==================== export ====================
@@ -227,51 +343,78 @@ describe('JianyingExportService', () => {
   describe('export', () => {
     const validInput = {
       projectId: 'proj-test',
-      matchResults: [],
-      ttsResults: [],
-      scriptParagraphs: [
+      shots: [
         {
-          id: 'para-1',
-          shotId: 'shot-1',
+          id: 'shot-1',
+          mediaId: 'media-1',
           text: '测试文案',
+          originalText: '测试文案',
+          start: 0,
+          end: 10,
           duration: 10,
-          editing: false,
+          audioPath: 'C:/audio/shot-1.mp3',
         },
       ],
+      matchResults: [],
+      ttsResults: [],
+      scriptParagraphs: [],
       bgmPath: 'C:/music/bgm.mp3',
       outputDir: 'C:/output',
     };
 
-    it('应创建草稿文件夹并写入 draft_content.json 和 draft_meta.json', () => {
-      JianyingExportService.export(validInput, 'C:/jianying/drafts');
+    it('应创建草稿文件夹并写入 5 个文件（draft_content/meta_info/meta + key_value/virtual_store）', async () => {
+      await JianyingExportService.export(validInput, 'C:/jianying/drafts');
 
       expect(mockFsExistsSync).toHaveBeenCalledWith('C:/jianying/drafts');
       expect(mockFsMkdirSync).toHaveBeenCalledTimes(1);
-      expect(mockFsWriteFileSync).toHaveBeenCalledTimes(2);
+      // 5 个文件：draft_content.json + draft_meta_info.json + draft_meta.json + key_value.json + draft_virtual_store.json
+      expect(mockFsWriteFileSync).toHaveBeenCalledTimes(5);
 
       const writeCalls = mockFsWriteFileSync.mock.calls;
       const paths = writeCalls.map((c: any) => c[0] as string);
       expect(paths.some((p: string) => p.endsWith('draft_content.json'))).toBe(true);
+      expect(paths.some((p: string) => p.endsWith('draft_meta_info.json'))).toBe(true);
       expect(paths.some((p: string) => p.endsWith('draft_meta.json'))).toBe(true);
+      // 剪映 8.9.0+ "本地"素材面板显示依赖（手册坑位 7/8）
+      expect(paths.some((p: string) => p.endsWith('key_value.json'))).toBe(true);
+      expect(paths.some((p: string) => p.endsWith('draft_virtual_store.json'))).toBe(true);
     });
 
-    it('返回的 filePath 应包含 Zentect_ 前缀', () => {
-      const result = JianyingExportService.export(validInput, 'C:/jianying/drafts');
+    it('返回的 filePath 应包含 Z_ 前缀（默认项目名 Zentect）', async () => {
+      const result = await JianyingExportService.export(validInput, 'C:/jianying/drafts');
 
-      expect(result.filePath).toContain('Zentect_');
-      expect(result.fileName).toContain('Zentect_');
+      expect(result.filePath).toContain('Z_');
+      expect(result.fileName).toContain('Z_');
     });
 
-    it('jiangingRoot 不存在时应抛出 AppError', () => {
+    it('传入 projectName 时草稿名以 Z_ 前缀 + 项目名 + (自增序号) 命名', async () => {
+      const result = await JianyingExportService.export(
+        { ...validInput, projectName: '我的项目' },
+        'C:/jianying/drafts',
+      );
+
+      // 草稿名形如 Z_我的项目 (1)，自增序号保证唯一，避免剪映将同名草稿移入回收站
+      expect(result.fileName).toMatch(/^Z_我的项目 \(\d+\)$/);
+    });
+
+    it('projectName 含非法文件名字符时应替换为下划线', async () => {
+      const result = await JianyingExportService.export(
+        { ...validInput, projectName: 'a/b:c*d' },
+        'C:/jianying/drafts',
+      );
+
+      expect(result.fileName).toMatch(/^Z_a_b_c_d \(\d+\)$/);
+    });
+
+    it('jianyingRoot 不存在时应抛出 AppError', () => {
       mockFsExistsSync.mockReturnValue(false);
 
-      expect(() => {
-        JianyingExportService.export(validInput, 'C:/nonexistent');
-      }).toThrow();
+      // export 为同步方法，使用同步断言
+      expect(() => JianyingExportService.export(validInput, 'C:/nonexistent')).toThrow();
     });
 
-    it('写入的 draft_content.json 应为有效 JSON', () => {
-      JianyingExportService.export(validInput, 'C:/jianying/drafts');
+    it('写入的 draft_content.json 应为有效 JSON', async () => {
+      await JianyingExportService.export(validInput, 'C:/jianying/drafts');
 
       const writeCall = mockFsWriteFileSync.mock.calls.find(
         (c: any) => String(c[0]).endsWith('draft_content.json'),
@@ -280,12 +423,12 @@ describe('JianyingExportService', () => {
       expect(writeCall).toBeDefined();
       const content = writeCall![1] as string;
       const parsed = JSON.parse(content);
-      expect(parsed.version).toBe(6);
+      expect(parsed.version).toBe(360000);
       expect(parsed.tracks).toHaveLength(4);
     });
 
-    it('写入的 draft_meta.json 应包含 draft_name 和 draft_id', () => {
-      JianyingExportService.export(validInput, 'C:/jianying/drafts');
+    it('写入的 draft_meta.json 应包含 draft_name 和 draft_id', async () => {
+      await JianyingExportService.export(validInput, 'C:/jianying/drafts');
 
       const writeCall = mockFsWriteFileSync.mock.calls.find(
         (c: any) => String(c[0]).endsWith('draft_meta.json'),
@@ -297,6 +440,31 @@ describe('JianyingExportService', () => {
       expect(parsed).toHaveProperty('draft_name');
       expect(parsed).toHaveProperty('draft_id');
       expect(parsed.draft_type).toBe('short_video');
+    });
+
+    it('每次导出使用唯一草稿名（含时间戳），不清空旧文件夹，避免剪映将草稿移入回收站', async () => {
+      // 即使目标根目录存在，也不应调用 rmSync：唯一命名保证每次为全新文件夹，
+      // 剪映走 copy_draft_external 识别；若复用固定名并清空，会触发 move_draft_to_trash
+      mockFsExistsSync.mockReturnValue(true);
+      mockFsRmSync.mockClear();
+
+      await JianyingExportService.export(validInput, 'C:/jianying/drafts');
+
+      expect(mockFsRmSync).not.toHaveBeenCalled();
+    });
+
+    it('导出创建的草稿文件夹名应包含自增序号', async () => {
+      mockFsExistsSync.mockReturnValue(true);
+      mockFsMkdirSync.mockClear();
+
+      await JianyingExportService.export(validInput, 'C:/jianying/drafts');
+
+      const mkdirCall = mockFsMkdirSync.mock.calls.find((c: any) =>
+        String(c[0]).includes('Z_'),
+      );
+      expect(mkdirCall).toBeDefined();
+      // 文件夹名形如 Z_项目名 (1)，自增序号保证唯一性
+      expect(String(mkdirCall![0])).toMatch(/\s\(\d+\)$/);
     });
   });
 });
