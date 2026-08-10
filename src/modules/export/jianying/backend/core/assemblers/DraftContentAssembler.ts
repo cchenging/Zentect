@@ -3,11 +3,13 @@
 //
 // 职责：组装剪映草稿的顶层结构（根级字段 + materials 容器 + keyframes + config），
 // 并整合素材装配（MaterialsAssembler）与轨道装配（TracksAssembler）的产物。
+// 4 个"非空"支撑容器（canvases / sound_channel_mappings / speeds / vocal_separations）
+// 由 MaterialsAssembler.assembleMaterials 产出 support，再合并到 45 键容器。
 
-import type { CompileShot } from '../../../types';
-import type { SubtitleStyle } from '../../../types';
+import type { CompileShot, SubtitleStyle } from '../../../types';
 import { DEFAULT_SUBTITLE_STYLE } from '../../../types';
 import { genDraftUuid } from '../utils/IdUtils';
+import type { VideoProbeResult } from '../utils/FfprobeProber';
 import { assembleMaterials } from './MaterialsAssembler';
 import { assembleTracks } from './TracksAssembler';
 
@@ -24,16 +26,17 @@ const emptyArrays = () => [] as unknown[];
 
 /**
  * 构建 45 个键的 materials 真相源容器（剪映原生完整键）。
- *
- * @param videos 视频素材数组
- * @param audios 音频素材数组
- * @param texts 字幕素材数组
- * @returns 完整 materials 容器
+ * 其中 7 个非空键来自 MaterialsAssembler：videos / audios / texts / canvases /
+ * sound_channel_mappings / speeds / vocal_separations，其余 38 键留空数组。
  */
 function buildMaterialsContainer(
   videos: unknown[],
   audios: unknown[],
   texts: unknown[],
+  canvases: unknown[],
+  soundChannelMappings: unknown[],
+  speeds: unknown[],
+  vocalSeparations: unknown[],
 ): Record<string, unknown> {
   return {
     ai_translates: emptyArrays(),
@@ -43,7 +46,7 @@ function buildMaterialsContainer(
     audio_track_indexes: emptyArrays(),
     audios,
     beats: emptyArrays(),
-    canvases: emptyArrays(),
+    canvases,
     chromas: emptyArrays(),
     color_curves: emptyArrays(),
     digital_humans: emptyArrays(),
@@ -68,8 +71,8 @@ function buildMaterialsContainer(
     shapes: emptyArrays(),
     smart_crops: emptyArrays(),
     smart_relights: emptyArrays(),
-    sound_channel_mappings: emptyArrays(),
-    speeds: emptyArrays(),
+    sound_channel_mappings: soundChannelMappings,
+    speeds,
     stickers: emptyArrays(),
     tail_leaders: emptyArrays(),
     text_templates: emptyArrays(),
@@ -80,15 +83,11 @@ function buildMaterialsContainer(
     video_trackings: emptyArrays(),
     videos,
     vocal_beautifys: emptyArrays(),
-    vocal_separations: emptyArrays(),
+    vocal_separations: vocalSeparations,
   };
 }
 
-/**
- * 构建 keyframes 容器（8 个空数组子键）。
- *
- * @returns keyframes 对象
- */
+/** 构建 keyframes 容器（8 个空数组子键）。 */
 function buildKeyframesContainer(): Record<string, unknown> {
   return {
     adjusts: emptyArrays(),
@@ -102,11 +101,7 @@ function buildKeyframesContainer(): Record<string, unknown> {
   };
 }
 
-/**
- * 构建 config 容器（24 个配置子字段）。
- *
- * @returns config 对象
- */
+/** 构建 config 容器（24 个配置子字段）。 */
 function buildConfigContainer(): Record<string, unknown> {
   return {
     adjust_max_index: 1,
@@ -139,11 +134,12 @@ function buildConfigContainer(): Record<string, unknown> {
 /**
  * 草稿内容装配：编译镜头数组为剪映 v360000 draft_content 对象。
  *
- * 内部整合素材装配（assembleMaterials）与轨道装配（assembleTracks），
- * 产出 28 根级字段 + materials + tracks 的完整草稿结构。
+ * 内部整合素材装配（assembleMaterials，需要 ffprobe probeMap 严格校验）
+ * 与轨道装配（assembleTracks），产出 28 根级字段 + materials + tracks。
  *
  * @param shots 编译后的镜头数据
  * @param mediaPath 源视频文件路径（chunkData 缺失时回退源）
+ * @param probeMap  所有视频文件的 ffprobe 结果（按绝对路径缓存；缺失会抛错 fail-fast）
  * @param bgmPath 背景音乐路径（可选）
  * @param subtitleStyle 字幕样式（缺省用默认样式）
  * @returns 剪映 v360000 草稿 JSON 对象
@@ -151,11 +147,15 @@ function buildConfigContainer(): Record<string, unknown> {
 export function assembleDraftContent(
   shots: CompileShot[],
   mediaPath: string,
+  probeMap: Map<string, VideoProbeResult>,
   bgmPath?: string,
   subtitleStyle: SubtitleStyle = DEFAULT_SUBTITLE_STYLE,
 ): Record<string, unknown> {
-  // 1. 素材装配
-  const materialsResult = assembleMaterials(shots, mediaPath, bgmPath, subtitleStyle);
+  // 1. 素材装配（含支撑 4 容器，字段齐全）
+  const materialsResult = assembleMaterials(shots, mediaPath, probeMap, {
+    bgmPath,
+    subtitleStyle,
+  });
 
   // 2. 轨道装配
   const tracksResult = assembleTracks(
@@ -196,6 +196,10 @@ export function assembleDraftContent(
       materialsResult.videos,
       materialsResult.audios,
       materialsResult.texts,
+      materialsResult.support.canvases,
+      materialsResult.support.sound_channel_mappings,
+      materialsResult.support.speeds,
+      materialsResult.support.vocal_separations,
     ),
     tracks: tracksResult.tracks,
   };

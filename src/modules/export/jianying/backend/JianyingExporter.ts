@@ -10,7 +10,7 @@ import type { ExportJob } from '../../contracts/ExportJob';
 import type { ExportResult } from '../../contracts/ExportResult';
 import type { JianyingExportInput, SubtitleStyle } from '../types';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
-import { validateInput, exportJianying } from './core/JianyingExporter';
+import { validateInput } from './core/JianyingExporter';
 import { JianyingExportService } from './Service';
 
 /** 剪映导出出口的专属载荷（经 ExportJob.payload 透传） */
@@ -47,12 +47,11 @@ export class JianyingExporter implements IExporter {
   async export(job: ExportJob): Promise<ExportResult> {
     this.validate(job);
     const payload = (job.payload || {}) as unknown as JianyingExportPayload;
-    // 三源重组 → 编译镜头 → 剪映草稿主流程（写盘）
-    const compileShots = JianyingExportService.buildCompileShots(payload.input);
-    const result = exportJianying(
+    // 委托 Service.export：内部已完成「三源重组编译镜头 → 批量 ffprobe 探针 → 素材/轨道装配 → 写盘」完整闭环
+    const result = JianyingExportService.export(
       payload.input,
       payload.jianyingRoot,
-      compileShots,
+      undefined, // ffmpegPath：封面生成预留，当前 Service 层未使用（void 忽略）
       payload.subtitleStyle,
     );
     return {

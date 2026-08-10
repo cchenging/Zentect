@@ -26,10 +26,11 @@ vi.mock('crypto', async (importOriginal) => {
 });
 
 // === Mock fs ===
-const { mockFsExistsSync, mockFsMkdirSync, mockFsWriteFileSync } = vi.hoisted(() => ({
+const { mockFsExistsSync, mockFsMkdirSync, mockFsWriteFileSync, mockFsStatSync } = vi.hoisted(() => ({
   mockFsExistsSync: vi.fn(),
   mockFsMkdirSync: vi.fn(),
   mockFsWriteFileSync: vi.fn(),
+  mockFsStatSync: vi.fn(),
 }));
 
 vi.mock('fs', async (importOriginal) => {
@@ -39,14 +40,35 @@ vi.mock('fs', async (importOriginal) => {
     existsSync: mockFsExistsSync,
     mkdirSync: mockFsMkdirSync,
     writeFileSync: mockFsWriteFileSync,
+    statSync: mockFsStatSync,
   };
 });
 
-// === Mock spawn (for cover generation) ===
+// === Mock child_process: ffprobe 返回假 1920x1080 结果 + spawn 封面生成模拟 ===
+const { mockExecFileSync } = vi.hoisted(() => ({
+  mockExecFileSync: vi.fn(),
+}));
+
+/** 构造假 ffprobe JSON：1920x1080 h264 + aac + 30fps，时长入参透传 */
+function buildFakeFfprobeOutput(durationSec = 100): string {
+  return JSON.stringify({
+    streams: [
+      { index: 0, codec_type: 'video', codec_name: 'h264', width: 1920, height: 1080, r_frame_rate: '30/1' },
+      { index: 1, codec_type: 'audio', codec_name: 'aac' },
+    ],
+    format: {
+      duration: String(durationSec),
+      format_name: 'mov,mp4,m4a,3gp,3g2,mj2',
+      size: '7000000000',
+    },
+  });
+}
+
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>();
   return {
     ...actual,
+    execFileSync: mockExecFileSync,
     spawn: vi.fn(() => ({
       on: vi.fn((event: string, cb: Function) => {
         if (event === 'close') cb(1); // simulate cover generation failure (non-blocking)
@@ -87,6 +109,9 @@ describe('JianyingExportService - Aug 6 Real Data Integration Test', () => {
     mockFsExistsSync.mockReturnValue(true);
     mockFsMkdirSync.mockImplementation(() => undefined);
     mockFsWriteFileSync.mockImplementation(() => undefined);
+    mockFsStatSync.mockImplementation(() => ({ size: 1_000_000 }));
+    // ffprobe 默认返回 1920x1080 + 有音频
+    mockExecFileSync.mockImplementation(() => buildFakeFfprobeOutput(100));
   });
 
   afterEach(() => {
@@ -405,6 +430,132 @@ describe('JianyingExportService - Aug 6 Real Data Integration Test', () => {
 
       expect(draft.platform.app_version).toBe('5.9.0');
       expect(draft.platform.os).toBe('windows');
+    });
+
+    // ==================== 三修复新增断言：canvases 非空、video width>0、素材字段齐全 ====================
+
+    it('materials 四个支撑容器（canvases/speeds/sound_channel_mappings/vocal_separations）应全部非空', () => {
+      const input = loadFixture();
+      const shots = JianyingExportService.buildCompileShots(input);
+      const draft = JianyingExportService.compileDraft(shots, input.mediaPath!, input.bgmPath) as any;
+      const m = draft.materials;
+
+      // 手册 §4.2：全部 7 个"非空"键不能是空数组
+      expect(Array.isArray(m.canvases)).toBe(true);
+      expect(m.canvases.length).toBeGreaterThanOrEqual(1);
+      expect(Array.isArray(m.speeds)).toBe(true);
+      expect(m.speeds.length).toBeGreaterThanOrEqual(1);
+      expect(Array.isArray(m.sound_channel_mappings)).toBe(true);
+      expect(m.sound_channel_mappings.length).toBeGreaterThanOrEqual(1);
+      expect(Array.isArray(m.vocal_separations)).toBe(true);
+      expect(m.vocal_separations.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('video material 的 width/height 应为 ffprobe 真实值（>0，非硬编码 0）', () => {
+      const input = loadFixture();
+      const shots = JianyingExportService.buildCompileShots(input);
+      const draft = JianyingExportService.compileDraft(shots, input.mediaPath!) as any;
+
+      for (const videoMat of draft.materials.videos) {
+        expect(typeof videoMat.width).toBe('number');
+        expect(typeof videoMat.height).toBe('number');
+        // 修复前：width=0 / height=0 → 素材面板空白
+        expect(videoMat.width).toBeGreaterThan(0);
+        expect(videoMat.height).toBeGreaterThan(0);
+        // mock ffprobe 返回 1920x1080
+        expect(videoMat.width).toBe(1920);
+        expect(videoMat.height).toBe(1080);
+      }
+    });
+
+    it('video/audio/text 三类素材应包含手册要求的 check_flag / crop / type 等核心字段', () => {
+      const input = loadFixture();
+      const shots = JianyingExportService.buildCompileShots(input);
+      const draft = JianyingExportService.compileDraft(shots, input.mediaPath!, input.bgmPath) as any;
+
+      // Video：§4.3 共 54 字段，核心字段不能缺
+      for (const vm of draft.materials.videos) {
+        expect(vm).toHaveProperty('id');
+        expect(vm).toHaveProperty('material_id');
+        expect(vm).toHaveProperty('type', 'video');
+        expect(vm).toHaveProperty('category_name', 'local');
+        expect(vm).toHaveProperty('check_flag', 63487);
+        expect(vm).toHaveProperty('path');
+        expect(vm).toHaveProperty('duration');
+        expect(vm).toHaveProperty('has_audio');
+        expect(vm).toHaveProperty('crop');
+        expect(vm.crop).toHaveProperty('upper_left_x');
+        expect(vm).toHaveProperty('matting');
+        expect(vm).toHaveProperty('stable');
+        expect(vm).toHaveProperty('video_algorithm');
+      }
+
+      // Audio：§4.4 check_flag=3，三 ID 对齐
+      for (const am of draft.materials.audios) {
+        expect(am).toHaveProperty('id');
+        expect(am).toHaveProperty('local_material_id');
+        expect(am).toHaveProperty('music_id');
+        expect(am.id).toBe(am.local_material_id); // §4.4 三 ID 一致
+        expect(am.id).toBe(am.music_id);
+        expect(am).toHaveProperty('check_flag', 3);
+        expect(am).toHaveProperty('type');
+        expect(['music', 'extract_music']).toContain(am.type);
+        expect(am).toHaveProperty('path');
+        expect(am).toHaveProperty('duration');
+      }
+
+      // Text：§4.5 check_flag=7 + caption_template_info
+      for (const tm of draft.materials.texts) {
+        expect(tm).toHaveProperty('id');
+        expect(tm).toHaveProperty('local_material_id');
+        expect(tm).toHaveProperty('type', 'text');
+        expect(tm).toHaveProperty('check_flag', 7);
+        expect(tm).toHaveProperty('content');
+        expect(tm).toHaveProperty('font_size');
+        expect(tm).toHaveProperty('alignment');
+        expect(tm).toHaveProperty('words');
+        expect(tm).toHaveProperty('caption_template_info');
+        expect(tm.words).toHaveProperty('start_time');
+        expect(tm.words).toHaveProperty('end_time');
+        expect(tm.words).toHaveProperty('text');
+      }
+    });
+
+    it('canvas material 的尺寸应为 1920x1080（画布占位）', () => {
+      const input = loadFixture();
+      const shots = JianyingExportService.buildCompileShots(input);
+      const draft = JianyingExportService.compileDraft(shots, input.mediaPath!) as any;
+
+      const canvas = draft.materials.canvases[0];
+      expect(canvas.type).toBe('canvas');
+      expect(canvas.width).toBe(1920);
+      expect(canvas.height).toBe(1080);
+      expect(canvas.check_flag).toBe(63487);
+    });
+
+    it('speed material 的数量应与 video segment 数一致（每段一条，speed=1.0 也有）', () => {
+      const input = loadFixture();
+      const shots = JianyingExportService.buildCompileShots(input);
+      const draft = JianyingExportService.compileDraft(shots, input.mediaPath!) as any;
+
+      // 26 段视频 → 26 条 speed 素材，保证 speeds 容器非空
+      expect(draft.materials.speeds).toHaveLength(26);
+      for (const sp of draft.materials.speeds) {
+        expect(sp).toHaveProperty('material_id');
+        expect(sp).toHaveProperty('speed');
+        expect(sp).toHaveProperty('duration');
+      }
+    });
+
+    it('video material 的 has_audio 应为 ffprobe 返回值（true）', () => {
+      const input = loadFixture();
+      const shots = JianyingExportService.buildCompileShots(input);
+      const draft = JianyingExportService.compileDraft(shots, input.mediaPath!) as any;
+
+      for (const vm of draft.materials.videos) {
+        expect(typeof vm.has_audio).toBe('boolean');
+        expect(vm.has_audio).toBe(true); // mock ffprobe 返回有 aac 音轨
+      }
     });
   });
 

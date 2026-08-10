@@ -22,11 +22,14 @@ vi.mock('crypto', async (importOriginal) => {
 });
 
 // === Mock fs ===
-const { mockFsExistsSync, mockFsMkdirSync, mockFsWriteFileSync, mockFsRmSync } = vi.hoisted(() => ({
+const {
+  mockFsExistsSync, mockFsMkdirSync, mockFsWriteFileSync, mockFsRmSync, mockFsStatSync,
+} = vi.hoisted(() => ({
   mockFsExistsSync: vi.fn(),
   mockFsMkdirSync: vi.fn(),
   mockFsWriteFileSync: vi.fn(),
   mockFsRmSync: vi.fn(),
+  mockFsStatSync: vi.fn(),
 }));
 
 vi.mock('fs', async (importOriginal) => {
@@ -37,6 +40,49 @@ vi.mock('fs', async (importOriginal) => {
     mkdirSync: mockFsMkdirSync,
     writeFileSync: mockFsWriteFileSync,
     rmSync: mockFsRmSync,
+    statSync: mockFsStatSync,
+  };
+});
+
+// === Mock child_process (ffprobe 探针返回假 1920x1080 结果) ===
+const { mockExecFileSync } = vi.hoisted(() => ({
+  mockExecFileSync: vi.fn(),
+}));
+
+/**
+ * 构造假 ffprobe JSON 输出（1920x1080 h264 + aac 音频，30fps，时长走 input 透传）
+ * probeVideoSync 会解析 stdout 为 {width,height,hasAudio,durationSec}
+ */
+function buildFakeFfprobeOutput(durationSec = 10): string {
+  return JSON.stringify({
+    streams: [
+      {
+        index: 0,
+        codec_type: 'video',
+        codec_name: 'h264',
+        width: 1920,
+        height: 1080,
+        r_frame_rate: '30/1',
+      },
+      {
+        index: 1,
+        codec_type: 'audio',
+        codec_name: 'aac',
+      },
+    ],
+    format: {
+      duration: String(durationSec),
+      format_name: 'mov,mp4,m4a,3gp,3g2,mj2',
+      size: '1024000',
+    },
+  });
+}
+
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return {
+    ...actual,
+    execFileSync: mockExecFileSync,
   };
 });
 
@@ -51,6 +97,9 @@ describe('JianyingExportService', () => {
     mockFsMkdirSync.mockImplementation(() => undefined);
     mockFsWriteFileSync.mockImplementation(() => undefined);
     mockFsRmSync.mockImplementation(() => undefined);
+    mockFsStatSync.mockImplementation(() => ({ size: 1_000_000 }));
+    // ffprobe 默认返回 1920x1080 + 10 秒 + 有音频
+    mockExecFileSync.mockImplementation(() => buildFakeFfprobeOutput(10));
   });
 
   afterEach(() => {

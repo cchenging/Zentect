@@ -15,6 +15,7 @@ import { assembleDraftContent } from './assemblers/DraftContentAssembler';
 import { buildKeyValue } from '../writers/KeyValueWriter';
 import { buildDraftVirtualStore } from '../writers/VirtualStoreWriter';
 import type { CompileShot } from '../../types';
+import type { VideoProbeResult } from './utils/FfprobeProber';
 
 /** BGM 素材整片铺底所需的输入片段（由 buildCompileShots 产出） */
 export interface CompileContext {
@@ -53,6 +54,7 @@ export function sanitizeProjectName(name: string): string {
  * @param input 导出输入参数
  * @param jianyingRoot 剪映草稿根目录
  * @param compileShots 已编译镜头（由 buildCompileShots 产出）
+ * @param probeMap 所有视频文件的 ffprobe 结果（Service.export 中已预跑批量探针；缺失 fail-fast）
  * @param subtitleStyle 字幕样式（缺省用默认样式）
  * @returns 导出结果（文件夹路径 + 名称）
  */
@@ -60,6 +62,7 @@ export function exportJianying(
   input: JianyingExportInput,
   jianyingRoot: string,
   compileShots: CompileShot[],
+  probeMap: Map<string, VideoProbeResult>,
   subtitleStyle: SubtitleStyle = DEFAULT_SUBTITLE_STYLE,
 ): JianyingExportOutput {
   validateInput(input, jianyingRoot);
@@ -70,10 +73,11 @@ export function exportJianying(
   const draftFolder = path.join(jianyingRoot, draftName);
   fs.mkdirSync(draftFolder, { recursive: true });
 
-  // 编译草稿内容（以 scriptParagraphs 为主数据源）
+  // 编译草稿内容（以 scriptParagraphs 为主数据源；probeMap 已由 Service 层预跑批量探针）
   const draftContent = assembleDraftContent(
     compileShots,
     input.mediaPath || input.outputDir,
+    probeMap,
     input.bgmPath,
     subtitleStyle,
   );
