@@ -1,5 +1,7 @@
 /**
  * useStep1Store — 步骤1「素材分析」局部 Store
+ * P0 · 契约收拢：抽帧策略从 4 枚举收拢为 2 枚举（AUTO_ADAPTIVE | UNIFORM_FPS），
+ * 新增 frameDensityPreset（抽帧密度预设 SSOT），配合 zustand persist.migrate 做旧数据迁移。
  *
  * @description
  * 从 editorSlice 和 uiSlice 中提取步骤1专属状态。
@@ -13,6 +15,12 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AsrLine } from '../../../shared/types/entities/editor';
+// P0 · 抽帧契约唯一真源
+import {
+  type FrameExtractStrategy as SharedFrameStrategy,
+  type DensityPreset as SharedFrameDensityPreset,
+  normalizeFrameStrategy,
+} from '../../../shared/contracts/capabilities';
 
 /** 音频分离配置（与 step1-material/types.ts 的 AudioConfig 保持一致） */
 export interface AudioConfig {
@@ -27,7 +35,12 @@ export interface ExtractionConfig {
   targetLanguage: string;
   frames: {
     enabled: boolean;
-    mode: 'VLM_OPTIMIZED' | 'UNIFORM_FPS' | 'FAST_KEYFRAME' | 'PRECISE_SINGLE';
+    /** P0 · 2 值枚举：AUTO_ADAPTIVE | UNIFORM_FPS；保留 string 以兼容历史反序列化 */
+    mode: SharedFrameStrategy | string;
+    /** P0 · 抽帧密度预设（SSOT，framesPerMinute/minFrameInterval/sceneThreshold 的唯一来源）
+     *  命名为 frameDensityPreset 避免与 step3 解说密度字段 density 语义冲突
+     */
+    frameDensityPreset?: SharedFrameDensityPreset;
     sceneThreshold: number;
     quality: number;
     scale: number;
@@ -42,6 +55,11 @@ export interface ExtractionConfig {
      * - '1x1': 精细单帧（独立分析，不拼图）
      */
     matrixMode?: 'auto' | '2x2' | '3x3' | '1x1';
+    /**
+     * @deprecated P0 · step3 解说密度已迁出抽帧配置；保留字段仅兼容旧 JSON
+     * 请改用 step3-script 内部的 scriptDensity 配置。
+     */
+    density?: SharedFrameDensityPreset | string;
   };
   audio: AudioConfig;
   whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'auto' };
@@ -52,6 +70,66 @@ export interface ExtractionConfig {
      * HDBSCAN 聚类后用于合并过拆簇 + 分配噪声点
      * 经验值：0.65 宽松 / 0.70 平衡 / 0.75 严格 / 0.82 极严格 */
     cosineThreshold?: number;
+  };
+}
+
+/**
+ * P0 · 旧抽帧配置迁移（migrateFramesConfig）
+ * 所有历史 4 策略名 → 归一化为 AUTO_ADAPTIVE | UNIFORM_FPS；
+ * 缺失 frameDensityPreset 时 → 根据旧策略名猜测档位或统一回落到 standard。
+ * 说明：此函数作为 zustand persist.migrate 的核心，同时暴露以便 step1 管线主动调用。
+ * @param rawFrames 持久化 JSON 里的 frames 子对象（任意形状）
+ * @returns 符合 P0 契约的 ExtractionConfig['frames']
+ */
+export function migrateFramesConfig(rawFrames: any): ExtractionConfig['frames'] {
+  const baseDefaults = {
+    enabled: true,
+    mode: 'AUTO_ADAPTIVE' as const,
+    sceneThreshold: 0.25,
+    quality: 3,
+    fps: 2,
+    scale: 1024,
+    minFrameInterval: 3.5,
+    matrixMode: 'auto' as const,
+    frameDensityPreset: 'standard' as const,
+  } satisfies ExtractionConfig['frames'];
+  if (!rawFrames || typeof rawFrames !== 'object') return baseDefaults;
+
+  // 1) 策略归一化：所有历史别名 → 2 值枚举
+  const normalizedMode = normalizeFrameStrategy(rawFrames.mode, baseDefaults.mode);
+
+  // 2) 密度预设猜测：缺失时根据旧策略选档，有显式 frameDensityPreset 直接用
+  let densityPreset: SharedFrameDensityPreset = baseDefaults.frameDensityPreset;
+  const rawPreset = rawFrames.frameDensityPreset ?? rawFrames.density; // 兼容旧 density 字段
+  if (typeof rawPreset === 'string' && ['sparse', 'standard', 'dense'].includes(rawPreset)) {
+    densityPreset = rawPreset as SharedFrameDensityPreset;
+  } else if (rawFrames.mode && typeof rawFrames.mode === 'string') {
+    // 无显式档位 → 基于旧策略名做一次合理映射
+    const oldMode = rawFrames.mode.trim().toUpperCase();
+    if (oldMode === 'UNIFORM' || oldMode === 'UNIFORM_FPS') {
+      densityPreset = 'standard';
+    } else if (oldMode === 'VLM_OPTIMIZED' || oldMode === 'FAST_KEYFRAME') {
+      densityPreset = 'standard';
+    } else if (oldMode === 'PRECISE_SINGLE') {
+      // PRECISE_SINGLE 已迁出，统一回落到 standard（定点截图走独立 API）
+      densityPreset = 'standard';
+    }
+  }
+
+  return {
+    ...baseDefaults,
+    enabled: typeof rawFrames.enabled === 'boolean' ? rawFrames.enabled : baseDefaults.enabled,
+    mode: normalizedMode,
+    frameDensityPreset: densityPreset,
+    sceneThreshold: typeof rawFrames.sceneThreshold === 'number' ? rawFrames.sceneThreshold : baseDefaults.sceneThreshold,
+    quality: typeof rawFrames.quality === 'number' ? rawFrames.quality : baseDefaults.quality,
+    fps: typeof rawFrames.fps === 'number' ? rawFrames.fps : baseDefaults.fps,
+    scale: typeof rawFrames.scale === 'number' ? rawFrames.scale : baseDefaults.scale,
+    minFrameInterval: typeof rawFrames.minFrameInterval === 'number' ? rawFrames.minFrameInterval : baseDefaults.minFrameInterval,
+    timePoint: typeof rawFrames.timePoint === 'number' ? rawFrames.timePoint : undefined,
+    matrixMode: rawFrames.matrixMode ?? baseDefaults.matrixMode,
+    // @deprecated 保留 density 原样避免老数据反序列化崩溃
+    density: typeof rawFrames.density === 'string' ? rawFrames.density : undefined,
   };
 }
 
@@ -92,7 +170,8 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
   targetLanguage: 'zh-CN',
   frames: {
     enabled: true,
-    mode: 'VLM_OPTIMIZED',
+    mode: 'AUTO_ADAPTIVE', // P0 · 新枚举默认
+    frameDensityPreset: 'standard', // P0 · 默认标准档
     sceneThreshold: 0.25,
     quality: 3,
     fps: 2,
@@ -109,6 +188,13 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
 const PERSIST_PARTIAL = (state: Step1Store) => ({
   extractionConfig: state.extractionConfig,
 });
+
+/**
+ * P0 · zustand persist 版本号 + 迁移钩子
+ * - version 0: 旧数据（4 枚举）；version 1: 新 2 枚举 + frameDensityPreset
+ * - migrate：仅需处理 0 → 1（历史 4 策略 → 2 策略 + standard 密度档）
+ */
+const PERSIST_VERSION = 1;
 
 export const useStep1Store = create<Step1Store>()(
   persist(
@@ -154,8 +240,20 @@ export const useStep1Store = create<Step1Store>()(
     }),
     {
       name: 'zentect-step1-store',
+      version: PERSIST_VERSION,
       // 只持久化配置部分，避免运行时数据污染
       partialize: PERSIST_PARTIAL,
+      // P0 · 历史数据迁移：旧策略归一化 + frameDensityPreset 补齐
+      migrate: (persistedState: any, version: number) => {
+        if (version === 0 && persistedState && typeof persistedState === 'object') {
+          const extractionConfig = (persistedState as any).extractionConfig;
+          if (extractionConfig && extractionConfig.frames) {
+            extractionConfig.frames = migrateFramesConfig(extractionConfig.frames);
+          }
+          // 迁移后 version 会被 zustand 自动更新为当前 PERSIST_VERSION
+        }
+        return persistedState;
+      },
     }
   )
 );

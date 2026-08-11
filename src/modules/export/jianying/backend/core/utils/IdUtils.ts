@@ -5,7 +5,7 @@ import * as crypto from 'crypto';
 
 /** 生成 32 位十六进制 ID（剪映 segment / track / material 统一格式） */
 export function genHexId(): string {
-  return crypto.randomBytes(16).toString('hex');
+  return crypto.randomBytes(16).toString('hex').toUpperCase();
 }
 
 /** 生成顶层草稿 UUID（剪映要求大写 UUID 格式） */

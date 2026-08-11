@@ -1,14 +1,16 @@
 // Module: media/frames - Strategy 单元测试
+// P0 · 策略收拢：VLM_OPTIMIZED / FAST_KEYFRAME → 都归一化为 AUTO_ADAPTIVE（scene + minInterval 兜底）
+// PRECISE_SINGLE → 归一化为 screenshotAt 单帧分支；UNIFORM_FPS 保持不变。
 
 import { describe, it, expect } from 'vitest';
 import { buildExtractCommand } from '../backend/Strategy';
-import type { FrameStrategy } from '../types';
 
 describe('buildExtractCommand', () => {
+  /** P0 · strategy 类型已放宽为 string（兼容历史 4 枚举别名；内部 normalizeInternalStrategy 归一化） */
   const baseConfig = {
     videoPath: 'C:/videos/test.mp4',
     outputPath: 'C:/frames/frame_%08d.jpg',
-    strategy: 'VLM_OPTIMIZED' as FrameStrategy,
+    strategy: 'VLM_OPTIMIZED',
     fps: 2,
     sceneThreshold: 0.28,
     minFrameInterval: 4,
@@ -121,21 +123,21 @@ describe('buildExtractCommand', () => {
   });
 
   // ==================== FAST_KEYFRAME 策略 ====================
-
-  describe('FAST_KEYFRAME 策略', () => {
-    it('应包含关键帧 select 滤镜', () => {
+  // P0 · FAST_KEYFRAME 现在归一化为 AUTO_ADAPTIVE，不再区分 GOP I 帧结构（统一走 scene + minInterval）
+  describe('FAST_KEYFRAME 策略（P0 · 归一化为 AUTO_ADAPTIVE）', () => {
+    it('应走 AUTO_ADAPTIVE 分支 → 场景检测滤镜（不再识别 eq(pict_type I) 的 GOP 结构）', () => {
       const args = buildExtractCommand({ ...baseConfig, strategy: 'FAST_KEYFRAME' });
       const vfArg = args.find(a => a === '-vf') ? args[args.indexOf('-vf') + 1] : '';
-      expect(vfArg).toContain("eq(pict_type\\,I)");
+      expect(vfArg).toContain('gt(scene');
     });
 
-    it('应包含 -skip_frame nokey', () => {
+    it('不应包含 -skip_frame nokey（P0 收拢后取消 GOP 级跳过，避免依赖流结构）', () => {
       const args = buildExtractCommand({ ...baseConfig, strategy: 'FAST_KEYFRAME' });
-      expect(args).toContain('-skip_frame');
-      expect(args).toContain('nokey');
+      expect(args).not.toContain('-skip_frame');
+      expect(args).not.toContain('nokey');
     });
 
-    it('应包含 vsync=vfr', () => {
+    it('作为 select 类滤镜分支，仍应包含 vsync=vfr', () => {
       const args = buildExtractCommand({ ...baseConfig, strategy: 'FAST_KEYFRAME' });
       expect(args).toContain('-vsync');
       expect(args).toContain('vfr');

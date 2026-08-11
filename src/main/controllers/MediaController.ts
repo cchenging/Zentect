@@ -1,4 +1,6 @@
 // 📁 路径: src/main/controllers/MediaController.ts
+// P0 · 契约收拢：抽帧策略统一走 normalizeFrameStrategy 归一化为 2 枚举；
+// PRECISE_SINGLE 不再作为抽帧策略，改由 MEDIA_SCREENSHOT_AT 独立 API 提供。
 import { dialog } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -12,7 +14,9 @@ import { PathManager } from '../utils/pathManager';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { VideoProcessor } from '../engine/media/VideoProcessor';
-// @deprecated 抽帧功能已迁移至 src/modules/media/frames/，此 import 保留兼容
+// P0 · 抽帧契约唯一真源（含兼容映射）
+import { normalizeFrameStrategy, type DensityPreset } from '../../modules/media/frames';
+// @deprecated 保留仅用于历史类型兼容提示
 import type { FrameStrategy } from '../../modules/media/frames';
 
 export class MediaController {
@@ -86,14 +90,40 @@ export class MediaController {
     });
 
     /**
-     * 轻量抽帧通道：只执行抽帧，不跑全管线
-     * 用于前端"开始提取"按钮的即时反馈闭环
+     * P0 · 轻量抽帧通道：只执行抽帧，不跑全管线
+     * 用于前端"开始提取"按钮的即时反馈闭环。
+     * 策略统一归一化为 AUTO_ADAPTIVE | UNIFORM_FPS；定点截图请走 MEDIA_SCREENSHOT_AT。
      */
     IpcRouter.handle(IPC_CHANNELS.MEDIA_EXTRACT_FRAMES, async (_, payload: {
       mediaId: string; projectId: string; strategy: string; fps: number;
       sceneThreshold: number; scale: number; quality: number; minFrameInterval?: number; timePoint?: number;
+      /** P0 新增：抽帧密度预设（预算封顶 SSOT） */
+      densityPreset?: DensityPreset;
+      /** P0 新增：显式 maxFrames 封顶（调试或 UNIFORM_FPS） */
+      maxFrames?: number;
+      /** P0 新增：BudgetClipper 超预算容忍度（默认 0.1） */
+      budgetToleranceRatio?: number;
     }) => {
-      const { mediaId, projectId, strategy, fps, sceneThreshold, scale, quality, minFrameInterval, timePoint } = payload;
+      const {
+        mediaId, projectId, fps, sceneThreshold, scale, quality, minFrameInterval, timePoint,
+        densityPreset, maxFrames, budgetToleranceRatio,
+      } = payload;
+      const rawStrategy = payload.strategy;
+
+      // P0 · PRECISE_SINGLE 守卫：定点截图不走批量抽帧主流程
+      const isPreciseSingle = (raw: string | null | undefined) => {
+        if (!raw) return false;
+        const r = String(raw).trim().toLowerCase().replace(/[\s-]/g, '_');
+        return r === 'precise_single' || r === 'precise' || r === 'precise_one' || r === 'single_frame';
+      };
+      if (isPreciseSingle(rawStrategy)) {
+        throw new AppError(
+          ErrorCode.SYS_INVALID_INPUT,
+          `[MediaController] 策略 "${rawStrategy}"（定点截图）已不再作为批量抽帧策略。` +
+          `请调用 ${IPC_CHANNELS.MEDIA_SCREENSHOT_AT} 独立 API（传入 timePoint）。`
+        );
+      }
+
       if (!mediaId || !projectId) {
         throw new AppError(ErrorCode.FS_PATH_INVALID, 'mediaId 和 projectId 必填');
       }
@@ -129,28 +159,25 @@ export class MediaController {
         fs.mkdirSync(framesDir, { recursive: true });
       }
 
-      /** 策略名映射：前端小写 → 后端大写 */
-      const STRATEGY_MAP: Record<string, FrameStrategy> = {
-        'vlm_optimized': 'VLM_OPTIMIZED', 'VLM_OPTIMIZED': 'VLM_OPTIMIZED',
-        'uniform': 'UNIFORM_FPS', 'UNIFORM_FPS': 'UNIFORM_FPS',
-        'scene': 'VLM_OPTIMIZED',
-        'iframe': 'FAST_KEYFRAME', 'FAST_KEYFRAME': 'FAST_KEYFRAME',
-        'precise_single': 'PRECISE_SINGLE', 'PRECISE_SINGLE': 'PRECISE_SINGLE',
-      };
-      const resolvedStrategy = STRATEGY_MAP[strategy] || 'VLM_OPTIMIZED';
+      /** P0 · 策略名归一化（所有历史别名 → 2 值枚举） */
+      const resolvedStrategy = normalizeFrameStrategy(rawStrategy, 'AUTO_ADAPTIVE');
 
-      /** 调用 VideoProcessor 轻量抽帧 */
+      /** 调用 VideoProcessor 轻量抽帧（透传 P0 densityPreset / maxFrames / tolerance） */
       const telemetry = await VideoProcessor.extractFrames(physicalPath, framesDir, mediaId, {
         strategy: resolvedStrategy,
         fps: fps || 2,
-        sceneThreshold: sceneThreshold || 0.25,
-        minFrameInterval: minFrameInterval || 3.5,
+        // sceneThreshold/minFrameInterval 不再强制给默认 → 由 Service 层结合 densityPreset 派生
+        sceneThreshold,
+        minFrameInterval,
         scale: scale ?? 1024,
         quality: quality || 3,
         timePoint,
-        // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重，与 step1 管线保持一致，
+        // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重 + P0 预算封顶，
         //   避免长镜头静态画面按 minFrameInterval 兜底抽出的重复帧污染 DB
         postProcess: true,
+        densityPreset,
+        maxFrames,
+        budgetToleranceRatio,
       });
 
       /** 结果写 DB — 帧路径转为 magic:// 协议 */
@@ -167,13 +194,119 @@ export class MediaController {
       });
 
       AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[MediaController] 轻量抽帧完成`, {
-        mediaId, strategy: resolvedStrategy, frameCount: framePaths.length,
+        mediaId, strategy: resolvedStrategy, densityPreset, maxFrames,
+        frameCount: framePaths.length,
       });
 
       return {
         success: true,
         frameCount: framePaths.length,
         previewUrls: magicFramePaths.slice(0, 30),
+      };
+    });
+
+    /**
+     * P0 · 新增：定点精准截图独立 API（替代原 PRECISE_SINGLE 策略）。
+     * 入参 timePoint 单位为秒（允许小数）。内部复用抽帧能力的 single-seek 子流程，
+     * 不经过 BudgetClipper 预算裁剪，直接返回一张或零张截图。
+     */
+    IpcRouter.handle(IPC_CHANNELS.MEDIA_SCREENSHOT_AT, async (_, payload: {
+      mediaId: string;
+      projectId: string;
+      /** 截图时间点（秒） */
+      timePoint: number;
+      /** 输出宽度（默认 1024） */
+      scale?: number;
+      /** JPEG 质量 2-31（越小越好，默认 3） */
+      quality?: number;
+      /** 可选：输出文件名（不含扩展名）；默认 screenshot_<ms> */
+      outputName?: string;
+    }) => {
+      const { mediaId, projectId, timePoint, scale, quality, outputName } = payload;
+      if (!mediaId || !projectId) {
+        throw new AppError(ErrorCode.FS_PATH_INVALID, 'mediaId 和 projectId 必填');
+      }
+      if (typeof timePoint !== 'number' || isNaN(timePoint) || timePoint < 0) {
+        throw new AppError(ErrorCode.SYS_INVALID_INPUT, 'timePoint 必须为非负秒数（number）');
+      }
+
+      /** 从 DB 获取媒体信息 */
+      const mediaItem = await this.mediaService.getMediaById(mediaId);
+      if (!mediaItem) {
+        throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, `媒体资产不存在: ${mediaId}`);
+      }
+
+      /** magic:// 路径脱水 */
+      let physicalPath = mediaItem.filePath || '';
+      const projectDir = PathManager.getProjectDir(projectId);
+      if (physicalPath.startsWith('magic://')) {
+        const prefix = `magic://${projectId}/`;
+        if (physicalPath.startsWith(prefix)) {
+          const relativePath = physicalPath.replace(prefix, '');
+          physicalPath = path.isAbsolute(relativePath) ? relativePath : path.join(projectDir, relativePath);
+        } else if (physicalPath.startsWith('magic://local/')) {
+          physicalPath = physicalPath.replace('magic://local/', '').replace(/\//g, '\\');
+        } else {
+          physicalPath = path.join(projectDir, physicalPath.replace(/^magic:\/\/[^/]+\//, ''));
+        }
+      }
+
+      if (!fs.existsSync(physicalPath)) {
+        throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, `物理文件不存在: ${physicalPath}`);
+      }
+
+      /** 构建输出目录：与 frames 输出同级，保持 DB frames 协议一致 */
+      const framesDir = path.join(PathManager.getProjectExtractionsDir(projectId, 'frames'), mediaId);
+      if (!fs.existsSync(framesDir)) {
+        fs.mkdirSync(framesDir, { recursive: true });
+      }
+
+      // P0 · screenshotAt 骨架：内部走 extractFrames + UNIFORM_FPS + timePoint 定点，
+      // 但不经过 BudgetClipper（定点截图不存在预算概念）。
+      const telemetry = await VideoProcessor.extractFrames(physicalPath, framesDir, mediaId, {
+        // P0 约定：定点截图内部仍走 AUTO_ADAPTIVE 策略 + 传 timePoint，
+        // Strategy.buildExtractCommand() 会生成单帧 seek 命令；
+        // 显式关闭后处理 BudgetClipper 不会影响单张，但我们也传 densityPreset 为 undefined。
+        strategy: 'AUTO_ADAPTIVE',
+        fps: 1,
+        timePoint,
+        scale: scale ?? 1024,
+        quality: quality || 3,
+        // 定点截图：关闭追加式后处理里的 BudgetClipper（虽然这里只有一张）
+        postProcess: false,
+      });
+
+      const framePaths = telemetry.files || [];
+      if (framePaths.length === 0) {
+        throw new AppError(ErrorCode.MEDIA_PARSE_FAILED, `截图失败：无法在 timePoint=${timePoint}s 处抽取帧`);
+      }
+      const outputAbs = framePaths[0];
+
+      /** 如需重命名 */
+      let finalAbs = outputAbs;
+      if (outputName) {
+        const dest = path.join(path.dirname(outputAbs), `${outputName.replace(/[^\w\-\u4e00-\u9fff.]/g, '_')}.jpg`);
+        try {
+          if (fs.existsSync(dest)) fs.unlinkSync(dest);
+          fs.renameSync(outputAbs, dest);
+          finalAbs = dest;
+        } catch (err) {
+          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[screenshotAt] 重命名失败，使用原文件名`, { err });
+        }
+      }
+
+      /** 相对路径 → magic:// 协议 */
+      const relative = path.relative(projectDir, finalAbs).replace(/\\/g, '/');
+      const magicPath = `magic://${projectId}/${relative}`;
+
+      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[MediaController] 定点截图完成`, {
+        mediaId, timePoint, sizeMB: telemetry.metrics?.totalSizeMB || 0,
+      });
+
+      return {
+        success: true,
+        framePath: magicPath,
+        sizeBytes: telemetry.metrics?.totalSizeMB ? Math.round(telemetry.metrics.totalSizeMB * 1024 * 1024) : 0,
       };
     });
 

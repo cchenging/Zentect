@@ -47,13 +47,61 @@ export class JianyingExporter implements IExporter {
   async export(job: ExportJob): Promise<ExportResult> {
     this.validate(job);
     const payload = (job.payload || {}) as unknown as JianyingExportPayload;
-    // 委托 Service.export：内部已完成「三源重组编译镜头 → 批量 ffprobe 探针 → 素材/轨道装配 → 写盘」完整闭环
-    const result = JianyingExportService.export(
-      payload.input,
-      payload.jianyingRoot,
-      undefined, // ffmpegPath：封面生成预留，当前 Service 层未使用（void 忽略）
-      payload.subtitleStyle,
-    );
+    const scriptParagraphs =
+      ((job.payload as any)?.scriptParagraphs as any[]) ||
+      payload.input?.scriptParagraphs ||
+      [];
+
+    let result: { filePath: string; fileName: string };
+    // 真模块化双通道：优先消费 job.project（统一装配的中间模型），缺失时回退 payload.input（兼容旧调用）
+    if (job.project && job.project.shots && job.project.shots.length > 0) {
+      // 路径 A：从 ExportProject → CompileShot[] → exportWithShots（避免二次装配）
+      const compileShots = JianyingExportService.buildCompileShotsFromExportProject(
+        job.project,
+        scriptParagraphs,
+      );
+      // 构建 baseInput：exportJianying 需要 projectId/projectName/mediaPath/outputDir/bgmPath 这些基础字段
+      const baseInput: JianyingExportInput = payload.input
+        ? { ...payload.input }
+        : {
+            projectId: job.projectId,
+            projectName: job.project.projectName,
+            shots: [],
+            matchResults: [],
+            ttsResults: [],
+            scriptParagraphs: scriptParagraphs as any[],
+            bgmPath: job.project.bgmPath,
+            mediaPath: job.project.mediaPath,
+            outputDir: job.project.mediaPath || '',
+          };
+      // 确保 baseInput 与 ExportProject 最新值对齐（防止 payload.input 是旧数据）
+      if (job.project.mediaPath) baseInput.mediaPath = job.project.mediaPath;
+      if (job.project.bgmPath) baseInput.bgmPath = job.project.bgmPath;
+      if (job.project.projectName) baseInput.projectName = job.project.projectName;
+      if (!baseInput.outputDir && baseInput.mediaPath) baseInput.outputDir = baseInput.mediaPath;
+
+      result = JianyingExportService.exportWithShots(
+        compileShots,
+        baseInput,
+        payload.jianyingRoot,
+        payload.subtitleStyle,
+      );
+    } else {
+      // 路径 B：兼容回退（遗留调用方只传 payload.input 三件套）
+      if (!payload.input) {
+        throw new AppError(
+          ErrorCode.SYS_INVALID_INPUT,
+          '剪映导出失败：既无 ExportProject.project 也无 payload.input，无法装配镜头',
+        );
+      }
+      result = JianyingExportService.export(
+        payload.input,
+        payload.jianyingRoot,
+        undefined,
+        payload.subtitleStyle,
+      );
+    }
+
     return {
       exporterId: this.id,
       success: true,

@@ -5,6 +5,8 @@
 // 具体实现委托给 core 子模块（resolvers / assemblers / writers / JianyingExporter）。
 // 设计原则：编排器只做数据转换与委托，不实现格式细节；ffprobe 通过 ExportBinDeps 注入，
 // 不直接耦合 Electron 主进程 PathManager（纯模块可测试）。
+// 真模块化扩展：新增「从统一装配好的 ExportProject → CompileShot[]」重载（buildCompileShotsFromExportProject），
+// 与成片出口共享同一镜头装配源，实现 S8 范围过滤一致性。
 
 import * as path from 'path';
 import type { CompileShot } from '../types';
@@ -12,6 +14,7 @@ import type { JianyingExportInput, JianyingExportOutput, SubtitleStyle } from '.
 import { DEFAULT_SUBTITLE_STYLE } from '../types';
 import { assembleDraftContent } from './core/assemblers/DraftContentAssembler';
 import { exportJianying } from './core/JianyingExporter';
+import type { ExportProject } from '../../contracts/ExportProject';
 import {
   probeVideoBatchSync,
   type ExportBinDeps,
@@ -131,6 +134,105 @@ export class JianyingExportService {
   }
 
   /**
+   * 真模块化重载：从统一装配好的 ExportProject + scriptParagraphs 生成 CompileShot[]。
+   *
+   * 与 buildCompileShots（原始三件套）产出完全等价的字段结构，差异点：
+   *   - 时间单位：project.shots[i].start/end 统一秒 → *1_000_000 转微秒写入 videoTimelineStartUs/EndUs 对应字段
+   *   - chunkData：直接透传 project.shots[i].chunkData（装配器已按 matchResult 填好，无需二次查）
+   *   - audioPath：project.shots[i].audioPath 已脱水 magic://，是干净物理路径
+   *   - scriptParagraphs 作用：保持 s_xx 段落粒度（剪映字幕文本素材仍以 scriptParagraph.id 命名）
+   *
+   * S8 范围：传入的 project.shots 已被装配器过滤为选中片段，此处按相同 shotId 集合对 scriptParagraphs
+   * 二次对齐，保证 s_xx 段数量与镜头数量 1:1 对应（不会出现 26 段字幕只对应 3 段视频的错位）。
+   */
+  static buildCompileShotsFromExportProject(
+    project: ExportProject,
+    scriptParagraphs: Array<Record<string, any>> = [],
+  ): CompileShot[] {
+    const shotByShotId = new Map<string, ExportProject['shots'][number]>();
+    for (const s of project.shots || []) {
+      shotByShotId.set(s.id, s);
+    }
+    const selectedIds = new Set(Array.from(shotByShotId.keys()));
+
+    // 1. 如果有 scriptParagraphs：先按 shotId/id 对齐过滤，保持 s_xx 命名粒度
+    let scopedParagraphs = scriptParagraphs || [];
+    if (selectedIds.size > 0) {
+      scopedParagraphs = (scriptParagraphs || []).filter((p) => {
+        const key1 = p?.shotId;
+        const key2 = p?.id;
+        return (typeof key1 === 'string' && selectedIds.has(key1))
+          || (typeof key2 === 'string' && selectedIds.has(key2));
+      });
+    }
+
+    // 2. 如果完全没有 scriptParagraphs（极端场景）：退化为按 project.shots 直接生成虚拟段落
+    if (scopedParagraphs.length === 0 && (project.shots || []).length > 0) {
+      return (project.shots || []).map((s) => {
+        const durationSec = s.duration || Math.max(0, s.end - s.start) || 3;
+        return {
+          id: s.id,
+          mediaId: s.mediaId || '',
+          imagePath: '',
+          text: s.text || s.aiText || '',
+          originalText: s.text || '',
+          aiText: s.aiText || s.text || '',
+          start: s.start,
+          end: s.end,
+          duration: durationSec,
+          audioDuration: durationSec,
+          audioPath: s.audioPath,
+          chunkData: s.chunkData || null,
+          appliedSpeedFactor: s.appliedSpeedFactor,
+          videoTimelineStartMs: Math.round(s.start * 1000),
+          videoTimelineEndMs: Math.round(s.end * 1000),
+        } as CompileShot;
+      });
+    }
+
+    // 3. 正常路径：逐段 scriptParagraph，按 shotId/id 找匹配的 ExportShot → 输出 CompileShot
+    return scopedParagraphs.map((p) => {
+      const id = p?.id || `s__${Math.random().toString(36).slice(2, 7)}`;
+      const shot = shotByShotId.get(p.shotId) || shotByShotId.get(p.id);
+      if (!shot) {
+        // 没匹配到 ExportShot → 按 scriptParagraph 自身数据装配（无 chunkData/无 audioPath，纯字幕段落占位）
+        const durationSec = p.duration || 3;
+        return {
+          id,
+          mediaId: '',
+          imagePath: '',
+          text: p.text || '',
+          originalText: p.text || '',
+          aiText: p.text || '',
+          start: 0,
+          end: durationSec,
+          duration: durationSec,
+          audioDuration: durationSec,
+          chunkData: null,
+        } as CompileShot;
+      }
+      const durationSec = shot.duration || Math.max(0, shot.end - shot.start) || (p.duration ?? 3);
+      return {
+        id,
+        mediaId: shot.mediaId || '',
+        imagePath: '',
+        text: p.text || shot.text || '',
+        originalText: p.text || shot.text || '',
+        aiText: shot.aiText || p.text || shot.text || '',
+        start: shot.start,
+        end: shot.end,
+        duration: durationSec,
+        audioDuration: durationSec,
+        audioPath: shot.audioPath,
+        chunkData: shot.chunkData || null,
+        appliedSpeedFactor: shot.appliedSpeedFactor,
+        videoTimelineStartMs: Math.round(shot.start * 1000),
+        videoTimelineEndMs: Math.round(shot.end * 1000),
+      } as CompileShot;
+    });
+  }
+
+  /**
    * 编译镜头数组为剪映 v360000 草稿 JSON（委托 core 的 assembleDraftContent）。
    *
    * @param shots     - 编译后的镜头数据
@@ -175,5 +277,33 @@ export class JianyingExportService {
       deps,
     );
     return exportJianying(input, jianyingRoot, compileShots, probeMap, subtitleStyle);
+  }
+
+  /**
+   * 真模块化重载：跳过 buildCompileShots(input) 二次装配，直接从外部传入的 compileShots 导出。
+   *
+   * 典型场景：JianyingExporter 从 job.project（ExportProject）调用 buildCompileShotsFromExportProject
+   * 拿到 compileShots 后，直接走此路径，避免内部再从 payload.input 的原始三件套二次装配（会产生分叉数据）。
+   *
+   * @param compileShots - 已由外部装配好的 CompileShot[]（双通道契约路径）
+   * @param baseInput    - 最小 JianyingExportInput（只需要 projectId/projectName/mediaPath/outputDir/bgmPath 字段）
+   * @param jianyingRoot - 剪映草稿根目录
+   * @param subtitleStyle - 字幕样式（可选）
+   * @param depsOverride - 可选：替换默认二进制依赖（测试用）
+   */
+  static exportWithShots(
+    compileShots: CompileShot[],
+    baseInput: JianyingExportInput,
+    jianyingRoot: string,
+    subtitleStyle?: SubtitleStyle,
+    depsOverride?: ExportBinDeps,
+  ): JianyingExportOutput {
+    const deps = depsOverride ?? binDeps;
+    const probeMap = probeCompileShotVideos(
+      compileShots,
+      baseInput.mediaPath || baseInput.outputDir || '',
+      deps,
+    );
+    return exportJianying(baseInput, jianyingRoot, compileShots, probeMap, subtitleStyle);
   }
 }

@@ -4,14 +4,14 @@ import type { Step3Input, Step3Output, Step3Role } from '../types';
 import type { ScriptParagraph, VlmFrame } from '../../../../shared/types/entities/editor';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 
-/** 风格到 Prompt 指令的映射（与 ScriptGenStrategy 保持一致） */
+/** 风格到 Prompt 指令的映射（与 ScriptGenStrategy.ts 严格对齐，保证双后端行为一致） */
 const STYLE_PROMPTS: Record<string, string> = {
-  '爆款短视频': '抖音/快手快剪风格：前3秒必须制造强钩子（悬念/冲突/反转），多用短句快切、网感词，节奏紧凑。',
-  '深度解说': 'B站长视频风格：硬核分析镜头语言与导演隐喻，剖析人物动机和剧情结构，逻辑层层递进。',
-  '评述视角': '主观点评风格：输出明确观点与价值判断，善用金句提炼和对比论证，带有强烈的个人立场。',
-  '情感叙事': '感性叙事风格：以细腻笔触描绘画面中的情绪流动，善用比喻和意象，在平淡场景中挖掘深层情感共鸣。',
-  '悬疑推理': '悬疑营造风格：用层层设问和伏笔构建悬念，每一句解说都是线索碎片，引导观众在脑中拼凑真相。',
-  '硬核科普': '知识科普风格：以严谨客观的语气进行知识性解说，注重事实准确性和逻辑清晰度，适当引用专业术语。',
+  '爆款短视频': '抖音/快手快剪风格：前3秒必须制造强钩子（悬念/冲突/反转），多用短句快切、网感词（"绝了"、"细思极恐"、"降维打击"），节奏紧凑，每句都为拉高完播率服务。适合短时长高密度内容。',
+  '深度解说': 'B站长视频风格：硬核分析镜头语言与导演隐喻，剖析人物动机和剧情结构，善用"命运的齿轮"、"戏剧性的转变"等文学化表达，逻辑层层递进，适合15分钟以上的深度内容。',
+  '评述视角': '主观点评风格：输出明确观点与价值判断，善用金句提炼和对比论证，带有强烈的个人立场（"这一波操作我给满分"、"这才是真正的XX"），适合UP主个人IP输出。',
+  '情感叙事': '感性叙事风格：以细腻笔触描绘画面中的情绪流动，善用比喻和意象（"他的眼神像熄灭的烟头"），在平淡场景中挖掘深层情感共鸣，适合情感类、文艺类内容。',
+  '悬疑推理': '悬疑营造风格：用层层设问和伏笔构建悬念，每一句解说都是线索碎片（"注意看他的手"、"这个细节很多人都忽略了"），引导观众在脑中拼凑真相，节奏张弛有度。',
+  '硬核科普': '知识科普风格：以严谨客观的语气进行知识性解说，注重事实准确性和逻辑清晰度，适当引用专业术语但保持通俗易懂，适合科技/历史/自然类内容。',
 };
 
 /** 默认语速（字/秒） */
@@ -94,14 +94,51 @@ export class ScriptGenerator {
     const speechRate = input.speechRate || DEFAULT_SPEECH_RATE;
     const params = input.pipelineParams || DEFAULT_PARAMS;
     const hookIntensity = params.hookIntensity ?? 0.7;
-    const audioVisualWeight = params.audioVisualWeight ?? 0.6;
-    // 解说密度 → 字数填充系数
-    const densityFillRate = params.narrationDensity === 'full' ? 1.0
-                          : params.narrationDensity === 'sparse' ? 0.5
-                          : 0.65;
 
-    // TTS 标点停顿折损系数：逗号 ~200ms / 句号 ~500ms，累计需扣除 15%
-    const discountFactor = 0.85;
+    /**
+     * SSOT：audioVisualWeight 由 originalAudioStrategy 唯一映射（与 View.tsx 保持一致）
+     * - cover: 0.8（解说全量覆盖，更多依赖视觉画面描写）
+     * - keep_key: 0.5（均衡）
+     * - original_main: 0.2（解说辅助过渡，更多提炼 ASR 对白）
+     */
+    const AUDIO_STRATEGY_TO_WEIGHT_MAP: Record<string, number> = {
+      cover: 0.8,
+      keep_key: 0.5,
+      original_main: 0.2,
+    };
+    const audioVisualWeight = AUDIO_STRATEGY_TO_WEIGHT_MAP[params.originalAudioStrategy] ?? 0.5;
+
+    // 解说密度 → 基础字数填充系数
+    const baseDensityFillRate = params.narrationDensity === 'full' ? 1.0
+                              : params.narrationDensity === 'sparse' ? 0.5
+                              : 0.65;
+
+    /**
+     * 原声策略折扣：对 densityFillRate 再打一层折，避免时间轴物理溢出
+     * - cover(全量覆盖解说): 1.0（原声时间轴无占用，无需打折）
+     * - keep_key(关键台词保留): 0.85（约 15% 时间留给关键原声）
+     * - original_main(原声为主): 0.45（约 60%~80% 时间留给高光对白，解说仅辅助串场）
+     */
+    const AUDIO_STRATEGY_DISCOUNT: Record<string, number> = {
+      cover: 1.0,
+      keep_key: 0.85,
+      original_main: 0.45,
+    };
+    const audioStrategyDiscount = AUDIO_STRATEGY_DISCOUNT[params.originalAudioStrategy] ?? 1.0;
+    const densityFillRate = baseDensityFillRate * audioStrategyDiscount;
+
+    /**
+     * TTS 标点停顿折损系数：按 rhythmMode 差异化取值（之前全局固定 0.85 导致双向失真）
+     * - short_fast(短句快切): 频繁逗号/感叹号 → 约 15% 停顿占比 → discountFactor = 0.85
+     * - mixed(长短交替): 适度标点 → 约 10% 停顿占比 → discountFactor = 0.90
+     * - slow_soothing(长句舒缓): 少标点 + 句号情感节点 → 约 7% 停顿占比 → discountFactor = 0.93
+     */
+    const DISCOUNT_BY_RHYTHM: Record<string, number> = {
+      short_fast: 0.85,
+      mixed: 0.90,
+      slow_soothing: 0.93,
+    };
+    const discountFactor = DISCOUNT_BY_RHYTHM[params.rhythmMode] ?? 0.88;
 
     // 节奏模式 → 单句字数上限（short_fast=12 / mixed=20 / slow_soothing=30）
     const maxSentenceChars = params.rhythmMode === 'short_fast' ? 12

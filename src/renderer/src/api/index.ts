@@ -106,8 +106,33 @@ export const API = {
     import: (projectId: string, filePaths: string[]) => invokeSafe<any[]>(IPC_CHANNELS.MEDIA_IMPORT, projectId, filePaths),
     update: (mediaId: string, data: any) => invokeSafe(IPC_CHANNELS.MEDIA_UPDATE, mediaId, data),
     process: (projectId: string, activeMedia: any, config: any) => invokeSafe(IPC_CHANNELS.MEDIA_PROCESS, projectId, activeMedia, config),
-    /** 轻量抽帧：只执行抽帧，不跑全管线，用于前端即时反馈闭环 */
-    extractFrames: (payload: { mediaId: string; projectId: string; strategy: string; fps: number; sceneThreshold: number; scale: number; quality: number; minFrameInterval?: number; timePoint?: number }) => invokeSafe<{ success: boolean; frameCount: number; previewUrls: string[] }>(IPC_CHANNELS.MEDIA_EXTRACT_FRAMES, payload),
+    /** P0 · 轻量抽帧：只执行抽帧，不跑全管线，用于前端即时反馈闭环
+     *  2 策略（AUTO_ADAPTIVE | UNIFORM_FPS）+ densityPreset 预算封顶（SSOT）。
+     *  PRECISE_SINGLE 定点截图请走独立 screenshotAt API。
+     */
+    extractFrames: (payload: {
+      mediaId: string; projectId: string; strategy: string; fps: number;
+      sceneThreshold: number; scale: number; quality: number;
+      minFrameInterval?: number; timePoint?: number;
+      densityPreset?: 'sparse' | 'standard' | 'dense';
+      maxFrames?: number;
+      budgetToleranceRatio?: number;
+    }) => invokeSafe<{ success: boolean; frameCount: number; previewUrls: string[] }>(
+      IPC_CHANNELS.MEDIA_EXTRACT_FRAMES, payload
+    ),
+    /** P0 · 新增：定点精准截图（独立 API，替代原 PRECISE_SINGLE 策略）。
+     *  结果为单张截图 magic:// 路径，不参与 BudgetClipper 预算裁剪。
+     */
+    screenshotAt: (payload: {
+      mediaId: string; projectId: string;
+      /** 时间点（秒） */
+      timePoint: number;
+      scale?: number;
+      quality?: number;
+      outputName?: string;
+    }) => invokeSafe<{ success: boolean; framePath: string; sizeBytes: number }>(
+      IPC_CHANNELS.MEDIA_SCREENSHOT_AT, payload
+    ),
     cancelProcess: (mediaId: string) => invokeSafe(IPC_CHANNELS.MEDIA_CANCEL, mediaId),
     delete: (projectId: string, mediaId: string) => invokeSafe(IPC_CHANNELS.MEDIA_DELETE, projectId, mediaId),
     getByProject: (projectId: string) => invokeSafe<any[]>(IPC_CHANNELS.MEDIA_GET_BY_PROJECT, projectId),

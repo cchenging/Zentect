@@ -115,7 +115,7 @@ function buildVideoMaterial(
     source_platform: 0,
     check_flag: 63487,
     crop_ratio: 'free',
-    crop_scale: 1.0,
+    crop_scale: 1,
     audio_fade: null,
     crop: {
       upper_left_x: 0.0, upper_left_y: 0.0,
@@ -363,7 +363,7 @@ function buildCanvasMaterial(canvasId: string, durationUs: number): unknown {
     source_platform: 0,
     check_flag: 63487,
     crop_ratio: 'free',
-    crop_scale: 1.0,
+    crop_scale: 1,
     audio_fade: null,
     crop: {
       upper_left_x: 0.0, upper_left_y: 0.0,

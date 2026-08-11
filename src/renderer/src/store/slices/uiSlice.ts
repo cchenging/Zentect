@@ -74,13 +74,20 @@ declare module '../storeTypes' {
       targetLanguage: string;
       frames: {
         enabled: boolean;
-        mode: 'VLM_OPTIMIZED' | 'UNIFORM_FPS' | 'FAST_KEYFRAME' | 'PRECISE_SINGLE';
+        /** P0 · 已收拢为 AUTO_ADAPTIVE | UNIFORM_FPS；保留 string 兼容历史反序列化 */
+        mode: 'AUTO_ADAPTIVE' | 'UNIFORM_FPS' | string;
+        /** P0 · 抽帧密度预设（与 step3 解说 density 语义区分，单独字段） */
+        frameDensityPreset?: 'sparse' | 'standard' | 'dense';
         sceneThreshold: number;
         quality: number;
         scale: number;
         fps: number;
         minFrameInterval?: number;
         timePoint?: number;
+        /**
+         * @deprecated P0 · step3 解说密度已迁出抽帧配置；保留仅兼容老 JSON
+         */
+        density?: 'sparse' | 'standard' | 'dense' | string;
       };
       audio: { enabled: boolean; engine: 'demucs' | 'mdx' | 'auto'; };
       whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'auto'; };
@@ -151,7 +158,17 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
 
   extractionConfig: {
     targetLanguage: 'zh-CN',
-    frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.25, quality: 3, fps: 2, scale: 1024, minFrameInterval: 3.5 },
+    // P0 · 抽帧契约收拢：2 枚举 + frameDensityPreset 默认档
+    frames: {
+      enabled: true,
+      mode: 'AUTO_ADAPTIVE',
+      frameDensityPreset: 'standard',
+      sceneThreshold: 0.25,
+      quality: 3,
+      fps: 2,
+      scale: 1024,
+      minFrameInterval: 3.5,
+    },
     audio: { enabled: true, engine: 'auto' },
     whisper: { enabled: true, engine: 'sensevoice' },
     faces: { enabled: true, engine: 'insightface' }

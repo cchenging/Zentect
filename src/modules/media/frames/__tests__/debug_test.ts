@@ -4,7 +4,8 @@ import { buildExtractCommand } from '../backend/Strategy';
 const baseConfig = {
     videoPath: 'C:/videos/test.mp4',
     outputPath: 'C:/frames/frame_%08d.jpg',
-    strategy: 'VLM_OPTIMIZED' as const,
+    // P0 · VLM_OPTIMIZED → 归一化为 AUTO_ADAPTIVE（Strategy.ExtractConfig.strategy 接受 string）
+    strategy: 'VLM_OPTIMIZED',
     fps: 2,
     sceneThreshold: 0.28,
     minFrameInterval: 4,

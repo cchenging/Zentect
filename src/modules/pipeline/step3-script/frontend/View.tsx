@@ -19,7 +19,7 @@ import {
   BookOpen,
   AlignLeft,
 } from "lucide-react";
-import { SCRIPT_STYLES } from "@modules/editor/shell/utils/pipelineConstants";
+import { SCRIPT_STYLES, STYLE_PRESET_MAP } from "@modules/editor/shell/utils/pipelineConstants";
 import { Badge, EmptyState, StatHeader } from "@renderer/components/shared";
 import {
   Select,
@@ -279,9 +279,24 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
   );
   const totalDurationMin = Math.ceil(totalDurationSec / 60) || Math.ceil(estimatedDuration / 60);
 
-  /** 冲突防呆：原声为主时降级 */
+  /**
+   * 冲突防呆：原声为主时解说密度强制锁定为留白(sparse, 50%)
+   * 为原片高光对白预留 60%~80% 时间窗口，避免声画物理重叠
+   */
   const isDensityLocked = pipelineParams.originalAudioStrategy === 'original_main';
-  const effectiveDensity = isDensityLocked && pipelineParams.narrationDensity === 'full' ? 'standard' : pipelineParams.narrationDensity;
+  const effectiveDensity = isDensityLocked ? 'sparse' : pipelineParams.narrationDensity;
+
+  /**
+   * 声画权重到原声策略的内部映射（SSOT 唯一真源：originalAudioStrategy → audioVisualWeight）
+   * - cover(全量覆盖解说): 0.8（解说词更依赖视觉画面描写）
+   * - keep_key(关键台词保留): 0.5（均衡）
+   * - original_main(原声为主): 0.2（解说词主要提炼 ASR 对白核心逻辑）
+   */
+  const AUDIO_STRATEGY_TO_WEIGHT_MAP: Record<PipelineParams['originalAudioStrategy'], number> = {
+    cover: 0.8,
+    keep_key: 0.5,
+    original_main: 0.2,
+  };
 
   const updateParam = <K extends keyof PipelineParams>(key: K, value: PipelineParams[K]) => {
     onSetPipelineParams({ ...pipelineParams, [key]: value });
@@ -289,11 +304,74 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
 
   const handleAudioStrategyChange = (v: PipelineParams['originalAudioStrategy']) => {
     const next = { ...pipelineParams, originalAudioStrategy: v };
-    if (v === 'original_main' && pipelineParams.narrationDensity === 'full') {
-      next.narrationDensity = 'standard';
+    // 切换原声策略时，同步更新内部的 audioVisualWeight，保证 SSOT（唯一真源为 originalAudioStrategy）
+    next.audioVisualWeight = AUDIO_STRATEGY_TO_WEIGHT_MAP[v];
+    if (v === 'original_main') {
+      // 原声为主：密度强制锁定为留白(sparse, 50%)，无论之前选的是 full 还是 standard
+      next.narrationDensity = 'sparse';
     }
     onSetPipelineParams(next);
   };
+
+  /**
+   * 创作风格预设切换：从 STYLE_PRESET_MAP（pipelineConstants.ts，唯一真源）
+   * 读取推荐的 informationLevel + emotionTone，自动填充到 pipelineParams 中
+   * 用户仍可手动微调（微调可能产生语义冲突，UI 会显式告警但不静默修正）
+   */
+  const handleScriptStyleChange = (v: string) => {
+    onSetScriptStyle(v);
+    const preset = STYLE_PRESET_MAP[v];
+    if (preset) {
+      onSetPipelineParams({
+        ...pipelineParams,
+        informationLevel: preset.informationLevel,
+        emotionTone: preset.emotionTone,
+      });
+    }
+  };
+
+  /**
+   * 语义冲突检测：检测 scriptStyle 预设 vs 用户手动微调后的 informationLevel/emotionTone
+   * 是否存在明显矛盾。遵循"错就错不降级"原则：只提示冲突，不静默修正。
+   */
+  const semanticConflict = useMemo(() => {
+    const style = scriptStyle;
+    const info = pipelineParams.informationLevel;
+    const tone = pipelineParams.emotionTone;
+    const conflicts: string[] = [];
+
+    // 1. 深度解说 + 搞笑吐槽冲突（严肃分析 vs 娱乐化表达）
+    if (style === '深度解说' && tone === 'comedy') {
+      conflicts.push('深度解说风格要求严谨分析，与搞笑基调存在冲突');
+    }
+    if (style === '硬核科普' && tone === 'comedy') {
+      conflicts.push('硬核科普风格要求事实准确，与搞笑基调存在冲突');
+    }
+    // 2. 悬疑推理 + 搞笑吐槽冲突（悬疑铺垫 vs 娱乐消解）
+    if (style === '悬疑推理' && tone === 'comedy') {
+      conflicts.push('悬疑推理风格依赖悬念营造，与搞笑基调存在冲突');
+    }
+    if (style === '悬疑推理' && tone === 'epic') {
+      conflicts.push('悬疑推理风格依赖张弛有度，与高燃热血基调存在冲突');
+    }
+    // 3. 情感叙事 + 客观中立冲突（感性渲染 vs 平铺直叙）
+    if (style === '情感叙事' && tone === 'neutral') {
+      conflicts.push('情感叙事风格依赖感性笔触，与客观中立基调存在冲突');
+    }
+    // 4. 信息层次=深度解读 + 情绪基调=搞笑=主观吐槽的交叉冲突
+    if (info === 'deep' && tone === 'comedy') {
+      conflicts.push('深度解读的信息层次与搞笑吐槽基调存在语义矛盾');
+    }
+    if (info === 'roast' && tone === 'neutral') {
+      conflicts.push('吐槽点评的信息层次与客观中立基调存在语义矛盾');
+    }
+    // 5. 爆款短视频 + 长句舒缓冲突（快节奏 vs 慢节奏）
+    if (style === '爆款短视频' && pipelineParams.rhythmMode === 'slow_soothing') {
+      conflicts.push('爆款短视频风格依赖短句快切节奏，与长句舒缓模式存在冲突');
+    }
+
+    return conflicts;
+  }, [scriptStyle, pipelineParams]);
 
   return (
     <div className="flex flex-col gap-4 pb-6">
@@ -326,11 +404,11 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
               <label className="text-[13px] font-medium text-muted-foreground flex items-center">
                 <Tv2 size={12} className="mr-1.5 text-accent" />
                 创作风格预设
-                <HelpTip text={TOOLTIPS.style} />
+                <HelpTip text={TOOLTIPS.style + '（选择后会自动填充信息层次与情绪基调，可手动微调）'} />
               </label>
               <CustomSelect
                 value={scriptStyle}
-                onChange={onSetScriptStyle}
+                onChange={handleScriptStyleChange}
                 options={SCRIPT_STYLES}
                 placeholder="选择风格..."
                 disabled={isGenerating}
@@ -407,9 +485,8 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
               <SegmentedControl
                 options={DENSITY_OPTIONS}
                 value={effectiveDensity}
-                onChange={(v) => !isDensityLocked && updateParam('narrationDensity', v)}
-                disabled={isGenerating}
-                lockedValue={isDensityLocked ? 'full' : undefined}
+                onChange={(v) => updateParam('narrationDensity', v)}
+                disabled={isGenerating || isDensityLocked}
               />
             </div>
 
@@ -429,11 +506,26 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             </div>
           </div>
 
-          {/* 冲突提示 */}
+          {/* 物理冲突提示（密度锁定） */}
           {isDensityLocked && (
             <div className="inline-flex items-center gap-2 text-[12px] text-amber-500/90 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 animate-fade-in">
               <AlertTriangle size={13} className="shrink-0" />
-              <span>原声为主策略生效中：解说密度已锁定为标准模式，避免音轨冲突。</span>
+              <span>原声为主策略生效中：解说密度已锁定为留白模式(50%)，为高光对白预留时间窗口。</span>
+            </div>
+          )}
+
+          {/* 语义冲突提示（错就错，不降级：只显式告警不静默修正） */}
+          {semanticConflict.length > 0 && (
+            <div className="flex flex-col gap-1.5 text-[12px] text-red-500/90 px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 animate-fade-in">
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={13} className="shrink-0" />
+                <span className="font-semibold">参数存在 {semanticConflict.length} 组语义冲突（已标注但不修正，生成结果可验证配置合理性）：</span>
+              </div>
+              <ul className="list-disc pl-5 space-y-0.5">
+                {semanticConflict.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
             </div>
           )}
 
@@ -465,8 +557,8 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             </div>
           </div>
 
-          {/* 4. 微调滑块 */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+          {/* 4. 微调滑块（声画权重已隐藏，由原声策略自动内部映射） */}
+          <div className="pt-1">
             <div className="flex flex-col gap-1">
               <div className="flex justify-between items-center text-[12px] text-muted-foreground">
                 <span className="flex items-center">
@@ -478,21 +570,6 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
               <CustomSlider
                 value={Math.round(pipelineParams.hookIntensity * 100)}
                 onChange={(v) => updateParam('hookIntensity', v / 100)}
-                disabled={isGenerating}
-              />
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <div className="flex justify-between items-center text-[12px] text-muted-foreground">
-                <span className="flex items-center">
-                  声画权重 (画面 vs 台词)
-                  <HelpTip text={TOOLTIPS.audioVisualWeight} />
-                </span>
-                <span className="font-mono text-accent">{Math.round(pipelineParams.audioVisualWeight * 100)}%</span>
-              </div>
-              <CustomSlider
-                value={Math.round(pipelineParams.audioVisualWeight * 100)}
-                onChange={(v) => updateParam('audioVisualWeight', v / 100)}
                 disabled={isGenerating}
               />
             </div>

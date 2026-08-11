@@ -1,14 +1,32 @@
 // 📁 路径：src/modules/media/frames/backend/Strategy.ts
-// 四大抽帧策略的FFmpeg滤镜实现，按规格 §3.5.2 定义
+// P0 重构 · 抽帧 FFmpeg 滤镜路由：仅保留 2 条主分支（AUTO_ADAPTIVE / UNIFORM_FPS）
+// 历史 4 策略（VLM_OPTIMIZED / FAST_KEYFRAME / PRECISE_SINGLE / UNIFORM）在 Service 层已归一化，
+// 此处额外做一层 defensive normalize，避免调用方绕过 Service 时抛 TypeScript 类型错误。
 //
-// 策略说明：
-// - VLM_OPTIMIZED：场景动态切片 + 最小间隔兜底补帧（电影解说最优方案）
-// - UNIFORM_FPS：传统均匀时间步长抽帧
-// - FAST_KEYFRAME：极速全片索引（只读关键I帧）
-// - PRECISE_SINGLE：精准单帧时间戳截图
+// 路由说明（内部归一化后）：
+// - PRECISE_SINGLE 别名 → 定点单帧截图 vframes=1（独立 screenshotAt API 使用）
+// - UNIFORM_FPS → 传统 fps 均匀步长抽帧
+// - AUTO_ADAPTIVE（默认，含 VLM_OPTIMIZED / FAST_KEYFRAME 历史别名） → scene select + minInterval 兜底
 
-import type { FrameStrategy } from '../types';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
+
+/** Strategy 内部使用的归一化分支枚举；PRECISE_SINGLE 用于 screenshotAt 独立 API */
+type InternalStrategy = 'AUTO_ADAPTIVE' | 'UNIFORM_FPS' | 'PRECISE_SINGLE';
+
+/**
+ * 内部归一化：将任意输入字符串（旧 4 枚举 / 新 2 枚举 / 别名 / 空值）
+ * 映射为 3 路内部分支（AUTO_ADAPTIVE / UNIFORM_FPS / PRECISE_SINGLE）
+ */
+function normalizeInternalStrategy(raw: string | null | undefined): InternalStrategy {
+  if (!raw) return 'AUTO_ADAPTIVE';
+  const r = String(raw).trim().toLowerCase().replace(/[\s-]/g, '_');
+  if (r === 'precise_single' || r === 'precise' || r === 'precise_one' || r === 'single_frame') {
+    return 'PRECISE_SINGLE';
+  }
+  if (r === 'uniform_fps' || r === 'uniform') return 'UNIFORM_FPS';
+  // 其余：VLM_OPTIMIZED / FAST_KEYFRAME / AUTO_ADAPTIVE / 未知值 → 统一走智能自适应
+  return 'AUTO_ADAPTIVE';
+}
 
 // ──────────────────────────────────────────────
 // 1. 滤镜基类与滤镜链
@@ -53,12 +71,8 @@ class FpsFilter extends VideoFilter {
   toString(): string { return `fps=${this.fps}`; }
 }
 
-/** select 滤镜：关键帧选择 */
-class KeyframeSelectFilter extends VideoFilter {
-  toString(): string { return "select='eq(pict_type\\,I)'"; }
-}
-
-/** select 滤镜：VLM 最优化复合选择（场景变化 + 最小间隔兜底） */
+/** P0 已废弃：FAST_KEYFRAME → 统一归并到 AUTO_ADAPTIVE 的 VlmOptimizedSelectFilter
+ *  select 滤镜：VLM 最优化复合选择（场景变化 + 最小间隔兜底） */
 class VlmOptimizedSelectFilter extends VideoFilter {
   private readonly threshold: number;
   private readonly minInterval: number;
@@ -100,7 +114,8 @@ class ScaleFilter extends VideoFilter {
 interface ExtractConfig {
   videoPath: string;
   outputPath: string;
-  strategy: FrameStrategy;
+  /** P0 · 放宽为 string：兼容历史 4 策略别名；实际路由由 normalizeInternalStrategy 归一化 */
+  strategy: string;
   fps: number;
   sceneThreshold: number;
   minFrameInterval: number;
@@ -121,7 +136,7 @@ class FrameCommandBuilder {
   private overwrite(): this { this.args.push('-y'); return this; }
   private seek(seconds: number): this { this.args.push('-ss', seconds.toString()); return this; }
   private to(seconds: number): this { this.args.push('-to', seconds.toString()); return this; }
-  private skipFrameNoKey(): this { this.args.push('-skip_frame', 'nokey'); return this; }
+  // P0 废弃：skipFrameNoKey（FAST_KEYFRAME 旧 GOP 级跳过，改为 AUTO_ADAPTIVE scene select）
   private input(filePath: string): this { this.args.push('-i', filePath); return this; }
   private videoFilter(chain: FilterChain): this { this.args.push('-vf', chain.toString()); return this; }
   private vsyncVfr(): this { this.args.push('-vsync', 'vfr'); return this; }
@@ -141,23 +156,20 @@ class FrameCommandBuilder {
       width, quality, inPoint, outPoint, timePoint, threads, attachShowinfo,
     } = config;
 
+    // P0 · 内部归一化：任意策略字符串 → 3 路由分支
+    const route = normalizeInternalStrategy(strategy);
+    // `normalizeFrameStrategy` 仅用于上层参数派生，这里保留 3 路路由（含 screenshotAt PRECISE_SINGLE）
+
     const builder = new FrameCommandBuilder();
     builder.overwrite();
 
-    // 1. 策略路由：输入选项阶段
-    switch (strategy) {
+    // 1. 策略路由：输入选项阶段（AUTO_ADAPTIVE 统一接管 VLM_OPTIMIZED / FAST_KEYFRAME）
+    switch (route) {
       case 'PRECISE_SINGLE': {
         const seekTime = timePoint ?? inPoint ?? 0;
         builder.seek(seekTime);
         builder.input(videoPath);
         builder.vframes(1);
-        break;
-      }
-      case 'FAST_KEYFRAME': {
-        builder.skipFrameNoKey();
-        if (inPoint !== undefined) builder.seek(inPoint);
-        builder.input(videoPath);
-        if (outPoint !== undefined) builder.to(outPoint);
         break;
       }
       case 'UNIFORM_FPS': {
@@ -166,7 +178,7 @@ class FrameCommandBuilder {
         if (outPoint !== undefined) builder.to(outPoint);
         break;
       }
-      case 'VLM_OPTIMIZED':
+      case 'AUTO_ADAPTIVE':
       default: {
         if (inPoint !== undefined) builder.seek(inPoint);
         builder.input(videoPath);
@@ -178,26 +190,25 @@ class FrameCommandBuilder {
     // 2. 构建滤镜链
     const chain = new FilterChain();
 
-    switch (strategy) {
-      case 'VLM_OPTIMIZED':
+    switch (route) {
+      case 'AUTO_ADAPTIVE':
+        // P0 · AUTO_ADAPTIVE 沿用 VLM_OPTIMIZED 的 scene select + minInterval 兜底（sceneThreshold 由 densityPreset 派生）
         chain.add(new VlmOptimizedSelectFilter(sceneThreshold, minFrameInterval));
-        break;
-      case 'FAST_KEYFRAME':
-        chain.add(new KeyframeSelectFilter());
         break;
       case 'UNIFORM_FPS':
         chain.add(new FpsFilter(fps));
         break;
       case 'PRECISE_SINGLE':
+      default:
         break;
     }
 
-    if (width > 0 && strategy !== 'PRECISE_SINGLE') {
+    if (width > 0 && route !== 'PRECISE_SINGLE') {
       chain.add(new ScaleFilter(width));
     }
 
     // 附加 showinfo：向 stderr 输出每帧 pts_time，供精确时序元数据捕获
-    if (attachShowinfo && strategy !== 'PRECISE_SINGLE') {
+    if (attachShowinfo && route !== 'PRECISE_SINGLE') {
       chain.add(new (class extends VideoFilter {
         toString(): string { return 'showinfo'; }
       })());
@@ -207,8 +218,8 @@ class FrameCommandBuilder {
       builder.videoFilter(chain);
     }
 
-    // 3. select 类滤镜需要 vfr 模式
-    if (strategy === 'VLM_OPTIMIZED' || strategy === 'FAST_KEYFRAME') {
+    // 3. AUTO_ADAPTIVE 用 select 滤镜 → 需要 vsync vfr
+    if (route === 'AUTO_ADAPTIVE') {
       builder.vsyncVfr();
     }
 
@@ -217,8 +228,8 @@ class FrameCommandBuilder {
     const qv = QUALITY_MAP[quality] ?? 4;
     builder.qualityJpeg(qv);
 
-    // 5. 线程数
-    if (strategy !== 'PRECISE_SINGLE') {
+    // 5. 线程数（单帧截图通常不需要多线程，避免额外开销）
+    if (route !== 'PRECISE_SINGLE') {
       builder.threads(threads);
     }
 
@@ -234,18 +245,18 @@ class FrameCommandBuilder {
 // ──────────────────────────────────────────────
 
 /**
- * 构建抽帧命令参数
+ * 构建抽帧命令参数（P0 · 对外公开 API）
  *
- * 四大策略路由：
- * - VLM_OPTIMIZED：场景动态切片 + 最小间隔兜底补帧（电影解说最优）
- * - UNIFORM_FPS：传统均匀时间步长
- * - FAST_KEYFRAME：极速全片索引（只读关键I帧）
- * - PRECISE_SINGLE：精准单帧时间戳截图
+ * 归一化后的策略路由（内部 normalizeInternalStrategy 自动兼容历史别名）：
+ * - PRECISE_SINGLE 别名 → 定点单帧截图 vframes=1（独立 screenshotAt API 使用）
+ * - UNIFORM_FPS → 传统 fps 均匀步长抽帧
+ * - AUTO_ADAPTIVE（默认，含 VLM_OPTIMIZED / FAST_KEYFRAME 历史别名） → scene select + minInterval 兜底
  */
 export function buildExtractCommand(config: {
   videoPath: string;
   outputPath: string;
-  strategy: FrameStrategy;
+  /** P0 · 放宽为 string：支持历史 4 策略别名；内部 normalizeInternalStrategy 归一化为 3 路路由 */
+  strategy: string;
   fps: number;
   sceneThreshold: number;
   minFrameInterval: number;

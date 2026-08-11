@@ -25,6 +25,8 @@ export const IPC_CHANNELS = {
   MEDIA_UPDATE: 'media:update',
   MEDIA_PROCESS: 'media:process',
   MEDIA_EXTRACT_FRAMES: 'media:extractFrames',
+  /** P0 新增：定点精准截图（独立 API，不再复用抽帧主流程 PRECISE_SINGLE） */
+  MEDIA_SCREENSHOT_AT: 'media:screenshotAt',
   MEDIA_CANCEL: 'media:cancelProcess',
   MEDIA_DELETE: 'media:delete',
   MEDIA_GET_BY_PROJECT: 'media:getByProject',

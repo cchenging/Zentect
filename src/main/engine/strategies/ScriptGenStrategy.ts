@@ -175,15 +175,51 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     };
     const params = input.pipelineParams || context.pipelineParams || DEFAULT_PARAMS;
     const hookIntensity = params.hookIntensity ?? 0.7;
-    const audioVisualWeight = params.audioVisualWeight ?? 0.6;
 
-    // 解说密度 → 字数填充系数（0-1）：满配1.0 / 标准0.65 / 留白0.5
-    const densityFillRate = params.narrationDensity === 'full' ? 1.0
-                          : params.narrationDensity === 'sparse' ? 0.5
-                          : 0.65;
+    /**
+     * SSOT：audioVisualWeight 由 originalAudioStrategy 唯一映射（与 Service.ts / View.tsx 保持一致）
+     * - cover: 0.8（解说全量覆盖，更多依赖视觉画面描写）
+     * - keep_key: 0.5（均衡）
+     * - original_main: 0.2（解说辅助过渡，更多提炼 ASR 对白）
+     */
+    const AUDIO_STRATEGY_TO_WEIGHT_MAP: Record<string, number> = {
+      cover: 0.8,
+      keep_key: 0.5,
+      original_main: 0.2,
+    };
+    const audioVisualWeight = AUDIO_STRATEGY_TO_WEIGHT_MAP[params.originalAudioStrategy] ?? 0.5;
 
-    // TTS 标点停顿折损系数：逗号 ~200ms / 句号 ~500ms，100 字累计停顿 3~6 秒，需扣除 15%
-    const discountFactor = 0.85;
+    // 解说密度 → 基础字数填充系数（0-1）：满配1.0 / 标准0.65 / 留白0.5
+    const baseDensityFillRate = params.narrationDensity === 'full' ? 1.0
+                              : params.narrationDensity === 'sparse' ? 0.5
+                              : 0.65;
+
+    /**
+     * 原声策略折扣：对 densityFillRate 再打一层折，避免时间轴物理溢出
+     * - cover(全量覆盖解说): 1.0（原声时间轴无占用，无需打折）
+     * - keep_key(关键台词保留): 0.85（约 15% 时间留给关键原声）
+     * - original_main(原声为主): 0.45（约 60%~80% 时间留给高光对白，解说仅辅助串场）
+     */
+    const AUDIO_STRATEGY_DISCOUNT: Record<string, number> = {
+      cover: 1.0,
+      keep_key: 0.85,
+      original_main: 0.45,
+    };
+    const audioStrategyDiscount = AUDIO_STRATEGY_DISCOUNT[params.originalAudioStrategy] ?? 1.0;
+    const densityFillRate = baseDensityFillRate * audioStrategyDiscount;
+
+    /**
+     * TTS 标点停顿折损系数：按 rhythmMode 差异化取值（之前全局固定 0.85 导致双向失真）
+     * - short_fast(短句快切): 频繁逗号/感叹号 → 约 15% 停顿占比 → discountFactor = 0.85
+     * - mixed(长短交替): 适度标点 → 约 10% 停顿占比 → discountFactor = 0.90
+     * - slow_soothing(长句舒缓): 少标点 + 句号情感节点 → 约 7% 停顿占比 → discountFactor = 0.93
+     */
+    const DISCOUNT_BY_RHYTHM: Record<string, number> = {
+      short_fast: 0.85,
+      mixed: 0.90,
+      slow_soothing: 0.93,
+    };
+    const discountFactor = DISCOUNT_BY_RHYTHM[params.rhythmMode] ?? 0.88;
 
     // ========== 阶段1：ContextChunk 结构化数据组装（时序对齐 + 角色锚定） ==========
     // 收集上游视觉数据（downstreamContext 优先）和 ASR 字幕数据

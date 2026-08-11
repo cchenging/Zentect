@@ -1,4 +1,5 @@
 // Module: pipeline/step1-material - Types 单元测试
+// P0 扩展：抽帧契约（2 枚举收拢 + densityPreset + 历史兼容映射）测试
 
 import { describe, it, expect } from 'vitest';
 import type {
@@ -12,6 +13,14 @@ import type {
   Step1State,
   StepMaterialAnalysisViewProps,
 } from '../types';
+// P0 · 抽帧契约唯一真源（共享层）
+import {
+  normalizeFrameStrategy,
+  LEGACY_FRAME_STRATEGY_COMPAT_MAP,
+  DENSITY_PRESET_CONFIG,
+  type FrameExtractStrategy,
+  type DensityPreset,
+} from '../../../../shared/contracts/capabilities';
 
 describe('Step1 Types', () => {
   describe('Step1Input', () => {
@@ -262,3 +271,112 @@ describe('Step1 Types', () => {
     });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// P0 · 抽帧契约收拢（共享层 capabilities.ts）
+// ═══════════════════════════════════════════════════════════════
+describe('P0 · 抽帧契约收拢（FrameExtractStrategy + DensityPreset）', () => {
+  describe('FrameExtractStrategy · 2 枚举收拢 + 历史兼容归一化', () => {
+    it('normalizeFrameStrategy 所有历史别名 → AUTO_ADAPTIVE / UNIFORM_FPS 之一', () => {
+      // LEGACY_COMPAT_MAP 里的每个 key 都应合法映射
+      for (const [raw, expected] of Object.entries(LEGACY_FRAME_STRATEGY_COMPAT_MAP)) {
+        expect(normalizeFrameStrategy(raw)).toBe(expected);
+      }
+      // 明确的 2 枚举直传保持不变
+      expect(normalizeFrameStrategy('AUTO_ADAPTIVE')).toBe('AUTO_ADAPTIVE');
+      expect(normalizeFrameStrategy('UNIFORM_FPS')).toBe('UNIFORM_FPS');
+    });
+
+    it('PRECISE_SINGLE / FAST_KEYFRAME / VLM_OPTIMIZED → 都归一化为 AUTO_ADAPTIVE（收拢核心）', () => {
+      const legacy: Array<[string | null | undefined, FrameExtractStrategy]> = [
+        ['PRECISE_SINGLE', 'AUTO_ADAPTIVE'],
+        ['FAST_KEYFRAME', 'AUTO_ADAPTIVE'],
+        ['VLM_OPTIMIZED', 'AUTO_ADAPTIVE'],
+        ['vlm_optimized', 'AUTO_ADAPTIVE'],
+        ['fast_keyframe', 'AUTO_ADAPTIVE'],
+        ['iframe', 'AUTO_ADAPTIVE'],
+        ['scene', 'AUTO_ADAPTIVE'],
+        ['UNIFORM', 'UNIFORM_FPS'],
+        ['uniform', 'UNIFORM_FPS'],
+        ['UNIFORM_FPS', 'UNIFORM_FPS'],
+      ];
+      for (const [raw, expected] of legacy) {
+        expect(normalizeFrameStrategy(raw)).toBe(expected);
+      }
+    });
+
+    it('空值 / 未知值 → 回落到 fallback（默认 AUTO_ADAPTIVE）', () => {
+      expect(normalizeFrameStrategy(null)).toBe('AUTO_ADAPTIVE');
+      expect(normalizeFrameStrategy(undefined)).toBe('AUTO_ADAPTIVE');
+      expect(normalizeFrameStrategy('')).toBe('AUTO_ADAPTIVE');
+      expect(normalizeFrameStrategy('STRATEGY_NOT_EXIST')).toBe('AUTO_ADAPTIVE');
+      expect(normalizeFrameStrategy('ANY', 'UNIFORM_FPS')).toBe('UNIFORM_FPS');
+    });
+  });
+
+  describe('DensityPreset · 3 档抽帧密度预设（SSOT，framesPerMinute / minFrameInterval / sceneThreshold）', () => {
+    it('sparse / standard / dense 三档均已定义，参数约束严格递增/递减', () => {
+      const presets: DensityPreset[] = ['sparse', 'standard', 'dense'];
+      for (const p of presets) {
+        const cfg = DENSITY_PRESET_CONFIG[p];
+        expect(cfg).toBeDefined();
+        expect(cfg.framesPerMinute).toBeGreaterThan(0);
+        expect(cfg.minFrameInterval).toBeGreaterThan(0);
+        expect(cfg.sceneThreshold).toBeGreaterThan(0);
+        expect(cfg.sceneThreshold).toBeLessThan(1);
+        expect(cfg.label).toBeTruthy();
+      }
+
+      // 稀疏→标准→高密度：framesPerMinute 严格增大
+      expect(DENSITY_PRESET_CONFIG.dense.framesPerMinute).toBeGreaterThan(
+        DENSITY_PRESET_CONFIG.standard.framesPerMinute
+      );
+      expect(DENSITY_PRESET_CONFIG.standard.framesPerMinute).toBeGreaterThan(
+        DENSITY_PRESET_CONFIG.sparse.framesPerMinute
+      );
+      // 稀疏→标准→高密度：minFrameInterval 严格减小
+      expect(DENSITY_PRESET_CONFIG.dense.minFrameInterval).toBeLessThan(
+        DENSITY_PRESET_CONFIG.standard.minFrameInterval
+      );
+      expect(DENSITY_PRESET_CONFIG.standard.minFrameInterval).toBeLessThan(
+        DENSITY_PRESET_CONFIG.sparse.minFrameInterval
+      );
+    });
+
+    it('典型时长估算：2 小时电影 × standard 档 → ≈ 2400 张封顶，解决"2000+ 爆 Token"问题', () => {
+      const minutes = 120;
+      const { framesPerMinute } = DENSITY_PRESET_CONFIG.standard;
+      const maxFrames = Math.ceil(minutes * framesPerMinute * 1.1); // +10% 容差
+      expect(framesPerMinute).toBe(20);
+      expect(maxFrames).toBe(2640);
+    });
+  });
+
+  describe('FramesConfig 新契约类型（向后兼容历史 4 枚举字符串）', () => {
+    it('新枚举 AUTO_ADAPTIVE / UNIFORM_FPS + frameDensityPreset 合法赋值', () => {
+      const config: FramesConfig = {
+        enabled: true,
+        mode: 'AUTO_ADAPTIVE',
+        frameDensityPreset: 'standard',
+        sceneThreshold: 0.28,
+        quality: 3,
+        scale: 1024,
+        fps: 2,
+      };
+      expect(config.mode).toBe('AUTO_ADAPTIVE');
+      expect(config.frameDensityPreset).toBe('standard');
+    });
+
+    it('历史 4 枚举字符串也能通过 FramesConfig.mode（string 兼容）', () => {
+      const legacyModes: FramesConfig['mode'][] = [
+        'VLM_OPTIMIZED',
+        'UNIFORM_FPS',
+        'FAST_KEYFRAME',
+        'PRECISE_SINGLE',
+      ];
+      // 不抛类型错误即可 → 保证老 JSON 反序列化不崩溃
+      expect(legacyModes).toHaveLength(4);
+    });
+  });
+});
+

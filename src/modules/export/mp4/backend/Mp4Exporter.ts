@@ -58,7 +58,9 @@ export class Mp4Exporter implements IExporter {
     const needBurn = subtitleMode === 'burn' || subtitleMode === 'both';
 
     // 烧录用 ASS（应用共享 subtitleStyle，样式可控）；附字幕文件用 SRT（通用格式）
-    const subtitleStyle = (project.subtitleStyle || {}) as import('../../jianying/types').SubtitleStyle;
+    // subtitleStyle 在 ExportProject 中定义为 Record<string, unknown>（跨出口通用），
+    // 真实结构是 SettingsService.getSubtitleStyle() 产出的 SubtitleStyle，结构完整，此处强转无风险。
+    const subtitleStyle = (project.subtitleStyle || {}) as unknown as import('../../jianying/types').SubtitleStyle;
 
     let subtitleBurnPath: string | undefined;
     let subtitleFileResult: string | undefined;

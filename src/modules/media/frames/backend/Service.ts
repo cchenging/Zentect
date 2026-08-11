@@ -1,5 +1,7 @@
 // 📁 路径：src/modules/media/frames/backend/Service.ts
 // 关键帧抽取服务：FFmpeg 抽帧执行 + 前置探针 + 自适应参数
+// P0 · 契约收拢：策略枚举收为 AUTO_ADAPTIVE | UNIFORM_FPS，
+// PRECISE_SINGLE 不再作为管线策略暴露，改由 screenshotAt 独立 API 消费。
 //
 // 依赖说明：
 // - 本模块通过函数参数注入外部依赖（PathManager、AppLogger 等），
@@ -8,9 +10,12 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { FrameStrategy, FrameExtractionTelemetry } from '../types';
+import type { FrameStrategy, FrameExtractionTelemetry, DensityPreset } from '../types';
 import { buildExtractCommand } from './Strategy';
 import { SmartFramePostProcessor } from './SmartFramePostProcessor';
+// P0：复用 frames/types 已 re-export 的契约唯一真源（含兼容映射）
+import { normalizeFrameStrategy, DENSITY_PRESET_CONFIG } from '../types';
+import { AppError, ErrorCode } from '../../../infra/error/AppError';
 
 // ──────────────────────────────────────────────
 // 外部依赖注入接口
@@ -24,22 +29,25 @@ export interface FrameExtractionDeps {
 }
 
 // ──────────────────────────────────────────────
-// 旧策略名映射表
+// P0 · 策略兼容归一化（替换旧 STRATEGY_MIGRATION）
 // ──────────────────────────────────────────────
 
-const STRATEGY_MIGRATION: Record<string, FrameStrategy> = {
-  uniform: 'UNIFORM_FPS',
-  keyframe: 'FAST_KEYFRAME',
-  iframe: 'FAST_KEYFRAME',
-  scene: 'VLM_OPTIMIZED',
-  vlm_optimized: 'VLM_OPTIMIZED',
-  uniform_fps: 'UNIFORM_FPS',
-  fast_keyframe: 'FAST_KEYFRAME',
-  precise_single: 'PRECISE_SINGLE',
-};
-
+/** P0 兼容归一化：所有历史别名 → 2 值枚举
+ *  ⚠️ 特殊：PRECISE_SINGLE 字符串会通过 normalize 变为 AUTO_ADAPTIVE；
+ *  真正的定点截图逻辑必须在调用 extractFrames 前通过 PRECISE_SINGLE 守卫拦截，
+ *  改走 screenshotAt 内部子流程（无需此守卫时可直接传 timePoint，但不推荐）。
+ */
 export function resolveStrategy(raw: string): FrameStrategy {
-  return STRATEGY_MIGRATION[raw] || (raw as FrameStrategy);
+  return normalizeFrameStrategy(raw);
+}
+
+/** 判断是否为 PRECISE_SINGLE 历史输入（大小写/下划线兼容）
+ *  true 时应拒绝进入抽帧主流程，提示走 screenshotAt 独立 API
+ */
+export function isPreciseSingleAlias(raw: string | null | undefined): boolean {
+  if (!raw) return false;
+  const r = String(raw).trim().toLowerCase().replace(/[\s-]/g, '_');
+  return r === 'precise_single' || r === 'precise' || r === 'precise_one' || r === 'single_frame';
 }
 
 // ──────────────────────────────────────────────
@@ -48,17 +56,28 @@ export function resolveStrategy(raw: string): FrameStrategy {
 
 export interface ExtractOptions {
   strategy?: string;
+  /** 均匀抽帧帧率（仅 UNIFORM_FPS 生效，AUTO_ADAPTIVE 下由 densityPreset 派生） */
   fps?: number;
   scale?: number;
   quality?: number;
+  /** 场景变化阈值；AUTO_ADAPTIVE + densityPreset 提供时默认从预设派生 */
   sceneThreshold?: number;
+  /** 最小帧间隔；AUTO_ADAPTIVE + densityPreset 提供时默认从预设派生 */
   minFrameInterval?: number;
   timePoint?: number;
   inPoint?: number;
   outPoint?: number;
   abortSignal?: AbortSignal;
-  /** 追加式后处理：清晰度/黑屏过滤 + 静态去重 + 时序元数据（默认关闭，非破坏） */
+  /** 追加式后处理：清晰度/黑屏过滤 + 静态去重 + 时序元数据 + 预算封顶（默认关闭，非破坏） */
   postProcess?: boolean;
+
+  // ── P0 · 密度预设 + BudgetClipper 参数 ──────────────────────────────────────
+  /** 抽帧密度预设（与 videoDuration 配合启用预算封顶）；前端选择档位时传递 */
+  densityPreset?: DensityPreset;
+  /** 显式 maxFrames 封顶（比 densityPreset 优先，调试或 UNIFORM_FPS 场景使用） */
+  maxFrames?: number;
+  /** BudgetClipper 超预算容忍度（默认 0.1） */
+  budgetToleranceRatio?: number;
 }
 
 // ──────────────────────────────────────────────
@@ -139,8 +158,8 @@ export class FrameExtractionService {
 
   /**
    * 视频抽帧（核心方法）
-   *
-   * 支持四大策略：VLM_OPTIMIZED / UNIFORM_FPS / FAST_KEYFRAME / PRECISE_SINGLE
+   * P0 后对外 2 大策略：AUTO_ADAPTIVE | UNIFORM_FPS
+   * PRECISE_SINGLE 输入会抛守卫错误，建议走 screenshotAt 独立 API。
    */
   async extractFrames(
     videoPath: string,
@@ -152,16 +171,28 @@ export class FrameExtractionService {
       fps = 2,
       scale = 1024,
       quality = 3,
-      sceneThreshold = 0.25,
-      minFrameInterval = 3.5,
+      sceneThreshold,
+      minFrameInterval,
       timePoint,
       inPoint,
       outPoint,
       abortSignal,
       postProcess = false,
+      densityPreset,
+      maxFrames,
+      budgetToleranceRatio,
     } = options;
 
-    const strategy = resolveStrategy(options.strategy || 'VLM_OPTIMIZED');
+    // P0 · PRECISE_SINGLE 守卫：定点截图不走批量抽帧，改走独立 screenshotAt API
+    if (isPreciseSingleAlias(options.strategy)) {
+      throw new AppError(
+        ErrorCode.SYS_INVALID_INPUT,
+        `[FrameExtraction] 策略 "${options.strategy}"（定点截图）已不再作为批量抽帧策略暴露。` +
+        `如需指定时间点精准截图，请调用 screenshotAt(...) 独立 API。`
+      );
+    }
+
+    const strategy = resolveStrategy(options.strategy || 'AUTO_ADAPTIVE');
     const safeMediaId = mediaId.replace(/[^\w\-\u4e00-\u9fff]/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
     const safeOutputDir = outputDir.replace(mediaId, safeMediaId);
 
@@ -191,12 +222,32 @@ export class FrameExtractionService {
       return emptyTelemetry;
     }
 
-    // 长视频自适应
-    const videoDurationSec = (outPoint ?? Infinity) - (inPoint ?? 0);
-    let adaptiveMinInterval = minFrameInterval;
+    // P0 · densityPreset 派生默认 sceneThreshold / minFrameInterval（用户显式传值时仍优先）
+    let effectiveSceneThreshold = sceneThreshold;
+    let effectiveMinInterval = minFrameInterval;
+    if (densityPreset && DENSITY_PRESET_CONFIG[densityPreset]) {
+      const preset = DENSITY_PRESET_CONFIG[densityPreset];
+      if (effectiveSceneThreshold === undefined || effectiveSceneThreshold === null) {
+        effectiveSceneThreshold = preset.sceneThreshold;
+      }
+      if (effectiveMinInterval === undefined || effectiveMinInterval === null) {
+        effectiveMinInterval = preset.minFrameInterval;
+      }
+    }
+    // 仍未设置 → 回退到历史默认值
+    if (effectiveSceneThreshold === undefined || effectiveSceneThreshold === null) effectiveSceneThreshold = 0.25;
+    if (effectiveMinInterval === undefined || effectiveMinInterval === null) effectiveMinInterval = 3.5;
+
+    // 长视频自适应（在 preset 派生后再施加，避免 preset 的 1.7s 高密档被意外放大）
+    const probedDurationSec = probeResult.duration ?? 0;
+    const actualIn = inPoint ?? 0;
+    const actualOut = outPoint ?? probedDurationSec;
+    const videoDurationSec = Math.max(0, actualOut - actualIn);
+    let adaptiveMinInterval = effectiveMinInterval;
     let adaptiveScale = scale;
     if (videoDurationSec > 600) {
-      adaptiveMinInterval = Math.min(15, Math.max(4, Math.round(videoDurationSec / 600) * 2));
+      // 长视频兜底只做放大（不小于 preset 派生）
+      adaptiveMinInterval = Math.max(effectiveMinInterval, Math.max(4, Math.round(videoDurationSec / 600) * 2));
       adaptiveScale = Math.min(1024, Math.max(512, 1024 - Math.floor(videoDurationSec / 600) * 64));
     }
 
@@ -207,7 +258,7 @@ export class FrameExtractionService {
       outputPath: outputPattern,
       strategy,
       fps,
-      sceneThreshold,
+      sceneThreshold: effectiveSceneThreshold,
       minFrameInterval: adaptiveMinInterval,
       width: adaptiveScale,
       quality,
@@ -216,7 +267,7 @@ export class FrameExtractionService {
       timePoint,
       threads: 0,
       // 后处理启用时附加 showinfo，捕获每帧精确 PTS
-      attachShowinfo: postProcess && strategy !== 'PRECISE_SINGLE',
+      attachShowinfo: postProcess,
     });
 
     return new Promise((resolve, reject) => {
@@ -268,7 +319,7 @@ export class FrameExtractionService {
             .map(f => path.join(safeOutputDir, f))
             .sort();
 
-          // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重 + 时序元数据
+          // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重 + 时序元数据 + P0 预算封顶
           // 会直接删除被丢弃的帧文件，返回的 files 即为精选后的帧
           let keptFiles = files;
           let frameDetails: import('../types').FrameAssetDetail[] = [];
@@ -276,11 +327,19 @@ export class FrameExtractionService {
             const ptsMs = ptsSeconds.map(s => Math.round(s * 1000));
             // ptsSeconds 不含文件名配对，仅当数量一致时才作为精确时间戳使用
             const exactPtsMs = files.length > 0 && ptsMs.length === files.length ? ptsMs : undefined;
+            // P0：videoDurationMinutes 基于探针实际时长（考虑 in/out point）
+            const videoDurationMinutes = videoDurationSec > 0 ? videoDurationSec / 60 : undefined;
             const result = await SmartFramePostProcessor.process(files, {
               strategy,
               fps,
               timePoint,
               ptsMs: exactPtsMs,
+              // P0 BudgetClipper 参数：densityPreset + 时长分钟数 / maxFrames / tolerance
+              densityPreset,
+              videoDurationMinutes,
+              maxFrames,
+              toleranceRatio: budgetToleranceRatio,
+              silentBudgetClipper: false,
             });
             keptFiles = result.kept.map(d => d.framePath);
             frameDetails = result.kept;

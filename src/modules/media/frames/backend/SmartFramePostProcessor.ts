@@ -6,10 +6,16 @@
 //   2. 黑屏检测：平均亮度过低（残影/溶接/黑场）的帧直接丢弃 —— 处理转场残影
 //   3. 感知去重：aHash（8x8 灰度平均哈希）汉明距离判断，剔除重复静态帧
 //   4. 时序元数据：按策略推断 timeMs，供下游步骤5绑定时间轴
+//   5. P0 预算封顶（BudgetClipper）：根据 densityPreset × 视频时长，做全片总帧数控
 //
 // 依赖：sharp（已安装 ^0.34.5），无需 OpenCV 绑定
 
 import sharp from 'sharp';
+import { BudgetClipper } from './BudgetClipper';
+import { InSceneDiffSampler } from './InSceneDiffSampler';
+import type { DensityPreset } from '../types';
+import type { BudgetClipPriorityFlag } from './BudgetClipper';
+import { normalizeFrameStrategy, type FrameExtractStrategy } from '../../../../shared/contracts/capabilities';
 
 /** 单帧质检与元数据结果 */
 export interface FrameAssetDetail {
@@ -29,10 +35,25 @@ export interface FrameAssetDetail {
   estimatedTime?: boolean;
 }
 
+/** P1 · 镜内差分采样配置（追加式，不破坏 P0 既有契约）
+ *  — enabled=false / strategy=UNIFORM_FPS → 全流程 gate 跳过（节省差分打分 + sharp hash 重算成本）
+ *  — peakRatio 默认 1.5：中心差分 > 前后均值 × 1.5 = 动作峰值
+ *  — lumaJumpThreshold 默认 100：luma 跳变超阈值 → 光效帧剔除以缓解转场溶接误报
+ */
+export interface DiffSamplingConfig {
+  /** 是否启用镜内差分采样（默认 true：AUTO_ADAPTIVE 下启用；UNIFORM_FPS 下即使 enabled=true 也 gate 跳过） */
+  enabled?: boolean;
+  /** 动作峰阈值系数（中心差分 / 前后邻居均值比），默认 1.5，越大越严格（仅显著跳变 = 峰值） */
+  peakRatio?: number;
+  /** 光效帧剔除阈值（中心帧 luma 与前帧 luma 差绝对值 ≤ lumaJumpThreshold 才进动作峰），默认 100 */
+  lumaJumpThreshold?: number;
+}
+
 /** 后处理选项 */
 export interface SmartFramePostProcessOptions {
-  /** 抽帧策略，决定 timeMs 推断方式 */
-  strategy: 'VLM_OPTIMIZED' | 'UNIFORM_FPS' | 'FAST_KEYFRAME' | 'PRECISE_SINGLE';
+  /** 抽帧策略，决定 timeMs 推断方式（P0 2 值枚举；历史旧字符串允许兼容传入；内部 normalize） */
+  strategy: 'VLM_OPTIMIZED' | 'UNIFORM_FPS' | 'FAST_KEYFRAME' | 'PRECISE_SINGLE'
+    | 'AUTO_ADAPTIVE' | string | FrameExtractStrategy;
   /** 均匀抽帧帧率（UNIFORM_FPS 用） */
   fps?: number;
   /** 精准截图时间点（秒，PRECISE_SINGLE 用） */
@@ -46,6 +67,26 @@ export interface SmartFramePostProcessOptions {
   /** 可选：每帧精确 PTS（毫秒，与 files 顺序对齐）。
    *  由 FFmpeg showinfo 捕获；提供时优先使用，否则按策略推断 */
   ptsMs?: number[];
+
+  // ── P0 · BudgetClipper 预算封顶参数 ──────────────────────────────
+  /** 抽帧密度预设；与 videoDurationMinutes 同时提供时启用预算封顶 */
+  densityPreset?: DensityPreset;
+  /** 视频总时长（分钟）；与 densityPreset 一起提供，计算 maxFrames */
+  videoDurationMinutes?: number;
+  /** 显式指定总帧数上限（比 densityPreset 优先级高）；UNIFORM_FPS 模式可直接传 */
+  maxFrames?: number;
+  /** 超预算容忍度，默认 0.1（10%）；≤ maxFrames × (1 + tolerance) 时不裁剪 */
+  toleranceRatio?: number;
+  /** P0 优先权标志：key = framePath（files 顺序），value = 保留标志；首末帧自动入白名单无需声明
+   *  P1 追加：合并动作峰值帧 action_peak 标志（immutable 不覆盖 upstream 声明的 hardCut/asrAnchor）
+   */
+  priorityFlags?: Record<string, BudgetClipPriorityFlag[]>;
+  /** 关闭 BudgetClipper 日志 */
+  silentBudgetClipper?: boolean;
+
+  // ── P1 · 镜内差分采样参数 ────────────────────────────────────────
+  /** P1 镜内差分采样配置（默认：enabled=true）；可在调用侧传 enabled=false 临时关闭做 A/B 基线回归 */
+  diffSampling?: DiffSamplingConfig;
 }
 
 /** 后处理结果 */
@@ -167,10 +208,13 @@ export class SmartFramePostProcessor {
       ptsMs,
     } = options;
 
-    const kept: FrameAssetDetail[] = [];
+    // kept 声明为 let：P0 BudgetClipper 可能会裁剪并替换整个数组（末尾重新赋值）
+    let kept: FrameAssetDetail[] = [];
     const dropped: SmartFramePostProcessResult['dropped'] = [];
     let lastHash = '';
     let sceneIndex = 0;
+    // P1 · aHash 缓存：③ 中 computeHash 一次计算，⑥ InSceneDiffSampler.scoreFramesDiff 零 computeHash 复用
+    const aHashCache = new Map<string, string>();
 
     for (let i = 0; i < files.length; i++) {
       const filePath = files[i];
@@ -204,12 +248,21 @@ export class SmartFramePostProcessor {
 
       // ③ 感知去重：与上一保留帧高度相似的静态画面折叠
       const currentHash = await this.computeHash(filePath).catch(() => '');
-      if (currentHash && lastHash && this.hammingDistance(lastHash, currentHash) <= dedupThreshold) {
-        dropped.push({ framePath: filePath, reason: `重复静态帧 (hamming<=${dedupThreshold})`, clarityScore, lumaScore });
-        this.tryUnlink(filePath);
-        continue;
+      if (currentHash) {
+        // P1 · 缓存写入：只要 hash 非空就写缓存（无论该帧是否因重复被丢弃，后续 P1 差分采样可能仍需 hash，但该帧若已删 → 实际只需要 kept 帧的 hash）
+        // 为节省内存：仅在「非重复帧（将进入 kept）」时写入缓存（重复帧被删，不需要参与后续差分）
+        const isDup = !!lastHash && this.hammingDistance(lastHash, currentHash) <= dedupThreshold;
+        if (!isDup) {
+          aHashCache.set(filePath, currentHash);
+          lastHash = currentHash;
+        } else {
+          dropped.push({ framePath: filePath, reason: `重复静态帧 (hamming<=${dedupThreshold})`, clarityScore, lumaScore });
+          this.tryUnlink(filePath);
+          continue;
+        }
+      } else if (lastHash) {
+        // hash 读取失败但 lastHash 存在：为保留该帧（不把 hash 失败当去重依据），跳过去重判断；lastHash 保持不变
       }
-      if (currentHash) lastHash = currentHash;
 
       // ④ 时序元数据（优先用 showinfo 捕获的精确 PTS，否则按策略推断）
       const exactMs = ptsMs && ptsMs[i] !== undefined ? ptsMs[i] : undefined;
@@ -228,6 +281,79 @@ export class SmartFramePostProcessor {
       });
     }
 
+    // ⑥ P1 · 镜内差分采样（新插入的追加式后处理）：
+    //   Gate 条件：strategy 归一化为 UNIFORM_FPS → 跳过（用户意图是均匀时序覆盖，不跑动作峰）
+    //              kept.length < 3 → 不足窗口 N=3 → 跳过
+    //              diffSampling?.enabled === false → 调用侧显式关闭（A/B 基线回归用）
+    //   执行逻辑（aHash 缓存命中，零新增 sharp 计算）：
+    //     ⑥-1 InSceneDiffSampler.scoreFramesDiff → ScoredFrame[]
+    //     ⑥-2 splitSceneBoundary → 差分分裂 sceneIndex（覆写 P0 递增序号，修复 R2）
+    //     ⑥-3 detectActionPeaks → 动作峰值帧路径列表
+    //     ⑥-4 buildPriorityFlags → 合并 upstream options.priorityFlags（immutable，不覆盖）
+    //   mergedPriorityFlags 供后续 ⑤ BudgetClipper 传参使用
+    const normalizedStrategy = normalizeFrameStrategy(strategy) as FrameExtractStrategy;
+    const diffEnabled = options.diffSampling?.enabled !== false; // 默认 true
+    const shouldRunDiff = diffEnabled
+      && normalizedStrategy === 'AUTO_ADAPTIVE'
+      && kept.length >= 3;
+    let mergedPriorityFlags = options.priorityFlags;
+    if (shouldRunDiff) {
+      try {
+        const scored = await InSceneDiffSampler.scoreFramesDiff(kept, undefined, aHashCache);
+        const splitScored = InSceneDiffSampler.splitSceneBoundary(scored);
+        // ⑥-2 覆写 kept[i].sceneIndex（P0 递增序号 → 差分分裂后 sceneIndex；修复「语义失真」R2 风险）
+        for (let idx = 0; idx < kept.length; idx++) {
+          kept[idx].sceneIndex = splitScored[idx].sceneIndex;
+        }
+        const peakRatio = options.diffSampling?.peakRatio ?? 1.5;
+        const lumaJumpThreshold = options.diffSampling?.lumaJumpThreshold ?? 100;
+        const actionPeakPaths = InSceneDiffSampler.detectActionPeaks(splitScored, {
+          strategy: normalizedStrategy, // AUTO_ADAPTIVE，不会被 gate
+          peakRatio,
+          lumaJumpThreshold,
+        });
+        mergedPriorityFlags = InSceneDiffSampler.buildPriorityFlags(actionPeakPaths, options.priorityFlags);
+      } catch (err) {
+        // ⑥ P1 为"尽力而为"追加优化：失败时不 crash 主流程，退回 baseline（P0 行为）；避免单帧异常导致整条抽帧任务挂
+        if (!options.silentBudgetClipper) {
+          console.warn('[SFPP·P1] 镜内差分采样异常，fallback 到 baseline：', err instanceof Error ? err.message : String(err));
+        }
+        mergedPriorityFlags = options.priorityFlags;
+      }
+    }
+
+    // ⑤ P0 · BudgetClipper：预算封顶（densityPreset + 时长 或 maxFrames 任一提供时启用）
+    const shouldClip = (!!options.densityPreset && typeof options.videoDurationMinutes === 'number')
+      || typeof options.maxFrames === 'number';
+    if (shouldClip && kept.length > 0) {
+      const clipResult = BudgetClipper.clip(kept, {
+        densityPreset: options.densityPreset,
+        videoDurationMinutes: options.videoDurationMinutes,
+        maxFrames: options.maxFrames,
+        toleranceRatio: options.toleranceRatio,
+        // P0 原 priorityFlags → P1 合并 action_peak 后的 mergedPriorityFlags（上游 hardCut/asrAnchor 不丢）
+        priorityFlags: mergedPriorityFlags,
+        silent: options.silentBudgetClipper,
+        // 删除归口：所有 discarded 帧（黑屏/模糊/重复/预算裁剪）统一由 SmartFramePostProcessor tryUnlink，
+        // 避免两个模块各删一份、日志重复；BudgetClipper 仅负责判定 dropped 列表。
+        deleteDroppedFiles: false,
+      });
+      // 合并 BudgetClipper 丢弃项到 dropped（统一形状：含 clarity/luma 占位）
+      for (const d of clipResult.dropped) {
+        const percentDesc = d.timePercent != null ? `@${Math.round(d.timePercent * 100)}%时间` : '';
+        dropped.push({
+          framePath: d.framePath,
+          reason: `预算裁剪 (${d.reason})${percentDesc}`,
+          clarityScore: 0,
+          lumaScore: 0,
+        });
+        // 被预算裁剪的帧也要从磁盘删除（保持磁盘与返回结果一致，不变式：returned kept ↔ 落盘）
+        this.tryUnlink(d.framePath);
+      }
+      // 用裁剪后的 kept 替换
+      kept = clipResult.kept;
+    }
+
     return { kept, dropped };
   }
 
@@ -235,21 +361,28 @@ export class SmartFramePostProcessor {
    * 按策略推断帧时间戳
    * - UNIFORM_FPS：index / fps，精确
    * - PRECISE_SINGLE：timePoint，精确
-   * - VLM_OPTIMIZED / FAST_KEYFRAME：非均匀，无法精确 → 标记 estimatedTime
+   * - VLM_OPTIMIZED / FAST_KEYFRAME / AUTO_ADAPTIVE：非均匀，无法精确 → 标记 estimatedTime
    */
   private static inferTimeMs(
-    strategy: 'VLM_OPTIMIZED' | 'UNIFORM_FPS' | 'FAST_KEYFRAME' | 'PRECISE_SINGLE',
+    strategy: 'VLM_OPTIMIZED' | 'UNIFORM_FPS' | 'FAST_KEYFRAME' | 'PRECISE_SINGLE'
+      | 'AUTO_ADAPTIVE' | string,
     index: number,
     fps: number,
     timePoint?: number,
   ): { timeMs: number; estimatedTime: boolean } {
-    switch (strategy) {
+    switch (String(strategy).toUpperCase()) {
       case 'UNIFORM_FPS':
-        return { timeMs: Math.round((index / fps) * 1000), estimatedTime: false };
+      case 'UNIFORM':
+        return { timeMs: Math.round((index / Math.max(1e-6, fps ?? 2)) * 1000), estimatedTime: false };
       case 'PRECISE_SINGLE':
+      case 'PRECISE':
         return { timeMs: Math.round((timePoint ?? 0) * 1000), estimatedTime: false };
       case 'VLM_OPTIMIZED':
       case 'FAST_KEYFRAME':
+      case 'AUTO_ADAPTIVE':
+      case 'SCENE':
+      case 'IFRAME':
+      case 'KEYFRAME':
       default:
         // 非均匀抽帧无精确 PTS，返回占位并明确标记为估算，避免误导下游
         return { timeMs: -1, estimatedTime: true };

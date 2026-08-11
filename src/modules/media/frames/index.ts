@@ -6,6 +6,7 @@ export type {
   FrameExtractInput,
   FrameExtractOutput,
   FrameExtractionTelemetry,
+  DensityPreset,
 } from './types';
 
 export { FRAME_STRATEGIES } from './types';

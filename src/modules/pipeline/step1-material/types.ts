@@ -3,6 +3,10 @@
 import type { AsrLine, Role, StepStatus } from '../../../shared/types/entities/editor';
 import type { MediaItem } from '../../../shared/types';
 import type { SubStepTiming } from '../../../renderer/src/store/usePipelineStore';
+import type {
+  FrameExtractStrategy as SharedFrameStrategy,
+  DensityPreset as SharedFrameDensityPreset,
+} from '../../../shared/contracts/capabilities';
 
 /** Step1 输入接口 (§3.3.2) */
 export interface Step1Input {
@@ -29,18 +33,29 @@ export interface Step1Config {
   faces: FacesConfig;
 }
 
-/** 抽帧配置 */
+/** 抽帧配置（P0 契约收拢：mode 2 值 + 抽帧密度预设 frameDensityPreset）
+ *  ⚠️ 字段命名注意：`density` 已被 step3 解说文案密度占用（usePipelineOrchestrator 动态访问），
+ *  因此抽帧密度预设使用 `frameDensityPreset`，避免语义碰撞。
+ */
 export interface FramesConfig {
   enabled: boolean;
-  mode: 'VLM_OPTIMIZED' | 'UNIFORM_FPS' | 'FAST_KEYFRAME' | 'PRECISE_SINGLE';
+  /** P0 抽帧策略（2 值；历史 4 枚举 job 打开时自动迁移） */
+  mode: SharedFrameStrategy | string;
+  /** P0 抽帧密度预设（仅 AUTO_ADAPTIVE 生效，绑定帧数预算/最小间隔/转场阈值，默认 standard） */
+  frameDensityPreset?: SharedFrameDensityPreset;
+  /** 场景变化阈值 0.0~1.0；AUTO_ADAPTIVE 下默认由 frameDensityPreset 派生（调试可覆盖） */
   sceneThreshold: number;
   quality: number;
   scale: number;
+  /** 均匀抽帧帧率，仅 UNIFORM_FPS 模式生效 */
   fps: number;
+  /** 最小帧间隔；AUTO_ADAPTIVE 下默认由 frameDensityPreset 派生（调试可覆盖） */
   minFrameInterval?: number;
+  /** ⚠️ 历史兼容：定点截图时间，P0 起抽帧主流程不消费，走 screenshotAt 独立 API */
   timePoint?: number;
   // 🔧 修复 TS2339：usePipelineOrchestrator 动态访问的字段（用于 UI 配置传递到管线）
   value?: number;
+  /** ⚠️ 保留字段：step3 解说文案密度（解说密度，非抽帧密度！不要与 frameDensityPreset 混用） */
   density?: 'sparse' | 'standard' | 'dense' | string;
 }
 

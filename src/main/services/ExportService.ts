@@ -2,6 +2,8 @@
 // 导出编排服务：统一分发「剪映草稿导出」与「成片渲染导出」两条出口
 //   - exportToJianYing: 生成剪映可编辑草稿（走 JianyingExportService）
 //   - exportVideo:      软件内直接合成最终 MP4 成片（走 FFmpegRenderer）
+// 真模块化：两条出口共享同一个 ExportProjectAssembler 装配中心（单一装配源），
+// 不再各自读取 DB / 手搓镜头装配，避免新增字段时改两处漏一处。
 import * as path from 'path';
 import { app } from 'electron';
 import { SrtExportService } from '../../modules/export/srt';
@@ -14,12 +16,15 @@ import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import type { JianyingExportInput } from '../../modules/export/jianying/types';
 import type { JianyingExportPayload } from '../../modules/export/jianying/backend/JianyingExporter';
 import type { ExportJob } from '../../modules/export/contracts/ExportJob';
-import type { ExportProject } from '../../modules/export/contracts/ExportProject';
 import { buildExportRegistry } from '../../modules/export/createExportRegistry';
 import type { Mp4ExportInput } from '../../modules/export/mp4/types';
 import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import type { WebContents } from 'electron';
 import { dehydrateMagicPath } from '../engine/utils/pathUtils';
+import {
+  assembleExportProjectSync,
+  type AssembleExportProjectOptions,
+} from '../../modules/export/backend/ExportProjectAssembler';
 
 export class ExportService {
   private projectRepo = new ProjectRepository();
@@ -43,69 +48,37 @@ export class ExportService {
     const { projectId, projectName, ratio, resolution, fps, preview, exportPath, subtitleMode, exportRange, selectedShotIds } = payload;
     try {
       if (!projectId) throw new AppError(ErrorCode.SYS_INVALID_INPUT, '缺少 projectId');
-      const projectData: any = this.projectRepo.loadFullProjectData(projectId);
-      if (!projectData) throw new AppError(ErrorCode.DB_RECORD_NOT_FOUND, '项目数据不存在');
 
-      const matchResults = projectData.matchResults || [];
-      const ttsResults = projectData.ttsResults || [];
-      const mediaItem = Array.isArray(projectData.mediaItems)
-        ? projectData.mediaItems[0]
-        : undefined;
-      const sourceVideoPath = mediaItem?.filePath || '';
-      if (!sourceVideoPath) throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, '未找到源视频，成片渲染中止');
-
-      // 配音路径按 shotId 关联，magic:// 路径脱水为物理路径
-      const ttsByShotId = new Map<string, any>(
-        (ttsResults || []).map((t: any) => [t.shotId, t]),
-      );
-
-      // 逐镜头装配中间模型（视频切片 + 变速 + 配音）
-      const shots = (matchResults || []).map((m: any) => {
-        const chunk = m?.chunkData || null;
-        const startMs = chunk?.startMs ?? m?.videoTimelineStartMs ?? 0;
-        const endMs = chunk?.endMs ?? m?.videoTimelineEndMs ?? startMs + (m?.audioDurationMs ?? 3000);
-        const tts = ttsByShotId.get(m.shotId);
-        let audioPath: string | undefined;
-        if (tts?.audioUrl && !tts._failed) {
-          audioPath = dehydrateMagicPath(tts.audioUrl).replace('file://', '');
-        }
-        return {
-          id: m.shotId,
-          // 透传文案，供成片字幕烧录/字幕文件装配使用
-          text: m.text,
-          aiText: m.aiText,
-          start: startMs / 1000,
-          end: endMs / 1000,
-          audioPath,
-          chunkData: chunk,
-          appliedSpeedFactor: m.appliedSpeedFactor,
-        };
+      // 真模块化：统一装配（DB读取 + 镜头 + BGM + 字幕样式 + S8 过滤）全部在一处完成
+      const assemblerOptions: AssembleExportProjectOptions = {
+        exportRange: exportRange || 'all',
+        selectedShotIds,
+        includeSubtitleStyle: true,
+      };
+      const assembled = assembleExportProjectSync(projectId, assemblerOptions, {
+        projectRepo: this.projectRepo,
+        settingsService: this.settingsService,
+        dehydratePath: dehydrateMagicPath,
       });
+      const project = assembled.project;
+      // 成片专属画面参数：覆盖装配器的默认空值
+      if (ratio !== undefined) project.ratio = ratio;
+      if (resolution !== undefined) project.resolution = resolution;
+      if (fps !== undefined) project.fps = fps;
+      if (preview !== undefined) project.preview = preview;
+      // projectName 优先级：前端传入 > DB 项目名
+      if (projectName && !project.projectName) project.projectName = projectName;
 
-      // 导出范围：选中片段时仅保留选中的镜头，无匹配则 fail-fast（不静默降级为全部）
-      const scopedShots = applyExportRange(shots, exportRange, selectedShotIds);
-
-      // 背景音乐（分离出的 BGM 轨）
-      const bgmItem = (projectData.mediaItems || []).find(
-        (mi: any) => mi.type === 'audio' && mi.extractedBgm,
-      );
-      const bgmPath = bgmItem?.extractedBgm || projectData.activeBgm || undefined;
-
-      // 装配统一的中间数据模型，走「成片导出出口」
-      const project: ExportProject = {
+      const mp4Payload: Mp4ExportInput = {
         projectId,
-        projectName: projectName || projectData.name || '',
-        mediaPath: sourceVideoPath,
-        bgmPath,
-        shots: scopedShots,
+        projectName: projectName || project.projectName,
         ratio,
         resolution,
         fps,
         preview,
-        // 透传共享字幕样式，供成片烧录 ASS 使用
-        subtitleStyle: this.settingsService.getSubtitleStyle() as unknown as Record<string, unknown>,
+        exportPath,
+        subtitleMode,
       };
-      const mp4Payload: Mp4ExportInput = { projectId, projectName, ratio, resolution, fps, preview, exportPath, subtitleMode };
       const job: ExportJob = {
         projectId,
         projectName: project.projectName,
@@ -133,47 +106,73 @@ export class ExportService {
 
   /** 导出剪映可编辑草稿 */
   public async exportToJianYing(payload: any, sender: Electron.WebContents): Promise<any> {
-    const { projectId, customPath } = payload;
+    const { projectId, customPath, exportRange, selectedShotIds } = payload;
     try {
       if (!projectId) throw new AppError(ErrorCode.SYS_INVALID_INPUT, '缺少 projectId');
-      const projectData: any = this.projectRepo.loadFullProjectData(projectId);
-      if (!projectData) throw new AppError(ErrorCode.DB_RECORD_NOT_FOUND, '项目数据不存在');
 
-      const mediaPath =
-        Array.isArray(projectData.mediaItems) && projectData.mediaItems[0]
-          ? projectData.mediaItems[0].filePath || ''
-          : '';
+      // 真模块化：统一装配（DB读取 + 镜头 + BGM + 字幕样式 + S8 过滤）一处完成
+      // 剪映端需要 scriptParagraphs/shots/matchResults/ttsResults 额外字段 → 走 extras 透传
+      const assemblerOptions: AssembleExportProjectOptions = {
+        exportRange: exportRange || 'all',
+        selectedShotIds,
+        includeSubtitleStyle: true,
+        extraPayloadFields: ['scriptParagraphs', 'shots', 'matchResults', 'ttsResults'],
+      };
+      const assembled = assembleExportProjectSync(projectId, assemblerOptions, {
+        projectRepo: this.projectRepo,
+        settingsService: this.settingsService,
+        dehydratePath: dehydrateMagicPath,
+      });
+      const { project, extras } = assembled;
 
-      // 背景音乐（分离出的 BGM 轨）
-      const bgmItem = (projectData.mediaItems || []).find(
-        (mi: any) => mi.type === 'audio' && mi.extractedBgm,
-      );
-      const bgmPath = bgmItem?.extractedBgm || projectData.activeBgm || undefined;
-      if (bgmPath) {
-        AppLogger.info(LOG_TAGS.EXPORT, `剪映导出: 检测到分离 BGM 轨道`, { bgmPath });
+      // S8 范围过滤已在装配器中完成（project.shots 即为 scopedShots），这里直接用
+      if (exportRange === 'selected') {
+        AppLogger.info(
+          LOG_TAGS.EXPORT,
+          `剪映导出 S8 生效：选中 ${project.shots.length} 段（共请求 ${(selectedShotIds || []).length} 个 id）`,
+          { exportRange, selectedShotIds: selectedShotIds || [] },
+        );
       }
 
-      // 组装剪映导出输入（主数据源：scriptParagraphs 解说文案 s_xx；matchResults/ttsResults 按 shotId 补充切片与配音）
+      // 剪映端兼容：按 JianyingExportInput 格式重组（scriptParagraphs 仍从 extras 取，保持剪映字幕段落 s_xx 粒度）
       const input: JianyingExportInput = {
         projectId,
-        projectName: projectData.name || projectData.projectName || '',
-        shots: projectData.shots || [],
-        matchResults: projectData.matchResults || [],
-        ttsResults: projectData.ttsResults || [],
-        scriptParagraphs: projectData.scriptParagraphs || [],
-        bgmPath,
-        mediaPath,
-        outputDir: mediaPath,
+        projectName: project.projectName,
+        shots: (extras.shots || []) as any[],
+        // S8 范围过滤：matchResults/ttsResults/scriptParagraphs 按装配器已过滤的 shotId 集合二次裁剪
+        matchResults: filterBySelectedShotIds(
+          (extras.matchResults || []) as any[],
+          project.shots.map((s) => s.id),
+          'shotId',
+        ),
+        ttsResults: filterBySelectedShotIds(
+          (extras.ttsResults || []) as any[],
+          project.shots.map((s) => s.id),
+          'shotId',
+        ),
+        scriptParagraphs: filterBySelectedShotIds(
+          (extras.scriptParagraphs || []) as any[],
+          project.shots.map((s) => s.id),
+          'shotId',
+          'id',
+        ),
+        bgmPath: project.bgmPath,
+        mediaPath: project.mediaPath,
+        outputDir: project.mediaPath || '',
       };
 
       const jianyingRoot = this.resolveJianyingRoot(customPath);
-      // 读取剪映字幕样式（缺省用默认样式）
-      const subtitleStyle = this.settingsService.getSubtitleStyle();
-      // 走「剪映导出出口」：payload 承载专属输入，registry 统一编排
+      // 字幕样式从统一装配器取（与成片端同一份，避免分叉读取）
+      const subtitleStyle = project.subtitleStyle as any;
+      if (subtitleStyle && project.bgmPath) {
+        AppLogger.info(LOG_TAGS.EXPORT, `剪映导出: 检测到分离 BGM 轨道`, { bgmPath: project.bgmPath });
+      }
+
       const jyPayload: JianyingExportPayload = { input, jianyingRoot, subtitleStyle };
       const job: ExportJob = {
         projectId,
         projectName: input.projectName,
+        project,                                    // 双通道契约落地：剪映端 job.project 首次赋值！
         payload: jyPayload as unknown as Record<string, unknown>,
         // 进度桥接：剪映写盘为同步快速路径，直接推送完成态
         onProgress: (p) => this.pushProgress(sender, projectId, p.percent, p.step),
@@ -242,6 +241,39 @@ export class ExportService {
       throw error;
     }
   }
+}
+
+/**
+ * S8 辅助：按选中的 shotId 集合，对 extras 里的原始数组（matchResults/ttsResults/scriptParagraphs）做二次过滤。
+ *
+ * 说明：ExportProjectAssembler 已按 shotId 过滤出 ExportShot[]，但 extras 里透传的 matchResults/ttsResults/scriptParagraphs
+ * 是 DB 原始数组（未过滤），剪映端 JianyingExportInput 需要这些结构按同一 S8 范围对齐，否则会出现
+ * "实际只有 3 段视频片段，但 scriptParagraphs 仍有 26 段 s_xx → 字幕轨道多 23 段空素材" 的问题。
+ *
+ * @param list        原始 extras 数组（matchResults/ttsResults/scriptParagraphs）
+ * @param selectedIds 装配器已过滤的选中 shotId 集合（白名单）
+ * @param primaryKey  list[i][primaryKey] 与 selectedIds 对齐的主键名（matchResults/ttsResults 用 'shotId'）
+ * @param fallbackKey 若 primaryKey 取不到时的回退键（scriptParagraphs 的 'shotId' 可能空，用 'id' 兜底，需传两键）
+ */
+function filterBySelectedShotIds<T extends Record<string, any>>(
+  list: T[],
+  selectedIds: string[],
+  primaryKey: string,
+  fallbackKey?: string,
+): T[] {
+  if (!list || list.length === 0) return [];
+  const selected = new Set(selectedIds || []);
+  // selectedIds 空：说明是 'all' 范围（装配器未裁剪）→ 原样返回，不做过滤
+  if (selected.size === 0) return list;
+  return list.filter((item) => {
+    const id1 = item?.[primaryKey];
+    if (typeof id1 === 'string' && selected.has(id1)) return true;
+    if (fallbackKey) {
+      const id2 = item?.[fallbackKey];
+      if (typeof id2 === 'string' && selected.has(id2)) return true;
+    }
+    return false;
+  });
 }
 
 /**
