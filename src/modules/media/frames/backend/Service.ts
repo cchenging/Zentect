@@ -78,6 +78,12 @@ export interface ExtractOptions {
   maxFrames?: number;
   /** BudgetClipper 超预算容忍度（默认 0.1） */
   budgetToleranceRatio?: number;
+
+  // ── P2 · 声画锚定参数 ────────────────────────────────────────────────
+  /** P2 声画锚定配置（追加式；默认启用；UNIFORM_FPS gate=空） */
+  asrSampling?: import('./AsrAnchorMatcher').AsrAnchoringConfig;
+  /** P2 上游 ASR 台词（来自 Step1 ASR 识别）；空数组/不传 = 跳过锚定（不 crash） */
+  asrLines?: import('../../../../shared/types/entities/editor').AsrLine[];
 }
 
 // ──────────────────────────────────────────────
@@ -181,6 +187,8 @@ export class FrameExtractionService {
       densityPreset,
       maxFrames,
       budgetToleranceRatio,
+      asrSampling,
+      asrLines,
     } = options;
 
     // P0 · PRECISE_SINGLE 守卫：定点截图不走批量抽帧，改走独立 screenshotAt API
@@ -340,6 +348,9 @@ export class FrameExtractionService {
               maxFrames,
               toleranceRatio: budgetToleranceRatio,
               silentBudgetClipper: false,
+              // P2：声画锚定（上游 ASR 透传；空数组 = 跳过吸附）
+              asrSampling,
+              asrLines,
             });
             keptFiles = result.kept.map(d => d.framePath);
             frameDetails = result.kept;

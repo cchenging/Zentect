@@ -175,3 +175,119 @@ describe('SmartFramePostProcessor.process · P1 镜内差分采样集成链路�
     for (const p of pathsOff) expect(pathsOn.has(p)).toBe(true);
   });
 });
+
+// ============= P2 集成链路验证（声画锚定：mock 免磁盘，P1 mock 可直接复用）=============
+/** 创建假 ASR 台词数据（纯内存） */
+function fakeAsr(startMs: number, endMs: number, text: string) {
+  return {
+    start: '', startMs, end: '', endMs, text, editing: false,
+  } as const;
+}
+
+describe('SmartFramePostProcessor.process · P2 声画锚定集成链路（mock 免磁盘）', () => {
+  const assessClaritySpy = vi.spyOn(SmartFramePostProcessor, 'assessClarity' as any) as unknown as MockInstance<(fp: string) => Promise<number>>;
+  const assessLumaSpy = vi.spyOn(SmartFramePostProcessor, 'assessLuma' as any) as unknown as MockInstance<(fp: string) => Promise<number>>;
+  const computeHashSpy = vi.spyOn(SmartFramePostProcessor, 'computeHash' as any) as unknown as MockInstance<(fp: string) => Promise<string>>;
+  const tryUnlinkSpy = vi.spyOn(SmartFramePostProcessor, 'tryUnlink' as any) as unknown as MockInstance<(fp: string) => void>;
+
+  beforeAll(() => {
+    assessClaritySpy.mockResolvedValue(500); // 清晰度过关
+    assessLumaSpy.mockResolvedValue(128);    // 亮度过关
+    tryUnlinkSpy.mockImplementation(() => { /* noop：不会真删 */ });
+  });
+  afterEach(() => { computeHashSpy.mockReset(); });
+
+  // [P2-集成-1] 声画吸附白名单：ASR line (4000-6000, center=5000) 对应 frame at 5000ms → BudgetClipper 白名单优先保留
+  it('[P2-集成-1] 声画吸附白名单：帧 time=5000ms 与 ASR 台词 center=5000ms 吸附 → 白名单保留（BudgetClipper 预算紧时 100% 留下）', async () => {
+    // 构造 5 帧：timeMs = 1000, 3000, 5000, 7000, 9000（均匀分布）
+    const files = fakeFiles(5);
+    // hash 各不相同（hamming=15 > 默认 dedupThreshold=5），确保 5 帧均不被 dedup drop
+    const base = '0'.repeat(64);
+    const hashSeq = Array.from({ length: 5 }, (_, i) => hashWithHammingDistance(base, 15 + i * 10));
+    computeHashSpy.mockImplementation(async (fp: string) => {
+      const idx = files.indexOf(fp);
+      return hashSeq[idx] ?? base;
+    });
+    // 单条 ASR 台词：4000-6000ms（center=5000ms → 匹配 frame index 2）
+    const asrLines = [fakeAsr(4000, 6000, '匹配台词5秒')];
+    // 显式传精确 PTS：5 帧 = [1000, 3000, 5000, 7000, 9000] ms（否则 AUTO_ADAPTIVE 会 inferTimeMs = index / fps*1000，fps=1 → i=2 time=2000，离 center 5000 Δ=3000 > tolerance 3000 边界）
+    const ptsMs = [1000, 3000, 5000, 7000, 9000];
+    // Budget：maxFrames = 2（tight budget，只留白名单），toleranceRatio=0
+    const result = await SmartFramePostProcessor.process(files, {
+      strategy: 'AUTO_ADAPTIVE', fps: 1,
+      dedupThreshold: 0, // 关闭去重（与 P1 保持一致，避免重复帧 drop 影响断言）
+      ptsMs,
+      maxFrames: 2, toleranceRatio: 0,
+      silentBudgetClipper: true,
+      asrSampling: { enabled: true, toleranceMs: 3000 },
+      asrLines,
+    });
+    // 白名单应包含：首帧(1000ms) + 末帧(9000ms) + 吸附帧(5000ms) = 3 张？——但 BudgetClipper 当 maxFrames=2, tol=0 时白名单=3>effective(2)
+    // → 进入分级裁剪（仅 action_peak 会裁，但这里只有 asrAnchor，白名单无仅 action_peak 帧 → 分级裁剪不起作用；白名单仍 > budget → 降级保留全部白名单，不裁剪 candidate？—— 不对，BudgetClipper 超容差时：降级保留全部白名单不删，dropped=0）
+    // → 修正断言：dropped.length = 0（降级保留白名单）
+    const keptPaths = new Set(result.kept.map(f => f.framePath));
+    expect(keptPaths.has(files[2])).toBe(true); // 吸附帧一定在 kept
+  });
+
+  // [P2-集成-2] UNIFORM_FPS gate：ASR 即使提供，声画锚定仍整体跳过（不变式：不破坏均匀抽帧策略）
+  it('[P2-集成-2] UNIFORM_FPS strategy gate：即使传 asrLines + 吸附时间匹配，声画锚定跳过（吸附帧 无 asrAnchor 白名单标志）', async () => {
+    // 构造 5 帧，time 1000/3000/5000/7000/9000
+    const files = fakeFiles(5);
+    const base = '0'.repeat(64);
+    const hashSeq = Array.from({ length: 5 }, (_, i) => hashWithHammingDistance(base, 15 + i * 10));
+    computeHashSpy.mockImplementation(async (fp: string) => {
+      const idx = files.indexOf(fp);
+      return hashSeq[idx] ?? base;
+    });
+    const asrLines = [fakeAsr(4000, 6000, '台词')];
+    // Spy BudgetClipper.clip：查看 priorityFlags 是否传 files[2] 带 asrAnchor —— 更简单的断言：spy 后看调用参数
+    const { mock: { calls: spyCallsBefore } } = vi.spyOn(SmartFramePostProcessor, 'process');
+    const clipSpy = vi.spyOn(await import('../backend/BudgetClipper').then(m => m.BudgetClipper), 'clip');
+
+    const result = await SmartFramePostProcessor.process(files, {
+      strategy: 'UNIFORM_FPS', fps: 1,
+      dedupThreshold: 0, maxFrames: 2, toleranceRatio: 0,
+      silentBudgetClipper: true,
+      asrSampling: { enabled: true, toleranceMs: 3000 },
+      asrLines,
+    });
+    // BudgetClipper 被调了 1 次 → priorityFlags 里没有 files[2] asrAnchor（因为 UNIFORM_FPS gate）
+    expect(clipSpy).toHaveBeenCalledTimes(1);
+    const priorityFlags = (clipSpy.mock.calls[0][1] as any)?.priorityFlags as Record<string, string[]> | undefined;
+    const anchorFlags = (priorityFlags?.[files[2]] ?? []).filter(f => f === 'asrAnchor');
+    expect(anchorFlags.length).toBe(0); // UNIFORM_FPS → 无 asrAnchor flag
+    clipSpy.mockRestore();
+  });
+
+  // [P2-集成-3] 回滚安全：asrSampling.enabled=false + asrLines 空 → kept 数量/路径 与 enabled=true 且无 asrLines 时 ±0 baseline
+  it('[P2-集成-3] 回滚安全：asrSampling.enabled=false 与 enabled=true (无 asrLines) → kept 数量/帧集合完全相等（±0 baseline）', async () => {
+    const files = fakeFiles(5);
+    const base = '0'.repeat(64);
+    const hashSeq = Array.from({ length: 5 }, (_, i) => hashWithHammingDistance(base, 15 + i * 10));
+    computeHashSpy.mockImplementation(async (fp: string) => {
+      const idx = files.indexOf(fp);
+      return hashSeq[idx] ?? base;
+    });
+    const [baselineOff, baselineOnNoAsr] = await Promise.all([
+      SmartFramePostProcessor.process(files, {
+        strategy: 'AUTO_ADAPTIVE', fps: 1, dedupThreshold: 0,
+        densityPreset: undefined, maxFrames: undefined, silentBudgetClipper: true,
+        asrSampling: { enabled: false },
+        asrLines: [], // 空数组 = 无 ASR
+      }),
+      SmartFramePostProcessor.process(files, {
+        strategy: 'AUTO_ADAPTIVE', fps: 1, dedupThreshold: 0,
+        densityPreset: undefined, maxFrames: undefined, silentBudgetClipper: true,
+        asrSampling: { enabled: true },
+        asrLines: [], // 空数组 = 无 ASR（gate 直接跳）
+      }),
+    ]);
+    expect(baselineOff.kept).toHaveLength(5);
+    expect(baselineOnNoAsr.kept).toHaveLength(5);
+    // 回滚安全不变式：两结果帧集合完全相同
+    const pathsOff = new Set(baselineOff.kept.map(f => f.framePath));
+    const pathsOn = new Set(baselineOnNoAsr.kept.map(f => f.framePath));
+    expect(pathsOff.size).toBe(pathsOn.size);
+    for (const p of pathsOff) expect(pathsOn.has(p)).toBe(true);
+  });
+});

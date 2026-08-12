@@ -13,8 +13,10 @@
 import sharp from 'sharp';
 import { BudgetClipper } from './BudgetClipper';
 import { InSceneDiffSampler } from './InSceneDiffSampler';
+import { AsrAnchorMatcher, type AsrAnchoringConfig } from './AsrAnchorMatcher';
 import type { DensityPreset } from '../types';
 import type { BudgetClipPriorityFlag } from './BudgetClipper';
+import type { AsrLine } from '../../../../shared/types/entities/editor';
 import { normalizeFrameStrategy, type FrameExtractStrategy } from '../../../../shared/contracts/capabilities';
 
 /** 单帧质检与元数据结果 */
@@ -87,6 +89,14 @@ export interface SmartFramePostProcessOptions {
   // ── P1 · 镜内差分采样参数 ────────────────────────────────────────
   /** P1 镜内差分采样配置（默认：enabled=true）；可在调用侧传 enabled=false 临时关闭做 A/B 基线回归 */
   diffSampling?: DiffSamplingConfig;
+
+  // ── P2 · 声画锚定参数 ──────────────────────────────────────────
+  /** P2 声画锚定配置（默认：enabled=true）；可在调用侧传 enabled=false 临时关闭做 A/B 基线回归；
+   *  strategy=UNIFORM_FPS 即使 enabled=true 也 gate 跳过（均匀时序优先）
+   */
+  asrSampling?: AsrAnchoringConfig;
+  /** P2 上游已有的 ASR 台词结果（Step1 ASR 产生的 asrLines）；不传或空数组 → 声画锚定零吸附（不 crash） */
+  asrLines?: AsrLine[];
 }
 
 /** 后处理结果 */
@@ -319,6 +329,40 @@ export class SmartFramePostProcessor {
           console.warn('[SFPP·P1] 镜内差分采样异常，fallback 到 baseline：', err instanceof Error ? err.message : String(err));
         }
         mergedPriorityFlags = options.priorityFlags;
+      }
+    }
+
+    // ⑦ P2 · 声画锚定（新插入的追加式后处理，纯函数无磁盘 I/O、无 FFmpeg 调用）
+    //   Gate 条件：strategy 归一化为 UNIFORM_FPS → 跳过（均匀时序优先，不做 ASR 吸附）
+    //              asrSampling?.enabled === false → 显式关闭（A/B 基线回归用）
+    //              asrLines 空/不传 → 跳过（不 crash）
+    //              kept.length < 1 → 无帧可吸附 → 跳过
+    //   执行逻辑（无 sharp/无 IO，全内存）：
+    //     ⑦-1 AsrAnchorMatcher.matchFramesToAsr → anchoredFramePaths
+    //     ⑦-2 buildPriorityFlags → 合并 ⑥ P1 产出的 mergedPriorityFlags（immutable，绝不覆盖 hardCut/action_peak）
+    //   失败回退：try/catch fallback，返回 baseline mergedPriorityFlags，不 crash
+    const asrEnabled = options.asrSampling?.enabled !== false; // 默认 true
+    const asrLinesArr = Array.isArray(options.asrLines) ? options.asrLines : [];
+    const shouldRunAsr = asrEnabled
+      && normalizedStrategy === 'AUTO_ADAPTIVE'
+      && kept.length >= 1
+      && asrLinesArr.length > 0;
+    if (shouldRunAsr) {
+      try {
+        const matchResult = AsrAnchorMatcher.matchFramesToAsr(kept, asrLinesArr, {
+          strategy: normalizedStrategy,
+          ...(options.asrSampling ?? {}),
+        });
+        // ⑦-2 immutable 合并：把 asrAnchor 追加到 mergedPriorityFlags
+        mergedPriorityFlags = AsrAnchorMatcher.buildPriorityFlags(
+          matchResult.anchoredFramePaths,
+          mergedPriorityFlags,
+        );
+      } catch (err) {
+        if (!options.silentBudgetClipper) {
+          console.warn('[SFPP·P2] 声画锚定异常，fallback 到 baseline：', err instanceof Error ? err.message : String(err));
+        }
+        // 失败回退：mergedPriorityFlags 保持 step 6 产出（或 options.priorityFlags），绝不丢失 upstream 的 hardCut/action_peak
       }
     }
 

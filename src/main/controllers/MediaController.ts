@@ -103,10 +103,15 @@ export class MediaController {
       maxFrames?: number;
       /** P0 新增：BudgetClipper 超预算容忍度（默认 0.1） */
       budgetToleranceRatio?: number;
+      /** P2 新增：声画锚定配置（追加式；默认启用；UNIFORM_FPS gate=空） */
+      asrSampling?: import('../../modules/media/frames/backend/AsrAnchorMatcher').AsrAnchoringConfig;
+      /** P2 新增：上游 ASR 台词（Step1 ASR 产生）；不传=空数组跳过，不 crash */
+      asrLines?: import('../../shared/types/entities/editor').AsrLine[];
     }) => {
       const {
         mediaId, projectId, fps, sceneThreshold, scale, quality, minFrameInterval, timePoint,
         densityPreset, maxFrames, budgetToleranceRatio,
+        asrSampling, asrLines,
       } = payload;
       const rawStrategy = payload.strategy;
 
@@ -162,7 +167,7 @@ export class MediaController {
       /** P0 · 策略名归一化（所有历史别名 → 2 值枚举） */
       const resolvedStrategy = normalizeFrameStrategy(rawStrategy, 'AUTO_ADAPTIVE');
 
-      /** 调用 VideoProcessor 轻量抽帧（透传 P0 densityPreset / maxFrames / tolerance） */
+      /** 调用 VideoProcessor 轻量抽帧（透传 P0 densityPreset / maxFrames / tolerance + P2 asrSampling/asrLines） */
       const telemetry = await VideoProcessor.extractFrames(physicalPath, framesDir, mediaId, {
         strategy: resolvedStrategy,
         fps: fps || 2,
@@ -178,6 +183,9 @@ export class MediaController {
         densityPreset,
         maxFrames,
         budgetToleranceRatio,
+        // P2：声画锚定（上游传则执行；不传或空数组安全跳过）
+        asrSampling,
+        asrLines,
       });
 
       /** 结果写 DB — 帧路径转为 magic:// 协议 */
