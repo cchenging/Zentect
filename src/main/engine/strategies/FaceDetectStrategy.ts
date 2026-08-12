@@ -70,7 +70,7 @@ export class FaceDetectStrategy extends BaseNodeStrategy {
       if (!roleGroups[clusterId]) roleGroups[clusterId] = [];
       roleGroups[clusterId].push(faceId);
     }
-    const roles = Object.keys(roleGroups).map(clusterId => ({
+    const rawRoles = Object.keys(roleGroups).map(clusterId => ({
       id: `${mediaId}_${clusterId}`,
       name: `角色_${clusterId}`,
       faceCount: roleGroups[clusterId].length,
@@ -86,7 +86,68 @@ export class FaceDetectStrategy extends BaseNodeStrategy {
         .filter(Boolean),
     }));
 
-    onProgress(100, `人脸扫描完成，识别 ${roles.length} 个角色`);
+    // 步骤6：角色主次分级（频次规则 → main/extra，兜底最高频保留1个主角）
+    //   supporting 配角留给用户前端手动标注（TierBadge 三档循环切换）
+    const roles = FaceDetectStrategy.computeRoleTierByFrequency(rawRoles);
+    const mainCount = roles.filter((r) => r.tier === 'main').length;
+    const extraCount = roles.filter((r) => r.tier === 'extra').length;
+
+    onProgress(100, `人脸扫描完成，识别 ${roles.length} 个角色（主角 ${mainCount} / 路人 ${extraCount}）`);
     return { faces, faceCount: faces.length, clusters: clustersMap, roles };
+  }
+
+  /**
+   * 角色主次分级：根据 faceCount（人脸聚类后出现频次）自动分配 tier 字段
+   *
+   * 规则（用户明确规定，唯一真源，禁止擅自变更）：
+   *   1. 频次 ≥ 3 → tier = 'main'（主角）
+   *   2. 频次 < 3 → tier = 'extra'（背景路人）
+   *      ⚠️  supporting 配角不自动分配，留给前端 TierBadge 三档循环手动标注
+   *   3. 兜底：若全员 < 3（或全是非法 count 导致全员 0）
+   *      → 取规范化 faceCount 最高且数组位置最前的 1 个，强制升为 'main'
+   *        （保证全片至少有 1 个主角，避免 UI 全是路人尴尬）
+   *   4. 非法 faceCount（null/undefined/NaN/负数/非数字）→ 规范化为 0（错就错不兜底）
+   *
+   * 纯函数特性：
+   *   - 入参 null/undefined → 返回 []，永不抛错
+   *   - 不修改原 role 对象（不可变展开），返回全新数组
+   *   - 输出稳定可重复（不引入随机，并列最高频时取数组第一个）
+   *
+   * @param roles 任意类型角色数组（要求含 id + faceCount 可选字段）
+   * @returns 注入 tier 后的新角色数组（原对象不被改写）
+   */
+  public static computeRoleTierByFrequency<T extends { id: string; faceCount?: number | null }>(
+    roles: T[] | null | undefined
+  ): Array<T & { tier: 'main' | 'supporting' | 'extra' }> {
+    if (!Array.isArray(roles) || roles.length === 0) return [];
+
+    // 规范化 faceCount：非数字 / NaN / < 0 → 0；浮点向下取整（避免半张脸凑数）
+    const normalizedCounts = roles.map((r) => {
+      const raw = r?.faceCount;
+      if (typeof raw !== 'number' || Number.isNaN(raw) || raw < 0) return 0;
+      return Math.floor(raw);
+    });
+
+    // 初筛分级：≥3 → main，其余 → extra
+    const prelim = roles.map((role, idx) => ({
+      ...(role as object),
+      tier: (normalizedCounts[idx] >= 3 ? 'main' : 'extra') as 'main' | 'extra',
+    })) as Array<T & { tier: 'main' | 'supporting' | 'extra' }>;
+
+    // 兜底：若没有 main，则强制最高频（数组首位优先）的第 1 个升为 main
+    const hasAnyMain = prelim.some((r) => r.tier === 'main');
+    if (!hasAnyMain) {
+      let maxIdx = 0;
+      let maxVal = normalizedCounts[0];
+      for (let i = 1; i < normalizedCounts.length; i++) {
+        if (normalizedCounts[i] > maxVal) {
+          maxVal = normalizedCounts[i];
+          maxIdx = i;
+        }
+      }
+      prelim[maxIdx] = { ...(prelim[maxIdx] as object), tier: 'main' } as T & { tier: 'main' | 'supporting' | 'extra' };
+    }
+
+    return prelim;
   }
 }
