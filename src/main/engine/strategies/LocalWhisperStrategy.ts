@@ -45,8 +45,14 @@ export class LocalWhisperStrategy implements ITextExtractor {
       throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, 'Python Daemon 离线，无法执行 ASR 推理');
     }
 
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，使用 ${engine} 推理`);
-    return await this.transcribeViaDaemon(audioPath, whisperOutPath, language, engine, signal, onProgress);
+    // 自动路由 engine（engine='auto' 时根据 language 选择；明确指定引擎则保持不变）
+    let effectiveEngine: 'sensevoice' | 'faster-whisper' | 'auto' = engine;
+    if (engine === 'auto') {
+      const normalizedLang = LocalWhisperStrategy.normalizeLangCode(language);
+      effectiveEngine = LocalWhisperStrategy.resolveEngineByLang(normalizedLang);
+    }
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，使用 effectiveEngine=${effectiveEngine}（请求=${engine}, language=${language}）推理`);
+    return await this.transcribeViaDaemon(audioPath, whisperOutPath, language, effectiveEngine, signal, onProgress);
   }
 
   /**
@@ -142,10 +148,63 @@ export class LocalWhisperStrategy implements ITextExtractor {
     return 'auto';
   }
 
+  /**
+   * 根据归一化语言代码自动选择 ASR 引擎（纯函数，便于单测与复用）
+   *
+   * 规则（项目核心准则，唯一真源）：
+   *   - 中日韩粤（zh/ja/ko/yue）→ sensevoice
+   *   - 其它明确语言（en/fr/de/es/ru/ar/...）→ faster-whisper
+   *   - 'auto'（语言未知，需预检测）→ 保留 auto，交由 Python 端先跑语言预检测再选对应引擎
+   *
+   * @param normalizedLangCode 已经经过 normalizeLangCode 归一化的语言代码 (2 字母或 auto)
+   * @returns 实际传给 Python Daemon 的 engine 值
+   */
+  public static resolveEngineByLang(normalizedLangCode: string): 'sensevoice' | 'faster-whisper' | 'auto' {
+    if (!normalizedLangCode) return 'auto';
+    const lower = normalizedLangCode.toLowerCase().trim();
+    // 明确走 SenseVoice 的中日韩粤白名单
+    const SENSEVOICE_LANGS = new Set(['zh', 'ja', 'ko', 'yue']);
+    if (SENSEVOICE_LANGS.has(lower)) return 'sensevoice';
+    // auto → 保留 auto 传 Python 端（错就错，不在 Node 端猜测 fallback）
+    if (lower === 'auto') return 'auto';
+    // 其它所有明确语言 → faster-whisper
+    return 'faster-whisper';
+  }
+
   private static cleanText(raw: any): string {
     if (typeof raw !== 'string' || !raw) return '';
-    let text = raw.replace(/<\|.*?\|>/g, '');
+    let text = raw;
+    // 1) 先移除 Whisper 特殊 token <|...|>
+    text = text.replace(/<\|.*?\|>/g, '');
     text = text.replace(/^[<|]+|[>|]+$/g, '');
+    // 2) 移除 ASR 方括号噪声标记（仅白名单标签，大小写不敏感）
+    //    ⚠️ 核心准则：不通配所有 [...] 内容，只替换明确的噪声标签白名单，避免误删台词
+    const BRACKET_NOISE_TAGS = [
+      'MUSIC', 'SOUND', 'BLANK', 'NOISE', 'SILENCE', 'GARBAGE',
+      'INAUDIBLE', 'LAUGHTER', 'APPLAUSE', 'BREATH', 'COUGH', 'SPEECH',
+    ];
+    const bracketPattern = new RegExp(
+      `\\s*\\[\\s*(${BRACKET_NOISE_TAGS.join('|')})\\s*\\]\\s*`,
+      'gi'
+    );
+    text = text.replace(bracketPattern, ' ');
+    // 3) 移除 ASR 圆括号噪声标记（中文 + 英文白名单，大小写不敏感）
+    //    ⚠️ 核心准则：不通配所有 (...) 内容，只替换明确的噪声标签白名单，避免误删台词括号注释
+    const PAREN_NOISE_TAGS_CN = [
+      '笑声', '掌声', '呼吸', '咳嗽', '音乐', '沉默', '说话',
+      '背景音乐', '欢呼声', '哭泣声', '叹气', '关门声', '门铃声',
+    ];
+    const PAREN_NOISE_TAGS_EN = [
+      'laughter', 'applause', 'breath', 'cough', 'music',
+      'silence', 'speech', 'background\\s*music', 'cheering', 'crying', 'sigh',
+    ];
+    const parenPattern = new RegExp(
+      `\\s*\\(\\s*(${[...PAREN_NOISE_TAGS_CN, ...PAREN_NOISE_TAGS_EN].join('|')})\\s*\\)\\s*`,
+      'gi'
+    );
+    text = text.replace(parenPattern, ' ');
+    // 4) 多空白压缩 + HTML 尖括号转义 + trim
+    text = text.replace(/\s+/g, ' ');
     return text.replace(/</g, '＜').replace(/>/g, '＞').trim();
   }
 
