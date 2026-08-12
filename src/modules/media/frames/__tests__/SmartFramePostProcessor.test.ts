@@ -290,4 +290,166 @@ describe('SmartFramePostProcessor.process · P2 声画锚定集成链路（mock 
     expect(pathsOff.size).toBe(pathsOn.size);
     for (const p of pathsOff) expect(pathsOn.has(p)).toBe(true);
   });
+
+  // ============ P3 集成链路：V2 真补帧（长镜头空段 runner mock） ============
+  // [P3-集成-1] 3 帧 scene 跨 20s（>minGapSeconds=10），相邻差分全<40（同一场景sceneIndex=1），runner 成功补帧 1 张
+  it('[P3-集成-1] 长镜头空段 V2 真补帧：20s gap + minGapSeconds=10 → 补 1 帧进 kept，priorityFlags 追加 gap_refill，BudgetClipper 保留补帧', async () => {
+    const files = fakeFiles(3, 'C:/fake/p3_frames'); // 3 帧：kept>=3 → P1 执行 splitSceneBoundary（差分<40 → 全 sceneIndex=1）
+    const base = '0'.repeat(64);
+    // 构造 hash 序列：相邻 hamming 距离 = 6, 6（全 < 40，不触发 scene split；也 > dedupThreshold=0，不被去重 drop）
+    const h0 = base;
+    const h1 = hashWithHammingDistance(h0, 6);
+    const h2 = hashWithHammingDistance(h1, 6);
+    const hashSeq = [h0, h1, h2];
+    // 自测断言：相邻差分 6/6（<40，>0）
+    expect(SmartFramePostProcessor.hammingDistance(h0, h1)).toBe(6);
+    expect(SmartFramePostProcessor.hammingDistance(h1, h2)).toBe(6);
+    computeHashSpy.mockImplementation(async (fp: string) => {
+      const idx = files.indexOf(fp);
+      return hashSeq[idx] ?? base;
+    });
+
+    // P3 runner mock：1 次调用必成功
+    const runner = vi.fn(async () => ({ success: true }));
+    // 精确 PTS：0ms / 1000ms / 20000ms（gapMs = end-start = 20s > minGapSeconds(10) → 长空段触发；中间 1s 处不影响 min/max 聚合）
+    const ptsMs = [0, 1000, 20000];
+    const BudgetClipperModule = await import('../backend/BudgetClipper');
+    const clipSpy = vi.spyOn(BudgetClipperModule.BudgetClipper, 'clip');
+
+    const result = await SmartFramePostProcessor.process(files, {
+      strategy: 'AUTO_ADAPTIVE',
+      fps: 1,
+      dedupThreshold: 0,
+      ptsMs,
+      densityPreset: undefined,
+      maxFrames: 10, // 激活 BudgetClipper，避免空预算导致 ⑤ BudgetClipper 零调用
+      toleranceRatio: 0,
+      silentBudgetClipper: true,
+      // P3 参数：全提供 → Gate 激活
+      videoPath: 'C:/fake/v.mp4',
+      framesDir: 'C:/fake/p3_frames',
+      runSingleFrameExtract: runner,
+      refillConfig: { minGapSeconds: 10, framesPerGap: 1 },
+    });
+
+    // runner 被调 1 次（中点 = (0+20000)/2 = 10000ms = 10s）
+    expect(runner).toHaveBeenCalledTimes(1);
+    const runArg = runner.mock.calls[0][0];
+    expect(runArg.timePointSec).toBeCloseTo(10.0, 3);
+    // kept：原 3 帧 + 补 1 帧 = 4
+    expect(result.kept).toHaveLength(4);
+    // BudgetClipper 调用时 priorityFlags：补帧路径 → 含 gap_refill
+    expect(clipSpy).toHaveBeenCalledTimes(1);
+    const priorityFlags = (clipSpy.mock.calls[0][1] as any).priorityFlags as Record<string, string[]>;
+    const refillPaths = Object.keys(priorityFlags).filter(p => (priorityFlags[p] ?? []).includes('gap_refill'));
+    expect(refillPaths.length).toBe(1);
+    clipSpy.mockRestore();
+  });
+
+  // [P3-集成-2] Gate：缺 videoPath / UNIFORM_FPS strategy → runner 未调，kept 仍原 2 帧
+  it('[P3-集成-2] P3 gate：缺 videoPath 或 strategy=UNIFORM_FPS → runner 零调用，kept ±0', async () => {
+    const files = fakeFiles(2, 'C:/fake/p3_gate');
+    const base = '0'.repeat(64);
+    computeHashSpy.mockImplementation(async (fp: string) => {
+      const idx = files.indexOf(fp);
+      return hashWithHammingDistance(base, 5 + idx * 3);
+    });
+    const ptsMs = [0, 25000];
+    const runner1 = vi.fn(async () => ({ success: true }));
+    const runner2 = vi.fn(async () => ({ success: true }));
+
+    const [noVideoPath, uniFps] = await Promise.all([
+      SmartFramePostProcessor.process(files, {
+        strategy: 'AUTO_ADAPTIVE', fps: 1, dedupThreshold: 0, ptsMs,
+        densityPreset: undefined, maxFrames: undefined, silentBudgetClipper: true,
+        framesDir: 'C:/fake/p3_gate',
+        runSingleFrameExtract: runner1, // runner 提供但 videoPath 缺 → gate
+        refillConfig: { minGapSeconds: 10, framesPerGap: 1 },
+        // videoPath 不传
+      }),
+      SmartFramePostProcessor.process(files, {
+        strategy: 'UNIFORM_FPS', fps: 1, dedupThreshold: 0, ptsMs,
+        densityPreset: undefined, maxFrames: undefined, silentBudgetClipper: true,
+        videoPath: 'C:/fake/v.mp4', framesDir: 'C:/fake/p3_gate',
+        runSingleFrameExtract: runner2, // 全提供但 strategy=UNIFORM_FPS → gate
+        refillConfig: { minGapSeconds: 10, framesPerGap: 1 },
+      }),
+    ]);
+
+    expect(runner1).toHaveBeenCalledTimes(0);
+    expect(runner2).toHaveBeenCalledTimes(0);
+    expect(noVideoPath.kept).toHaveLength(2);
+    expect(uniFps.kept).toHaveLength(2);
+  });
+
+  // [P3-集成-3] 回滚安全：① refillConfig.enabled=false ② runner 抛 ③ runner return false ④ maxFrames=紧预算+补帧 gap_refill 白名单保留 → kept 结果稳定，不 crash
+  it('[P3-集成-3] 回滚安全 + 紧预算保留 gap_refill：enabled=false / 抛错 / 紧预算 → 不 crash，紧预算优先保留 gap_refill', async () => {
+    // —— 前 3 个基线场景（2 帧，不依赖 P1/P3 实际执行，验证开关/fallback 稳定性不变式）
+    const files2 = fakeFiles(2, 'C:/fake/p3_safe');
+    const base2 = '0'.repeat(64);
+    computeHashSpy.mockImplementation(async (fp: string) => {
+      const idx = files2.indexOf(fp);
+      return hashWithHammingDistance(base2, 5 + idx * 3);
+    });
+    const ptsMs2 = [0, 25000];
+    const runnerThrow = vi.fn(async () => { throw new Error('模拟 FFmpeg 崩溃'); });
+    const runnerFail = vi.fn(async () => ({ success: false }));
+
+    const [enabledOff, runnerThrew, runnerFailed] = await Promise.all([
+      SmartFramePostProcessor.process(files2, {
+        strategy: 'AUTO_ADAPTIVE', fps: 1, dedupThreshold: 0, ptsMs: ptsMs2,
+        densityPreset: undefined, maxFrames: undefined, silentBudgetClipper: true,
+        videoPath: 'C:/fake/v.mp4', framesDir: 'C:/fake/p3_safe',
+        runSingleFrameExtract: vi.fn(),
+        refillConfig: { enabled: false, minGapSeconds: 10 }, // ① enabled=false
+      }),
+      SmartFramePostProcessor.process(files2, { // ② runner throw → try/catch fallback baseline
+        strategy: 'AUTO_ADAPTIVE', fps: 1, dedupThreshold: 0, ptsMs: ptsMs2,
+        densityPreset: undefined, maxFrames: undefined, silentBudgetClipper: true,
+        videoPath: 'C:/fake/v.mp4', framesDir: 'C:/fake/p3_safe',
+        runSingleFrameExtract: runnerThrow,
+        refillConfig: { minGapSeconds: 10 },
+      }),
+      SmartFramePostProcessor.process(files2, { // ③ runner return false → 0 补帧（同一场景检测通过 runner return false）
+        strategy: 'AUTO_ADAPTIVE', fps: 1, dedupThreshold: 0, ptsMs: ptsMs2,
+        densityPreset: undefined, maxFrames: undefined, silentBudgetClipper: true,
+        videoPath: 'C:/fake/v.mp4', framesDir: 'C:/fake/p3_safe',
+        runSingleFrameExtract: runnerFail,
+        refillConfig: { minGapSeconds: 10 },
+      }),
+    ]);
+
+    expect(enabledOff.kept).toHaveLength(2);
+    expect(runnerThrew.kept).toHaveLength(2); // fallback 不 crash（即使 computeLongGapScenes 空，runner 零调用，也稳定）
+    expect(runnerFailed.kept).toHaveLength(2); // 0 补帧
+
+    // —— ④ 紧预算：3 帧场景（kept>=3 → P1 执行 splitSceneBoundary 差分<40 → sceneIndex 全部=1 → computeLongGapScenes 检测到 gap=25s）
+    const files3 = fakeFiles(3, 'C:/fake/p3_safe_tight');
+    const base3 = '0'.repeat(64);
+    const h0 = base3;
+    const h1 = hashWithHammingDistance(h0, 6);
+    const h2 = hashWithHammingDistance(h1, 6);
+    const hashSeq3 = [h0, h1, h2];
+    computeHashSpy.mockImplementation(async (fp: string) => {
+      const idx = files3.indexOf(fp);
+      return hashSeq3[idx] ?? base3;
+    });
+    const ptsMs3 = [0, 1500, 25000]; // gapMs = 25000 - 0 = 25s > 10s 阈值
+
+    const runnerOk = vi.fn(async () => ({ success: true }));
+    const tightBudgetResult = await SmartFramePostProcessor.process(files3, {
+      strategy: 'AUTO_ADAPTIVE', fps: 1, dedupThreshold: 0, ptsMs: ptsMs3,
+      maxFrames: 4, toleranceRatio: 0, // 紧预算：原始预算 4 = 原 3 帧 + 补 1 帧，刚好不裁剪
+      silentBudgetClipper: true,
+      videoPath: 'C:/fake/v.mp4', framesDir: 'C:/fake/p3_safe_tight',
+      runSingleFrameExtract: runnerOk,
+      refillConfig: { minGapSeconds: 10, framesPerGap: 1 },
+    });
+    expect(runnerOk).toHaveBeenCalledTimes(1); // 断言 runner 已调 1 次
+    expect(tightBudgetResult.kept).toHaveLength(4); // 3 原 + 1 补 = 4
+    const keptPaths = tightBudgetResult.kept.map(f => f.framePath);
+    // 原 3 帧仍保留（首末白名单 + 中间帧进 candidate），补帧 path 出现在 kept 中（gap_refill flag 白名单保留）
+    for (const orig of files3) expect(keptPaths.includes(orig)).toBe(true);
+    expect(keptPaths.find(p => String(p).includes('gap_refill'))).toBeTruthy();
+  });
 });

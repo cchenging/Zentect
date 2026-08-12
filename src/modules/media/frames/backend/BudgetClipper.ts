@@ -28,6 +28,8 @@ export type BudgetClipPriorityFlag =
   | 'asrAnchor'
   | 'p1DeltaIntraShot'
   | 'action_peak'
+  /** P3 · V2 补帧：长镜头空段二次 FFmpeg 单帧 seek 补充的代表帧（保留优先级低于硬切/ASR/动作峰，高于普通候选帧） */
+  | 'gap_refill'
   | 'debugForceKeep';
 
 /** 预算裁剪输入选项 */

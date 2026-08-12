@@ -14,6 +14,11 @@ import sharp from 'sharp';
 import { BudgetClipper } from './BudgetClipper';
 import { InSceneDiffSampler } from './InSceneDiffSampler';
 import { AsrAnchorMatcher, type AsrAnchoringConfig } from './AsrAnchorMatcher';
+import {
+  GapFrameRefiller,
+  type GapRefillConfig,
+  type SingleFrameRunner,
+} from './GapFrameRefiller';
 import type { DensityPreset } from '../types';
 import type { BudgetClipPriorityFlag } from './BudgetClipper';
 import type { AsrLine } from '../../../../shared/types/entities/editor';
@@ -97,6 +102,16 @@ export interface SmartFramePostProcessOptions {
   asrSampling?: AsrAnchoringConfig;
   /** P2 上游已有的 ASR 台词结果（Step1 ASR 产生的 asrLines）；不传或空数组 → 声画锚定零吸附（不 crash） */
   asrLines?: AsrLine[];
+
+  // ── P3 · V2 真补帧参数（长镜头空段，二次 FFmpeg 单帧 seek 补帧） ─────────────
+  /** P3 V2 真补帧配置（默认：enabled=true；UNIFORM_FPS gate=空；每长空段最多 3 帧 25%/50%/75%） */
+  refillConfig?: GapRefillConfig;
+  /** P3 必需：原视频绝对路径（缺省时 P3 流程全 skip，不 crash） */
+  videoPath?: string;
+  /** P3 必需：帧落盘目录（=Service safeOutputDir）；缺省时 P3 skip，不 crash */
+  framesDir?: string;
+  /** P3 生产环境注入（Service 层传 spawn(ffmpeg) 包装；测试 mock 即可）；缺省时 P3 skip */
+  runSingleFrameExtract?: SingleFrameRunner;
 }
 
 /** 后处理结果 */
@@ -363,6 +378,73 @@ export class SmartFramePostProcessor {
           console.warn('[SFPP·P2] 声画锚定异常，fallback 到 baseline：', err instanceof Error ? err.message : String(err));
         }
         // 失败回退：mergedPriorityFlags 保持 step 6 产出（或 options.priorityFlags），绝不丢失 upstream 的 hardCut/action_peak
+      }
+    }
+
+    // ⑧ P3 · V2 真补帧（新插入的追加式后处理，长空段单帧 seek 补代表帧）
+    //   Gate 条件：
+    //     - refillConfig?.enabled !== false（默认 true；调用侧显式关 = A/B baseline）
+    //     - strategy 归一化为 AUTO_ADAPTIVE（UNIFORM_FPS gate=空，均匀时序优先）
+    //     - kept.length >= 2（至少 2 帧才能计算长空段）
+    //     - videoPath / framesDir 均提供（否则无法跑 FFmpeg seek）
+    //     - runSingleFrameExtract runner 已注入（Service 层提供 spawn 包装；测试 mock）
+    //   执行（P3 尽力而为：整段 try/catch，失败不 crash 主流程）：
+    //     ⑧-1 GapFrameRefiller.refillLongGapScenes → 得到 refilledFrames + 落盘 jpg
+    //     ⑧-2 kept.push(...refilledFrames)（追加到候选池；不删原帧，不破坏原 kept 顺序稳定性）
+    //     ⑧-3 buildPriorityFlags：gap_refill flag immutable 合并不覆盖 ⑥/⑦/P0 声明
+    //   随后进入 ⑤ BudgetClipper（硬顶预算裁剪；gap_refill 属白名单 flag 保留优先级）
+    const refillEnabled = options.refillConfig?.enabled !== false; // 默认 true
+    if (typeof (process as any)?.env?.DEBUG_P3 !== 'undefined' && !options.silentBudgetClipper) {
+      console.debug('[DEBUG-P3] shouldRunRefill factors:', {
+        refillEnabled,
+        normalizedStrategy,
+        keptLength: kept.length,
+        hasVideoPath: !!options.videoPath,
+        hasFramesDir: !!options.framesDir,
+        runnerType: typeof options.runSingleFrameExtract,
+      });
+    }
+    const shouldRunRefill = refillEnabled
+      && normalizedStrategy === 'AUTO_ADAPTIVE'
+      && kept.length >= 2
+      && !!options.videoPath
+      && !!options.framesDir
+      && typeof options.runSingleFrameExtract === 'function';
+    if (shouldRunRefill) {
+      try {
+        const refillResult = await GapFrameRefiller.refillLongGapScenes({
+          frames: kept,
+          videoPath: options.videoPath,
+          framesDir: options.framesDir,
+          config: {
+            strategy: normalizedStrategy,
+            ...(options.refillConfig ?? {}),
+          },
+          runner: options.runSingleFrameExtract,
+        });
+        if (refillResult.refilledFrames.length > 0) {
+          // ⑧-2 追加（kept 在之前为去重/质检/P1/P2 后的 stable 数组；push 不破坏原有帧顺序）
+          kept.push(...refillResult.refilledFrames);
+          // ⑧-3 immutable 合并 gap_refill flag（不覆盖 hardCut/action_peak/asrAnchor）
+          mergedPriorityFlags = GapFrameRefiller.buildPriorityFlags(
+            refillResult.refilledFrames.map(f => f.framePath),
+            mergedPriorityFlags,
+          );
+          if (!options.silentBudgetClipper && (refillResult.refillRunnerFailures > 0 || refillResult.skippedByStrategy || refillResult.skippedNoVideoPath)) {
+            console.warn('[SFPP·P3] V2 补帧部分完成：', {
+              gapScenesDetected: refillResult.gapScenesDetected,
+              refilled: refillResult.refilledCount,
+              failures: refillResult.refillRunnerFailures,
+              skippedByStrategy: refillResult.skippedByStrategy,
+              skippedNoVideoPath: refillResult.skippedNoVideoPath,
+            });
+          }
+        }
+      } catch (err) {
+        if (!options.silentBudgetClipper) {
+          console.warn('[SFPP·P3] V2 补帧异常，fallback 到 baseline：', err instanceof Error ? err.message : String(err));
+        }
+        // 失败回退：kept 与 mergedPriorityFlags 保持 P2 产出，不 crash、不丢失任何声明
       }
     }
 

@@ -13,6 +13,7 @@ import * as path from 'path';
 import type { FrameStrategy, FrameExtractionTelemetry, DensityPreset } from '../types';
 import { buildExtractCommand } from './Strategy';
 import { SmartFramePostProcessor } from './SmartFramePostProcessor';
+import type { GapRefillConfig } from './GapFrameRefiller';
 // P0：复用 frames/types 已 re-export 的契约唯一真源（含兼容映射）
 import { normalizeFrameStrategy, DENSITY_PRESET_CONFIG } from '../types';
 import { AppError, ErrorCode } from '../../../infra/error/AppError';
@@ -84,6 +85,10 @@ export interface ExtractOptions {
   asrSampling?: import('./AsrAnchorMatcher').AsrAnchoringConfig;
   /** P2 上游 ASR 台词（来自 Step1 ASR 识别）；空数组/不传 = 跳过锚定（不 crash） */
   asrLines?: import('../../../../shared/types/entities/editor').AsrLine[];
+
+  // ── P3 · V2 真补帧参数（长镜头空段二次 FFmpeg 单帧 seek） ─────────────────
+  /** P3 V2 真补帧配置（追加式；默认启用；UNIFORM_FPS gate=空；缺省补 1 帧/长空段 12s 阈值） */
+  refillConfig?: GapRefillConfig;
 }
 
 // ──────────────────────────────────────────────
@@ -189,6 +194,7 @@ export class FrameExtractionService {
       budgetToleranceRatio,
       asrSampling,
       asrLines,
+      refillConfig,
     } = options;
 
     // P0 · PRECISE_SINGLE 守卫：定点截图不走批量抽帧，改走独立 screenshotAt API
@@ -337,6 +343,38 @@ export class FrameExtractionService {
             const exactPtsMs = files.length > 0 && ptsMs.length === files.length ? ptsMs : undefined;
             // P0：videoDurationMinutes 基于探针实际时长（考虑 in/out point）
             const videoDurationMinutes = videoDurationSec > 0 ? videoDurationSec / 60 : undefined;
+
+            // P3：生产级 runner（封装 spawn PRECISE_SINGLE 单帧 seek；Strategy.buildExtractCommand 保证 -ss 在前 + vframes=1）
+            const runSingleFrameExtract: import('./GapFrameRefiller').SingleFrameRunner = async (args) => {
+              const singleArgs = buildExtractCommand({
+                videoPath,
+                outputPath: args.outputPath,
+                strategy: 'PRECISE_SINGLE', // 内部路由（不走 normalizeFrameStrategy → 不抛守卫）
+                fps: 1,
+                sceneThreshold: 0.25,
+                minFrameInterval: 0,
+                width: args.width ?? adaptiveScale,
+                quality: args.quality ?? quality,
+                timePoint: args.timePointSec,
+                threads: 0,
+                attachShowinfo: false, // 单帧无需 showinfo，节省 stderr 解析
+              });
+              return await new Promise((resolve) => {
+                try {
+                  const child = spawn(ffmpegExe, singleArgs, { windowsHide: true });
+                  let stderr = '';
+                  child.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); if (stderr.length > 1024) stderr = stderr.slice(-1024); });
+                  child.on('close', (code) => {
+                    if (code === 0) resolve({ success: true, stderr });
+                    else resolve({ success: false, stderr });
+                  });
+                  child.on('error', (_e) => resolve({ success: false, stderr: `spawn_error:${String(_e?.message ?? _e)}` }));
+                } catch (e) {
+                  resolve({ success: false, stderr: `runner_sync_error:${String((e as Error)?.message ?? e)}` });
+                }
+              });
+            };
+
             const result = await SmartFramePostProcessor.process(files, {
               strategy,
               fps,
@@ -351,6 +389,15 @@ export class FrameExtractionService {
               // P2：声画锚定（上游 ASR 透传；空数组 = 跳过吸附）
               asrSampling,
               asrLines,
+              // P3：V2 真补帧（长镜头空段单帧 seek）—— 全参数提供时 Gate 才激活；缺任一自动 skip
+              videoPath,
+              framesDir: safeOutputDir,
+              runSingleFrameExtract,
+              refillConfig: {
+                width: adaptiveScale,
+                quality,
+                ...(refillConfig ?? {}),
+              },
             });
             keptFiles = result.kept.map(d => d.framePath);
             frameDetails = result.kept;
