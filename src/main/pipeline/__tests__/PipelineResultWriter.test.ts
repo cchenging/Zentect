@@ -198,8 +198,8 @@ describe('PipelineResultWriter', () => {
       result: {
         ...baseParams.result,
         shots: [
-          { originalText: '你好', start: 0, end: 2.5 },
-          { originalText: '世界', start: 3.0, end: 5.0 },
+          { id: 'shot_1', originalText: '你好', start: 0, end: 2.5 },
+          { id: 'shot_2', originalText: '世界', start: 3.0, end: 5.0 },
         ],
       },
     };
@@ -217,7 +217,7 @@ describe('PipelineResultWriter', () => {
       asrSkipped: true,
       result: {
         ...baseParams.result,
-        shots: [{ originalText: 'hello', start: 0, end: 1 }],
+        shots: [{ id: 'shot_1', originalText: 'hello', start: 0, end: 1 }],
       },
     };
     const { updatedMedia } = await PipelineResultWriter.writeStep1Results(params);
@@ -301,7 +301,7 @@ describe('PipelineResultWriter', () => {
         ...baseParams.result,
         frames: ['C:/projects/test/frames/f1.jpg'],
         vocalsPath: 'C:/projects/test/audio/vocals.wav',
-        shots: [{ originalText: 'hello', start: 0, end: 1 }],
+        shots: [{ id: 'shot_1', originalText: 'hello', start: 0, end: 1 }],
         roles: [{ id: 'r1', name: '张三' }],
       },
     };

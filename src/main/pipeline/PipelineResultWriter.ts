@@ -42,7 +42,7 @@ export interface PipelineStep1Result {
   vocalsIsFallback: boolean;
   separationMode: string;
   separationEngine: string;
-  shots: Array<{ originalText: string; start: number; end: number }>;
+  shots: Array<{ id: string; originalText: string; start: number; end: number }>;
   roles: any[];
 }
 

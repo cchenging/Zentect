@@ -131,9 +131,6 @@ export const usePipelineExecutor = () => {
 
   useEffect(() => {
     API.engine.onPipelineProgress(handlePipelineProgress);
-    if (window.api?.ipc?.on) {
-      window.api.ipc.on('QUICK_PIPELINE_PROGRESS', (_e: any, p: any) => handlePipelineProgress(p));
-    }
     return () => {
       if (renderTimerRef.current) clearTimeout(renderTimerRef.current);
       if (API.engine.offPipelineProgress) API.engine.offPipelineProgress();
