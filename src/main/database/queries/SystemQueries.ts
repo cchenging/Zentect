@@ -89,6 +89,16 @@ export const JOB_SQL = {
     FROM jobs_queue 
     WHERE project_id = @projectId AND status IN ('pending', 'processing')
   `,
+  // 💥 卡死恢复：查找长时间未更新进度的 running 任务（SSE 断连/进程崩溃/子步骤卡死）
+  //   判定标准：status='running' 且 updated_at 距今超过 15 分钟仍未完成。
+  //   正常长任务（如 Demucs）每 100ms 推一次进度 → updated_at 持续刷新；
+  //   只有真正卡死（进程崩溃/SSE 断连/死锁）才会 15 分钟无任何更新。
+  GET_STALE_RUNNING: `
+    SELECT id, project_id as projectId, target_id as targetId, task_type as taskType, payload, status, message, progress
+    FROM jobs_queue 
+    WHERE status = 'running' 
+      AND updated_at < datetime('now', 'localtime', '-15 minutes')
+  `,
   FAIL_JOB: `
     UPDATE jobs_queue 
     SET status = 'failed', message = @message, retry_count = retry_count + 1, updated_at = datetime('now', 'localtime') 

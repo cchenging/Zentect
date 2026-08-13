@@ -27,6 +27,21 @@ export class JobRepository {
     }));
   }
 
+  /** 查询长时间未更新进度的 running 任务（卡死任务），用于启动时恢复 */
+  public getStaleRunningJobs() {
+    const rows = this.db.prepare(JOB_SQL.GET_STALE_RUNNING).all() as any[];
+    return rows.map((r: any) => ({
+      id: r.id,
+      projectId: r.projectId,
+      targetId: r.targetId,
+      taskType: r.taskType,
+      payload: r.payload ? JSON.parse(r.payload) : {},
+      status: r.status,
+      message: r.message,
+      progress: r.progress
+    }));
+  }
+
   public getActiveJobsByProject(projectId: string) {
     const rows = this.db.prepare(JOB_SQL.GET_ACTIVE_BY_PROJECT).all({ projectId: projectId }) as any[];
     return rows.map((r: any) => ({
