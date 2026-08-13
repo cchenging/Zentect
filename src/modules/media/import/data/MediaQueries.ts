@@ -49,9 +49,14 @@ export const MEDIA_SQL = {
 
   UPDATE_FULL: `
     UPDATE media_assets SET
-      cover_path = @coverPath, status = @status,
-      duration = @duration, width = @width, height = @height, fps = @fps,
-      file_path = @filePath, update_time = datetime('now', 'localtime')
+      cover_path = COALESCE(@coverPath, cover_path),
+      status = COALESCE(@status, status),
+      duration = COALESCE(@duration, duration),
+      width = COALESCE(@width, width),
+      height = COALESCE(@height, height),
+      fps = COALESCE(@fps, fps),
+      file_path = COALESCE(@filePath, file_path),
+      update_time = datetime('now', 'localtime')
     WHERE id = @id AND is_deleted = 0
   `,
 
