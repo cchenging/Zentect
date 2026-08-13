@@ -2,7 +2,7 @@
 // 接口契约：人声/背景音乐分离模块
 
 /** 分离引擎 */
-export type SeparationEngine = 'demucs' | 'mdx' | 'auto';
+export type SeparationEngine = 'demucs' | 'mdx';
 
 /** 分离模式 */
 export type SeparationMode = 'quality' | 'fast';
@@ -33,8 +33,7 @@ export interface AudioSeparationInput {
    * 分离引擎（仅 quality 模式生效）
    * - 'demucs': 重型高保真，失败不降级
    * - 'mdx': 轻量极速，失败不降级
-   * - 'auto': Demucs → MDX-Net 降级链
-   * @default 'auto'
+   * @default 'mdx'
    */
   engine?: SeparationEngine;
 

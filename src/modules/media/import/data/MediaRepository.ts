@@ -45,9 +45,9 @@ export class MediaRepository {
       narrationScript: (media as any).narrationScript
         ? JSON.stringify((media as any).narrationScript)
         : null,
-      // 音频分离配置：模式(fast/quality)、引擎(demucs/mdx/auto)、是否降级到原始音轨
+      // 音频分离配置：模式(fast/quality)、引擎(demucs/mdx)、是否降级到原始音轨
       separationMode: (media as any).separationMode || 'quality',
-      separationEngine: (media as any).separationEngine || 'auto',
+      separationEngine: (media as any).separationEngine || 'mdx',
       vocalsIsFallback: (media as any).vocalsIsFallback ? 1 : 0,
     });
     console.log(
@@ -172,7 +172,7 @@ export class MediaRepository {
           : undefined,
         // 音频分离配置：供前端展示降级提示与下游消费
         separationMode: row.separationMode || 'quality',
-        separationEngine: row.separationEngine || 'auto',
+        separationEngine: row.separationEngine || 'mdx',
         vocalsIsFallback: !!row.vocalsIsFallback,
       }));
     } catch (e: any) {

@@ -87,8 +87,8 @@ class TranscribeReq(BaseModel):
 class SeparateReq(BaseModel):
     audio_path: str
     output_dir: str
-    # 引擎选择：'demucs'(重型,高保真) | 'mdx'(轻量,极速) | 'auto'(默认 Demucs→MDX 降级链)
-    engine: str = "auto"
+    # 引擎选择：'demucs'(重型,高保真) | 'mdx'(轻量,极速)
+    engine: str = "mdx"
     # 任务 ID：由 Node 端生成，用于隔离并发任务的进度状态（SSE 推流时按 task_id 查询）
     task_id: str | None = None
 
@@ -1105,7 +1105,6 @@ def _separate_sync(req: SeparateReq, task_id: str):
     engine 参数控制引擎选择：
       - 'demucs': 仅使用 Demucs（重型，高保真），失败则抛 500
       - 'mdx':    仅使用 MDX-Net（轻量，极速），失败则抛 500
-      - 'auto':  默认顺序 Demucs → MDX-Net 降级链
 
     task_id 用于按任务隔离进度状态（支持并发分离多个媒体）
     """
@@ -1119,9 +1118,9 @@ def _separate_sync(req: SeparateReq, task_id: str):
         if not os.path.exists(req.output_dir):
             os.makedirs(req.output_dir, exist_ok=True)
 
-        engine = (req.engine or "auto").lower()
-        run_demucs = engine in ("demucs", "auto")
-        run_mdx = engine in ("mdx", "auto")
+        engine = (req.engine or "mdx").lower()
+        run_demucs = engine == "demucs"
+        run_mdx = engine == "mdx"
 
         # --- Phase 0: Demucs (highest quality, 4-stem hybrid) ---
         # demucs 4.1.0+ 官方 API：demucs.api.Separator
@@ -1254,13 +1253,12 @@ def _separate_sync(req: SeparateReq, task_id: str):
                 demucs_sep = None
                 _cleanup_demucs_memory()
 
-            # engine='demucs' 时不降级到 MDX-Net，直接抛失败
-            if engine == "demucs":
-                print("[AI Daemon] ❌ Demucs 不可用且 engine=demucs，不降级", file=sys.stderr)
-                raise HTTPException(
-                    status_code=500,
-                    detail="Demucs 不可用且 engine=demucs，不降级到 MDX-Net"
-                )
+            # Demucs 失败直接抛错（已移除 auto 降级链）
+            print("[AI Daemon] ❌ Demucs 不可用，分离失败", file=sys.stderr)
+            raise HTTPException(
+                status_code=500,
+                detail="Demucs 不可用，分离失败"
+            )
 
         # --- Phase 1: MDX-Net (high quality) ---
         if run_mdx:

@@ -27,17 +27,21 @@ os.environ['INSIGHTFACE_HOME'] = os.path.join(MODELS_DIR, 'insightface')
 os.environ['MODELSCOPE_CACHE'] = os.path.join(MODELS_DIR, 'modelscope_cache')
 os.environ['MODELSCOPE_DOWNLOAD_PARALLELS'] = '0'
 
-# 清理 modelscope 下载中断残留的 .lock 和临时文件，防止下次加载时触发异常下载
+# 清理 modelscope 下载中断残留的 .lock 文件和目录、临时文件，防止下次加载时触发异常下载
 import glob as _glob
-for _lock_file in _glob.glob(os.path.join(MODELS_DIR, '**', '.lock'), recursive=True):
+import shutil as _shutil
+for _lock_path in _glob.glob(os.path.join(MODELS_DIR, '**', '.lock'), recursive=True):
     try:
-        os.remove(_lock_file)
-        print(f'[AI Config] 清理残留锁文件: {_lock_file}', file=sys.stderr)
+        if os.path.isdir(_lock_path):
+            _shutil.rmtree(_lock_path, ignore_errors=True)
+            print(f'[AI Config] 清理残留锁目录: {_lock_path}', file=sys.stderr)
+        else:
+            os.remove(_lock_path)
+            print(f'[AI Config] 清理残留锁文件: {_lock_path}', file=sys.stderr)
     except OSError:
         pass
 for _tmp_dir in _glob.glob(os.path.join(MODELS_DIR, '**', '._____temp'), recursive=True):
     try:
-        import shutil as _shutil
         _shutil.rmtree(_tmp_dir, ignore_errors=True)
         print(f'[AI Config] 清理残留临时目录: {_tmp_dir}', file=sys.stderr)
     except OSError:

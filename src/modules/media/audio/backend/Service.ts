@@ -109,7 +109,7 @@ export class AudioSeparationService {
       hqPath,
       outputDir,
       signal,
-      engine || 'auto',
+      engine || 'mdx',
       onProgress,
     );
 

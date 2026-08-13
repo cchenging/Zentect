@@ -68,8 +68,8 @@ export const StepMaterialAnalysis: React.FC = () => {
 
       // 🔧 修复重试无反应：currentConfig 可能为 null（首次加载未初始化），提供默认配置
       const currentConfig = step1State.extractionConfig || {
-        frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.25, minFrameInterval: 3.5, fps: 2, scale: 1024, quality: 3 },
-        audio: { enabled: true, separationMode: 'quality', engine: 'auto' },
+        frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.25, minFrameInterval: 3.5, fps: 2 },
+        audio: { enabled: true, separationMode: 'quality', engine: 'mdx' },
         whisper: { enabled: true, engine: 'sensevoice', language: 'auto' },
         faces: { enabled: true, engine: 'insightface' },
         targetLanguage: 'zh-CN',

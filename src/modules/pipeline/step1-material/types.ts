@@ -64,8 +64,8 @@ export interface AudioConfig {
   enabled: boolean;
   /** 'fast': 跳过人声分离，ASR 使用原始音轨（含 BGM）；'quality': 使用 Demucs/MDX-Net 分离人声 */
   separationMode?: 'fast' | 'quality';
-  /** quality 模式下可选引擎：'demucs'(重型,高保真) | 'mdx'(轻量,极速) | 'auto'(Python 默认顺序) */
-  engine?: 'demucs' | 'mdx' | 'auto';
+  /** quality 模式下可选引擎：'demucs'(重型,高保真) | 'mdx'(轻量,极速) */
+  engine?: 'demucs' | 'mdx';
 }
 
 /** ASR 引擎配置 */

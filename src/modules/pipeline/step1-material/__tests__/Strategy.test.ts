@@ -357,7 +357,7 @@ describe('Step1MaterialStrategy', () => {
 
       expect(AudioProcessor.extractAndSeparate).toHaveBeenCalledWith(
         '/v.mp4', expect.any(String), expect.any(String), undefined,
-        expect.objectContaining({ skipSeparation: false, engine: 'auto' })
+        expect.objectContaining({ skipSeparation: false, engine: 'mdx' })
       );
       const busResult = getBusResult(context);
       expect(busResult.audio.separated).toBe(true);
@@ -434,7 +434,7 @@ describe('Step1MaterialStrategy', () => {
 
       expect(AudioProcessor.extractAndSeparate).toHaveBeenCalledWith(
         '/v.mp4', expect.any(String), expect.any(String), undefined,
-        expect.objectContaining({ skipSeparation: true, engine: 'auto' })
+        expect.objectContaining({ skipSeparation: true, engine: 'mdx' })
       );
     });
 

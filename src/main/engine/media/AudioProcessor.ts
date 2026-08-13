@@ -129,14 +129,14 @@ export class AudioProcessor {
 
   /**
    * 调用 Demucs/MDX-Net 分离人声和背景音，均失败时返回 null（由上层走 fallback）
-   * @param engine     指定引擎：'demucs' | 'mdx' | 'auto'（auto=Python 端默认顺序 Demucs→MDX）
+   * @param engine     指定引擎：'demucs' | 'mdx'
    * @param onProgress 实时进度回调（通过 SSE 流式推送，替代旧版 500ms 轮询）
    */
   public static async separateVocalsBgm(
     inputAudioPath: string,
     outputDir: string,
     signal?: AbortSignal,
-    engine: 'demucs' | 'mdx' | 'auto' = 'auto',
+    engine: 'demucs' | 'mdx' = 'mdx',
     onProgress?: (pct: number, msg: string) => void
   ): Promise<{ vocals: string; bgm: string | undefined; _isFallback?: boolean } | null> {
     if (!fs.existsSync(inputAudioPath)) return null;
@@ -211,7 +211,7 @@ export class AudioProcessor {
    *   - 分离失败：从 44.1k 降采样到 16k mono 给 ASR 作为 fallback
    *   - 无音轨：返回 hasAudio=false，由上层决定如何处理
    *   - skipSeparation=true（fast 模式）：只提 44.1k 并降采样到 16k，跳过分离引擎
-   *   - engine（quality 模式可选）：'demucs' | 'mdx' | 'auto'，控制 Python 端使用的分离引擎
+   *   - engine（quality 模式可选）：'demucs' | 'mdx'，控制 Python 端使用的分离引擎
    *   - onProgress：透传分离引擎的实时进度回调（P0 修复：链路不再断裂）
    * 这样消除了双流提取的冗余，且分离引擎仍吃 44.1kHz stereo 保证质量
    * @returns asrAudioPath 供 ASR 的 16k mono；vocalsPath/bgmPath 分离产物（44.1k stereo）；isFallback 是否降级
@@ -223,7 +223,7 @@ export class AudioProcessor {
     signal?: AbortSignal,
     options?: {
       skipSeparation?: boolean;
-      engine?: 'demucs' | 'mdx' | 'auto';
+      engine?: 'demucs' | 'mdx';
       onProgress?: (pct: number, msg: string) => void;
     }
   ): Promise<{
@@ -270,7 +270,7 @@ export class AudioProcessor {
     onProgress?.(10, '正在分离人声...');
     const separated = await AudioProcessor.separateVocalsBgm(
       hqPath, outputDir, signal,
-      options?.engine || 'auto',
+      options?.engine || 'mdx',
       onProgress
     );
 
