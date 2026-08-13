@@ -96,7 +96,7 @@ export class MediaController {
      */
     IpcRouter.handle(IPC_CHANNELS.MEDIA_EXTRACT_FRAMES, async (_, payload: {
       mediaId: string; projectId: string; strategy: string; fps: number;
-      sceneThreshold: number; scale: number; quality: number; minFrameInterval?: number; timePoint?: number;
+      sceneThreshold: number; minFrameInterval?: number; timePoint?: number;
       /** P0 新增：抽帧密度预设（预算封顶 SSOT） */
       densityPreset?: DensityPreset;
       /** P0 新增：显式 maxFrames 封顶（调试或 UNIFORM_FPS） */
@@ -109,7 +109,7 @@ export class MediaController {
       asrLines?: import('../../shared/types/entities/editor').AsrLine[];
     }) => {
       const {
-        mediaId, projectId, fps, sceneThreshold, scale, quality, minFrameInterval, timePoint,
+        mediaId, projectId, fps, sceneThreshold, minFrameInterval, timePoint,
         densityPreset, maxFrames, budgetToleranceRatio,
         asrSampling, asrLines,
       } = payload;
@@ -174,8 +174,6 @@ export class MediaController {
         // sceneThreshold/minFrameInterval 不再强制给默认 → 由 Service 层结合 densityPreset 派生
         sceneThreshold,
         minFrameInterval,
-        scale: scale ?? 1024,
-        quality: quality || 3,
         timePoint,
         // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重 + P0 预算封顶，
         //   避免长镜头静态画面按 minFrameInterval 兜底抽出的重复帧污染 DB
@@ -271,6 +269,9 @@ export class MediaController {
 
       // P0 · screenshotAt 骨架：内部走 extractFrames + UNIFORM_FPS + timePoint 定点，
       // 但不经过 BudgetClipper（定点截图不存在预算概念）。
+      // 决策点①：定点截图保留 scale/quality 控件（交互/导出层，非同 Pipeline 抽帧）。
+      //  - scale → frameCap：交 resolveGoldenWidth 处理，源长边大于 scale 才缩，否则保持原始（不放大）
+      //  - quality → jpegQuality：覆盖输出 JPEG 画质（-q:v），缺省回落系统黄金值 2
       const telemetry = await VideoProcessor.extractFrames(physicalPath, framesDir, mediaId, {
         // P0 约定：定点截图内部仍走 AUTO_ADAPTIVE 策略 + 传 timePoint，
         // Strategy.buildExtractCommand() 会生成单帧 seek 命令；
@@ -278,8 +279,8 @@ export class MediaController {
         strategy: 'AUTO_ADAPTIVE',
         fps: 1,
         timePoint,
-        scale: scale ?? 1024,
-        quality: quality || 3,
+        frameCap: scale,
+        jpegQuality: quality,
         // 定点截图：关闭追加式后处理里的 BudgetClipper（虽然这里只有一张）
         postProcess: false,
       });

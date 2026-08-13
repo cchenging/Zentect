@@ -318,8 +318,6 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
             sceneThreshold: config.frames.sceneThreshold ?? 0.25,
             minFrameInterval: config.frames.minFrameInterval ?? 3.5,
             fps: config.frames.fps ?? 2,
-            scale: config.frames.scale ?? 1024,
-            quality: config.frames.quality ?? 3,
           } : { enabled: false },
           audio: config.audio,
           whisper: config.whisper,

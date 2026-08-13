@@ -79,30 +79,33 @@ function createMockSpawn(
 import { FrameExtractionService, resolveStrategy } from '../backend/Service';
 
 describe('resolveStrategy', () => {
-  it('应识别新版大写策略名', () => {
-    expect(resolveStrategy('VLM_OPTIMIZED')).toBe('VLM_OPTIMIZED');
+  it('应识别新版 2 值枚举', () => {
+    expect(resolveStrategy('AUTO_ADAPTIVE')).toBe('AUTO_ADAPTIVE');
     expect(resolveStrategy('UNIFORM_FPS')).toBe('UNIFORM_FPS');
-    expect(resolveStrategy('FAST_KEYFRAME')).toBe('FAST_KEYFRAME');
-    expect(resolveStrategy('PRECISE_SINGLE')).toBe('PRECISE_SINGLE');
   });
 
-  it('应识别旧版小写下划线策略名', () => {
-    expect(resolveStrategy('vlm_optimized')).toBe('VLM_OPTIMIZED');
+  it('历史 4 策略别名（大写）应归一化到 AUTO_ADAPTIVE', () => {
+    expect(resolveStrategy('VLM_OPTIMIZED')).toBe('AUTO_ADAPTIVE');
+    expect(resolveStrategy('FAST_KEYFRAME')).toBe('AUTO_ADAPTIVE');
+    expect(resolveStrategy('PRECISE_SINGLE')).toBe('AUTO_ADAPTIVE');
+    expect(resolveStrategy('UNIFORM')).toBe('UNIFORM_FPS');
+  });
+
+  it('旧版小写下划线/简写别名应归一化', () => {
+    expect(resolveStrategy('vlm_optimized')).toBe('AUTO_ADAPTIVE');
     expect(resolveStrategy('uniform_fps')).toBe('UNIFORM_FPS');
-    expect(resolveStrategy('fast_keyframe')).toBe('FAST_KEYFRAME');
-    expect(resolveStrategy('precise_single')).toBe('PRECISE_SINGLE');
-  });
-
-  it('应识别旧版简写别名', () => {
+    expect(resolveStrategy('fast_keyframe')).toBe('AUTO_ADAPTIVE');
+    expect(resolveStrategy('precise_single')).toBe('AUTO_ADAPTIVE');
     expect(resolveStrategy('uniform')).toBe('UNIFORM_FPS');
-    expect(resolveStrategy('keyframe')).toBe('FAST_KEYFRAME');
-    expect(resolveStrategy('iframe')).toBe('FAST_KEYFRAME');
-    expect(resolveStrategy('scene')).toBe('VLM_OPTIMIZED');
+    expect(resolveStrategy('keyframe')).toBe('AUTO_ADAPTIVE');
+    expect(resolveStrategy('iframe')).toBe('AUTO_ADAPTIVE');
+    expect(resolveStrategy('scene')).toBe('AUTO_ADAPTIVE');
   });
 
-  it('未知策略名应原样透传', () => {
-    expect(resolveStrategy('custom_strategy')).toBe('custom_strategy');
-    expect(resolveStrategy('')).toBe('');
+  it('未知/空策略名应回退到 AUTO_ADAPTIVE', () => {
+    expect(resolveStrategy('custom_strategy')).toBe('AUTO_ADAPTIVE');
+    expect(resolveStrategy('')).toBe('AUTO_ADAPTIVE');
+    expect(resolveStrategy(undefined as unknown as string)).toBe('AUTO_ADAPTIVE');
   });
 });
 
@@ -325,7 +328,7 @@ describe('FrameExtractionService', () => {
         'C:/videos/test.mp4',
         'C:/output/frames',
         'media_001',
-        { strategy: 'VLM_OPTIMIZED', fps: 2, scale: 1024, quality: 3 },
+        { strategy: 'VLM_OPTIMIZED', fps: 2 },
       );
 
       expect(result.metrics.durationMs).toBeGreaterThanOrEqual(0);

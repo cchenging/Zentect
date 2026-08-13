@@ -27,8 +27,8 @@ export interface AudioConfig {
   enabled: boolean;
   /** 'fast': 跳过人声分离，ASR 使用原始音轨（含 BGM）；'quality': 使用 Demucs/MDX-Net 分离人声 */
   separationMode?: 'fast' | 'quality';
-  /** quality 模式下可选引擎：'demucs'(重型,高保真) | 'mdx'(轻量,极速) | 'auto'(Python 默认顺序) */
-  engine?: 'demucs' | 'mdx' | 'auto';
+  /** quality 模式下可选引擎：'demucs'(重型,高保真) | 'mdx'(轻量,极速) */
+  engine?: 'demucs' | 'mdx';
 }
 
 export interface ExtractionConfig {
@@ -42,8 +42,6 @@ export interface ExtractionConfig {
      */
     frameDensityPreset?: SharedFrameDensityPreset;
     sceneThreshold: number;
-    quality: number;
-    scale: number;
     fps: number;
     minFrameInterval?: number;
     timePoint?: number;
@@ -86,9 +84,7 @@ export function migrateFramesConfig(rawFrames: any): ExtractionConfig['frames'] 
     enabled: true,
     mode: 'AUTO_ADAPTIVE' as const,
     sceneThreshold: 0.25,
-    quality: 3,
     fps: 2,
-    scale: 1024,
     minFrameInterval: 3.5,
     matrixMode: 'auto' as const,
     frameDensityPreset: 'standard' as const,
@@ -122,9 +118,7 @@ export function migrateFramesConfig(rawFrames: any): ExtractionConfig['frames'] 
     mode: normalizedMode,
     frameDensityPreset: densityPreset,
     sceneThreshold: typeof rawFrames.sceneThreshold === 'number' ? rawFrames.sceneThreshold : baseDefaults.sceneThreshold,
-    quality: typeof rawFrames.quality === 'number' ? rawFrames.quality : baseDefaults.quality,
     fps: typeof rawFrames.fps === 'number' ? rawFrames.fps : baseDefaults.fps,
-    scale: typeof rawFrames.scale === 'number' ? rawFrames.scale : baseDefaults.scale,
     minFrameInterval: typeof rawFrames.minFrameInterval === 'number' ? rawFrames.minFrameInterval : baseDefaults.minFrameInterval,
     timePoint: typeof rawFrames.timePoint === 'number' ? rawFrames.timePoint : undefined,
     matrixMode: rawFrames.matrixMode ?? baseDefaults.matrixMode,
@@ -173,13 +167,11 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
     mode: 'AUTO_ADAPTIVE', // P0 · 新枚举默认
     frameDensityPreset: 'standard', // P0 · 默认标准档
     sceneThreshold: 0.25,
-    quality: 3,
     fps: 2,
-    scale: 1024,
     minFrameInterval: 3.5,
     matrixMode: 'auto',
   },
-  audio: { enabled: true, separationMode: 'quality', engine: 'auto' },
+  audio: { enabled: true, separationMode: 'quality', engine: 'mdx' },
   whisper: { enabled: true, engine: 'auto' },
   faces: { enabled: true, engine: 'insightface' },
 };

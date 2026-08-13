@@ -99,8 +99,6 @@ describe('Media Frames Types（P0 · 2 枚举收拢 + 历史兼容别名）', ()
         sceneThreshold: 0.35,
         minFrameInterval: 6,
         fps: 2,
-        scale: 1920,
-        quality: 2,
         timePoint: 30.5,
         inPoint: 10.0,
         outPoint: 120.0,
@@ -109,8 +107,6 @@ describe('Media Frames Types（P0 · 2 枚举收拢 + 历史兼容别名）', ()
       expect(input.sceneThreshold).toBe(0.35);
       expect(input.minFrameInterval).toBe(6);
       expect(input.fps).toBe(2);
-      expect(input.scale).toBe(1920);
-      expect(input.quality).toBe(2);
       expect(input.timePoint).toBe(30.5);
       expect(input.inPoint).toBe(10.0);
       expect(input.outPoint).toBe(120.0);
@@ -125,8 +121,6 @@ describe('Media Frames Types（P0 · 2 枚举收拢 + 历史兼容别名）', ()
       expect(input.sceneThreshold).toBeUndefined();
       expect(input.minFrameInterval).toBeUndefined();
       expect(input.fps).toBeUndefined();
-      expect(input.scale).toBeUndefined();
-      expect(input.quality).toBeUndefined();
       expect(input.timePoint).toBeUndefined();
       expect(input.inPoint).toBeUndefined();
       expect(input.outPoint).toBeUndefined();

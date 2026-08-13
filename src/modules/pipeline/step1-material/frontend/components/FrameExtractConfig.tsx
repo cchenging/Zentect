@@ -3,8 +3,7 @@
 // 隐藏细粒度滑块（sceneThreshold / fps / minFrameInterval），密度预设作为唯一真源（SSOT）。
 
 import React from 'react';
-import { Sparkles, Clock, Layers, Image as ImageIcon, AlertTriangle } from 'lucide-react';
-import { Slider } from '@renderer/components/ui/slider';
+import { Sparkles, Clock, Layers, AlertTriangle } from 'lucide-react';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 // P0 · 抽帧契约唯一真源（normalize + preset 配置）
 import {
@@ -67,12 +66,6 @@ const DENSITY_OPTIONS: DensityOption[] = [
   },
 ];
 
-const SCALE_OPTIONS = [
-  { value: 640, label: '640' },
-  { value: 1024, label: '1024' },
-  { value: 0, label: '原始' },
-];
-
 export const FrameExtractConfig: React.FC<FrameExtractConfigProps> = ({ isRunning }) => {
   const extractionConfig = useStep1Store((s) => s.extractionConfig);
   const updateExtractionConfig = useStep1Store((s) => s.updateExtractionConfig);
@@ -97,8 +90,6 @@ export const FrameExtractConfig: React.FC<FrameExtractConfigProps> = ({ isRunnin
   // P0 · 细粒度参数（不再在 UI 中调整，仅作显示使用 + 作为 patch 基准）
   const sceneThreshold = frames.sceneThreshold ?? presetConfig.sceneThreshold;
   const fps = frames.fps || 2;
-  const scale = frames.scale ?? 1024;
-  const quality = frames.quality ?? 3;
   const minInterval = frames.minFrameInterval ?? presetConfig.minFrameInterval;
 
   // 探测是否为 PRECISE_SINGLE 历史数据（仅展示一条提示条，不做功能）
@@ -249,51 +240,6 @@ export const FrameExtractConfig: React.FC<FrameExtractConfigProps> = ({ isRunnin
             ? `「智能自适应」结合镜头转场检测（灵敏度 ${sceneThreshold}）与 ${minInterval}s 兜底采样，再按「${presetConfig.label}」预算封顶，避免长视频爆 Token。`
             : `「均匀抽帧」按 ${presetConfig.label} 档位（${presetConfig.framesPerMinute} 张/分钟）均匀采样；当前实际帧率 ${fps} 帧/秒，同样受预算封顶保护。`}
         </p>
-      </div>
-
-      {/* 通用输出参数：缩放宽度 + 画质 */}
-      <div className="grid grid-cols-2 gap-1.5">
-        <div
-          className="rounded-lg border border-border/50 bg-muted/20 p-2 flex flex-col gap-1.5 shadow-sm"
-        >
-          <span className="text-[12px] text-muted-foreground flex items-center gap-1">
-            <ImageIcon size={11} /> 缩放宽度
-          </span>
-          <div className="flex gap-1">
-            {SCALE_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => updateFrames({ scale: opt.value })}
-                disabled={isRunning}
-                className={`flex-1 text-[11px] py-0.5 rounded transition-all cursor-pointer border ${
-                  scale === opt.value
-                    ? 'bg-primary/10 text-primary font-semibold border-primary/20'
-                    : 'bg-muted/40 text-muted-foreground border-transparent hover:bg-muted/60 hover:text-foreground'
-                } ${isRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div
-          className="rounded-lg border border-border/50 bg-muted/20 p-2 flex flex-col gap-1.5 shadow-sm"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-[12px] text-muted-foreground">画质</span>
-            <span className="text-[12px] font-mono text-accent-warm font-semibold">
-              {quality}/5
-            </span>
-          </div>
-          <Slider
-            min={1}
-            max={5}
-            step={1}
-            value={[quality]}
-            onValueChange={([v]) => updateFrames({ quality: v })}
-            disabled={isRunning}
-          />
-        </div>
       </div>
     </div>
   );

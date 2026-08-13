@@ -15,7 +15,6 @@ describe('buildExtractCommand', () => {
     sceneThreshold: 0.28,
     minFrameInterval: 4,
     width: 1024,
-    quality: 3,
     threads: 4,
   };
 
@@ -225,30 +224,25 @@ describe('buildExtractCommand', () => {
 
   // ==================== 画质映射 ====================
 
-  describe('JPEG 画质映射', () => {
-    it('quality=1（最高）应映射为 q:v=6', () => {
-      const args = buildExtractCommand({ ...baseConfig, quality: 1 });
+  describe('JPEG 画质（系统托管）', () => {
+    it('管线不传 jpegQuality 时固定为系统黄金值 q:v=2（P0 剥离 quality 控件）', () => {
+      const args = buildExtractCommand(baseConfig);
       const qvIdx = args.indexOf('-q:v');
       expect(qvIdx).not.toBe(-1);
-      expect(args[qvIdx + 1]).toBe('6');
-    });
-
-    it('quality=3（默认）应映射为 q:v=4', () => {
-      const args = buildExtractCommand({ ...baseConfig, quality: 3 });
-      const qvIdx = args.indexOf('-q:v');
-      expect(args[qvIdx + 1]).toBe('4');
-    });
-
-    it('quality=5（最低）应映射为 q:v=2', () => {
-      const args = buildExtractCommand({ ...baseConfig, quality: 5 });
-      const qvIdx = args.indexOf('-q:v');
       expect(args[qvIdx + 1]).toBe('2');
     });
 
-    it('非法 quality 值应降级为 4', () => {
-      const args = buildExtractCommand({ ...baseConfig, quality: 99 } as any);
+    it('定点截图经 jpegQuality 覆盖画质（决策点①保留 quality 控件）', () => {
+      const args = buildExtractCommand({ ...baseConfig, jpegQuality: 5 });
       const qvIdx = args.indexOf('-q:v');
-      expect(args[qvIdx + 1]).toBe('4');
+      expect(qvIdx).not.toBe(-1);
+      expect(args[qvIdx + 1]).toBe('5');
+    });
+
+    it('jpegQuality=3 直接映射为 q:v=3', () => {
+      const args = buildExtractCommand({ ...baseConfig, jpegQuality: 3 });
+      const qvIdx = args.indexOf('-q:v');
+      expect(args[qvIdx + 1]).toBe('3');
     });
   });
 });

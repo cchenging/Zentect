@@ -112,7 +112,7 @@ export const API = {
      */
     extractFrames: (payload: {
       mediaId: string; projectId: string; strategy: string; fps: number;
-      sceneThreshold: number; scale: number; quality: number;
+      sceneThreshold: number;
       minFrameInterval?: number; timePoint?: number;
       densityPreset?: 'sparse' | 'standard' | 'dense';
       maxFrames?: number;

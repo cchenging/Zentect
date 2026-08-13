@@ -119,14 +119,16 @@ interface ExtractConfig {
   fps: number;
   sceneThreshold: number;
   minFrameInterval: number;
+  /** 系统级黄金缩放宽度（长边 cap；-1 = 不加 scale 滤镜，保持原始） */
   width: number;
-  quality: number;
   inPoint?: number;
   outPoint?: number;
   timePoint?: number;
   threads: number;
   /** 是否附加 showinfo 滤镜，向 stderr 输出每帧 pts_time（供精确时序元数据） */
   attachShowinfo?: boolean;
+  /** 定点截图专用 JPEG 画质覆盖（-q:v）；缺省回落到系统黄金值 2。管线抽帧不传此字段。 */
+  jpegQuality?: number;
 }
 
 /** 帧模块专用的精简 FFmpeg 命令构建器 */
@@ -153,7 +155,7 @@ class FrameCommandBuilder {
     const {
       videoPath, outputPath, strategy,
       fps, sceneThreshold, minFrameInterval,
-      width, quality, inPoint, outPoint, timePoint, threads, attachShowinfo,
+      width, inPoint, outPoint, timePoint, threads, attachShowinfo, jpegQuality,
     } = config;
 
     // P0 · 内部归一化：任意策略字符串 → 3 路由分支
@@ -223,10 +225,8 @@ class FrameCommandBuilder {
       builder.vsyncVfr();
     }
 
-    // 4. JPEG 画质非线性映射：quality 1-5 → q:v 6-2
-    const QUALITY_MAP: Record<number, number> = { 5: 2, 4: 3, 3: 4, 2: 5, 1: 6 };
-    const qv = QUALITY_MAP[quality] ?? 4;
-    builder.qualityJpeg(qv);
+    // 4. JPEG 画质：管线固定系统黄金值 -q:v 2（约 88%+，单帧 80KB~150KB）；定点截图可经 jpegQuality 覆盖
+    builder.qualityJpeg(jpegQuality ?? 2);
 
     // 5. 线程数（单帧截图通常不需要多线程，避免额外开销）
     if (route !== 'PRECISE_SINGLE') {
@@ -260,13 +260,15 @@ export function buildExtractCommand(config: {
   fps: number;
   sceneThreshold: number;
   minFrameInterval: number;
+  /** 系统级黄金缩放宽度（长边 cap；-1 = 不加 scale 滤镜，保持原始） */
   width: number;
-  quality: number;
   inPoint?: number;
   outPoint?: number;
   timePoint?: number;
   threads: number;
   attachShowinfo?: boolean;
+  /** 定点截图专用 JPEG 画质覆盖（-q:v）；缺省回落 2。管线抽帧不传此字段。 */
+  jpegQuality?: number;
 }): string[] {
   return FrameCommandBuilder.buildExtractCommand(config);
 }

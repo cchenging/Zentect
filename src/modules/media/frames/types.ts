@@ -50,10 +50,6 @@ export interface FrameExtractInput {
   minFrameInterval?: number;
   /** 均匀抽帧帧率，默认 2（仅 UNIFORM_FPS 模式生效） */
   fps?: number;
-  /** 缩放宽度（像素），VLM推荐1024，默认 1024 */
-  scale?: number;
-  /** JPEG 画质 1-5（1=最高，5=最低压缩），默认 3 */
-  quality?: number;
   /** ⚠️ 历史兼容保留：定点秒数；P0 起抽帧主流程不应消费；请走 screenshotAt 独立 API */
   timePoint?: number;
   /** 起始时间点（秒） */

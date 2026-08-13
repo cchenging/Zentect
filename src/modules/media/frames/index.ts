@@ -9,7 +9,7 @@ export type {
   DensityPreset,
 } from './types';
 
-export { FRAME_STRATEGIES } from './types';
+export { FRAME_STRATEGIES, normalizeFrameStrategy } from './types';
 
 export type {
   FrameExtractionDeps,
@@ -19,4 +19,5 @@ export type {
 export {
   FrameExtractionService,
   resolveStrategy,
+  FACE_FRAME_LONG_EDGE,
 } from './backend/Service';

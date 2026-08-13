@@ -109,10 +109,6 @@ export interface ExtractFramesParams {
   fps?: number;
   /** 场景变化阈值 (0,1]，默认由 densityPreset 派生（P0 UI 隐藏，调试仍可手动覆盖） */
   sceneThreshold?: number;
-  /** 缩放宽度，VLM 推荐 1024，默认 1024（前端 store 用 scale，VideoProcessor 解构为 scale，传给 FFmpegBuilder 映射为 width） */
-  scale?: number;
-  /** JPEG 画质 1-5，默认 3 */
-  quality?: number;
   /** VLM 模式最小帧间隔（秒），默认由 densityPreset 派生（P0 UI 隐藏，调试仍可手动覆盖） */
   minFrameInterval?: number;
   /** ⚠️ 历史兼容保留：精准截图时间点（秒）。P0 起不应进入抽帧主流程，统一走 screenshotAt 独立 API。 */

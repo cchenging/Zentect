@@ -10,7 +10,6 @@ const baseConfig = {
   sceneThreshold: 0.28,
   minFrameInterval: 4,
   width: 1024,
-  quality: 3,
   threads: 4,
 };
 describe('debug', () => {
@@ -20,8 +19,11 @@ describe('debug', () => {
   it('minFrameInterval 0', () => {
     expect(() => buildExtractCommand({ ...baseConfig, minFrameInterval: 0 })).toThrow();
   });
-  it('width -1', () => {
-    expect(() => buildExtractCommand({ ...baseConfig, width: -1 })).toThrow();
+  it('width -1（保持原始不放大，决策点②）不抛错且不加缩放滤镜', () => {
+    expect(() => buildExtractCommand({ ...baseConfig, width: -1 })).not.toThrow();
+    const args = buildExtractCommand({ ...baseConfig, width: -1 });
+    const vfArg = args.find(a => a === '-vf') ? args[args.indexOf('-vf') + 1] : '';
+    expect(vfArg).not.toContain('scale=');
   });
   it('width 0', () => {
     const args = buildExtractCommand({ ...baseConfig, width: 0 });

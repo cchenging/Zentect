@@ -2,7 +2,7 @@
 
 import { BaseNodeStrategy } from '../../../../main/engine/strategies/BaseNodeStrategy';
 import type { ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
-import { FrameExtractionService } from '@modules/media/frames';
+import { FrameExtractionService, FACE_FRAME_LONG_EDGE } from '@modules/media/frames';
 import { PathManager } from '../../../../main/utils/pathManager';
 import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
 import { VisionProcessor } from '../../../../main/engine/media/VisionProcessor';
@@ -69,7 +69,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     const mediaPath = input.mediaPath;
     const config = input.config || {};
     const separationMode = config.audio?.separationMode || 'quality';
-    const engine = config.audio?.engine || 'auto';
+    const engine = config.audio?.engine || 'mdx';
     const mediaId = input.mediaId || `media_${Date.now()}`;
     const signal = context.signal;
     // 🔧 修复重试：forceRetryStep 表示用户点击了单个子步骤的重试按钮，该子步骤必须强制执行不跳过
@@ -438,8 +438,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             fps: framesConfig.fps || config.frameFps || 2,
             sceneThreshold: framesConfig.sceneThreshold || 0.25,
             minFrameInterval: framesConfig.minFrameInterval || 3.5,
-            scale: framesConfig.scale || 1024,
-            quality: framesConfig.quality || 3,
+            // P0 · 系统级黄金参数：VLM 抽帧默认 longEdge=1024，JPEG -q:v 2（后端自动接管）
             timePoint: framesConfig.timePoint,
             abortSignal: signal,
             // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重 + timeMs 元数据
@@ -456,8 +455,6 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             telemetryResult = await frameService.extractFrames(mediaPath, framesDir, mediaId, {
               strategy: 'UNIFORM_FPS',
               fps: framesConfig.fps || config.frameFps || 2,
-              scale: framesConfig.scale || 1024,
-              quality: framesConfig.quality || 3,
               abortSignal: signal,
               postProcess: true,
             });
@@ -608,8 +605,8 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           const faceFramesResult = await frameService.extractFrames(mediaPath, faceFramesDir, mediaId, {
             strategy: 'UNIFORM_FPS',
             fps: 1,
-            scale: 1280,
-            quality: 3,
+            // P0 · 人脸专用黄金长边 cap=1280（决策点②：源分辨率低于 1280 保持原始，不放大），JPEG 画质由系统托管 -q:v 2
+            frameCap: FACE_FRAME_LONG_EDGE,
             abortSignal: signal,
           });
           if (faceFramesResult.files.length > 0) {

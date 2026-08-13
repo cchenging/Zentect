@@ -30,6 +30,23 @@ export interface FrameExtractionDeps {
 }
 
 // ──────────────────────────────────────────────
+// P0 · 系统级黄金抽帧参数（托管，用户不可改）
+// 从 UI / Store / DTO 剥离 scale 与 quality，由后端按源分辨率自适应接管：
+//  - VLM 抽帧：长边 > 1024px 时等比缩放至 1024，否则保持原始（不拉伸放大）
+//  - 人脸抽帧：长边 > 1280px 时等比缩放至 1280，否则保持原始（frameCap 由调用方传 1280）
+//  - JPEG 画质：统一固定 -q:v 2（高保真，约 88%+，单帧 80KB~150KB）
+// ──────────────────────────────────────────────
+export const VLM_FRAME_LONG_EDGE = 1024;  // VLM 视觉识别黄金长边
+export const FACE_FRAME_LONG_EDGE = 1280; // 人脸识别黄金长边（更充分保留五官细节）
+export const GOLDEN_JPEG_QUALITY_QV = 2;  // 固定高保真 JPEG 画质 (-q:v 2)
+
+/** 内部自适应缩放：长边 > cap → 等比缩到 cap；否则 -1（不加 scale 滤镜，保持原始，不放大） */
+export function resolveGoldenWidth(longEdge: number | undefined, cap: number): number {
+  if (!longEdge || longEdge <= 0) return cap;
+  return longEdge > cap ? cap : -1;
+}
+
+// ──────────────────────────────────────────────
 // P0 · 策略兼容归一化（替换旧 STRATEGY_MIGRATION）
 // ──────────────────────────────────────────────
 
@@ -59,8 +76,9 @@ export interface ExtractOptions {
   strategy?: string;
   /** 均匀抽帧帧率（仅 UNIFORM_FPS 生效，AUTO_ADAPTIVE 下由 densityPreset 派生） */
   fps?: number;
-  scale?: number;
-  quality?: number;
+  /** 系统内部黄金缩放上限（长边像素）。省略=1024（VLM）；人脸识别传 1280。
+   *  不进入 UI / Store / DTO，仅内部消费方（如人脸抽帧）按需覆盖。 */
+  frameCap?: number;
   /** 场景变化阈值；AUTO_ADAPTIVE + densityPreset 提供时默认从预设派生 */
   sceneThreshold?: number;
   /** 最小帧间隔；AUTO_ADAPTIVE + densityPreset 提供时默认从预设派生 */
@@ -85,6 +103,8 @@ export interface ExtractOptions {
   asrSampling?: import('./AsrAnchorMatcher').AsrAnchoringConfig;
   /** P2 上游 ASR 台词（来自 Step1 ASR 识别）；空数组/不传 = 跳过锚定（不 crash） */
   asrLines?: import('../../../../shared/types/entities/editor').AsrLine[];
+  /** 定点截图专用 JPEG 画质覆盖（-q:v）；缺省回落系统黄金值 2。管线抽帧不传此字段，保持系统托管。 */
+  jpegQuality?: number;
 
   // ── P3 · V2 真补帧参数（长镜头空段二次 FFmpeg 单帧 seek） ─────────────────
   /** P3 V2 真补帧配置（追加式；默认启用；UNIFORM_FPS gate=空；缺省补 1 帧/长空段 12s 阈值） */
@@ -180,8 +200,7 @@ export class FrameExtractionService {
   ): Promise<FrameExtractionTelemetry> {
     const {
       fps = 2,
-      scale = 1024,
-      quality = 3,
+      frameCap,
       sceneThreshold,
       minFrameInterval,
       timePoint,
@@ -195,6 +214,7 @@ export class FrameExtractionService {
       asrSampling,
       asrLines,
       refillConfig,
+      jpegQuality,
     } = options;
 
     // P0 · PRECISE_SINGLE 守卫：定点截图不走批量抽帧，改走独立 screenshotAt API
@@ -258,12 +278,14 @@ export class FrameExtractionService {
     const actualOut = outPoint ?? probedDurationSec;
     const videoDurationSec = Math.max(0, actualOut - actualIn);
     let adaptiveMinInterval = effectiveMinInterval;
-    let adaptiveScale = scale;
     if (videoDurationSec > 600) {
       // 长视频兜底只做放大（不小于 preset 派生）
       adaptiveMinInterval = Math.max(effectiveMinInterval, Math.max(4, Math.round(videoDurationSec / 600) * 2));
-      adaptiveScale = Math.min(1024, Math.max(512, 1024 - Math.floor(videoDurationSec / 600) * 64));
     }
+
+    // P0 · 系统级黄金缩放：按源分辨率长边 + 内部 frameCap（默认 1024 VLM / 人脸传 1280）自适应
+    const longEdge = Math.max(probeResult.width ?? 0, probeResult.height ?? 0);
+    const goldenWidth = resolveGoldenWidth(longEdge, frameCap ?? VLM_FRAME_LONG_EDGE);
 
     const outputPattern = path.join(safeOutputDir, 'frame_%08d.jpg');
 
@@ -274,14 +296,15 @@ export class FrameExtractionService {
       fps,
       sceneThreshold: effectiveSceneThreshold,
       minFrameInterval: adaptiveMinInterval,
-      width: adaptiveScale,
-      quality,
+      width: goldenWidth,
       inPoint,
       outPoint,
       timePoint,
       threads: 0,
       // 后处理启用时附加 showinfo，捕获每帧精确 PTS
       attachShowinfo: postProcess,
+      // 定点截图经 jpegQuality 覆盖画质（管线不传 → 回落黄金值 2）
+      jpegQuality,
     });
 
     return new Promise((resolve, reject) => {
@@ -353,8 +376,7 @@ export class FrameExtractionService {
                 fps: 1,
                 sceneThreshold: 0.25,
                 minFrameInterval: 0,
-                width: args.width ?? adaptiveScale,
-                quality: args.quality ?? quality,
+                width: args.width ?? goldenWidth,
                 timePoint: args.timePointSec,
                 threads: 0,
                 attachShowinfo: false, // 单帧无需 showinfo，节省 stderr 解析
@@ -394,8 +416,7 @@ export class FrameExtractionService {
               framesDir: safeOutputDir,
               runSingleFrameExtract,
               refillConfig: {
-                width: adaptiveScale,
-                quality,
+                width: goldenWidth,
                 ...(refillConfig ?? {}),
               },
             });
