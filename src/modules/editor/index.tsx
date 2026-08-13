@@ -43,7 +43,8 @@ export default function Editor() {
 
   /** 管线编排器，提供 executeStep 供自动模式递进 */
   const { executeStep } = usePipelineOrchestrator();
-  useExtractionHandler(async (nextStep: number) => { await executeStep(nextStep); });
+  const handleAutoContinue = useCallback(async (nextStep: number) => { await executeStep(nextStep); }, [executeStep]);
+  useExtractionHandler(handleAutoContinue);
 
   const { handleStart, handleNextStep, handleVideoImport, handleReplaceVideo } = useStepRunner(id);
 
