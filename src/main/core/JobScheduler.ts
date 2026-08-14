@@ -310,7 +310,10 @@ export class JobScheduler {
               config: {
                 frames: { enabled: true },
                 audio: { enabled: true, separationMode: 'quality', engine: 'mdx' },
-                whisper: { enabled: true },
+                // 🔧 修复：显式指定识别语言为中文 + sensevoice 引擎，不再依赖 auto 检测
+                //   auto 检测对剧集片头(音乐/静音)易误判为非中文 → 误走 faster-whisper large-v3
+                //   (CPU 对长中文音频极慢，45 分钟都识别不完导致超时)。默认中文走 sensevoice 又快又稳。
+                whisper: { enabled: true, language: 'zh', engine: 'sensevoice' },
                 faces: { enabled: true },
               },
               existingMedia: targetMedia || null,

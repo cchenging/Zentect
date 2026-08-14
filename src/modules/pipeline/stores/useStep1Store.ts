@@ -60,7 +60,7 @@ export interface ExtractionConfig {
     density?: SharedFrameDensityPreset | string;
   };
   audio: AudioConfig;
-  whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'auto' };
+  whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'auto'; language?: string };
   faces: {
     enabled: boolean;
     engine: 'insightface' | 'mediapipe';
@@ -172,7 +172,10 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
     matrixMode: 'auto',
   },
   audio: { enabled: true, separationMode: 'quality', engine: 'mdx' },
-  whisper: { enabled: true, engine: 'auto' },
+  // 🔧 修复：默认中文走 SenseVoice（又快又稳），显式指定 language='zh'
+  //   旧默认 engine='auto' 会让 Python 端用 faster-whisper 预检测语言，
+  //   对电视剧片头(音乐/静音)易误判 → 误走 faster-whisper large-v3，CPU 上极慢导致超时。
+  whisper: { enabled: true, engine: 'sensevoice', language: 'zh' },
   faces: { enabled: true, engine: 'insightface' },
 };
 
@@ -184,9 +187,10 @@ const PERSIST_PARTIAL = (state: Step1Store) => ({
 /**
  * P0 · zustand persist 版本号 + 迁移钩子
  * - version 0: 旧数据（4 枚举）；version 1: 新 2 枚举 + frameDensityPreset
- * - migrate：仅需处理 0 → 1（历史 4 策略 → 2 策略 + standard 密度档）
+ * - version 2: whisper 默认引擎收拢为 SenseVoice + language='zh'（中文电视剧稳定识别）
+ * migrate：处理 0→2（策略归一化 + 密度档 + whisper 迁移）
  */
-const PERSIST_VERSION = 1;
+const PERSIST_VERSION = 2;
 
 export const useStep1Store = create<Step1Store>()(
   persist(
@@ -235,14 +239,26 @@ export const useStep1Store = create<Step1Store>()(
       version: PERSIST_VERSION,
       // 只持久化配置部分，避免运行时数据污染
       partialize: PERSIST_PARTIAL,
-      // P0 · 历史数据迁移：旧策略归一化 + frameDensityPreset 补齐
+      // P0 · 历史数据迁移：旧策略归一化 + frameDensityPreset 补齐 + whisper 引擎收拢
       migrate: (persistedState: any, version: number) => {
-        if (version === 0 && persistedState && typeof persistedState === 'object') {
+        if (persistedState && typeof persistedState === 'object') {
           const extractionConfig = (persistedState as any).extractionConfig;
-          if (extractionConfig && extractionConfig.frames) {
-            extractionConfig.frames = migrateFramesConfig(extractionConfig.frames);
+          if (extractionConfig) {
+            // version < 1：旧 4 策略 → 2 策略 + 密度档
+            if (version < 1 && extractionConfig.frames) {
+              extractionConfig.frames = migrateFramesConfig(extractionConfig.frames);
+            }
+            // version < 2：旧 whisper 配置（engine:'auto' 或缺失 language）→ 默认中文走 SenseVoice
+            // 关键：persist 持久化会让旧 localStorage 覆盖新默认值，必须在此强制收拢，
+            //      否则用户"改了默认值"也会被本地旧 {engine:'auto'} 顶掉。
+            if (version < 2) {
+              const w = extractionConfig.whisper;
+              extractionConfig.whisper =
+                w && typeof w === 'object'
+                  ? { ...w, engine: 'sensevoice', language: 'zh' }
+                  : { enabled: true, engine: 'sensevoice', language: 'zh' };
+            }
           }
-          // 迁移后 version 会被 zustand 自动更新为当前 PERSIST_VERSION
         }
         return persistedState;
       },

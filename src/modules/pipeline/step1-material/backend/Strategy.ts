@@ -538,14 +538,29 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         const whisperCfg = typeof config.whisper === 'object' ? config.whisper : { enabled: true, engine: 'auto' as const };
         const asrLang = whisperCfg.language || 'auto';
         const CJK_LANGS = ['zh', 'ja', 'ko', 'yue'];
-        // 🔧 修复：language='auto' 时强制 engine='auto'，让 Python 端根据 faster-whisper 检测结果自动选择引擎
-        // 旧版 bug：前端默认 engine='sensevoice' 是 truthy → 走第一分支 → 英文视频被 SenseVoice 识别导致字幕不一致
-        // 且 zustand persist 持久化了旧默认值，仅改默认值对老数据无效，故此处强制覆盖
+        // 🔧 诊断：打印前端实际传入的原始 whisper 配置，便于定位"为什么还是 auto"
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] ASR 原始配置: ${JSON.stringify(whisperCfg)}, targetLanguage=${(config as any)?.targetLanguage ?? '未传'}`, { mediaId });
+        // 🔧 修复：调整引擎选择优先级 —— 显式指定的 engine 优先于语言推断
+        // 旧版 bug：`if (asrLang === 'auto') asrEngine='auto'` 排在显式 engine 之前，
+        //   前端一旦传 language='auto'（即使 engine='sensevoice'），就会被强制回退到 auto，
+        //   导致中文电视剧误走 faster-whisper。现在显式 engine 优先级最高。
+        // 另加 targetLanguage 兜底：即便前端 persist 旧数据仍传 engine='auto'，
+        //   只要项目目标语言是中文，就强制走 SenseVoice（电视剧场景稳定识别）。
+        const targetLang = (config as any)?.targetLanguage || '';
+        const isChineseTarget = /^zh/i.test(targetLang);
+        // 兜底时同步解析语言：中文目标 → 'zh'，让 LocalWhisperStrategy 日志显示真实语言而非 auto
+        let resolvedLang = asrLang;
         let asrEngine: 'sensevoice' | 'faster-whisper' | 'auto';
-        if (asrLang === 'auto') {
-          asrEngine = 'auto';
-        } else if (whisperCfg.engine && whisperCfg.engine !== 'auto') {
+        if (whisperCfg.engine && whisperCfg.engine !== 'auto') {
+          // 上层/前端显式指定了引擎 → 优先尊重
           asrEngine = whisperCfg.engine;
+        } else if (isChineseTarget) {
+          // 未显式指定引擎，但目标语言是中文 → 默认 SenseVoice（中文剧集又快又稳）
+          asrEngine = 'sensevoice';
+          if (resolvedLang === 'auto') resolvedLang = 'zh';
+        } else if (asrLang === 'auto') {
+          // 未指定引擎且语言未知 → 交由 Python 端预检测语言并选定引擎
+          asrEngine = 'auto';
         } else if (CJK_LANGS.includes(asrLang)) {
           asrEngine = 'sensevoice';
         } else {
@@ -556,7 +571,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           onProgress(Math.max(lastProgress, mapped), msg || 'ASR 识别中');
         };
         whisperResult = await whisperStrategy.transcribe(
-          targetAudio, audioDir, mediaId, asrLang, asrEngine, signal, asrOnProgress
+          targetAudio, audioDir, mediaId, resolvedLang, asrEngine, signal, asrOnProgress
         );
         lastProgress = Math.max(lastProgress, 65);
         onProgress(lastProgress, 'ASR 识别完成');
