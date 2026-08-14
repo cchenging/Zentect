@@ -49,8 +49,20 @@ export const StepMaterialAnalysis: React.FC = () => {
   const unmergeRole = useProjectStore((s) => s.unmergeRole);
   const deleteRole = useProjectStore((s) => s.deleteRole);
 
-  const setCurrentTime = usePlayerStore((s) => s.setCurrentTime);
   const setActivePlaySource = usePlayerStore((s) => s.setActivePlaySource);
+
+  /**
+   * ASR 台词「跳转」动作：真正 seek 媒体到指定时间点。
+   * 🔧 修复：旧版接 setCurrentTime 只更新进度条 state，不 seek 媒体，
+   *   导致视频位置不动（"位置是假的"）。改为写 manualSeekTime，
+   *   VideoCanvas 监听它并执行 media.currentTime = manualSeekTime。
+   * 不依赖 store.duration 截断（媒体元素自身会按真实时长截断），
+   * 避免 duration 未就绪时被 clamp 到 0。
+   */
+  const seekTo = useCallback((time: number) => {
+    const clamped = Math.max(0, time);
+    usePlayerStore.setState({ currentTime: clamped, manualSeekTime: clamped });
+  }, []);
 
   const handleRetrySubStep = useCallback(
     async (stepKey: string) => {
@@ -139,7 +151,7 @@ export const StepMaterialAnalysis: React.FC = () => {
       extractedData={extractedData}
       onUpdateAsrLine={updateAsrLine}
       onSetAsrLines={setAsrLines}
-      onSetCurrentTime={setCurrentTime}
+      onSetCurrentTime={seekTo}
       onSetActivePlaySource={setActivePlaySource}
       onUpdateRole={updateRole}
       onMergeRoles={mergeRoles}

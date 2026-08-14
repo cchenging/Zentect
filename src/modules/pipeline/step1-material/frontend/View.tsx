@@ -1,12 +1,13 @@
 // Module: pipeline/step1-material - View
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Edit3, Music, Play, UndoDot, RotateCcw, Square, AlertTriangle, GitMerge, Split, Trash2, X, Globe, Users } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "@renderer/components/shared";
 import { FrameExtractConfig } from "./components/FrameExtractConfig";
 import { AudioSeparationConfig } from "./components/AudioSeparationConfig";
 import { useI18n } from "@renderer/store/useI18n";
+import { usePlayerStore } from "@modules/editor/stores/usePlayerStore";
 import type { AsrLine } from "../../../../shared/types/entities/editor";
 import type { SubStepTiming } from "../../../../renderer/src/store/usePipelineStore";
 import type { StepMaterialAnalysisViewProps } from "../types";
@@ -118,6 +119,35 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
     frames: true, audio: false, whisper: false, faces: false,
   });
   const toggleSubStep = (key: string) => setExpandedSubSteps((prev) => ({ ...prev, [key]: !prev[key] }));
+
+  /** 🎬 自动联动：订阅播放器当前时间，用于高亮当前播放的台词并滚动到可见区域 */
+  const playerCurrentTime = usePlayerStore((s) => s.currentTime);
+  const asrRowRefs = useRef<(HTMLDivElement | null)[]>([]);
+  /** 悬停暂停联动：鼠标悬停在台词列表上时停止自动滚动，避免"滚到别处又被拽回去" */
+  const [hoverPaused, setHoverPaused] = useState(false);
+
+  /** 计算当前播放时间对应的台词行索引：
+   *   仅当时间严格落在某行 [startMs, endMs) 内才高亮该行（间隙态不吸附）；
+   *   落在两行之间的静音/留白时返回 -1，不高亮也不滚动，避免误高亮没在说话的台词 */
+  const activeAsrIndex = useMemo(() => {
+    if (asrLines.length === 0) return -1;
+    const tMs = playerCurrentTime * 1000;
+    for (let i = 0; i < asrLines.length; i++) {
+      const ls = asrLines[i].startMs ?? 0;
+      const le = asrLines[i].endMs ?? ls;
+      // 严格落在 [start, end) 内才算当前行；end 未定义时视为单点时刻落到该行
+      if (tMs >= ls && (asrLines[i].endMs !== undefined ? tMs < le : tMs <= ls)) return i;
+    }
+    return -1;
+  }, [asrLines, playerCurrentTime]);
+
+  /** 联动滚动：仅在非悬停暂停且存在当前行时滚动到可见区域（block:'nearest' 最小化跳动） */
+  useEffect(() => {
+    if (hoverPaused || activeAsrIndex < 0) return;
+    const row = asrRowRefs.current[activeAsrIndex];
+    if (row) row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [activeAsrIndex, hoverPaused]);
+
   /** 展开的角色卡片 ID（默认展开第一个角色，让用户一进来就能看到详情示例） */
   const [expandedRole, setExpandedRole] = useState<string | null>(roles[0]?.id ?? null);
   /** 🎭 P0.5+ 合并模式：mergeSourceId 非 null 时进入"选择目标"模式，点击其他角色完成合并 */
@@ -238,12 +268,16 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         </>}
         borderColor={whisperStatus === "failed" ? "var(--accent-rose)" : undefined}>
         {whisperStatus === "completed" && asrLines.length > 0 && (
-          <div className="rounded-md bg-bg-secondary border border-border/20 overflow-hidden">
+          <div className="rounded-md bg-bg-secondary border border-border/20 overflow-hidden"
+            onMouseEnter={() => setHoverPaused(true)}
+            onMouseLeave={() => setHoverPaused(false)}>
             {asrLines.map((line, idx) => {
               const isModified = line.originalText !== undefined && line.text !== line.originalText;
+              const isActive = idx === activeAsrIndex;
               return (
-                <div key={idx} className={`flex items-center gap-2 px-3 py-2 border-b border-border/10 last:border-0 group ${isModified ? "bg-accent/5 border-l-2 border-l-accent-rose" : ""}`}>
-                  <span className="text-[13px] font-mono text-accent shrink-0 w-12">{formatAsrTime(line)}</span>
+                <div key={idx} ref={(el) => { asrRowRefs.current[idx] = el; }}
+                  className={`flex items-center gap-2 px-3 py-2 border-b border-border/10 last:border-0 group ${isModified ? "bg-accent/5 border-l-2 border-l-accent-rose" : ""} ${isActive ? "bg-accent/15 border-l-2 border-l-accent" : ""}`}>
+                  <span className={`text-[13px] font-mono shrink-0 w-12 ${isActive ? "text-accent font-semibold" : "text-accent"}`}>{formatAsrTime(line)}</span>
                   {line.editing ? (
                     <input value={line.text} onChange={(e) => onUpdateAsrLine(idx, e.target.value)} onBlur={() => toggleEditing(idx, false)} onKeyDown={(e) => { if (e.key === "Enter") toggleEditing(idx, false); }} className="flex-1 text-[13px] bg-bg-secondary px-2 py-1 rounded border border-accent/30 outline-none" autoFocus />
                   ) : (
