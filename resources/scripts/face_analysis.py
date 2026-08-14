@@ -19,6 +19,64 @@ router = APIRouter()
 
 
 # ==========================================
+# 方案 A：检测保持 CPU，识别(ArcFace)/3D关键点切换 DirectML 加速
+# ==========================================
+# _DML_PATCH_STATE 取值：
+#   None  — 尚未尝试注入
+#   True  — 已成功将 recognition / landmark_3d_68 切换到 DmlExecutionProvider
+#   False — DirectML 不可用或注入失败，已回退原 CPU session
+_DML_PATCH_STATE = None
+_DML_TARGET_MODELS = ("recognition", "landmark_3d_68")
+
+
+def _try_patch_dml(app_face):
+    """将 recognition 与 landmark_3d_68 的 session 替换为 DmlExecutionProvider。
+
+    - detection(det_10g) 保持 CPU 1280 不变（该模型在 1280 输入下 DML 无法运行）
+    - DML 不可用、模型缺失或任一 session 创建失败时，整体回退原 CPU session
+    - 幂等：仅首次调用尝试，结果缓存于 _DML_PATCH_STATE，避免每次请求重复建会话
+    """
+    global _DML_PATCH_STATE
+    if _DML_PATCH_STATE is not None:
+        return
+
+    _DML_PATCH_STATE = False  # 默认按回退处理，全部成功后再置 True
+    try:
+        import onnxruntime as ort
+        if "DmlExecutionProvider" not in ort.get_available_providers():
+            print("[AI Daemon] ⚠️ DirectML 不可用，人脸识别/关键点保持 CPU",
+                  file=sys.stderr)
+            return
+
+        new_sessions = {}
+        for name in _DML_TARGET_MODELS:
+            model = app_face.models.get(name)
+            if model is None:
+                print(f"[AI Daemon] ⚠️ 模型 {name} 缺失，DirectML 注入中止",
+                      file=sys.stderr)
+                return
+            src = (getattr(model, "model_file", None)
+                   or getattr(model.session, "_model_path", None))
+            if not src or not os.path.exists(src):
+                print(f"[AI Daemon] ⚠️ 模型 {name} 路径无效，DirectML 注入中止",
+                      file=sys.stderr)
+                return
+            # 先全部创建成功，再统一替换，保证原子性（任一失败整体回退 CPU）
+            new_sessions[name] = ort.InferenceSession(
+                src, providers=["DmlExecutionProvider", "CPUExecutionProvider"]
+            )
+
+        for name, sess in new_sessions.items():
+            app_face.models[name].session = sess
+            print(f"[AI Daemon] ✅ {name} 已切换 DirectML (DmlExecutionProvider)",
+                  file=sys.stderr)
+        _DML_PATCH_STATE = True
+    except Exception as e:
+        print(f"[AI Daemon] ⚠️ DirectML 注入失败，人脸识别/关键点保持 CPU: {e}",
+              file=sys.stderr)
+
+
+# ==========================================
 # 辅助：统一错误响应格式（含 errorCode，便于 Node 端按错误类型分流处理）
 # ==========================================
 def _error(msg: str, code: str = "AI_PROCESS_FAILED") -> dict:
@@ -78,6 +136,7 @@ def api_vision(req: VisionReq):
     try:
         with INFERENCE_LOCK:
             app_face = AIModels.get_face_app()
+            _try_patch_dml(app_face)  # 方案 A：识别/关键点切 DirectML，检测保持 CPU
             results = []
             # 💥 诊断日志：统计检测总数与各门禁过滤数
             total_detected = 0

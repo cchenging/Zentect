@@ -35,6 +35,17 @@ import uvicorn
 os.environ['PYTHONIOENCODING'] = 'utf-8'
 os.environ['PYTHONUTF8'] = '1'
 
+# ============================================================
+# CPU 推理线程数：最大化多核利用
+#   i5-14600KF (14C/20T) 等 CPU 上，torch 若不显式设置线程数，
+#   SenseVoice/Demucs 等 CPU 推理可能只用到部分核心 → 45min 音频识别超时。
+#   这里在 torch/funasr 首次 import 前设置环境变量，确保线程池按满核初始化。
+# ============================================================
+_cpu_threads = os.cpu_count() or 4
+for _nk in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS',
+            'OPENBLAS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
+    os.environ.setdefault(_nk, str(_cpu_threads))
+
 try:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
