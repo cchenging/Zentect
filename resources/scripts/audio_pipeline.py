@@ -27,6 +27,309 @@ def _error(msg: str, code: str = "AI_PROCESS_FAILED") -> dict:
 
 
 # ==========================================
+# SenseVoice ONNX + DirectML 加速（encoder+CTC 前向走 DML，DML 不可用回退 torch CPU）
+# ==========================================
+_sensevoice_dml_lock = None
+_sensevoice_dml_session = None
+_sensevoice_dml_available = None  # None=未探测 / True / False
+
+
+def _get_sensevoice_dml_lock():
+    """返回模块级 DML 互斥锁（懒初始化），串行化 session 创建与推理。"""
+    global _sensevoice_dml_lock
+    if _sensevoice_dml_lock is None:
+        import threading
+        _sensevoice_dml_lock = threading.Lock()
+    return _sensevoice_dml_lock
+
+
+def _ensure_sensevoice_dml_session(onnx_path: str):
+    """创建 SenseVoice encoder+CTC 的 ONNX DirectML session（含 warmup）。
+
+    DML 不可用或初始化失败时返回 None，由调用方回退 torch CPU 原链路。
+    """
+    global _sensevoice_dml_session, _sensevoice_dml_available
+    lock = _get_sensevoice_dml_lock()
+    with lock:
+        if _sensevoice_dml_available is not None:
+            return _sensevoice_dml_session
+
+        try:
+            import onnxruntime as ort
+            import numpy as np
+        except Exception as e:
+            print(f"[ASR] SenseVoice onnxruntime 导入失败，回退 torch CPU: {e}", file=sys.stderr)
+            _sensevoice_dml_available = False
+            _sensevoice_dml_session = None
+            return None
+
+        try:
+            if "DmlExecutionProvider" not in ort.get_available_providers():
+                print("[ASR] 当前环境无 DmlExecutionProvider，SenseVoice 回退 torch CPU", file=sys.stderr)
+                _sensevoice_dml_available = False
+                _sensevoice_dml_session = None
+                return None
+
+            sess = ort.InferenceSession(
+                onnx_path, providers=["DmlExecutionProvider", "CPUExecutionProvider"]
+            )
+
+            # 读取 speech 输入的最后一维（fbank 特征维度，SenseVoice 为 560=80*7）
+            feat_dim = 560
+            for inp in sess.get_inputs():
+                if inp.name == "speech" and inp.shape is not None and len(inp.shape) >= 3:
+                    if inp.shape[-1] is not None:
+                        feat_dim = int(inp.shape[-1])
+                    break
+
+            # warmup：首次 DML 推理有 kernel 编译开销
+            warm_len = 50
+            feeds = {
+                "speech": np.random.randn(1, warm_len, feat_dim).astype(np.float32),
+                "speech_lengths": np.array([warm_len], dtype=np.int32),
+                "language": np.array([3], dtype=np.int32),
+                "textnorm": np.array([14], dtype=np.int32),
+            }
+            sess.run(None, feeds)
+
+            _sensevoice_dml_session = sess
+            _sensevoice_dml_available = True
+            print("[ASR] SenseVoice ONNX DirectML session 已就绪（encoder+CTC）", file=sys.stderr)
+            return sess
+        except Exception as e:
+            print(f"[ASR] SenseVoice ONNX DirectML 初始化失败，回退 torch CPU: {e}", file=sys.stderr)
+            _sensevoice_dml_available = False
+            _sensevoice_dml_session = None
+            return None
+
+
+def _sensevoice_onnx_forward(sess, speech_tensor, speech_lengths_tensor, language_id: int, textnorm_id: int):
+    """用 ONNX DML session 跑 encoder+ctc_lo 前向。
+
+    入参 speech 为原始 fbank（未拼 language/textnorm/event_emo query），
+    language/textnorm 以 int32 标量喂给 ONNX，query 由导出模型内部拼接。
+    返回 (ctc_logits_torch, encoder_out_lens_torch)，ctc_logits 为 ctc_lo 线性值（未 log_softmax）。
+    """
+    import numpy as np
+    import torch
+
+    b = speech_tensor.shape[0]
+    speech_np = speech_tensor.detach().cpu().numpy().astype(np.float32)
+    lens_np = speech_lengths_tensor.detach().cpu().numpy().astype(np.int32).reshape(-1)
+
+    feeds = {
+        "speech": speech_np,
+        "speech_lengths": lens_np,
+        "language": np.full((b,), language_id, dtype=np.int32),
+        "textnorm": np.full((b,), textnorm_id, dtype=np.int32),
+    }
+    lock = _get_sensevoice_dml_lock()
+    with lock:
+        ctc_lo_np, enc_lens_np = sess.run(None, feeds)
+
+    ctc_logits = torch.from_numpy(ctc_lo_np).to(speech_tensor.device)
+    encoder_out_lens = torch.from_numpy(enc_lens_np).to(speech_tensor.device)
+    return ctc_logits, encoder_out_lens
+
+
+def _sensevoice_inference_onnx_dml(self, data_in, data_lengths=None, key=None, tokenizer=None, frontend=None, **kwargs):
+    """SenseVoiceSmall.inference 的 ONNX+DML 版本。
+
+    只替换 encoder+CTC 前向（走 DML），其余（fbank 提取、query、argmax 解码、
+    ctc_forced_align、post）完整复刻 funasr 原 inference，保证输出行为一致。
+    DML 不可用或推理失败时回退到原始 torch inference。
+    """
+    import time
+    import torch
+    import torch.nn.functional as F
+    from funasr.utils.load_utils import load_audio_text_image_video, extract_fbank
+    from funasr.utils.datadir_writer import DatadirWriter
+    from funasr.models.sense_voice.utils.ctc_alignment import ctc_forced_align
+
+    if key is None:
+        key = ["wav_file_tmp_name"]
+
+    meta_data = {}
+    if isinstance(data_in, torch.Tensor) and kwargs.get("data_type", "sound") == "fbank":
+        speech, speech_lengths = data_in, data_lengths
+        if len(speech.shape) < 3:
+            speech = speech[None, :, :]
+        if speech_lengths is None:
+            speech_lengths = speech.shape[1]
+    else:
+        time1 = time.perf_counter()
+        audio_sample_list = load_audio_text_image_video(
+            data_in,
+            fs=frontend.fs,
+            audio_fs=kwargs.get("fs", 16000),
+            data_type=kwargs.get("data_type", "sound"),
+            tokenizer=tokenizer,
+        )
+        time2 = time.perf_counter()
+        meta_data["load_data"] = f"{time2 - time1:0.3f}"
+        speech, speech_lengths = extract_fbank(
+            audio_sample_list, data_type=kwargs.get("data_type", "sound"), frontend=frontend
+        )
+        time3 = time.perf_counter()
+        meta_data["extract_feat"] = f"{time3 - time2:0.3f}"
+        meta_data["batch_data_time"] = (
+            speech_lengths.sum().item() * frontend.frame_shift * frontend.lfr_n / 1000
+        )
+
+    speech = speech.to(device=kwargs["device"])
+    speech_lengths = speech_lengths.to(device=kwargs["device"])
+
+    language = kwargs.get("language", "auto")
+    use_itn = kwargs.get("use_itn", False)
+    textnorm = kwargs.get("text_norm", None)
+    output_timestamp = kwargs.get("output_timestamp", False)
+    if textnorm is None:
+        textnorm = "withitn" if use_itn else "woitn"
+
+    # ── ONNX+DML encoder+ctc_lo 前向（原始 fbank，不在此处拼 query） ──
+    language_id = self.lid_dict.get(language, 0)
+    textnorm_id = self.textnorm_dict.get(textnorm, self.textnorm_dict["withitn"])
+    onnx_path = os.path.join(AIModels.MODELS_DIR, "sensevoice_small", "model_dml.onnx")
+
+    dml_sess = getattr(self, "_sensevoice_dml_sess", None)
+    if dml_sess is None and _sensevoice_dml_available is not False:
+        dml_sess = _ensure_sensevoice_dml_session(onnx_path)
+        self._sensevoice_dml_sess = dml_sess
+
+    if dml_sess is None:
+        # DML 不可用，回退 torch CPU 原链路
+        return self._orig_inference_sensevoice(
+            data_in, data_lengths=data_lengths, key=key,
+            tokenizer=tokenizer, frontend=frontend, **kwargs
+        )
+
+    try:
+        ctc_logits, encoder_out_lens = _sensevoice_onnx_forward(
+            dml_sess, speech, speech_lengths, language_id, textnorm_id
+        )
+    except Exception as dml_err:
+        print(f"[ASR] SenseVoice DML 推理失败，回退 torch CPU: {dml_err}", file=sys.stderr)
+        return self._orig_inference_sensevoice(
+            data_in, data_lengths=data_lengths, key=key,
+            tokenizer=tokenizer, frontend=frontend, **kwargs
+        )
+
+    # ONNX 输出为 ctc_lo 线性值，补 log_softmax 对齐 torch 的 self.ctc.log_softmax(encoder_out)
+    ctc_logits = F.log_softmax(ctc_logits, dim=-1)
+    if kwargs.get("ban_emo_unk", False):
+        ctc_logits[:, :, self.emo_dict["unk"]] = -float("inf")
+
+    results = []
+    b, n, d = ctc_logits.size()
+    if isinstance(key[0], (list, tuple)):
+        key = key[0]
+    if len(key) < b:
+        key = key * b
+    for i in range(b):
+        x = ctc_logits[i, : encoder_out_lens[i].item(), :]
+        yseq = x.argmax(dim=-1)
+        yseq = torch.unique_consecutive(yseq, dim=-1)
+
+        ibest_writer = None
+        if kwargs.get("output_dir") is not None:
+            if not hasattr(self, "writer"):
+                self.writer = DatadirWriter(kwargs.get("output_dir"))
+            ibest_writer = self.writer[f"1best_recog"]
+
+        mask = yseq != self.blank_id
+        token_int = yseq[mask].tolist()
+
+        text = tokenizer.decode(token_int)
+
+        if ibest_writer is not None:
+            ibest_writer["text"][key[i]] = text
+
+        if output_timestamp:
+            from itertools import groupby
+
+            timestamp = []
+            tokens = tokenizer.text2tokens(text)[4:]
+            token_back_to_id = tokenizer.tokens2ids(tokens)
+            token_ids = []
+            for tok_ls in token_back_to_id:
+                if tok_ls:
+                    token_ids.extend(tok_ls)
+                else:
+                    token_ids.append(124)
+
+            if len(token_ids) == 0:
+                result_i = {"key": key[i], "text": text}
+                results.append(result_i)
+                continue
+
+            # 复用已算好的 log_softmax(ctc_lo)，等价于原 self.ctc.log_softmax(encoder_out)
+            logits_speech = ctc_logits[i, 4 : encoder_out_lens[i].item(), :]
+            pred = logits_speech.argmax(-1).cpu()
+            logits_speech[pred == self.blank_id, self.blank_id] = 0
+            align = ctc_forced_align(
+                logits_speech.unsqueeze(0).float(),
+                torch.Tensor(token_ids).unsqueeze(0).long().to(logits_speech.device),
+                (encoder_out_lens[i] - 4).long(),
+                torch.tensor(len(token_ids)).unsqueeze(0).long().to(logits_speech.device),
+                ignore_id=self.ignore_id,
+            )
+            pred = groupby(align[0, : encoder_out_lens[i]])
+            _start = 0
+            token_id = 0
+            ts_max = encoder_out_lens[i] - 4
+            for pred_token, pred_frame in pred:
+                _end = _start + len(list(pred_frame))
+                if pred_token != 0:
+                    ts_left = max((_start * 60 - 30) / 1000, 0)
+                    ts_right = min((_end * 60 - 30) / 1000, (ts_max * 60 - 30) / 1000)
+                    timestamp.append([tokens[token_id], ts_left, ts_right])
+                    token_id += 1
+                _start = _end
+            timestamp, words = self.post(timestamp)
+            result_i = {"key": key[i], "text": text, "timestamp": timestamp, "words": words}
+            results.append(result_i)
+        else:
+            result_i = {"key": key[i], "text": text}
+            results.append(result_i)
+    return results, meta_data
+
+
+def _patch_sensevoice_onnx_dml(model) -> bool:
+    """把 SenseVoiceSmall.inference 替换为 ONNX+DML 版本，DML 不可用则不 patch（走原链路）。"""
+    import types
+
+    # 🔧 修正：DML 决策与 enableGPU/--device 联动。
+    #   旧逻辑只要 onnxruntime 存在 DmlExecutionProvider 就无条件启用 DML，
+    #   导致 enableGPU=false（--device cpu）时仍走 DirectML。
+    #   在 AMD RX5600XT 上 DML 对 SenseVoice 大 batch 推理异常慢（45min 音频 ~40min+ 未完成），
+    #   且 CPU 利用率仅 ~17%（更多时间在 GPU 等待/换页）。
+    #   故仅当用户明确开启 GPU（--device cuda/dml）时才启用 DML；否则走 torch CPU 原链路。
+    if AIModels._cli_device not in ("cuda", "dml"):
+        print("[ASR] enableGPU 未开启（device=cpu），跳过 ONNX DirectML，使用 torch CPU 推理", file=sys.stderr)
+        return False
+
+    onnx_path = os.path.join(AIModels.MODELS_DIR, "sensevoice_small", "model_dml.onnx")
+    if not os.path.exists(onnx_path):
+        print("[ASR] 未找到 SenseVoice ONNX 模型，回退 torch CPU", file=sys.stderr)
+        return False
+
+    dml_sess = _ensure_sensevoice_dml_session(onnx_path)
+    if dml_sess is None:
+        return False
+
+    sv_model = getattr(model, "model", None)
+    if sv_model is None or not hasattr(sv_model, "inference"):
+        return False
+
+    if not hasattr(sv_model, "_orig_inference_sensevoice"):
+        sv_model._orig_inference_sensevoice = sv_model.inference
+    sv_model._sensevoice_dml_sess = dml_sess
+    sv_model.inference = types.MethodType(_sensevoice_inference_onnx_dml, sv_model)
+    print("[ASR] SenseVoice 推理已切换到 ONNX DirectML", file=sys.stderr)
+    return True
+
+
+# ==========================================
 # 辅助：Demucs 模型内存强制释放（修复 SR 崩溃 exit code: 3221225477）
 # ==========================================
 def _cleanup_demucs_memory():
@@ -99,7 +402,7 @@ class BeatDetectReq(BaseModel):
 # ==========================================
 # ASR Helper Functions: 语言识别 / 情绪检测 / 后处理
 # ==========================================
-def clean_and_merge_to_sentences(raw_timestamp_list, text_with_tags, detected_lang="zh"):
+def clean_and_merge_to_sentences(raw_timestamp_list, text_with_tags, detected_lang="zh", words=None):
     """终极多语言空格自适应断句算法（彻底终结"一段台词"魔咒）：
     核心依据:
       1) 字幕去标点契约: 封装前强制将一切残留标点擦除，确保字幕只含有纯文字和合法词距
@@ -129,9 +432,22 @@ def clean_and_merge_to_sentences(raw_timestamp_list, text_with_tags, detected_la
     word_counter = 0
 
     normalized_words = []
+    word_idx = 0
     for item in raw_timestamp_list:
         try:
-            if isinstance(item, (list, tuple)) and len(item) == 2:
+            if isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(x, (int, float)) for x in item):
+                # 🔧 修复时间戳全错：funasr SenseVoice 的 timestamp 是 [[start_ms, end_ms], ...]，
+                #   词在 words 并行列表。旧代码只认 [时间区间, 词] 或 dict，导致真实时间戳被丢弃，
+                #   落到兜底分句生成从 0 开始的假时间（"该在19s却显示00:01"）。
+                #   这里把两个并行列表配对，还原真实的毫秒级时间戳。
+                if words is not None and word_idx < len(words):
+                    normalized_words.append({
+                        "start": float(item[0]) / 1000.0,
+                        "end": float(item[1]) / 1000.0,
+                        "word": str(words[word_idx])
+                    })
+                    word_idx += 1
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
                 time_range, word = item[0], item[1]
                 if isinstance(time_range, (list, tuple)) and len(time_range) == 2:
                     normalized_words.append({
@@ -139,6 +455,9 @@ def clean_and_merge_to_sentences(raw_timestamp_list, text_with_tags, detected_la
                         "end": float(time_range[1]) / 1000.0,
                         "word": str(word)
                     })
+            elif isinstance(item, (list, tuple)) and len(item) == 3 and isinstance(item[0], str):
+                # 自定义/ONNX 路径：item 为 [词, 起秒, 止秒]
+                normalized_words.append({"start": float(item[1]), "end": float(item[2]), "word": str(item[0])})
             elif isinstance(item, dict):
                 w = item.get("word", item.get("text", ""))
                 s = item.get("start", 0)
@@ -617,12 +936,18 @@ async def api_transcribe_stream(task_id: str):
     import asyncio
 
     async def event_generator():
+        # 🔧 修复刷屏：只在 progress 内容变化时才推送，避免 ASR 推理期间
+        #   progress 长时间不变却每 100ms 无条件推送同一条快照，导致日志刷屏
+        last_snapshot = None
         while True:
             progress = _get_progress(task_id)
-            yield f"data: {json.dumps(progress, ensure_ascii=False)}\n\n"
+            snapshot = json.dumps(progress, ensure_ascii=False, sort_keys=True)
+            if snapshot != last_snapshot:
+                yield f"data: {snapshot}\n\n"
+                last_snapshot = snapshot
             if progress.get("done"):
                 break
-            await asyncio.sleep(0.1)  # 100ms 推送间隔
+            await asyncio.sleep(0.1)  # 100ms 轮询间隔
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
@@ -728,6 +1053,9 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
         all_text_parts = []
         total_segments_est = max(1, int(getattr(info, 'duration', 120)) // 5) if info else 20
         seg_idx = 0
+        # 🔧 修复刷屏：只在跨 10% 进度里程碑时才推送"已识别 N 段"消息，
+        #   避免每 5 段一条垃圾日志占满日志窗口（45min 电视剧旧逻辑会输出上百条）
+        last_pushed_decade = None
 
         for seg in segments_iter:
             seg_idx += 1
@@ -749,10 +1077,13 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
                 })
                 all_text_parts.append(text)
 
-            # 推送进度（15-90 区间）
+            # 推送进度（15-90 区间）：仅跨 10% 里程碑时输出消息，避免刷屏
             if task_id and seg_idx % 5 == 0:
                 pct = min(90, 15 + int(seg_idx / total_segments_est * 75))
-                _set_progress(task_id, pct=pct, msg=f"已识别 {seg_idx} 段...")
+                decade = pct // 10
+                if decade != last_pushed_decade:
+                    last_pushed_decade = decade
+                    _set_progress(task_id, pct=pct, msg=f"已识别 {seg_idx} 段 ({(pct - 15) / 75 * 100:.0f}%)")
 
         # 后处理：faster-whisper 已自带 segment 级断句和标点，无需再走 word 级断句器
         # 🔧 修复：旧版把 faster-whisper 的 segment（完整句子）当作 word 传入 clean_and_merge_to_sentences，
@@ -796,6 +1127,29 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
         return _error(f"{type(e).__name__}: {str(e)}")
 
 
+def _detect_language_fw(audio_path: str) -> str:
+    """用 faster-whisper 快速检测音频语言（只解码前几秒，不完整转写）
+
+    用于 engine='auto' 且 language='auto' 时，先判定语言再路由引擎：
+    CJK → sensevoice，其他 → faster-whisper。
+
+    参数：
+        audio_path: 音频文件路径
+    返回：
+        faster-whisper 语言代码（如 'zh'/'ja'/'ko'/'en'），检测失败时返回 'en'
+    """
+    try:
+        model = AIModels.get_faster_whisper('large-v3')
+        language, probability = model.detect_language(audio_path)
+        print(f"[ASR] faster-whisper 检测语言: {language}, 概率: {probability:.2f}", file=sys.stderr)
+        return language
+    except Exception as e:
+        # 语言检测失败不能静默降级为非 CJK，避免中文被误路由到 faster-whisper；
+        # 记录告警后回退 'en'，由转写阶段再次检测
+        print(f"[ASR] faster-whisper 语言检测失败，回退 en: {e}", file=sys.stderr)
+        return 'en'
+
+
 def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
     """同步 ASR 推理逻辑：在线程池中执行，不阻塞 uvicorn 事件循环
 
@@ -809,13 +1163,24 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
 
         # ── 引擎自动选择：CJK 语言用 sensevoice，其他用 faster-whisper ──
         CJK_LANGS = ['zh', 'ja', 'ko', 'yue']
+        lang_lower = (req.language or 'auto').lower()
         selected_engine = req.engine
         if selected_engine == 'auto':
-            lang_lower = (req.language or 'auto').lower()
+            # 🔥 修复：language='auto' 时旧逻辑用 'auto' 字符串匹配 CJK 永远不命中，
+            #   中文电视剧被错误路由到 faster-whisper。现在先检测音频真实语言再路由。
+            if lang_lower == 'auto':
+                lang_lower = _detect_language_fw(req.audio_path)
+                print(f"[ASR] 引擎自动选择：检测语言={lang_lower}", file=sys.stderr)
             if lang_lower in CJK_LANGS:
                 selected_engine = 'sensevoice'
+                # 释放为语言检测而加载的 faster-whisper，避免与 sensevoice 共存导致 OOM
+                AIModels.release_faster_whisper()
             else:
                 selected_engine = 'faster-whisper'
+
+        # 通过 SSE 推送实际生效的语言与引擎，供 Node 端/用户在日志中核对
+        if task_id:
+            _set_progress(task_id, pct=2, msg=f"检测语言: {lang_lower}，选用引擎: {selected_engine}")
 
         # ── 分支 1：faster-whisper（英文/欧洲语言） ──
         if selected_engine == 'faster-whisper':
@@ -829,20 +1194,22 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
             if task_id:
                 _set_progress(task_id, pct=5, msg="正在加载 SenseVoice 模型...")
             model = AIModels.get_funasr_sensevoice()
+            _patch_sensevoice_onnx_dml(model)
             print(f"[ASR] 使用 funasr AutoModel + fsmn-vad，language={req.language}", file=sys.stderr)
 
             if task_id:
-                _set_progress(task_id, pct=15, msg="模型已就绪，开始语音推理...")
+                _set_progress(task_id, pct=15, msg="使用 SenseVoice 引擎 (funasr + fsmn-vad) 开始推理...")
 
             # ✅ 关键修复：启用 funasr 内置 VAD，并做细粒度切分
             #   - vad_model="fsmn-vad"：让模型内部 VAD 负责切分（比外部的任何 VAD 都准）
             #   - max_single_segment_time=30000：单段不超过 30 秒
-            #   - batch_size_s=60：批处理
+            #   - batch_size_s=15：CPU 上小批量降低内存峰值与 padding 浪费，
+            #     避免一次性处理整段 45min 音频导致换页 + 进度无反馈（funasr 整段 generate 无中间进度）
             res = model.generate(
                 input=req.audio_path,
                 language=req.language if req.language != "auto" else "auto",
                 use_itn=True,
-                batch_size_s=60,
+                batch_size_s=15,
                 vad_model="fsmn-vad",
                 vad_kwargs={"max_single_segment_time": 30000},
                 word_timestamp=True,         # 必须开启：向模型索要底层每个 Token 的毫秒级坐标
@@ -871,7 +1238,8 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
                     processed_sentences = clean_and_merge_to_sentences(
                         raw_timestamp_list=raw_timestamps,
                         text_with_tags=raw_text,
-                        detected_lang=lang  # 动态匹配实际检测出的语种(如 zh/en/ja)
+                        detected_lang=lang,  # 动态匹配实际检测出的语种(如 zh/en/ja)
+                        words=item.get("words", None)  # 🔧 配对 funasr 并行 words，还原真实时间戳
                     )
 
                     # 💥 V1.2 关键修复：如果断句结果只有1段且文本很长，
@@ -1267,6 +1635,14 @@ def _separate_sync(req: SeparateReq, task_id: str):
                 mdx_model_dir = os.path.join(AIModels.MODELS_DIR, "mdx_net")
                 _set_progress(task_id, pct=10, msg="正在加载 MDX-Net 模型...")
                 separator = Separator(output_dir=req.output_dir, model_file_dir=mdx_model_dir)
+                # DirectML 加速：AMD 独显上 MDX 分离提速约 3.9x，失败自动回退 CPU
+                try:
+                    import onnxruntime as _ort
+                    if "DmlExecutionProvider" in _ort.get_available_providers():
+                        separator.onnx_execution_provider = ["DmlExecutionProvider"]
+                        print("[AI Daemon] [MDX-Net] 启用 DirectML 加速", file=sys.stderr)
+                except Exception as _dml_err:
+                    print(f"[AI Daemon] [MDX-Net] DirectML 不可用，回退 CPU: {_dml_err}", file=sys.stderr)
                 separator.load_model('UVR-MDX-NET-Inst_HQ_4.onnx')
                 _set_progress(task_id, pct=30, msg="MDX-Net 正在分离音轨...")
                 output_files = separator.separate(req.audio_path)
