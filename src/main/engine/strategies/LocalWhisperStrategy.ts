@@ -51,7 +51,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
       const normalizedLang = LocalWhisperStrategy.normalizeLangCode(language);
       effectiveEngine = LocalWhisperStrategy.resolveEngineByLang(normalizedLang);
     }
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，使用 effectiveEngine=${effectiveEngine}（请求=${engine}, language=${language}）推理`);
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，请求 language=${language}, engine=${engine}（effectiveEngine=${effectiveEngine}）；engine=auto 时由 Python 端预检测音频语言并选定引擎，实际结果见后续 SSE 进度日志`);
     return await this.transcribeViaDaemon(audioPath, whisperOutPath, language, effectiveEngine, signal, onProgress);
   }
 
@@ -75,10 +75,20 @@ export class LocalWhisperStrategy implements ITextExtractor {
     const langCode = LocalWhisperStrategy.normalizeLangCode(language);
 
     // PythonClient.callAsync 内部处理 POST 触发 + SSE 订阅，消除竞态
+    // 记录最近一次已打印的进度消息，用于去重，避免 Python 端重复推送同一条消息导致日志刷屏
+    let lastLoggedMsg = '';
     const sseResult = await PythonClient.getInstance().callAsync(
       '/api/transcribe',
       { audio_path: audioPath, output_json_path: whisperOutPath, language: langCode, engine },
-      (pct, msg) => { if (onProgress) onProgress(pct, msg); },
+      (pct, msg) => {
+        // 记录 Python 端 SSE 进度消息（含自动检测的语言/引擎），让用户从日志核对实际识别配置
+        // 🔧 去重：仅当消息内容变化时才打印，减少 ASR 推理期间的同消息刷屏
+        if (msg && msg !== lastLoggedMsg) {
+          AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] ${msg}`);
+          lastLoggedMsg = msg;
+        }
+        if (onProgress) onProgress(pct, msg);
+      },
       { signal, timeoutMs, streamPath: '/api/transcribe/stream/' }
     );
 

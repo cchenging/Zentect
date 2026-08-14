@@ -264,7 +264,15 @@ export class SimplePipelineRunner {
         const vocalPath = path.join(PathManager.getNodeBaseDir(projectId, taskId, 'audio'), `vocal_${mediaId}.wav`);
         const audioPath = fs.existsSync(vocalPath) ? vocalPath : mediaPath;
         const whisper = new LocalWhisperStrategy();
-        const result = await whisper.transcribe(audioPath, asrDir, mediaId, 'auto');
+        // 🔧 修复：为 ASR 传入 onProgress，把 Python 端 SSE 的"已识别 X 段"子进度
+        //   映射到当前步骤进度并 pushProgress → 前端进度条才能实时更新
+        const result = await whisper.transcribe(
+          audioPath, asrDir, mediaId, 'auto', 'auto',
+          context.signal,
+          (pct, msg) => this.pushProgress(projectId,
+            { id: stepId, order: 3, label: '语音识别' },
+            Math.round(pct), this.calcOverall(3), 'running', msg || '语音识别')
+        );
 
         // P2: 语言检测 — ASR 完成后检查是否为外语或无台词
         const asrJsonPath = result?.whisperJsonPath;
