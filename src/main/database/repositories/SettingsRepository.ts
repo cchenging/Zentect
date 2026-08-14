@@ -66,13 +66,23 @@ export class SettingsRepository {
     const row = this.db.prepare(SETTINGS_SQL.GET_BY_KEY).get({ key }) as { value: string } | undefined;
     if (!row) return defaultValue;
 
-    let val = this.safeDecrypt(key, row.value);
+    let val: any = this.safeDecrypt(key, row.value);
 
     try {
       if (typeof val === 'string' && (val.startsWith('[') || val.startsWith('{'))) {
         val = JSON.parse(val);
       }
     } catch { /* 非 JSON 字符串保持原样 */ }
+
+    // 🔥 关键修复：布尔字符串转布尔
+    //   存库值为 'true'/'false' 字符串时，旧逻辑不解析（非 [/{ 开头），
+    //   返回 truthy 的 'false' 字符串。导致 settings.get<boolean>('enableGPU', false)
+    //   被判为 true → AiRuntimeManager 误传 --device cuda（AMD 无 CUDA 且 DML 极慢）。
+    if (typeof val === 'string') {
+      const lower = val.trim().toLowerCase();
+      if (lower === 'true') val = true;
+      else if (lower === 'false') val = false;
+    }
 
     return val as T;
   }
