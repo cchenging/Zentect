@@ -107,11 +107,10 @@ class ClusterRequest(BaseModel):
     persist_dir: str = ""
     # 🎭 P0.5+ 余弦相似度阈值：HDBSCAN 聚类后，用于合并过拆簇 + 分配噪声点
     # InsightFace ArcFace 512维归一化 embedding 经验值：
-    #   0.65 — 宽松（同一人不同角度/表情基本能合并，偶有误合并）
-    #   0.70 — 平衡（推荐默认，多数场景准确）
+    #   0.55 — 很宽松（同人物几乎必合并，偶有误合并多人）
+    #   0.65 — 平衡（项目规则：相似度≥0.65 归为同一人，推荐默认）
     #   0.75 — 严格（同人物差异较大时可能仍拆分）
-    #   0.82 — 极严格（旧版隐式行为，导致同人物被拆成多个角色）
-    cosine_threshold: float = 0.70
+    cosine_threshold: float = 0.65
 
 
 class LoadClustersRequest(BaseModel):

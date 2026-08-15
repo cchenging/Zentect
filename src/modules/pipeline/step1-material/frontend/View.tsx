@@ -1,11 +1,12 @@
 // Module: pipeline/step1-material - View
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Edit3, Music, Play, UndoDot, RotateCcw, Square, AlertTriangle, GitMerge, Split, Trash2, X, Globe, Users } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "@renderer/components/shared";
 import { FrameExtractConfig } from "./components/FrameExtractConfig";
 import { AudioSeparationConfig } from "./components/AudioSeparationConfig";
+import { ASRConfig } from "./components/ASRConfig";
 import { useI18n } from "@renderer/store/useI18n";
 import { usePlayerStore } from "@modules/editor/stores/usePlayerStore";
 import type { AsrLine } from "../../../../shared/types/entities/editor";
@@ -157,6 +158,24 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
   /** 🎭 角色主次分组：main 主角 + supporting 配角平铺主体区，extra 背景路人折叠收纳 */
   const mainRoles = roles.filter((r) => r.tier !== 'extra');
   const extraRoles = roles.filter((r) => r.tier === 'extra');
+
+  /**
+   * 获取角色可显示的头像路径（修复黑头像）
+   * 优先级：avatarPath → representative.facePath/face_path → avatar → faces 中第一个有效路径
+   * 旧版只读 avatarPath，一旦该字段为空（历史数据/路径缺失）就显示黑块；
+   * 实际上 faces 数组里通常有可用的人脸路径，可回退显示。
+   */
+  const getRoleAvatar = useCallback((role: any): string => {
+    if (!role) return '';
+    const direct =
+      role.avatarPath || role.avatar
+      || role.representative?.facePath || role.representative?.face_path || '';
+    if (direct && String(direct).trim()) return direct;
+    const face = (role.faces || []).find(
+      (x: any) => x && String(x.face_path || x.facePath || '').trim() !== ''
+    );
+    return face ? (face.face_path || face.facePath || '') : '';
+  }, []);
   /** 🎭 P1.5 手动标注：点击分级徽章循环切换 main→supporting→extra→main，并持久化 */
   const cycleTier = (role: any) => {
     const order: Array<'main' | 'supporting' | 'extra'> = ['main', 'supporting', 'extra'];
@@ -267,6 +286,8 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
             : <button onClick={(e) => { e.stopPropagation(); onRetrySubStep("whisper"); }} className="ml-auto text-muted-foreground hover:text-primary transition-colors cursor-pointer" title={t["editor.step1.asr.title"]}><RotateCcw size={13} /></button>}
         </>}
         borderColor={whisperStatus === "failed" ? "var(--accent-rose)" : undefined}>
+        {/* ASR 引擎 + faster-whisper 模型大小配置 */}
+        <ASRConfig isRunning={whisperStatus === "running"} />
         {whisperStatus === "completed" && asrLines.length > 0 && (
           <div className="rounded-md bg-bg-secondary border border-border/20 overflow-hidden"
             onMouseEnter={() => setHoverPaused(true)}
@@ -340,6 +361,8 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                 const isMergeTarget = mergeSourceId && mergeSourceId !== role.id;
                 /** 🎭 P1 全局人物注册中心：role.globalCharacterId 存在表示该角色已匹配到全局人物（跨集/跨项目复用） */
                 const globalCharacterId = (role as any).globalCharacterId as string | undefined;
+                /** 💥 修复黑头像：用 getRoleAvatar 回退获取可显示的头像路径 */
+                const avatarUrl = getRoleAvatar(role);
                 return (
                   <div
                     key={role.id}
@@ -365,9 +388,11 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                         setExpandedRole(isExpanded ? null : role.id);
                       }}
                     >
-                      {/* 方形大头像 80x80，比旧版 48x48 大 2.8 倍 */}
-                      <div className="relative w-20 h-20 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
-                        {role.avatarPath && <img src={getSafeMediaUrl(role.avatarPath)} className="w-full h-full object-cover" />}
+                      {/* 方形大头像 96x96，比旧版 48x48 大 4 倍，让角色脸更清晰可辨 */}
+                      <div className="relative w-24 h-24 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
+                        {avatarUrl
+                          ? <img src={getSafeMediaUrl(avatarUrl)} className="w-full h-full object-cover" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                          : <div className="w-full h-full flex items-center justify-center text-muted-foreground/40"><Users size={28} /></div>}
                         {/* 🎭 P1 全局人物标记：右上角紫色 Globe 徽章，标识该角色已匹配到全局人物（跨集/跨项目复用） */}
                         {globalCharacterId && (
                           <span
@@ -430,6 +455,21 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                         <span className={`text-muted-foreground text-[11px] transition-transform shrink-0 ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
                       )}
                     </div>
+                    {/* 人脸印象条：未展开时也展示该角色多张真实人脸缩略图（最多 5 张）
+                        目的：单张头像有时是远景/侧脸看不清，一排多张能直观看出"这是同一人"，
+                        也便于对比不同角色是否重复，缓解"分不清谁是谁"的问题 */}
+                    {!isExpanded && !mergeSourceId && allFaces.length > 1 && (
+                      <div className="px-2 pb-2 pt-0.5 flex gap-1">
+                        {allFaces.slice(0, 5).map((face: any, idx: number) => {
+                          const fUrl = face.face_path || face.facePath;
+                          return fUrl ? (
+                            <div key={idx} className="w-10 h-10 rounded border border-border/20 overflow-hidden shrink-0 bg-bg-primary">
+                              <img src={getSafeMediaUrl(fUrl)} className="w-full h-full object-cover" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                            </div>
+                          ) : null;
+                        })}
+                      </div>
+                    )}
                     {/* 展开区域：多张人脸缩略图 + 已合并角色拆分按钮 */}
                     {isExpanded && !mergeSourceId && (
                       <div className="px-2 pb-2 pt-1 border-t border-border/10">
@@ -492,12 +532,14 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                 {showExtras && (
                   <div className="grid grid-cols-4 gap-2 px-2 pb-2">
                     {extraRoles.map((role) => {
-                      const faceUrl = role.avatarPath || role.representative?.facePath;
+                      const faceUrl = getRoleAvatar(role);
                       const faceCount = role.faceCount ?? (role.faces?.length || 0);
                       return (
                         <div key={role.id} className="rounded-lg bg-bg-secondary border border-border/20 p-1.5 flex flex-col items-center gap-1">
-                          <div className="w-12 h-12 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
-                            {faceUrl && <img src={getSafeMediaUrl(faceUrl)} className="w-full h-full object-cover" />}
+                          <div className="w-14 h-14 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
+                            {faceUrl
+                              ? <img src={getSafeMediaUrl(faceUrl)} className="w-full h-full object-cover" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+                              : <div className="w-full h-full flex items-center justify-center text-muted-foreground/40"><Users size={16} /></div>}
                           </div>
                           <span className="text-[12px] text-muted-foreground truncate w-full text-center">{role.name}</span>
                           {/* 🎭 P1.5 路人徽章：点击可循环切换分级（升级为配角/主角） */}

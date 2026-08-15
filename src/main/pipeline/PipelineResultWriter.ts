@@ -208,8 +208,16 @@ export class PipelineResultWriter {
           const roleName = role.name || role.label || `角色_${Date.now().toString(36).slice(-4)}`;
           /** 💥 修复黑头像：avatar 转为相对路径（与 frames/audio 一致）
            * 旧版 bug：直接写入绝对路径，resolveDbPath 无法正确解析 → 头像加载失败显示黑色
-           * 修复：绝对路径转为 projectDir 相对路径，统一用 '/' 分隔 */
-          const rawAvatar = role.avatar || role.representative?.facePath || '';
+           * 修复：绝对路径转为 projectDir 相对路径，统一用 '/' 分隔
+           * 兜底：若 representative.facePath 为空，回退到 faces 中第一个有效 face_path，
+           *   避免代表脸路径缺失导致 DB avatar 为空 → 前端黑头像 */
+          const repPath = role.representative?.facePath || '';
+          const firstFacePath = Array.isArray(role.faces)
+            ? (role.faces.find((f: any) => (f.face_path || f.facePath || '').trim() !== '')?.face_path
+                || (role.faces.find((f: any) => (f.face_path || f.facePath || '').trim() !== '')?.facePath)
+                || '')
+            : '';
+          const rawAvatar = role.avatar || repPath || firstFacePath || '';
           const roleAvatar = rawAvatar && path.isAbsolute(rawAvatar)
             ? path.relative(projectDir, rawAvatar).replace(/\\/g, '/')
             : rawAvatar;

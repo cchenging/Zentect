@@ -20,6 +20,45 @@ export interface VisionQualityGate {
 
 export class VisionProcessor {
   /**
+   * 从同一个人脸簇中挑选「最佳代表脸」作为角色头像
+   *
+   * 为什么不用第一张脸（groupFaces[0]）：
+   *   第一张脸是检测顺序里的第一张，可能是远景小脸/侧脸/模糊脸，
+   *   作为头像看不清，用户难以区分不同角色（黑头像/小头像问题根因）。
+   *
+   * 选择策略（按优先级降序）：
+   *   1. 必须有可用 face_path（否则头像无法显示）
+   *   2. 优先选 bbox 面积最大的人脸（更靠近镜头、框更大 → 头像更清晰）
+   *   3. 同面积程度下选清晰度（clarity）更高的脸
+   *
+   * 纯函数，不修改入参；无候选时返回 null。
+   * @param faces 同一簇的人脸数组（元素含 face_path/facePath、bbox、clarity 等）
+   */
+  public static pickRepresentativeFace(faces: any[]): any | null {
+    if (!Array.isArray(faces) || faces.length === 0) return null;
+
+    // 先过滤出有可用路径的脸（无法显示的不作为头像候选）
+    const candidates = faces.filter(
+      (f) => f && ((f.face_path || f.facePath || '').trim() !== '')
+    );
+    // 若全无路径，退化为第一张脸（保证至少有一个 representative 供下游读取）
+    const pool = candidates.length > 0 ? candidates : faces;
+
+    // bbox 面积 + 清晰度综合打分：面积优先，同面积比清晰度
+    const score = (f: any): number => {
+      const box = f.bbox || f.box || [];
+      const w = Array.isArray(box) && box.length >= 4 ? Math.max(0, (box[2] as number) - (box[0] as number)) : 0;
+      const h = Array.isArray(box) && box.length >= 4 ? Math.max(0, (box[3] as number) - (box[1] as number)) : 0;
+      const area = w * h;
+      const clarity = typeof f.clarity === 'number' && f.clarity > 0 ? f.clarity : 0;
+      // 面积主导（权重高），清晰度作为次级区分（防止两个同面积候选随意取第一个）
+      return area * 1e3 + clarity;
+    };
+
+    return pool.reduce((best, cur) => (score(cur) > score(best) ? cur : best), pool[0]);
+  }
+
+  /**
    * 极速抽取关键帧，供视觉大模型 (VLM) 分析
    * @deprecated 仅在步骤2（VisionExtractStrategy / 画面描述）中使用。
    *   步骤1（素材分析）的帧提取在 JobScheduler / QuickPipeline 中直接实现，
@@ -154,10 +193,10 @@ export class VisionProcessor {
    * @param mediaId 媒体ID
    * @param faces 检测到的人脸列表（元素含 {id, embedding, ...}）
    * @param persistDir 可选，聚类持久化目录（Python 端写入 clusters_{media_id}.json）
-   * @param cosineThreshold 可选，余弦相似度阈值（默认 0.70），用于 HDBSCAN 后处理：
+   * @param cosineThreshold 可选，余弦相似度阈值（默认 0.65），用于 HDBSCAN 后处理：
    *   - 合并过拆簇：簇心余弦相似度 > threshold 的簇合并
    *   - 分配噪声点：噪声点与某簇心余弦相似度 > threshold 时分配到该簇
-   *   经验值：0.65 宽松 / 0.70 平衡 / 0.75 严格 / 0.82 极严格
+   *   经验值：0.55 宽松 / 0.65 平衡（项目规则：相似度≥0.65 归为同一人） / 0.75 严格
    * @returns 人脸到聚类ID的映射（{ faceId: "role_X" }）
    */
   public static async clusterFaces(
@@ -166,7 +205,7 @@ export class VisionProcessor {
     persistDir?: string,
     cosineThreshold?: number,
   ): Promise<Record<string, string>> {
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] clusterFaces: clustering ${faces.length} faces for ${mediaId} (cosine_threshold=${cosineThreshold ?? 0.70})`);
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] clusterFaces: clustering ${faces.length} faces for ${mediaId} (cosine_threshold=${cosineThreshold ?? 0.65})`);
 
     if (!faces || faces.length === 0) {
       return {};
@@ -180,10 +219,10 @@ export class VisionProcessor {
           embedding: f.embedding || []
         })),
         persist_dir: persistDir || '',
-        // 🎭 P0.5+ 透传余弦相似度阈值，未传入时 Python 端使用默认值 0.70
+        // 🎭 P0.5+ 透传余弦相似度阈值，未传入时 Python 端使用默认值 0.65
         cosine_threshold: typeof cosineThreshold === 'number' && cosineThreshold > 0 && cosineThreshold < 1
           ? cosineThreshold
-          : 0.70,
+          : 0.65,
       });
       // 🔧 修复 P0-5：Python 返回 { success, clusters }，旧版读 clustersMap → 永远空
       if (result && result.clusters) {

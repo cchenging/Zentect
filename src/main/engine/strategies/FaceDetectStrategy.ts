@@ -70,21 +70,25 @@ export class FaceDetectStrategy extends BaseNodeStrategy {
       if (!roleGroups[clusterId]) roleGroups[clusterId] = [];
       roleGroups[clusterId].push(faceId);
     }
-    const rawRoles = Object.keys(roleGroups).map(clusterId => ({
-      id: `${mediaId}_${clusterId}`,
-      name: `角色_${clusterId}`,
-      faceCount: roleGroups[clusterId].length,
-      /** 修复黑头像：representative 包含 facePath，供 PipelineResultWriter 读取 avatar */
-      representative: (() => {
-        const firstFace = roleGroups[clusterId]
-          .map(fid => faces.find(f => (f.id || f.face_id) === fid))
-          .filter(Boolean)[0];
-        return firstFace ? { ...firstFace, facePath: firstFace.face_path || firstFace.facePath || '' } : null;
-      })(),
-      faces: roleGroups[clusterId]
+    const rawRoles = Object.keys(roleGroups).map(clusterId => {
+      const clusterFaces = roleGroups[clusterId]
         .map(fid => faces.find(f => (f.id || f.face_id) === fid))
-        .filter(Boolean),
-    }));
+        .filter(Boolean);
+      /** 修复黑头像 + 小头像：用「最佳代表脸」作为头像
+       * 旧版取第一张脸（可能是远景小脸），新版选 bbox 面积最大且清晰的代表脸 */
+      const bestFace = VisionProcessor.pickRepresentativeFace(clusterFaces) || clusterFaces[0] || null;
+      const facePath = bestFace ? (bestFace.face_path || bestFace.facePath || '') : '';
+      return {
+        id: `${mediaId}_${clusterId}`,
+        name: `角色_${clusterId}`,
+        faceCount: clusterFaces.length,
+        /** 修复黑头像：representative 包含 facePath，供 PipelineResultWriter 读取 avatar */
+        representative: bestFace ? { ...bestFace, facePath } : null,
+        /** avatarPath 供前端显示头像 */
+        avatarPath: facePath,
+        faces: clusterFaces,
+      };
+    });
 
     // 步骤6：角色主次分级（频次规则 → main/extra，兜底最高频保留1个主角）
     //   supporting 配角留给用户前端手动标注（TierBadge 三档循环切换）
