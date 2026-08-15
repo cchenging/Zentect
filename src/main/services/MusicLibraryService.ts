@@ -3,6 +3,7 @@
 // P1 阶段仅落地可插拔骨架，具体 provider（如 Openverse）按需接入。
 
 import { OpenverseMusicProvider } from './OpenverseMusicProvider';
+import { LocalMusicLibraryProvider } from './LocalMusicLibraryProvider';
 
 /** 曲库曲目（真实曲库返回的元数据，字段以实际 provider 为准，接入时对齐） */
 export interface MusicTrack {
@@ -57,9 +58,11 @@ class MusicLibraryService {
 
   constructor() {
     this.register(new EmptyMusicLibraryProvider());
-    // Openverse 免费商用曲库：注册并默认激活（无需 API key）
+    // 本地预置曲库：默认激活（零网络零 key，曲目随项目分发）
+    this.register(new LocalMusicLibraryProvider());
+    // Openverse 免费商用曲库：注册为可选远端增强（默认不激活）
     this.register(new OpenverseMusicProvider());
-    this.setActive('openverse');
+    this.setActive('local');
   }
 
   /** 注册 provider（后注册同名会覆盖，用于接入真实曲库或测试桩） */

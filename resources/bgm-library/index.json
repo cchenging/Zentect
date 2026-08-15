@@ -1,0 +1,373 @@
+{
+  "version": 1,
+  "license": "CC-BY 4.0",
+  "licenseNote": "免费商用，需署名 Kevin MacLeod (incompetech.com)",
+  "trackCount": 20,
+  "tracks": [
+    {
+      "id": "local-USUAN2300002",
+      "name": "Evening",
+      "artist": "Kevin MacLeod",
+      "bpm": 101,
+      "durationMs": 186000,
+      "feel": [
+        "Bright",
+        "Calm",
+        "Relaxed"
+      ],
+      "tone": "neutral",
+      "relativePath": "neutral/USUAN230_evening.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN2100001",
+      "name": "Guzheng City",
+      "artist": "Kevin MacLeod",
+      "bpm": 104,
+      "durationMs": 113000,
+      "feel": [
+        "Bright",
+        "Calm",
+        "Relaxed"
+      ],
+      "tone": "neutral",
+      "relativePath": "neutral/USUAN210_guzheng_city.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN2000017",
+      "name": "Canon In D For 8 Bit Synths",
+      "artist": "Kevin MacLeod",
+      "bpm": 132,
+      "durationMs": 195000,
+      "feel": [
+        "Bright",
+        "Calm",
+        "Relaxed"
+      ],
+      "tone": "neutral",
+      "relativePath": "neutral/USUAN200_canon_in_d_for_8_bit_synths.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN1800015",
+      "name": "Manor",
+      "artist": "Kevin MacLeod",
+      "bpm": 78,
+      "durationMs": 234000,
+      "feel": [
+        "Bright",
+        "Calming",
+        "Relaxed"
+      ],
+      "tone": "neutral",
+      "relativePath": "neutral/USUAN180_manor.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN1600018",
+      "name": "Floating Cities",
+      "artist": "Kevin MacLeod",
+      "bpm": 120,
+      "durationMs": 184000,
+      "feel": [
+        "Somber",
+        "Relaxed",
+        "Mystical",
+        "Calming"
+      ],
+      "tone": "emotional",
+      "relativePath": "emotional/USUAN160_floating_cities.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN1400037",
+      "name": "Carefree",
+      "artist": "Kevin MacLeod",
+      "bpm": 96,
+      "durationMs": 205000,
+      "feel": [
+        "Bouncy",
+        "Bright",
+        "Calming",
+        "Uplifting"
+      ],
+      "tone": "emotional",
+      "relativePath": "emotional/USUAN140_carefree.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN1300043",
+      "name": "Ashton Manor",
+      "artist": "Kevin MacLeod",
+      "bpm": 150,
+      "durationMs": 44000,
+      "feel": [
+        "Bright",
+        "Uplifting",
+        "Calming"
+      ],
+      "tone": "emotional",
+      "relativePath": "emotional/USUAN130_ashton_manor.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-388b093e-bcbe-4e80-9d62-5b5404edabfe",
+      "name": "Danse Morialta",
+      "artist": "Kevin MacLeod",
+      "bpm": 70,
+      "durationMs": 236000,
+      "feel": [
+        "Calming",
+        "Relaxed",
+        "Somber",
+        "Uplifting"
+      ],
+      "tone": "emotional",
+      "relativePath": "emotional/388b093e_danse_morialta.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-a8deba7b-e59a-49c4-964c-bb74cf1de0df",
+      "name": "Darkening Developments",
+      "artist": "Kevin MacLeod",
+      "bpm": 116,
+      "durationMs": 132000,
+      "feel": [
+        "Dark",
+        "Eerie",
+        "Intense",
+        "Mysterious",
+        "Unnerving"
+      ],
+      "tone": "suspense",
+      "relativePath": "suspense/a8deba7b_darkening_developments.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN1600013",
+      "name": "Crypto",
+      "artist": "Kevin MacLeod",
+      "bpm": 80,
+      "durationMs": 204000,
+      "feel": [
+        "Dark",
+        "Eerie",
+        "Unnerving",
+        "Suspenseful"
+      ],
+      "tone": "suspense",
+      "relativePath": "suspense/USUAN160_crypto.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-7f31639f-30a1-4803-a7cb-c02c3b95809b",
+      "name": "Satiate - only strings",
+      "artist": "Kevin MacLeod",
+      "bpm": 90,
+      "durationMs": 192000,
+      "feel": [
+        "Dark",
+        "Intense",
+        "Suspenseful",
+        "Unnerving"
+      ],
+      "tone": "suspense",
+      "relativePath": "suspense/7f31639f_satiate_only_strings.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-e3272c33-bfc1-468f-a9c2-ecbbf0076e9c",
+      "name": "Satiate",
+      "artist": "Kevin MacLeod",
+      "bpm": 90,
+      "durationMs": 192000,
+      "feel": [
+        "Dark",
+        "Intense",
+        "Relaxed",
+        "Suspenseful",
+        "Unnerving"
+      ],
+      "tone": "suspense",
+      "relativePath": "suspense/e3272c33_satiate.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN1300037",
+      "name": "Black Vortex",
+      "artist": "Kevin MacLeod",
+      "bpm": 163,
+      "durationMs": 170000,
+      "feel": [
+        "Action",
+        "Aggressive",
+        "Dark",
+        "Driving",
+        "Epic",
+        "Intense",
+        "Suspenseful"
+      ],
+      "tone": "epic",
+      "relativePath": "epic/USUAN130_black_vortex.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN1300005",
+      "name": "Full On",
+      "artist": "Kevin MacLeod",
+      "bpm": 128,
+      "durationMs": 153000,
+      "feel": [
+        "Action",
+        "Aggressive",
+        "Dark",
+        "Driving",
+        "Epic",
+        "Intense"
+      ],
+      "tone": "epic",
+      "relativePath": "epic/USUAN130_full_on.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-0cdb4287-9ff0-4091-866f-8818a8d718e0",
+      "name": "Movement Proposition",
+      "artist": "Kevin MacLeod",
+      "bpm": 126,
+      "durationMs": 141000,
+      "feel": [
+        "Action",
+        "Aggressive",
+        "Driving",
+        "Epic",
+        "Grooving",
+        "Intense"
+      ],
+      "tone": "epic",
+      "relativePath": "epic/0cdb4287_movement_proposition.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-fcabd7c7-734b-40a2-8701-c23749ea83b4",
+      "name": "Exciting Trailer",
+      "artist": "Kevin MacLeod",
+      "bpm": 180,
+      "durationMs": 76000,
+      "feel": [
+        "Action",
+        "Aggressive",
+        "Dark",
+        "Driving",
+        "Epic",
+        "Intense"
+      ],
+      "tone": "epic",
+      "relativePath": "epic/fcabd7c7_exciting_trailer.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN1500053",
+      "name": "Quirky Dog",
+      "artist": "Kevin MacLeod",
+      "bpm": 155,
+      "durationMs": 149000,
+      "feel": [
+        "Bouncy",
+        "Bright",
+        "Humorous",
+        "Grooving"
+      ],
+      "tone": "comedy",
+      "relativePath": "comedy/USUAN150_quirky_dog.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-5a1cdae0-444f-4924-9d2b-0399b4f752d5",
+      "name": "Feelin Good",
+      "artist": "Kevin MacLeod",
+      "bpm": 131,
+      "durationMs": 225000,
+      "feel": [
+        "Bouncy",
+        "Bright",
+        "Grooving",
+        "Humorous",
+        "Uplifting"
+      ],
+      "tone": "comedy",
+      "relativePath": "comedy/5a1cdae0_feelin_good.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN2300001",
+      "name": "Goblin Tinker Soldier Spy",
+      "artist": "Kevin MacLeod",
+      "bpm": 101,
+      "durationMs": 136000,
+      "feel": [
+        "Grooving",
+        "Bouncy",
+        "Humorous"
+      ],
+      "tone": "comedy",
+      "relativePath": "comedy/USUAN230_goblin_tinker_soldier_spy.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    },
+    {
+      "id": "local-USUAN2300000",
+      "name": "Paradise Found",
+      "artist": "Kevin MacLeod",
+      "bpm": 105,
+      "durationMs": 187000,
+      "feel": [
+        "Bright",
+        "Grooving",
+        "Bouncy"
+      ],
+      "tone": "comedy",
+      "relativePath": "comedy/USUAN230_paradise_found.mp3",
+      "license": "CC-BY 4.0",
+      "attribution": "Kevin MacLeod (incompetech.com)",
+      "source": "incompetech.com"
+    }
+  ]
+}
