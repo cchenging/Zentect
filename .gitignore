@@ -90,6 +90,9 @@ resources/logs/
 # 🔧 V8: 便携 Python 环境（ai-env）不进 git，发版时由 electron-builder extraResources 打包
 #   体积约 2GB（含 torch 等），开发者本地用 `python -m venv resources/ai-env` 重建
 resources/ai-env/
+# 🔧 BGM 本地曲库 mp3（CC-BY，约 107MB）不进 git：发版由 extraResources 打包，
+#   新环境用 `python scripts/download-bgm-library.py` 从 incompetech 重建（index.json 仍入 git 用于合规与索引）
+resources/bgm-library/**/*.mp3
 
 # 资源目录中不需要的媒体文件（保留 bin/ 和 models/）
 resources/*.png

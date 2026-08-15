@@ -28,6 +28,11 @@ extraResources:
       - "!**/*.pyo"
       - "!**/_cache/**"
       - "!**/cache/**"
+  # BGM 本地曲库：CC-BY 曲目 + index.json 随包分发（零网络零 key）
+  - from: resources/bgm-library/
+    to: bgm-library/
+    filter:
+      - "**/*"
 win:
   executableName: Zentect
   icon: build/icon.ico
