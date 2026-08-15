@@ -109,6 +109,7 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
     emotionTone: 'neutral',
     hookIntensity: 0.7,
     audioVisualWeight: 0.6,
+    targetNarrationDurationSec: 0,
   },
   extractionConfig: null,
 
@@ -193,6 +194,7 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
     emotionTone: 'neutral',
     hookIntensity: 0.7,
     audioVisualWeight: 0.6,
+    targetNarrationDurationSec: 0,
   },
     extractionConfig: null,
   }),

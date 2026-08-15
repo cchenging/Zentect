@@ -172,6 +172,7 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       emotionTone: 'neutral',
       hookIntensity: 0.7,
       audioVisualWeight: 0.6,
+      targetNarrationDurationSec: 0,
     };
     const params = input.pipelineParams || context.pipelineParams || DEFAULT_PARAMS;
     const hookIntensity = params.hookIntensity ?? 0.7;
@@ -206,7 +207,8 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       original_main: 0.45,
     };
     const audioStrategyDiscount = AUDIO_STRATEGY_DISCOUNT[params.originalAudioStrategy] ?? 1.0;
-    const densityFillRate = baseDensityFillRate * audioStrategyDiscount;
+    // 可变：若用户设置了"目标解说时长"，会在 totalDurationSec 计算后用目标时长覆盖（todo）
+    let densityFillRate = baseDensityFillRate * audioStrategyDiscount;
 
     /**
      * TTS 标点停顿折损系数：按 rhythmMode 差异化取值（之前全局固定 0.85 导致双向失真）
@@ -380,6 +382,16 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
 
     // 计算总时长（秒）用于字数预算（阶段4：真实时间轴替代 sceneLineCount*4 硬编码）
     const totalDurationSec = contextChunks.reduce((sum, c) => sum + c.durationSec, 0) || (totalShots * 4);
+
+    // 目标解说时长覆盖：用户显式指定解说总时长时，用它反推等效填充率，覆盖 narrationDensity 三档
+    // 需放在 totalDurationSec 之后（要用视频总时长做除法）。目标时长相对视频总时长 clamp 到 [0,1]，
+    // 避免解说超出视频物理溢出。0 / undefined 表示未设置，保持 density 自动逻辑。
+    const targetSec = typeof params.targetNarrationDurationSec === 'number' && params.targetNarrationDurationSec > 0
+      ? params.targetNarrationDurationSec
+      : null;
+    if (targetSec !== null && totalDurationSec > 0) {
+      densityFillRate = Math.min(1, targetSec / totalDurationSec);
+    }
 
     // 使用 LLMFactory.createAdapter 自动读取用户配置的模型和 API Key
     const { adapter, modelName, temperature } = LLMFactory.createAdapter('script');
@@ -612,8 +624,11 @@ ${roleMapLines.join('\n')}
     const parsedShots: GeneratedShot[] = rawShots.map((raw, idx) => {
       const scanResult = lexiconFilter.scan(raw.text || '');
 
+      // 画面真实时长优先：LLM 自报的 duration 不受画面约束，常出现超长段落无法匹配画面。
+      // 方案 A：用微切分得到的画面真实时长 contextChunks[idx].durationSec 覆盖 raw.duration，
+      // 保证解说时长与画面对齐；contextChunks 按 chunk 下标与 rawShots 一一对应。
+      const baseDuration = contextChunks[idx]?.durationSec ?? (raw.duration || 3);
       // 节奏模式影响分镜时长 — 短句快切缩短，长句舒缓加长，长短交替不变
-      const baseDuration = raw.duration || 3;
       const paceAdjustedDuration = params.rhythmMode === 'short_fast'
         ? baseDuration * 0.8   // 短句快切：duration 缩短 20%
         : params.rhythmMode === 'slow_soothing'

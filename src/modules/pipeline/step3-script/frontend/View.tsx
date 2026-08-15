@@ -18,6 +18,7 @@ import {
   Zap,
   BookOpen,
   AlignLeft,
+  Clock,
 } from "lucide-react";
 import { SCRIPT_STYLES, STYLE_PRESET_MAP } from "@modules/editor/shell/utils/pipelineConstants";
 import { Badge, EmptyState, StatHeader } from "@renderer/components/shared";
@@ -370,8 +371,25 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
       conflicts.push('爆款短视频风格依赖短句快切节奏，与长句舒缓模式存在冲突');
     }
 
+    // 6. 强钩子 + 慢节奏/低语速冲突（钩子强度要求开篇密集紧张，慢节奏/低语速与之相反）
+    if ((pipelineParams.hookIntensity ?? 0) >= 0.8 && pipelineParams.rhythmMode === 'slow_soothing') {
+      conflicts.push('黄金 3 秒钩子强度拉满需短句快切开篇，与长句舒缓节奏存在冲突');
+    }
+    if ((pipelineParams.hookIntensity ?? 0) >= 0.8 && speechRate <= 3.5) {
+      conflicts.push('黄金 3 秒钩子强度拉满需密集紧张语速，与低缓语速(3.5)存在冲突');
+    }
+    // 7. 吐槽点评 + 悬疑/高燃冲突（吐槽是娱乐消解，悬疑需铺垫张力、高燃需情绪堆叠）
+    if (pipelineParams.informationLevel === 'roast' && (pipelineParams.emotionTone === 'suspense' || pipelineParams.emotionTone === 'epic')) {
+      conflicts.push('吐槽点评的信息层次与悬疑/高燃基调存在语义矛盾');
+    }
+    // 8. 目标解说时长超过视频总时长（物理溢出：目标时长 > 视频总时长时解说将铺满整片无留白）
+    const targetSec = pipelineParams.targetNarrationDurationSec ?? 0;
+    if (targetSec > 0 && totalDurationSec > 0 && targetSec > totalDurationSec) {
+      conflicts.push(`目标解说时长(${targetSec}s)超过视频总时长(${totalDurationSec}s)，将导致解说铺满整片无留白`);
+    }
+
     return conflicts;
-  }, [scriptStyle, pipelineParams]);
+  }, [scriptStyle, pipelineParams, totalDurationSec, speechRate]);
 
   return (
     <div className="flex flex-col gap-4 pb-6">
@@ -503,6 +521,30 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
                 onChange={handleAudioStrategyChange}
                 disabled={isGenerating}
               />
+            </div>
+
+            {/* 目标解说时长（>0 覆盖解说密度；跨两列独占一行） */}
+            <div className="md:col-span-2 flex flex-col gap-1.5">
+              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
+                <Clock size={12} className="mr-1 text-accent/80" />
+                目标解说时长
+                <HelpTip text="直接设定解说总时长(秒)，>0 时覆盖上方解说密度三档；0 表示自动按密度计算" />
+              </span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={0}
+                  step={5}
+                  value={pipelineParams.targetNarrationDurationSec ?? 0}
+                  onChange={(e) => updateParam('targetNarrationDurationSec', Math.max(0, Number(e.target.value) || 0))}
+                  disabled={isGenerating}
+                  className="h-9 w-full max-w-[140px] px-3 text-[12.5px] font-medium rounded-xl border border-border/40 bg-bg-tertiary/80 text-foreground hover:border-accent/60 focus:border-accent/60 focus:ring-1 focus:ring-accent/30 outline-none transition-all"
+                />
+                <span className="text-[12px] text-muted-foreground shrink-0">秒</span>
+                <Badge variant="accent" className="text-[12px] font-mono py-0 px-1.5 shrink-0">
+                  目标 {pipelineParams.targetNarrationDurationSec ?? 0}s / 预计 {estimatedDuration}s
+                </Badge>
+              </div>
             </div>
           </div>
 

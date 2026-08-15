@@ -68,6 +68,7 @@ export class PipelineEngine {
       emotionTone: 'neutral',
       hookIntensity: 0.7,
       audioVisualWeight: 0.6,
+      targetNarrationDurationSec: 0,
     };
   }
 
