@@ -2,10 +2,11 @@
 // 纯 Props 组件：镜头匹配卡片列表 + 拖拽排序 + 替换弹窗 + 成品预览弹窗（视频+配音+台词）
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import { Check, RefreshCw, Film, X, Play, Pause, Volume2, VolumeX } from "lucide-react";
+import { Check, RefreshCw, Film, X, Play, Pause, Volume2, VolumeX, Music, Music2, Upload, Trash2, Sparkles, Loader2 } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatHeader, EmptyState } from "@renderer/components/shared";
 import { DragReorderList } from "@renderer/components/shared/drag-reorder-list";
+import { API } from "@renderer/api";
 import type { StepShotMatchingProps } from "../types";
 
 /** 时长毫秒 → 整数秒文案（去掉小数点，如 3500ms → "4s"） */
@@ -14,8 +15,38 @@ const formatIntSeconds = (ms?: number | null): string => {
   return `${Math.round(ms / 1000)}s`;
 };
 
+/** BGM 推荐曲目 */
+interface BgmTrack {
+  name: string;
+  artist: string;
+  mood: string;
+  source: string;
+  beatFit: string;
+  bpm?: number;
+  durationMs?: number;
+  previewUrl?: string;
+  downloadUrl?: string;
+  libraryId?: string;
+}
+
+/** BGM 个性化推荐结果 */
+interface BgmRecommendation {
+  toneLabel: string;
+  toneDesc: string;
+  tracks: BgmTrack[];
+}
+
+/** 默认推荐占位：未生成前的空推荐（不硬编码曲目，全部由 AI 生成） */
+const EMPTY_RECOMMENDATION: BgmRecommendation = {
+  toneLabel: '',
+  toneDesc: '',
+  tracks: [],
+};
+
 export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   matchResults, videoChunks, mediaItems, ttsResults, hasBgm, isProcessing,
+  activeBgm, scriptParagraphs, emotionTone, frameEmotions, shotTypes, videoDurationMs, bgmOptions,
+  onSetBgm, onRemoveBgm, onUploadBgm,
   onConfirm, onReplace, onRematch, onReorder,
 }) => {
   const [replacingShotId, setReplacingShotId] = useState<string | null>(null);
@@ -29,10 +60,86 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
     return videoChunks.length > 0 ? videoChunks : mediaItems.filter((m) => m.type === "video_chunk" || m.type === "frame");
   }, [videoChunks, mediaItems]);
 
+  /** AI 深度推荐状态：LLM 依据文案语义生成的推荐（唯一数据源，不再硬编码） */
+  const [deepRecommendation, setDeepRecommendation] = useState<BgmRecommendation | null>(null);
+  const [deepLoading, setDeepLoading] = useState(false);
+  const [deepError, setDeepError] = useState('');
+  /** 一键应用：正在下载的曲目 key（用于按钮 loading 态） */
+  const [applyingTrackKey, setApplyingTrackKey] = useState<string | null>(null);
+  /** 一键应用失败提示 */
+  const [applyError, setApplyError] = useState('');
+
+  /** 当前展示的推荐：AI 生成结果优先，未生成时为占位空对象 */
+  const currentRecommendation = deepRecommendation || EMPTY_RECOMMENDATION;
+
+  /** 调用后端 LLM 生成深度 BGM 推荐 */
+  const handleDeepRecommend = useCallback(async () => {
+    setDeepLoading(true);
+    setDeepError('');
+    try {
+      const payload = {
+        scriptParagraphs: scriptParagraphs.map((p) => p.text).filter(Boolean),
+        emotionTone,
+        frameEmotions,
+        shotTypes,
+        videoDurationMs,
+      };
+      const res: any = await API.ai.recommendBgm(payload);
+      // 后端明确失败（配置缺失 / LLM 调用异常）→ 透传真实原因，而非笼统提示
+      if (res && (res as any).success === false) {
+        setDeepError((res as any).error || 'AI 深度推荐失败');
+        return;
+      }
+      const data = (res as any)?.data;
+      if (data && Array.isArray(data.tracks) && data.tracks.length > 0) {
+        setDeepRecommendation({ ...data });
+      } else {
+        /** 解析退化（LLM 有响应但结构异常）时给出针对性提示，并尽量带出原始内容片段 */
+        const hasRaw = typeof (res as any)?.raw === 'string' && (res as any).raw.length > 0;
+        setDeepError(hasRaw ? 'AI 已返回内容但格式无法解析，请重试或换个模型' : 'AI 未能生成有效推荐，请确认 LLM 通道可用后重试');
+      }
+    } catch (e: any) {
+      setDeepError(e?.message || 'AI 深度推荐失败');
+    } finally {
+      setDeepLoading(false);
+    }
+  }, [scriptParagraphs, emotionTone, frameEmotions, shotTypes, videoDurationMs]);
+
   const handleReplaceSelect = (shotId: string, chunk: any) => {
     onReplace(shotId, chunk);
     setReplacingShotId(null);
   };
+
+  /** 曲目唯一 key：libraryId 优先，退化为 name+artist */
+  const trackKey = (t: BgmTrack) => `${t.libraryId || ''}|${t.name}|${t.artist}`;
+
+  /** P1 一键应用：下载曲目到本地缓存 → onSetBgm 携带 bpm 应用 */
+  const handleApplyBgm = useCallback(async (t: BgmTrack) => {
+    const key = trackKey(t);
+    setApplyingTrackKey(key);
+    setApplyError('');
+    try {
+      const res: any = await API.ai.bgmDownload({
+        downloadUrl: t.downloadUrl,
+        libraryId: t.libraryId,
+        name: t.name,
+      });
+      if (!res || (res as any).success === false) {
+        setApplyError((res as any)?.error || 'BGM 下载失败');
+        return;
+      }
+      const filePath = (res as any)?.filePath;
+      if (!filePath) {
+        setApplyError('下载成功但未返回本地路径');
+        return;
+      }
+      onSetBgm({ id: t.libraryId || filePath, filePath, name: t.name, bpm: t.bpm });
+    } catch (e: any) {
+      setApplyError(e?.message || 'BGM 下载失败');
+    } finally {
+      setApplyingTrackKey(null);
+    }
+  }, [onSetBgm]);
 
   /** 当前预览的匹配项、切片、配音音频 */
   const previewMatch = useMemo(
@@ -106,6 +213,123 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
 
   return (
     <div className="flex flex-col gap-4">
+      {/* 🎵 BGM 设置面板：个性化推荐 + 上传本地 + 已分离伴奏选择 + 当前状态 */}
+      <div className="glass-card-sm p-3 flex flex-col gap-3">
+        {/* 标题 + 当前状态 */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-1.5 text-[14px] font-semibold">
+            <Music size={14} className="text-accent" /> BGM 背景音乐
+            {activeBgm && <Badge variant="success" className="flex items-center gap-0.5">已选</Badge>}
+          </div>
+          {activeBgm && (
+            <button onClick={onRemoveBgm} disabled={isProcessing}
+              className="flex items-center gap-1 px-2 py-1 text-[12px] text-accent-rose hover:bg-accent-rose/10 rounded transition-all cursor-pointer disabled:opacity-50">
+              <Trash2 size={12} /> 移除
+            </button>
+          )}
+        </div>
+
+        {/* 当前 BGM 文件 */}
+        {activeBgm ? (
+          <div className="text-[12px] flex items-center gap-2">
+            <span className="bg-accent/15 text-accent px-2 py-0.5 rounded truncate max-w-[320px]" title={activeBgm.filePath}>
+              {activeBgm.name || activeBgm.filePath}
+            </span>
+          </div>
+        ) : (
+          <div className="text-[12px] text-muted-foreground">未选择 BGM，画面切换将不卡音乐节奏</div>
+        )}
+
+        {/* 个性化推荐（AI 深度生成，依据解说文案语义） */}
+          <div className="flex flex-col gap-2">
+            {/* 标题行 + AI 深度推荐按钮 */}
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 text-[13px] font-medium">
+                <Sparkles size={13} className="text-accent" /> 个性化推荐
+                <span className="text-muted-foreground font-normal text-[11px]">
+                  {deepRecommendation ? '（AI 深度 · 依据文案语义）' : '（点击生成）'}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={handleDeepRecommend} disabled={deepLoading || isProcessing}
+                  className="flex items-center gap-1 px-2.5 py-1 text-[12px] bg-accent/15 text-accent hover:bg-accent hover:text-accent-foreground rounded-md transition-all cursor-pointer disabled:opacity-50">
+                  {deepLoading
+                    ? <><Loader2 size={12} className="animate-spin" /> 生成中...</>
+                    : <><Sparkles size={12} /> {deepRecommendation ? '重新AI推荐' : 'AI 深度推荐'}</>}
+                </button>
+              </div>
+            </div>
+            {deepError && (
+              <div className="flex items-start gap-1.5 px-2.5 py-1.5 rounded-md bg-accent-rose/10 border border-accent-rose/30 text-accent-rose text-[12px]">
+                <X size={13} className="mt-0.5 shrink-0" />
+                <span>AI 深度推荐失败：{deepError}</span>
+              </div>
+            )}
+            {currentRecommendation.tracks.length > 0 ? (
+              <>
+                <div className="text-[12px] text-muted-foreground">{currentRecommendation.toneDesc}</div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {currentRecommendation.tracks.map((t) => (
+                    <div key={t.name} className="border border-border rounded-lg p-2.5 flex flex-col gap-1 bg-bg-secondary/30">
+                      <div className="text-[12px] font-medium truncate" title={t.name}>{t.name}</div>
+                      <div className="text-[11px] text-muted-foreground truncate">{t.artist} · {t.source}</div>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <Badge variant="warning" className="text-[10px]">{t.mood}</Badge>
+                        <Badge variant="success" className="text-[10px]">卡点 {t.beatFit}</Badge>
+                      </div>
+                      {(t.previewUrl || t.downloadUrl || t.libraryId) && (
+                        <div className="flex items-center gap-2 mt-1">
+                          {t.previewUrl && (
+                            <a href={t.previewUrl} target="_blank" rel="noreferrer"
+                              className="px-2 py-1 text-[11px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer">
+                              试听
+                            </a>
+                          )}
+                          {(t.downloadUrl || t.libraryId) && (
+                            <button type="button" disabled={isProcessing || applyingTrackKey === trackKey(t)}
+                              className="px-2 py-1 text-[11px] bg-accent/15 text-accent hover:bg-accent hover:text-accent-foreground rounded transition-all cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                              onClick={() => handleApplyBgm(t)}>
+                              {applyingTrackKey === trackKey(t) && <Loader2 size={11} className="animate-spin" />}
+                              {applyingTrackKey === trackKey(t) ? '下载中' : '应用'}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {applyError && (
+                  <div className="flex items-start gap-1.5 px-2.5 py-1.5 rounded-md bg-accent-rose/10 border border-accent-rose/30 text-accent-rose text-[12px]">
+                    <X size={13} className="mt-0.5 shrink-0" />
+                    <span>BGM 应用失败：{applyError}</span>
+                  </div>
+                )}
+                <div className="text-[11px] text-muted-foreground">点击「应用」可自动下载并套用为当前 BGM</div>
+              </>
+            ) : !deepLoading && (
+              <div className="text-[12px] text-muted-foreground">点击「AI 深度推荐」，AI 将依据解说文案语义生成免费商用选曲建议</div>
+            )}
+          </div>
+
+        {/* 操作：上传本地 / 使用已分离伴奏 */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={onUploadBgm} disabled={isProcessing}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-accent/15 text-accent hover:bg-accent hover:text-accent-foreground rounded-md text-[12px] font-medium transition-all cursor-pointer disabled:opacity-50">
+            <Upload size={12} /> 上传本地BGM
+          </button>
+          {bgmOptions.map((m) => (
+            <button key={m.id} onClick={() => onSetBgm({ id: m.id, filePath: (m as any).extractedBgm, name: (m as any).name || '伴奏' })} disabled={isProcessing}
+              className="flex items-center gap-1 px-3 py-1.5 bg-bg-secondary text-muted-foreground hover:text-foreground rounded-md text-[12px] transition-all cursor-pointer disabled:opacity-50">
+              <Music2 size={12} /> 用伴奏：{(m as any).name || '已分离伴奏'}
+            </button>
+          ))}
+        </div>
+        {bgmOptions.length === 0 && (
+          <div className="text-[11px] text-muted-foreground">小提示：对原视频执行「音频分离」后，可在此直接选用分离出的纯伴奏作为 BGM</div>
+        )}
+        <div className="text-[11px] text-muted-foreground">选择 BGM 后会自动重新匹配，将镜头切换吸附到鼓点，避免夹帧</div>
+      </div>
+
       <div className="flex items-center justify-between">
         <div className="text-[14px] font-semibold flex items-center gap-1.5">
           <span>镜头匹配</span>

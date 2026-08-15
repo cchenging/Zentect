@@ -2,7 +2,7 @@
 // @migrated 阶段三：从 useStore → useStep5Store + useProjectStore + usePipelineStore + useStep2Store + useStep3Store + useStep4Store
 // 阶段四：移除 mapPipelineResultToState 的 useStore fallback
 
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import { useStep5Store } from "../../stores/useStep5Store";
 import { useStep1Store } from "../../stores/useStep1Store";
 import { useStep2Store } from "../../stores/useStep2Store";
@@ -14,6 +14,7 @@ import { API } from "@renderer/api";
 import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/usePipelineResultMapper";
 import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
 import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
+import { persistProjectSnapshot } from "@modules/editor/shell/utils/persistSnapshot";
 import { StepShotMatchingView } from "./View";
 
 export const StepShotMatching: React.FC = () => {
@@ -27,6 +28,43 @@ export const StepShotMatching: React.FC = () => {
 
   const mediaItems = useProjectStore((s) => s.mediaItems);
   const pipelineRunning = usePipelineStore((s) => s.pipelineRunning);
+  /** 步骤2 逐帧 VLM 描述（含情绪/景别），P3 用于聚合多模态选曲信号 */
+  const vlmFrames = useStep2Store((s) => s.vlmFrames);
+  /** 解说文案段落（用于个性化 BGM 推荐的情绪分析） */
+  const scriptParagraphs = useStep3Store((s) => s.scriptParagraphs);
+  /** 全局情绪基调（用户可在步骤3设定） */
+  const emotionTone = useStep3Store((s) => s.pipelineParams?.emotionTone || 'neutral');
+  /** 已分离的伴奏音频项（原视频做过人声/BGM 分离后生成），可直接选用为 BGM */
+  const bgmOptions = useMemo(
+    () => mediaItems.filter((m) => m.type === 'audio' && (m as any).extractedBgm),
+    [mediaItems],
+  );
+
+  /** P3 多模态：从步骤2 VLM 帧聚合去重的画面情绪标签（帧 emotion 或 downstream.emotion） */
+  const frameEmotions = useMemo(() => {
+    const set = new Set<string>();
+    for (const f of vlmFrames as any[]) {
+      const v = String(f?.emotion || f?.downstream?.emotion || '').trim();
+      if (v) set.add(v);
+    }
+    return Array.from(set);
+  }, [vlmFrames]);
+
+  /** P3 多模态：从步骤2 VLM 帧聚合去重的镜头景别标签（shotType 或 downstream.shotType） */
+  const shotTypes = useMemo(() => {
+    const set = new Set<string>();
+    for (const f of vlmFrames as any[]) {
+      const v = String(f?.shotType || f?.downstream?.shotType || '').trim();
+      if (v) set.add(v);
+    }
+    return Array.from(set);
+  }, [vlmFrames]);
+
+  /** P3 多模态：源视频总时长（mediaItems[0].duration 为秒，换算为毫秒） */
+  const videoDurationMs = useMemo(() => {
+    const d = mediaItems[0]?.duration;
+    return typeof d === 'number' && d > 0 ? Math.round(d * 1000) : 0;
+  }, [mediaItems]);
 
   const handleReplace = useCallback((shotId: string, chunkItem: any) => {
     const coverPath = chunkItem.coverPath || chunkItem.filePath || chunkItem.thumbnail;
@@ -75,9 +113,7 @@ export const StepShotMatching: React.FC = () => {
               shotType: (f.downstream?.shotType || '').trim(),
             }))
             .filter((f) => f.description.length > 0),
-          bgmInfo: step5State.activeBgm
-            ? { id: step5State.activeBgm.id, filePath: step5State.activeBgm.filePath }
-            : null,
+          bgmInfo: step5State.activeBgm ?? null,
         },
       }));
       const result = await API.engine.runPipeline({
@@ -88,6 +124,15 @@ export const StepShotMatching: React.FC = () => {
       if (result) mapPipelineResultToState(result?.data || result, buildMappers());
       pipelineState.setStepCompleted(5, true);
       pipelineState.setStepStatus(5, "completed");
+      // 💥 根因修复：步骤5独立流程完成时统一落盘，否则匹配结果/切片池/步骤状态
+      //   不写入 SQLite，重开项目步骤5状态丢失
+      if (projectState.projectId) {
+        try {
+          await persistProjectSnapshot(projectState.projectId);
+        } catch (saveErr) {
+          console.error("[步骤5] 镜头匹配落盘失败:", saveErr);
+        }
+      }
     } catch (err: any) {
       pipelineState.setStepStatus(5, "failed");
       pipelineState.setPipelineError(err?.message || "匹配失败");
@@ -95,6 +140,28 @@ export const StepShotMatching: React.FC = () => {
       pipelineState.setPipelineRunning(false);
     }
   }, []);
+
+  /** 设置 BGM（从已分离伴奏选择或本地导入共用入口），选中后自动重匹配以应用节拍吸附 */
+  const handleSetBgm = useCallback((bgm: { id: string; filePath: string; name?: string; bpm?: number }) => {
+    useStep5Store.getState().setActiveBgm(bgm);
+    handleRematch();
+  }, [handleRematch]);
+
+  /** 移除 BGM，并重匹配回退到无 BGM 模式 */
+  const handleRemoveBgm = useCallback(() => {
+    useStep5Store.getState().setActiveBgm(null);
+    handleRematch();
+  }, [handleRematch]);
+
+  /** 上传本地音乐文件为 BGM：弹系统文件选择框 → 构造 BgmInfo → 沿用 handleSetBgm */
+  const handleUploadBgm = useCallback(async () => {
+    const picked = await API.system.openFile({
+      filters: [{ name: '音频文件', extensions: ['mp3', 'wav', 'm4a', 'flac', 'aac', 'ogg'] }],
+    });
+    if (!picked) return;
+    const name = picked.split(/[\\/]/).pop() || '本地BGM';
+    handleSetBgm({ id: `bgm-upload-${Date.now()}`, filePath: picked, name });
+  }, [handleSetBgm]);
 
   return (
     <StepShotMatchingView
@@ -104,6 +171,16 @@ export const StepShotMatching: React.FC = () => {
       ttsResults={ttsResults}
       hasBgm={!!activeBgm}
       isProcessing={pipelineRunning}
+      activeBgm={activeBgm}
+      scriptParagraphs={scriptParagraphs}
+      emotionTone={emotionTone}
+      frameEmotions={frameEmotions}
+      shotTypes={shotTypes}
+      videoDurationMs={videoDurationMs}
+      bgmOptions={bgmOptions}
+      onSetBgm={handleSetBgm}
+      onRemoveBgm={handleRemoveBgm}
+      onUploadBgm={handleUploadBgm}
       onConfirm={confirmMatch}
       onReplace={handleReplace}
       onRematch={handleRematch}

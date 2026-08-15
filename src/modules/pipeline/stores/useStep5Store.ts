@@ -8,13 +8,7 @@
  */
 
 import { create } from 'zustand';
-import type { MatchResult } from '../../../shared/types/entities/editor';
-
-export interface BgmInfo {
-  id: string;
-  filePath: string;
-  name?: string;
-}
+import type { BgmInfo, MatchResult } from '../../../shared/types/entities/editor';
 
 export interface Step5Store {
   // 步骤5专属数据

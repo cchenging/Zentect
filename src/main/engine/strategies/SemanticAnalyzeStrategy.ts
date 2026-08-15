@@ -5,7 +5,7 @@ import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { dehydrateMagicPath } from '../utils/pathUtils';
 import { VideoChunkRepository } from '../../database/repositories/VideoChunkRepository';
-import { ProviderManager } from '../config/ProviderManager';
+import { LLMFactory } from '../adapters/LLMFactory';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -28,7 +28,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     /** BaseNodeStrategy 将 params 和 mergedInputs 合并为扁平对象，直接从顶层取值 */
     /** 💥 关键修复：mediaPath 可能是 magic:// 协议路径（hydrate 后跨盘符转 magic://local/），
      *  必须脱水为物理路径再传给 daemon，否则 detect_scene_chunks 的 os.path.exists 失败 → 切片池为空 */
-    const mediaPath = dehydrateMagicPath(task.mediaPath);
+    const mediaPath = task.mediaPath ? dehydrateMagicPath(task.mediaPath) : undefined;
     if (!mediaPath) throw new Error('语义分析失败：未找到媒体文件路径');
 
     /** 从前端注入的参数中获取解说文案段落 */
@@ -52,6 +52,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
     /** 步骤1：检测 BGM 鼓点节拍 */
     let bgmBeats: number[] = [];
+    let bgmBpm = 0;
     if (bgmInfo?.filePath && fs.existsSync(bgmInfo.filePath)) {
       onProgress(10, '正在检测 BGM 节拍...');
       try {
@@ -60,7 +61,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         });
         const beatData = beatResult?.data || beatResult;
         bgmBeats = (beatData.beatGridMs || beatData.onsetMs || []).map((ms: number) => ms / 1000);
-        AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] BGM 节拍检测完成，共 ${bgmBeats.length} 个节拍`);
+        bgmBpm = Number(beatData.tempo) || 0;
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] BGM 节拍检测完成，共 ${bgmBeats.length} 个节拍，BPM=${bgmBpm}`);
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] BGM 节拍检测失败: ${e.message}，继续无 BGM 模式`);
       }
@@ -215,7 +217,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  必须先把中文翻译成英文再匹配。未配置 LLM 时明确告警并降级（仅时长+运动生效），不静默。 */
     let llmTranslate: { apiKey: string; baseURL: string; model: string } | null = null;
     try {
-      const cfg = ProviderManager.getLLMConfig('translate');
+      const cfg = LLMFactory.getEffectiveConfig('translate');
       if (cfg.apiKey && cfg.baseURL && cfg.model) {
         llmTranslate = { apiKey: cfg.apiKey, baseURL: cfg.baseURL, model: cfg.model };
         AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 已获取 LLM 翻译凭据（${cfg.provider}/${cfg.model}），中文文案将翻译为英文参与 CLIP 语义匹配`);
@@ -230,7 +232,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  用户 LLM 通道模型不支持识图时，daemon 侧连续失败会自动熔断，不影响匹配结果。 */
     let vlmConfig: { apiKey: string; baseURL: string; model: string } | null = null;
     try {
-      const vlm = ProviderManager.getLLMConfig('visual');
+      const vlm = LLMFactory.getEffectiveConfig('visual');
       if (vlm.apiKey && vlm.baseURL && vlm.model) {
         vlmConfig = { apiKey: vlm.apiKey, baseURL: vlm.baseURL, model: vlm.model };
       }
@@ -243,9 +245,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         queries: kmQueries,
         videoChunks,
         bgmBeats,
-        alpha: 0.6,
-        beta: 0.3,
-        gamma: 0.1,
+        bpm: bgmBpm,
+        weights: { sem: 0.35, emotion: 0.2, motion: 0.15, duration: 0.25, role: 0.05 },
         /** 🚀 中文→英文翻译链路：开启后 daemon 侧先把文案批量翻译再编码，CLIP 语义匹配才真正生效 */
         translateToEnglish: !!llmTranslate,
         ...(llmTranslate ? {

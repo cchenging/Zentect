@@ -21,6 +21,16 @@ vi.mock('lucide-react', () => ({
   Pause: (props: any) => React.createElement('span', { 'data-testid': 'icon-pause', ...props }),
   Volume2: (props: any) => React.createElement('span', { 'data-testid': 'icon-volume2', ...props }),
   VolumeX: (props: any) => React.createElement('span', { 'data-testid': 'icon-volumex', ...props }),
+  Music: (props: any) => React.createElement('span', { 'data-testid': 'icon-music', ...props }),
+  Music2: (props: any) => React.createElement('span', { 'data-testid': 'icon-music2', ...props }),
+  Upload: (props: any) => React.createElement('span', { 'data-testid': 'icon-upload', ...props }),
+  Trash2: (props: any) => React.createElement('span', { 'data-testid': 'icon-trash2', ...props }),
+  Sparkles: (props: any) => React.createElement('span', { 'data-testid': 'icon-sparkles', ...props }),
+  Loader2: (props: any) => React.createElement('span', { 'data-testid': 'icon-loader2', ...props }),
+}));
+
+vi.mock('@renderer/api', () => ({
+  API: { ai: { recommendBgm: vi.fn() } },
 }));
 
 vi.mock('../../../../renderer/src/utils/formatUrl', () => ({
@@ -84,6 +94,13 @@ function makeProps(overrides: Partial<StepShotMatchingProps> = {}): StepShotMatc
     ttsResults: [],
     hasBgm: false,
     isProcessing: false,
+    activeBgm: null,
+    scriptParagraphs: [],
+    emotionTone: 'neutral',
+    bgmOptions: [],
+    onSetBgm: vi.fn(),
+    onRemoveBgm: vi.fn(),
+    onUploadBgm: vi.fn(),
     onConfirm: vi.fn(),
     onReplace: vi.fn(),
     onRematch: vi.fn(),

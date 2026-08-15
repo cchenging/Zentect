@@ -75,6 +75,20 @@ export class SystemController {
       return filePaths;
     });
 
+    // 🎵 通用文件选择：支持自定义 filters/properties，供 BGM 上传等场景复用
+    IpcRouter.handle(IPC_CHANNELS.SYSTEM_OPEN_FILE, async (event, options?: {
+      filters?: Array<{ name: string; extensions: string[] }>;
+      properties?: string[];
+    }) => {
+      const win: BrowserWindow | null = BrowserWindow.fromWebContents(event.sender);
+      const { canceled, filePaths } = await dialog.showOpenDialog(win as BrowserWindow, {
+        properties: (options?.properties?.length ? options.properties : ['openFile']) as any,
+        filters: options?.filters?.length ? options.filters : undefined,
+      });
+      if (canceled || filePaths.length === 0) return null;
+      return filePaths[0];
+    });
+
     // --- 窗口控制 ---
     IpcRouter.handle(IPC_CHANNELS.SYSTEM_RESIZE, async (_, width: number, height: number) => {
       const win = BrowserWindow.getFocusedWindow();

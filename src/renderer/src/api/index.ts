@@ -162,6 +162,17 @@ export const API = {
     } | null>(IPC_CHANNELS.AI_CHECK_DEPS),
     emotionSingle: (data: any) => invokeSafe(IPC_CHANNELS.AI_EMOTION_SINGLE, data),
     generateAiScript: (data: any) => invokeSafe(IPC_CHANNELS.AI_GENERATE_SCRIPT, data),
+    /** AI 深度 BGM 推荐：依据解说文案语义调用 LLM 生成个性化选曲 */
+    recommendBgm: (data: {
+      scriptParagraphs: string[];
+      emotionTone: string;
+      frameEmotions?: string[];
+      shotTypes?: string[];
+      videoDurationMs?: number;
+    }) => invokeSafe(IPC_CHANNELS.AI_BGM_RECOMMEND, data),
+    /** P1 一键应用：下载曲库曲目到本地缓存 */
+    bgmDownload: (data: { downloadUrl?: string; libraryId?: string; name?: string }) =>
+      invokeSafe(IPC_CHANNELS.AI_BGM_DOWNLOAD, data),
     streamText: (payload: any) => window.api.ai.streamText(payload),
     searchSemantics: (mediaId: string, query: string) => invokeSafe(IPC_CHANNELS.AI_SEARCH_SEMANTICS, mediaId, query),
     // 🔧 修复 TS2339：usePipelineOrchestrator 调用 visionExtract

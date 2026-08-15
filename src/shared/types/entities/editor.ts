@@ -104,6 +104,11 @@ export interface PipelineParams {
   hookIntensity: number;
   /** 声画权重 0-1：0.2=偏向原声(依赖ASR) / 0.8=偏向视觉(依赖画面描述) */
   audioVisualWeight: number;
+  /**
+   * 目标解说时长（秒）：>0 时生效，覆盖 narrationDensity 三档的填充率（等效填充率 = 目标时长 / 视频总时长）
+   * 0 / undefined = 不限制，按 narrationDensity 自动计算。用于直接控制解说总时长。
+   */
+  targetNarrationDurationSec?: number;
 }
 
 /** TTS 合成结果 */
@@ -140,7 +145,20 @@ export interface VideoChunk {
 }
 
 /** 背景音乐 */
-export interface BgmInfo { id: string; filePath: string; }
+export interface BgmInfo {
+  id: string;
+  filePath: string;
+  /** BGM 名称（用于界面展示） */
+  name?: string;
+  /** 曲目 BPM，供卡点对齐 */
+  bpm?: number;
+  /** 时长（毫秒） */
+  durationMs?: number;
+  /** 曲库来源 URL（P1 引入） */
+  sourceUrl?: string;
+  /** 试听 URL（P1 引入） */
+  previewUrl?: string;
+}
 
 /** 角色的人脸元数据（单张脸） */
 export interface FaceFeature {

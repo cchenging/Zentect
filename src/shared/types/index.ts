@@ -81,6 +81,10 @@ export interface PipelineTask {
   audioPath?: string;
   vocalPath?: string;
   scriptShots?: any[];
+  /** ASR 原声时间轴（SemanticAnalyzeStrategy 原声段落定位用）：[{ text, startMs, endMs }] */
+  asrLines?: any[];
+  /** 步骤2 逐帧 VLM 描述（SemanticAnalyzeStrategy 帧描述聚合用）：[{ timeMs, description, emotion?, shotType?, downstream? }] */
+  frameDescriptions?: any[];
   ttsDurations?: number[];
   bgmInfo?: any;
   /** 该节点执行完成后的输出结果，供下游节点作为上游上下文合并 */

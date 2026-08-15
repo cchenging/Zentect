@@ -105,6 +105,10 @@ export const IPC_CHANNELS = {
   AI_CHAT_REQUEST: 'ai:chatRequest',
   AI_SEARCH_BROLL: 'ai:searchBroll',
   AI_EXTRACT_FRAMES: 'ai:extractFrames',
+  /** AI 深度 BGM 推荐：依据解说文案语义调用 LLM 生成个性化选曲 */
+  AI_BGM_RECOMMEND: 'ai:bgmRecommend',
+  /** P1 一键应用：下载曲库曲目到本地缓存 */
+  AI_BGM_DOWNLOAD: 'ai:bgmDownload',
 
   // --- AI 智能体流式域 ---
   AGENT_CHAT_INVOKE: 'agent:chatInvoke',

@@ -46,6 +46,10 @@ class KMMatchReq(BaseModel):
     vlmApiKey: str = ''
     vlmApiBase: str = ''
     vlmApiModel: str = ''
+    """🎵 P2 BPM 对齐卡点：BGM 曲目 BPM（librosa tempo 检测），>0 时启用整拍网格磁吸，<=0 回退单点鼓点吸附"""
+    bpm: float = 0
+    """🎵 P2 权重可配置：五项打分权重字典，键为 sem/emotion/motion/duration/role，缺省回退并归一化"""
+    weights: dict = {}
 
 
 # ==========================================
@@ -155,7 +159,8 @@ def _compute_role_score(query_roles, chunk_roles) -> float:
 
 
 def _compute_combined_score(sem_score: float, duration_penalty: float, motion_score: float,
-                            emotion_score: float = 0.5, role_score: float = 0.5) -> float:
+                            emotion_score: float = 0.5, role_score: float = 0.5,
+                            weights: dict = None) -> float:
     """
     多因子综合打分：0.35 文本语义 + 0.2 情绪意境 + 0.15 画面运动 + 0.25 时长契合 + 0.05 角色契合
     - 语义：CLIP 图文余弦相似度归一化到 0~1
@@ -168,9 +173,21 @@ def _compute_combined_score(sem_score: float, duration_penalty: float, motion_sc
     （情绪全缺失时 emotion_score=0.5 贡献常数 0.1，其余维度权重与旧权重接近，排序基本不变）。
     🎭 P1 角色维度：语义权重由 0.4 微降至 0.35，让出 0.05 给角色契合——软加成，命中主角加分、
     未命中仅中性值，不因角色信息缺失或误识别而破坏既有匹配排序。
+    🎵 P2 权重可配置：从 weights 读取五项权重（缺省回退默认值），并对五项权重做归一化，
+    让前端调参真正生效，不再依赖硬编码。
     """
-    return 0.35 * sem_score + 0.2 * emotion_score + 0.15 * motion_score \
-        + 0.25 * duration_penalty + 0.05 * role_score
+    _default_weights = {
+        'sem': 0.35, 'emotion': 0.2, 'motion': 0.15, 'duration': 0.25, 'role': 0.05,
+    }
+    w = {key: float(weights.get(key, _default_weights[key]))
+         for key in _default_weights} if isinstance(weights, dict) else dict(_default_weights)
+    total = sum(w.values())
+    if total > 0:
+        w = {key: value / total for key, value in w.items()}
+    else:
+        w = dict(_default_weights)
+    return w['sem'] * sem_score + w['emotion'] * emotion_score + w['motion'] * motion_score \
+        + w['duration'] * duration_penalty + w['role'] * role_score
 
 
 def _call_llm_translate(texts: list, api_key: str, api_base: str, model: str) -> list:
@@ -325,7 +342,7 @@ def _call_vlm_rerank(script_text: str, candidate_covers: list,
 def _apply_vlm_rerank(results: list, queries, video_chunks: list,
                       valid_chunk_indices: list, semantic_sim,
                       emotion_sim, role_sim, n_queries: int, api_key: str, api_base: str,
-                      model: str = "gpt-4o") -> list:
+                      model: str = "gpt-4o", weights: dict = None) -> list:
     """
     对置信度低于 VLM_CONFIDENCE_THRESHOLD 的匹配结果，收集 top-3 候选切片，
     调用 VLM 二次裁决，替换低置信度匹配。
@@ -356,6 +373,11 @@ def _apply_vlm_rerank(results: list, queries, video_chunks: list,
 
     vlm_reranked = 0
 
+    # 🎥 修复"重复切片"：KM 主匹配已保证每个切片只被一个 shot 占用（global_used_chunks 排他），
+    # 但 VLM 二次裁决此前替换 chunkData 时不检查排他，可能把相邻 shot 已占用的切片再分给当前 shot，
+    # 导致剪映草稿里出现重复的两段视频。这里维护一张"已占用切片 id"集合，替换前过滤掉他人占用的切片。
+    used_chunk_ids = set(r.get("chunkId") for r in results if r.get("chunkId"))
+
     for result in results:
         if result["confidence"] >= VLM_CONFIDENCE_THRESHOLD:
             continue
@@ -376,7 +398,15 @@ def _apply_vlm_rerank(results: list, queries, video_chunks: list,
             for ci_idx, cb in chunk_block.items():
                 if cb == block_idx + offset:
                     candidate_ci_indices.add(ci_idx)
-        candidate_list = sorted(candidate_ci_indices)
+
+        # 排除"已被其他 shot 占用"的切片：当前 result 自己占用的切片允许替换（不产生新增重复）。
+        # 这样候选池里只含"当前自身切片 + 未占用切片"，VLM 无论选哪个都不会造成重复。
+        current_id = result.get("chunkId")
+        used_by_others = used_chunk_ids - ({current_id} if current_id else set())
+        candidate_list = sorted(
+            ci_idx for ci_idx in candidate_ci_indices
+            if video_chunks[valid_chunk_indices[ci_idx]].get("id") not in used_by_others
+        )
 
         if len(candidate_list) == 0:
             continue
@@ -409,7 +439,7 @@ def _apply_vlm_rerank(results: list, queries, video_chunks: list,
             # 🎭 P1 角色契合度：候选打分与 KM 主体一致计入角色命中
             role_score = float(role_sim[qi, ci_idx])
 
-            combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score, role_score)
+            combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score, role_score, weights=weights)
             scores.append((ci_idx, ci, combined_score))
 
         scores.sort(key=lambda x: x[2], reverse=True)
@@ -438,8 +468,15 @@ def _apply_vlm_rerank(results: list, queries, video_chunks: list,
         # 替换匹配结果
         new_ci_idx, new_ci, new_score = top3[chosen]
         new_chunk = video_chunks[new_ci]
+        new_id = new_chunk.get("id", f"chunk_{new_ci:03d}")
 
-        result["chunkId"] = new_chunk.get("id", f"chunk_{new_ci:03d}")
+        # 同步维护已占用集合：释放当前 result 旧切片占用，登记新切片占用（防止后续 shot 重复选中）
+        if current_id:
+            used_chunk_ids.discard(current_id)
+        if new_id:
+            used_chunk_ids.add(new_id)
+
+        result["chunkId"] = new_id
         result["confidence"] = round(new_score, 4)
         result["coverPath"] = new_chunk.get("coverPath", "")
         result["chunkData"] = new_chunk
@@ -510,7 +547,8 @@ def _continuity_penalty(prev_chunk: dict, next_chunk: dict) -> float:
 
 
 def _apply_continuity_rerank(results: list, queries, video_chunks: list,
-                             valid_chunk_indices: list, semantic_sim, emotion_sim, role_sim) -> list:
+                             valid_chunk_indices: list, semantic_sim, emotion_sim, role_sim,
+                             weights: dict = None) -> list:
     """
     🎬 P1 衔接流畅性重排：对成品时间轴相邻匹配对做连续性检查（色调/景别/情绪），
     连续性差（惩罚超阈值）的边界，从该段文案的时间块候选池中替换为
@@ -597,7 +635,7 @@ def _apply_continuity_rerank(results: list, queries, video_chunks: list,
             if audio_dur_ms > 0 and vdur > 0:
                 d = abs(vdur - audio_dur_ms) / max(audio_dur_ms, 1)
                 dur = float(np.exp(-d * 2)) if vdur < audio_dur_ms else float(np.exp(-d * 0.5))
-            return _compute_combined_score(sem, dur, motion, emo, role), chunk
+            return _compute_combined_score(sem, dur, motion, emo, role, weights=weights), chunk
 
         cur_score, _ = _score(cur_ci_idx)
 
@@ -986,7 +1024,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                 # 🎭 P1 角色契合度：解说期望角色与切片出现角色的命中率（软加成）
                 role_score = float(role_sim[qi, ci_idx])
 
-                combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score, role_score)
+                combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score, role_score, weights=req.weights)
                 local_cost[lqi, lci] = -combined_score
 
         if local_n_queries > local_n_chunks:
@@ -1015,7 +1053,15 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
             raw_end_time_ms = current_timeline_ms + audio_dur_ms
             target_end_time_ms = raw_end_time_ms
 
-            if req.bgmBeats:
+            # 🎵 P2 BPM 整拍网格磁吸：bpm>0 时按 60000/bpm 的整拍网格吸附（动态阈值 35% 拍间隔），
+            # 替代原来固定 250ms 的单点最近鼓点吸附；bpm<=0 时回退旧 250ms 逻辑。
+            bpm = float(getattr(req, 'bpm', 0) or 0)
+            if bpm > 0:
+                beat_interval_ms = 60000.0 / bpm
+                grid_pos = round(raw_end_time_ms / beat_interval_ms) * beat_interval_ms
+                if abs(grid_pos - raw_end_time_ms) < beat_interval_ms * 0.35:
+                    target_end_time_ms = grid_pos
+            elif req.bgmBeats:
                 bgm_beats_ms = [b * 1000 for b in req.bgmBeats]
                 closest_beat_ms = min(bgm_beats_ms, key=lambda x: abs(x - raw_end_time_ms))
                 if abs(closest_beat_ms - raw_end_time_ms) < 250:
@@ -1063,7 +1109,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                     best_emotion = float(emotion_sim[qi, chunk_rank[best_ci]])
                     # 🎭 P1 角色契合度：变速重选同样计入角色命中，避免为了时长丢弃角色更贴合的切片
                     best_role = float(role_sim[qi, chunk_rank[best_ci]])
-                    combined_score = _compute_combined_score(best_sem, best_dur_pen, best_motion, best_emotion, best_role)
+                    combined_score = _compute_combined_score(best_sem, best_dur_pen, best_motion, best_emotion, best_role, weights=req.weights)
 
             speed_factor = 1.0
             if final_video_duration_ms > 0 and video_dur_ms > 0:
@@ -1090,7 +1136,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
         results = _apply_vlm_rerank(
             results, req.queries, video_chunks, valid_chunk_indices,
             semantic_sim, emotion_sim, role_sim, n_queries,
-            req.vlmApiKey, req.vlmApiBase, req.vlmApiModel,
+            req.vlmApiKey, req.vlmApiBase, req.vlmApiModel, req.weights,
         )
 
     # 🎬 P1 衔接流畅性重排：相邻切片色调/景别/情绪连续性优化。
@@ -1098,7 +1144,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     if len(results) > 1:
         results = _apply_continuity_rerank(
             results, req.queries, video_chunks, valid_chunk_indices,
-            semantic_sim, emotion_sim, role_sim,
+            semantic_sim, emotion_sim, role_sim, req.weights,
         )
 
     return {"success": True, "results": results}

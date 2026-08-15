@@ -7,16 +7,24 @@ import { ChatHistoryRepository } from '../database/repositories/ChatHistoryRepos
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
-import { LLMFactory } from '../engine/adapters/LLMFactory';
+import { LLMFactory, FactoryResult } from '../engine/adapters/LLMFactory';
 import { MediaRepository } from '../database/repositories/MediaRepository';
 import { PipelinePayload } from '../../shared/types';
 import { PipelineEngine } from '../engine/PipelineEngine';
 import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import { MultiChannelPipeline } from '../core/MultiChannelPipeline';
-import { ProviderManager } from '../engine/config/ProviderManager';
 import * as fs from 'fs';
 import * as path from 'path';
 import { PathManager } from '../utils/pathManager';
+import { musicLibraryService, MusicTrack } from './MusicLibraryService';
+
+/** BGM 选曲意图（两段式 Step1 输出） */
+interface BgmIntent {
+  moodTags: string[];
+  bpmMin: number;
+  bpmMax: number;
+  styleNotes: string;
+}
 
 export class AIService {
   private pipelineEngine: PipelineEngine;
@@ -37,19 +45,19 @@ export class AIService {
         { role: 'user', content: text }
       ];
 
-      // 💥 OPT-5: 使用 MultiChannelPipeline 包裹 LLM 调用，主通道失败自动切换备用通道
+      // 💥 OPT-5: 使用 MultiChannelPipeline 包裹 LLM 调用，主通道失败自动重试
+      // 统一走 LLMFactory.createAdapter('chat') 单一配置源（模型映射绑定表优先），
+      // 不再走 ProviderManager.getLLMConfig 的 proxy 通道，避免通道不一致。
       const reply = await MultiChannelPipeline.executeWithFailover(
         // 主通道
         () => {
-          const primaryConfig = ProviderManager.getLLMConfig('chat');
-          const adapter = LLMFactory.createFromConfig(primaryConfig);
-          return adapter.chat(messages, primaryConfig.model, primaryConfig.temperature);
+          const { adapter, modelName, temperature } = LLMFactory.createAdapter('chat');
+          return adapter.chat(messages, modelName, temperature);
         },
-        // 备用通道（降级到 proxy 通道）
+        // 重试通道（同一配置，遇瞬时故障重试一次）
         () => {
-          const fallbackConfig = ProviderManager.getLLMConfig('chat', 'proxy');
-          const adapter = LLMFactory.createFromConfig(fallbackConfig);
-          return adapter.chat(messages, fallbackConfig.model, fallbackConfig.temperature);
+          const { adapter, modelName, temperature } = LLMFactory.createAdapter('chat');
+          return adapter.chat(messages, modelName, temperature);
         }
       );
 
@@ -74,17 +82,16 @@ export class AIService {
         { role: 'user', content: payload.prompt || '请生成一个15秒短视频剧本' }
       ];
 
-      // 💥 OPT-5: 使用 MultiChannelPipeline 包裹 LLM 调用
+      // 💥 OPT-5: 使用 MultiChannelPipeline 包裹 LLM 调用，主通道失败自动重试
+      // 统一走 LLMFactory.createAdapter('script') 单一配置源，避免通道不一致。
       const script = await MultiChannelPipeline.executeWithFailover(
         () => {
-          const primaryConfig = ProviderManager.getLLMConfig('script');
-          const adapter = LLMFactory.createFromConfig(primaryConfig);
-          return adapter.chat(messages, primaryConfig.model, primaryConfig.temperature);
+          const { adapter, modelName, temperature } = LLMFactory.createAdapter('script');
+          return adapter.chat(messages, modelName, temperature);
         },
         () => {
-          const fallbackConfig = ProviderManager.getLLMConfig('script', 'proxy');
-          const adapter = LLMFactory.createFromConfig(fallbackConfig);
-          return adapter.chat(messages, fallbackConfig.model, fallbackConfig.temperature);
+          const { adapter, modelName, temperature } = LLMFactory.createAdapter('script');
+          return adapter.chat(messages, modelName, temperature);
         }
       );
 
@@ -100,6 +107,260 @@ export class AIService {
 
   public async getChatHistory(_projectId: string) {
     return await new ChatHistoryRepository().getHistory(_projectId);
+  }
+
+  /**
+   * AI 深度 BGM 推荐：两段式——①LLM 生成选曲意图（moodTags + 目标 BPM 区间）
+   * ②调 MusicLibraryService 检索真实曲目；曲库无结果时降级为原有纯生成逻辑。
+   * 返回结构与前端 BgmRecommendation 对齐：{ toneLabel, toneDesc, tracks:[{name,artist,mood,source,beatFit,...}] }
+   */
+  public async recommendBgm(payload: {
+    scriptParagraphs: string[];
+    emotionTone: string;
+    /** P3 多模态：步骤2 画面情绪标签（去重） */
+    frameEmotions?: string[];
+    /** P3 多模态：步骤2 镜头景别标签（去重） */
+    shotTypes?: string[];
+    /** P3 多模态：源视频总时长（毫秒），用于推算目标切点密度 */
+    videoDurationMs?: number;
+  }) {
+    const { scriptParagraphs, emotionTone, frameEmotions, shotTypes, videoDurationMs } = payload;
+    const scriptText = (scriptParagraphs || []).filter(Boolean).join('\n').slice(0, 8000) || '（无文案）';
+
+    // 💥 关键：与脚本生成走【同一条】配置解析链路 —— LLMFactory.createAdapter('script')
+    //    （先查「模型映射」绑定表 ProfileBindingRepository，再回退 settings 模型名路由）。
+    //    切勿改用 ProviderManager.getLLMConfig('script')：它读的是 api_profiles 激活的
+    //    proxy profile，与脚本生成实际使用的通道不同，会导致"脚本能用、这里却 403"。
+    let factory: FactoryResult;
+    try {
+      factory = LLMFactory.createAdapter('script');
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT, `[BGM推荐] 脚本生成通道未配置: ${e?.message}`);
+      return { success: false, error: e?.message || '未配置可用的 LLM 通道' };
+    }
+
+    // Step1：生成选曲意图（失败不阻断，降级纯生成）
+    let intent: BgmIntent | null = null;
+    try {
+      intent = await this.generateBgmIntent(factory, scriptText, emotionTone, frameEmotions, shotTypes, videoDurationMs);
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT, `[BGM推荐] 选曲意图生成失败，降级纯生成: ${e?.message}`);
+    }
+
+    // Step2：调曲库检索真实曲目（默认空 provider 返回空，命中后再走精选）
+    if (intent) {
+      try {
+        const pool = await musicLibraryService.search({
+          mood: (intent.moodTags || []).join(','),
+          bpmMin: intent.bpmMin,
+          bpmMax: intent.bpmMax,
+          limit: 10,
+        });
+        if (pool.length > 0) {
+          const selected = await this.selectBgmFromPool(factory, pool);
+          if (selected) {
+            AppLogger.info(LOG_TAGS.AI_AGENT, `[BGM推荐] 曲库精选完成: ${selected.tracks?.length ?? 0} 首`);
+            return { success: true, data: selected };
+          }
+        }
+      } catch (e: any) {
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[BGM推荐] 曲库检索失败，降级纯生成: ${e?.message}`);
+      }
+    }
+
+    // Step3：降级——现有纯生成逻辑（保持历史行为不变）
+    return this.generateBgmFallback(factory, scriptText, emotionTone);
+  }
+
+  /** P1 一键应用：下载曲库曲目到本地缓存并返回本地 filePath */
+  public async downloadBgm(payload: { downloadUrl?: string; libraryId?: string; name?: string }) {
+    const { downloadUrl, libraryId, name } = payload || {};
+    let url = (downloadUrl || '').trim();
+    if (!url && libraryId) {
+      try {
+        url = (await musicLibraryService.getDownloadUrl(libraryId)).trim();
+      } catch (e: any) {
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[BGM下载] 解析下载地址失败: ${e?.message}`);
+      }
+    }
+    if (!url) return { success: false, error: '未获取到可下载的曲目地址' };
+
+    const bgmDir = path.join(PathManager.getCacheRootPath(), 'bgm');
+    fs.mkdirSync(bgmDir, { recursive: true });
+
+    const safeName = (name || libraryId || 'bgm').replace(/[\\/:*?"<>|]/g, '_');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+    let res: Response;
+    try {
+      res = await fetch(url, { method: 'GET', signal: controller.signal });
+    } catch (e: any) {
+      if (e?.name === 'AbortError') return { success: false, error: '曲目下载超时（60s）' };
+      return { success: false, error: `曲目下载失败：${e?.message || e}` };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    if (!res.ok) return { success: false, error: `曲目下载失败：HTTP ${res.status}` };
+
+    const ext = this.inferBgmExtension(url, res.headers.get('content-type') || '');
+    const filePath = path.join(bgmDir, `${Date.now()}_${safeName}${ext}`);
+    try {
+      const buffer = Buffer.from(await res.arrayBuffer());
+      fs.writeFileSync(filePath, buffer);
+    } catch (e: any) {
+      return { success: false, error: `曲目写入本地失败：${e?.message || e}` };
+    }
+    AppLogger.info(LOG_TAGS.AI_AGENT, `[BGM下载] 已缓存曲目: ${filePath}`);
+    return { success: true, filePath };
+  }
+
+  /** 根据 Content-Type 或 URL 推断 BGM 文件扩展名，默认 .mp3 */
+  private inferBgmExtension(url: string, contentType: string): string {
+    const ct = (contentType || '').toLowerCase();
+    if (ct.includes('mpeg') || ct.includes('mp3')) return '.mp3';
+    if (ct.includes('wav')) return '.wav';
+    if (ct.includes('mp4') || ct.includes('m4a')) return '.m4a';
+    if (ct.includes('ogg')) return '.ogg';
+    try {
+      const ext = path.extname(new URL(url).pathname).toLowerCase();
+      if (/^\.[a-z0-9]{1,5}$/.test(ext)) return ext;
+    } catch { /* 忽略非法 URL，走默认 */ }
+    return '.mp3';
+  }
+
+  /** 选曲意图：由文案情绪推导出的检索条件（两段式 Step1） */
+  private async generateBgmIntent(
+    factory: FactoryResult,
+    scriptText: string,
+    emotionTone: string,
+    frameEmotions?: string[],
+    shotTypes?: string[],
+    videoDurationMs?: number,
+  ): Promise<BgmIntent | null> {
+    const { adapter, modelName, temperature } = factory;
+    const systemPrompt =
+      '你是短视频背景音乐(BGM)选曲意图分析器。根据文案的情绪基调与内容，推断目标曲目的情绪标签与 BPM 区间。' +
+      '你必须只输出一个合法的 JSON 对象，禁止输出任何解释、前后缀或 Markdown 代码块。字段名必须严格如下：\n' +
+      '{"moodTags":["情绪标签1","情绪标签2"],"bpmMin":90,"bpmMax":140,"styleNotes":"一句话选曲说明"}';
+    // P3 多模态：把步骤2 的画面情绪、镜头景别与视频时长纳入选曲意图，供 LLM 结合画面节奏推断 BPM 区间
+    const frameEmotionLine = (frameEmotions || []).length > 0 ? `\n画面情绪分布：${frameEmotions!.join('、')}` : '';
+    const shotTypeLine = (shotTypes || []).length > 0 ? `\n镜头景别：${shotTypes!.join('、')}` : '';
+    const durationLine = videoDurationMs ? `\n视频总时长：${Math.round(videoDurationMs / 1000)}秒` : '';
+    const userPrompt = `情绪基调：${emotionTone}\n解说文案段落：\n${scriptText}${frameEmotionLine}${shotTypeLine}${durationLine}`;
+    const reply: any = await adapter.chat(
+      [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+      modelName, temperature,
+    );
+    if (reply && reply.success === false) throw new Error(reply.error || '选曲意图生成失败');
+    const parsed = this.parseJsonFromText(reply?.text || '');
+    if (!parsed || typeof parsed !== 'object') return null;
+    const rawTags = Array.isArray(parsed.moodTags) ? parsed.moodTags : (Array.isArray(parsed.tags) ? parsed.tags : []);
+    const moodTags = rawTags.map((t: any) => String(t).trim()).filter(Boolean).slice(0, 5);
+    const bpmMin = Number(parsed.bpmMin ?? parsed.targetBpmMin ?? parsed.min ?? 0) || 0;
+    const bpmMax = Number(parsed.bpmMax ?? parsed.targetBpmMax ?? parsed.max ?? 0) || 0;
+    const styleNotes = String(parsed.styleNotes || parsed.reason || parsed.note || '').trim();
+    if (moodTags.length === 0 && !styleNotes) return null;
+    return { moodTags, bpmMin, bpmMax, styleNotes };
+  }
+
+  /** 从曲库候选池中精选 3 首（两段式 Step3，仅在曲库命中时调用） */
+  private async selectBgmFromPool(factory: FactoryResult, pool: MusicTrack[]): Promise<any> {
+    const { adapter, modelName, temperature } = factory;
+    const systemPrompt =
+      '你是短视频背景音乐(BGM)精选器。从给定候选曲目中挑选 3 首最适合解说文案的曲目。' +
+      '你必须只输出一个合法的 JSON 对象，禁止输出任何解释、前后缀或 Markdown 代码块。字段名必须严格如下：\n' +
+      '{"toneLabel":"推荐风格标签","toneDesc":"一句话选曲理由","tracks":[{"name":"曲名","artist":"作者","mood":"情绪标签","source":"来源","beatFit":"卡点强度","bpm":120,"durationMs":180000,"previewUrl":"试听URL","downloadUrl":"下载URL","libraryId":"曲库ID"}]}';
+    const userPrompt = `候选曲目（JSON）：\n${JSON.stringify(pool)}`;
+    const reply: any = await adapter.chat(
+      [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+      modelName, temperature,
+    );
+    if (reply && reply.success === false) throw new Error(reply.error || '曲目精选失败');
+    const parsed = this.parseJsonFromText(reply?.text || '');
+    return this.normalizeBgmRecommendation(parsed);
+  }
+
+  /** 纯生成降级逻辑：保持改造前的推荐行为（LLM 直接编曲名） */
+  private async generateBgmFallback(factory: FactoryResult, scriptText: string, emotionTone: string) {
+    const systemPrompt =
+      '你是短视频背景音乐(BGM)选曲专家。根据解说文案的情绪基调，推荐 3 首免费商用(CC0/创作共用)的纯音乐，要求节奏明显、便于剪辑卡点、不抢人声，曲目必须是真实存在且可搜索下载的。' +
+      '你必须只输出一个合法的 JSON 对象，禁止输出任何解释、前后缀或 Markdown 代码块。字段名必须严格如下：\n' +
+      '{"toneLabel":"推荐风格标签(如：悬疑紧张)","toneDesc":"一句话选曲理由与使用建议","tracks":[{"name":"曲名","artist":"作者","mood":"情绪标签","source":"下载站，如 Incompetech / YouTube音频库 / Pixabay","beatFit":"卡点强度：强/中/弱"}]}';
+    const userPrompt = `情绪基调：${emotionTone}\n解说文案段落：\n${scriptText}`;
+
+    try {
+      const { adapter, modelName, temperature } = factory;
+      const reply: any = await adapter.chat(
+        [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+        modelName, temperature,
+      );
+      // 💥 关键：Adapter 调用失败时返回 { success:false, error } 而非抛异常，
+      //    必须检查 reply.success，否则 reply.text 为空会误判为"解析失败"而丢失真实错误
+      if (reply && reply.success === false) {
+        throw new Error(reply.error || 'LLM 调用失败');
+      }
+      const rawText = reply?.text || '';
+      const parsed = this.parseJsonFromText(rawText);
+      const normalized = this.normalizeBgmRecommendation(parsed);
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[BGM推荐] 深度推荐完成: ${normalized?.tracks?.length ?? 0} 首`);
+      return { success: true, data: normalized, raw: rawText.slice(0, 500) };
+    } catch (e: any) {
+      AppLogger.error(LOG_TAGS.AI_AGENT, `[BGM推荐] LLM 调用失败`, e);
+      return { success: false, error: e?.message || 'LLM 调用失败' };
+    }
+  }
+
+  /** 从 LLM 自由文本中健壮提取 JSON 对象：整段解析 → 剥 ```json 代码块 → 取首个 { 起 → 清洗尾随噪音 */
+  private parseJsonFromText(text: string): any {
+    const candidates: string[] = [];
+    try { candidates.push(JSON.parse(text)); } catch { /* 继续 */ }
+    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fence) {
+      try { candidates.push(JSON.parse(fence[1])); } catch {
+        try { candidates.push(JSON.parse(fence[1].slice(fence[1].indexOf('{')))); } catch { /* 继续 */ }
+      }
+    }
+    const brace = text.indexOf('{');
+    if (brace >= 0) {
+      // 从首个 { 向后找配对 }，避免解析到尾随的中文说明文字
+      let depth = 0;
+      for (let i = brace; i < text.length; i++) {
+        if (text[i] === '{') depth++;
+        else if (text[i] === '}') { depth--; if (depth === 0) { try { candidates.push(JSON.parse(text.slice(brace, i + 1))); } catch { /* 继续 */ } break; } }
+      }
+    }
+    // 返回第一个非空对象候选
+    for (const c of candidates) {
+      if (c && typeof c === 'object' && !Array.isArray(c)) return c;
+      if (Array.isArray(c) && c.length > 0) return c[0];
+    }
+    return null;
+  }
+
+  /** 归一化 AI 返回的 BGM 推荐：兼容字段别名（tracks/music/songs、toneDesc/reason），并清洗缺失字段 */
+  private normalizeBgmRecommendation(obj: any): any {
+    if (!obj || typeof obj !== 'object') return null;
+    const rawTracks = obj.tracks || obj.music || obj.songs || obj.list || obj.recommendations;
+    const tracks = (Array.isArray(rawTracks) ? rawTracks : []).map((t: any) => ({
+      name: String(t?.name || t?.title || t?.song || t?.track || '').trim(),
+      artist: String(t?.artist || t?.author || t?.singer || '').trim(),
+      mood: String(t?.mood || t?.emotion || t?.style || '').trim(),
+      source: String(t?.source || t?.where || t?.platform || '').trim(),
+      beatFit: String(t?.beatFit || t?.beat || t?.rhythm || t?.fit || '').trim(),
+      bpm: t?.bpm != null && !Number.isNaN(Number(t.bpm)) ? Number(t.bpm) : undefined,
+      durationMs: t?.durationMs != null && !Number.isNaN(Number(t.durationMs)) ? Number(t.durationMs) : undefined,
+      previewUrl: String(t?.previewUrl || t?.preview || '').trim() || undefined,
+      downloadUrl: String(t?.downloadUrl || t?.download || '').trim() || undefined,
+      libraryId: String(t?.libraryId || t?.id || '').trim() || undefined,
+    })).filter((t: any) => t.name);
+    if (tracks.length === 0) return null;
+    return {
+      toneLabel: String(obj?.toneLabel || obj?.tone || obj?.label || '').trim() || 'AI 推荐',
+      toneDesc: String(obj?.toneDesc || obj?.reason || obj?.desc || obj?.summary || '').trim() || '依据解说文案语义生成的选曲建议',
+      tracks,
+    };
   }
 
   public async executePipeline(payload: PipelinePayload, sender: Electron.WebContents) {
@@ -351,8 +612,8 @@ export class AIService {
     return await AIEngine.extractFramesLocally(media.filePath, PathManager.getProjectDir(mediaId), strategy, fps);
   }
 
-  public async agentStreamChat(sender: Electron.WebContents, projectId: string, prompt: string, context: any, history: Array<{ role: string; content: string }>, provider?: string) {
-    await AIEngine.agentStreamChat(sender, projectId, prompt, context, history, provider);
+  public async agentStreamChat(sender: Electron.WebContents, projectId: string, prompt: string, context: any, history: Array<{ role: string; content: string }>) {
+    await AIEngine.agentStreamChat(sender, projectId, prompt, context, history);
     return { success: true };
   }
 

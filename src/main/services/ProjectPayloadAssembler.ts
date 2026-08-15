@@ -127,7 +127,7 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
       newAudioItems.push({
         id: `${media.id}_bgm`, type: 'audio', sourceType: 'bgm',
         fileName: '分离背景音', name: '分离背景音',
-        filePath: media.extractedBgm, projectId, mediaId: media.id,
+        filePath: media.extractedBgm, extractedBgm: media.extractedBgm, projectId, mediaId: media.id,
         createdAt: new Date().toISOString(),
       });
     }

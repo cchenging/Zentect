@@ -62,6 +62,16 @@ export class AIController {
       return await this.aiService.generateScript(payload, event.sender);
     });
 
+    // 🎵 AI 深度 BGM 推荐：依据解说文案语义调用 LLM 生成个性化选曲
+    IpcRouter.handle(IPC_CHANNELS.AI_BGM_RECOMMEND, async (_, payload) => {
+      return await this.aiService.recommendBgm(payload);
+    });
+
+    // 🎵 P1 一键应用：下载曲库曲目到本地缓存
+    IpcRouter.handle(IPC_CHANNELS.AI_BGM_DOWNLOAD, async (_, payload) => {
+      return await this.aiService.downloadBgm(payload);
+    });
+
     IpcRouter.handle(IPC_CHANNELS.AI_VISION_SINGLE, async (_, data) => {
       return await this.aiService.visionSingle(data);
     });
@@ -100,7 +110,7 @@ export class AIController {
         AppLogger.info(LOG_TAGS.AI_ENGINE, `Agent 收到对话请求："${payload.prompt}"`);
         return await this.aiService.agentStreamChat(
           event.sender, payload.projectId, payload.prompt,
-          payload.context, payload.history || [], payload.provider
+          payload.context, payload.history || []
         );
       } catch (e: any) {
         AppLogger.error(LOG_TAGS.AI_ENGINE, "Agent 流式对话崩溃", e);
