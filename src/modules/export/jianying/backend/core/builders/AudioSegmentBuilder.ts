@@ -17,7 +17,8 @@ import { genHexId } from '../utils/IdUtils';
  * @param targetStart 时间线起始（微秒）
  * @param duration 时长（微秒）
  * @param speed 变速因子
- * @param volume 音量（BGM 0.3 / TTS 1.0，线性比例 0.0~1.0）
+ * @param volume 音量（BGM 0.3 / TTS 1.8，线性比例，TTS 配音放大避免听不清）
+ * @param lastNonzeroVolume 上次非零音量参考值（默认 1.0；TTS 放大时同步提升）
  * @returns 音频 segment 对象
  */
 export function buildAudioSegment(
@@ -26,6 +27,7 @@ export function buildAudioSegment(
   duration: number,
   speed: number,
   volume: number,
+  lastNonzeroVolume = 1.0,
 ): object {
   return {
     enable_adjust: false,
@@ -35,7 +37,7 @@ export function buildAudioSegment(
     enable_color_wheels: false,
     enable_lut: false,
     enable_smart_color_adjust: false,
-    last_nonzero_volume: 1.0,
+    last_nonzero_volume: lastNonzeroVolume,
     reverse: false,
     track_attribute: 0,
     track_render_index: 0,

@@ -21,6 +21,8 @@ export interface JianyingExportInput {
     appliedSpeedFactor?: number;
     audioDurationMs?: number;
     chunkData?: Record<string, unknown>;
+    /** 原声段落标记：true=保留原片原声，不配 TTS 配音 */
+    keepOriginalAudio?: boolean;
   }>;
   /** TTS 合成结果（配音音频路径） */
   ttsResults: Array<{
@@ -36,6 +38,8 @@ export interface JianyingExportInput {
     text: string;
     duration?: number;
     emotion?: string;
+    /** 原声段落标记：true=该段保留原片原声，不配 TTS 配音 */
+    keepOriginalAudio?: boolean;
     editing: boolean;
   }>;
   /** 背景音乐路径（可选） */
@@ -108,4 +112,6 @@ export interface CompileShot extends Shot {
   videoTimelineStartMs?: number;
   /** 视频时间线结束毫秒（原视频坐标） */
   videoTimelineEndMs?: number;
+  /** 是否保留原片原声（true=原声段，不配 TTS 配音，剪映导出时视频段音量开足） */
+  keepOriginalAudio?: boolean;
 }

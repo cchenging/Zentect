@@ -132,6 +132,7 @@ export function assembleExportProjectSync(
       audioPath,
       chunkData: chunk,
       appliedSpeedFactor: m?.appliedSpeedFactor,
+      keepOriginalAudio: m?.keepOriginalAudio === true,
     };
   });
 

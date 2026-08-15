@@ -23,6 +23,8 @@ export interface ExportShot {
   chunkData?: Record<string, unknown>;
   /** 变速因子（1.0=正常） */
   appliedSpeedFactor?: number;
+  /** 是否保留原片原声（true=原声段，不配 TTS 配音，剪映导出时视频段音量开足） */
+  keepOriginalAudio?: boolean;
 }
 
 /**

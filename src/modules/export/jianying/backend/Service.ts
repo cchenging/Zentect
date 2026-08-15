@@ -129,6 +129,7 @@ export class JianyingExportService {
         appliedSpeedFactor: m?.appliedSpeedFactor,
         videoTimelineStartMs: m?.videoTimelineStartMs,
         videoTimelineEndMs: m?.videoTimelineEndMs,
+        keepOriginalAudio: p.keepOriginalAudio === true || m?.keepOriginalAudio === true,
       } as CompileShot;
     });
   }
@@ -186,6 +187,7 @@ export class JianyingExportService {
           appliedSpeedFactor: s.appliedSpeedFactor,
           videoTimelineStartMs: Math.round(s.start * 1000),
           videoTimelineEndMs: Math.round(s.end * 1000),
+          keepOriginalAudio: s.keepOriginalAudio === true,
         } as CompileShot;
       });
     }
@@ -209,6 +211,7 @@ export class JianyingExportService {
           duration: durationSec,
           audioDuration: durationSec,
           chunkData: null,
+          keepOriginalAudio: p.keepOriginalAudio === true,
         } as CompileShot;
       }
       const durationSec = shot.duration || Math.max(0, shot.end - shot.start) || (p.duration ?? 3);
@@ -228,6 +231,7 @@ export class JianyingExportService {
         appliedSpeedFactor: shot.appliedSpeedFactor,
         videoTimelineStartMs: Math.round(shot.start * 1000),
         videoTimelineEndMs: Math.round(shot.end * 1000),
+        keepOriginalAudio: shot.keepOriginalAudio === true || p.keepOriginalAudio === true,
       } as CompileShot;
     });
   }

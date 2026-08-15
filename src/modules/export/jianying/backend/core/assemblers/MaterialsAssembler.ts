@@ -31,6 +31,8 @@ export interface ShotMaterialRef {
   sourceStartUs: number;
   /** 变速因子 */
   speed: number;
+  /** 是否保留原片原声（原声段音量开足，不配 TTS 配音） */
+  keepOriginalAudio?: boolean;
   /** 视频变速引用 id（指向 materials.speeds，speed≠1.0 时关联） */
   speedRefId?: string;
 }
@@ -520,6 +522,7 @@ export function assembleMaterials(
         ? Math.round(Number(shot.chunkData.startMs) * 1000)
         : 0,
       speed,
+      keepOriginalAudio: shot.keepOriginalAudio === true,
     };
 
     // B. 变速：每个视频段一条（即便 speed=1.0 也要填充，保证 speeds 非空）

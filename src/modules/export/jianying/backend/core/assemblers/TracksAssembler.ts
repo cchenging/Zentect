@@ -12,6 +12,9 @@ import { buildAudioSegment } from '../builders/AudioSegmentBuilder';
 import { buildTextSegment } from '../builders/TextSegmentBuilder';
 import type { ShotMaterialRef, BgmMaterialRef } from './MaterialsAssembler';
 
+/** TTS 配音音量：放大至 1.8，避免"配音听不见"（BGM 仅 0.3 铺底不抢声） */
+const TTS_VOLUME = 1.8;
+
 /**
  * 创建一条剪映轨道的基础结构。
  *
@@ -70,7 +73,7 @@ export function assembleTracks(
 
   // -- 逐镜头轨道 --
   for (const ref of shotRefs) {
-    // A. 视频主轨
+    // A. 视频主轨（原声段保留原片原声并放大，普通段静音由 TTS 承载）
     videoTrack.segments.push(
       buildVideoSegment(
         ref.videoId,
@@ -78,13 +81,14 @@ export function assembleTracks(
         ref.durationUs,
         ref.sourceStartUs,
         ref.speed,
+        ref.keepOriginalAudio,
       ),
     );
 
-    // B. AI 配音轨（TTS）
+    // B. AI 配音轨（TTS，放大音量避免听不清）
     if (ref.audioId) {
       ttsTrack.segments.push(
-        buildAudioSegment(ref.audioId, globalOffset, ref.durationUs, 1, 1.0),
+        buildAudioSegment(ref.audioId, globalOffset, ref.durationUs, 1, TTS_VOLUME, TTS_VOLUME),
       );
     }
 
