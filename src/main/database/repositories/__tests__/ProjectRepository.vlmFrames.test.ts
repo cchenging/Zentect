@@ -113,6 +113,8 @@ function setupInMemoryDB(): Database.Database {
       voice_id TEXT,
       merged_roles TEXT,
       faces_json TEXT,
+      global_character_id TEXT,
+      tier TEXT,
       create_time DATETIME DEFAULT CURRENT_TIMESTAMP,
       update_time DATETIME DEFAULT CURRENT_TIMESTAMP,
       is_deleted INTEGER DEFAULT 0
@@ -240,7 +242,7 @@ describe('ProjectRepository - vlmFrames 持久化往返', () => {
     expect(meta.vlmFrames[0].description).toContain('男子走入画面');
 
     // 执行加载，验证 loadFullProjectData 返回的数据包含 vlmFrames
-    const loaded = repo.loadFullProjectData(PROJECT_ID);
+    const loaded = repo.loadFullProjectData(PROJECT_ID)!;
     expect(loaded).not.toBeNull();
     expect(loaded.vlmFrames).toBeDefined();
     expect(Array.isArray(loaded.vlmFrames)).toBe(true);
@@ -319,7 +321,7 @@ describe('ProjectRepository - vlmFrames 持久化往返', () => {
     });
 
     // 加载
-    const loaded = repo.loadFullProjectData(PROJECT_ID);
+    const loaded = repo.loadFullProjectData(PROJECT_ID)!;
 
     // 逐字段验证一致性
     expect(loaded.vlmFrames).toHaveLength(originalFrames.length);
@@ -381,7 +383,7 @@ describe('ProjectRepository - vlmFrames 持久化往返', () => {
     memDB.prepare('UPDATE projects SET canvas_data = ? WHERE id = ?').run(staleCanvasData, PROJECT_ID);
 
     // 加载，验证 metadata 中的 vlmFrames 未被 canvas_data 覆盖
-    const loaded = repo.loadFullProjectData(PROJECT_ID);
+    const loaded = repo.loadFullProjectData(PROJECT_ID)!;
     expect(loaded.vlmFrames).toHaveLength(3);
     expect(loaded.vlmFrames[0].description).toContain('男子走入画面');
   });
@@ -398,7 +400,7 @@ describe('ProjectRepository - vlmFrames 持久化往返', () => {
       shots: [],
     });
 
-    const loaded = repo.loadFullProjectData(PROJECT_ID);
+    const loaded = repo.loadFullProjectData(PROJECT_ID)!;
 
     // 验证 vlmFrames 在顶层（非嵌套在 metadata 中）
     expect(Object.prototype.hasOwnProperty.call(loaded, 'vlmFrames')).toBe(true);
@@ -468,7 +470,7 @@ describe('ProjectRepository - vlmFrames 持久化往返', () => {
       shots: [],
     });
 
-    const loaded = repo.loadFullProjectData(PROJECT_ID);
+    const loaded = repo.loadFullProjectData(PROJECT_ID)!;
 
     // 验证 vlmFrames 落盘成功（旧版会因 facesJson 异常回滚，vlmFrames 丢失）
     expect(loaded.vlmFrames).toHaveLength(3);
@@ -487,7 +489,7 @@ describe('ProjectRepository - vlmFrames 持久化往返', () => {
       shots: [],
     });
 
-    const loaded = repo.loadFullProjectData(PROJECT_ID);
+    const loaded = repo.loadFullProjectData(PROJECT_ID)!;
 
     // 验证 role_001 的人脸详细信息被正确恢复
     const maleRole = loaded.roles.find((r: any) => r.id === 'role_001');
@@ -518,7 +520,7 @@ describe('ProjectRepository - vlmFrames 持久化往返', () => {
       });
     }).not.toThrow();
 
-    const loaded = repo.loadFullProjectData(PROJECT_ID);
+    const loaded = repo.loadFullProjectData(PROJECT_ID)!;
     expect(loaded.roles).toHaveLength(1);
     expect(loaded.roles[0].name).toBe('最小角色');
     expect(loaded.roles[0].faces).toEqual([]);

@@ -124,7 +124,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
       },
       visionResult: {
         sceneDescriptions: '第1镜: 男子走入室内\n第2镜: 男子拿起杯子',
-      },
+      } as any,
       audioResult: {
         lines: [{ text: '你好', startMs: 1000 }],
       },

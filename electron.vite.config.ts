@@ -85,7 +85,7 @@ export default defineConfig({
       {
         name: 'request-logger',
         configureServer(server) {
-          server.middlewares.use((req, res, next) => {
+          server.middlewares.use((req, _res, next) => {
             const url = req.url || ''
             // 只记录关键请求（排除 HMR websocket 和 .vite/deps）
             if (!url.startsWith('/@') && !url.includes('node_modules/.vite/deps')) {

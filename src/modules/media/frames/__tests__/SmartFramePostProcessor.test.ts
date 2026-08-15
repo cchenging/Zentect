@@ -241,10 +241,9 @@ describe('SmartFramePostProcessor.process · P2 声画锚定集成链路（mock 
     });
     const asrLines = [fakeAsr(4000, 6000, '台词')];
     // Spy BudgetClipper.clip：查看 priorityFlags 是否传 files[2] 带 asrAnchor —— 更简单的断言：spy 后看调用参数
-    const { mock: { calls: spyCallsBefore } } = vi.spyOn(SmartFramePostProcessor, 'process');
     const clipSpy = vi.spyOn(await import('../backend/BudgetClipper').then(m => m.BudgetClipper), 'clip');
 
-    const result = await SmartFramePostProcessor.process(files, {
+    await SmartFramePostProcessor.process(files, {
       strategy: 'UNIFORM_FPS', fps: 1,
       dedupThreshold: 0, maxFrames: 2, toleranceRatio: 0,
       silentBudgetClipper: true,
@@ -334,7 +333,7 @@ describe('SmartFramePostProcessor.process · P2 声画锚定集成链路（mock 
 
     // runner 被调 1 次（中点 = (0+20000)/2 = 10000ms = 10s）
     expect(runner).toHaveBeenCalledTimes(1);
-    const runArg = runner.mock.calls[0][0];
+    const runArg = (runner.mock.calls[0] as any[])[0] as { timePointSec: number };
     expect(runArg.timePointSec).toBeCloseTo(10.0, 3);
     // kept：原 3 帧 + 补 1 帧 = 4
     expect(result.kept).toHaveLength(4);

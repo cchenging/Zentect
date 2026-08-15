@@ -257,8 +257,6 @@ class AppBootstrap {
         webSecurity: true,
         contextIsolation: true,
         nodeIntegration: false,
-        // 🔧 修复启动卡顿：禁用磁盘缓存，避免 EBADF/权限问题导致 HTTP 响应卡住
-        cache: false
       }
     })
 
@@ -470,6 +468,9 @@ app.whenReady().then(async () => {
 
   // — 注册 magic:// 协议处理器（实现见 ./protocols/magic.ts）
   session.defaultSession.protocol.handle('magic', handleMagicProtocol);
+  // 🔧 修复启动卡顿：webPreferences 无 cache 选项，改用合法 API 清除磁盘缓存，
+  //   避免旧 EBADF/权限问题导致 HTTP 响应卡住
+  try { await session.defaultSession.clearCache(); } catch { /* 清理失败不阻塞启动 */ }
   protocol.handle('atom', async (request) => {
     try {
       // 提取路径（与 magic:// 相同的解析逻辑）

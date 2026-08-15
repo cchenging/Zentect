@@ -415,7 +415,8 @@ export class SmartFramePostProcessor {
         const refillResult = await GapFrameRefiller.refillLongGapScenes({
           frames: kept,
           videoPath: options.videoPath,
-          framesDir: options.framesDir,
+          // 上方 shouldRunRefill 守卫已保证 framesDir 非空（!!options.framesDir）
+          framesDir: options.framesDir!,
           config: {
             strategy: normalizedStrategy,
             ...(options.refillConfig ?? {}),

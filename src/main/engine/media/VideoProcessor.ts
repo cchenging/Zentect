@@ -10,6 +10,7 @@ import * as path from 'path';
 import { PathManager } from '../../utils/pathManager';
 import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
+import type { ExtractOptions } from '../../../modules/media/frames/backend/Service';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import {
   buildCoverCommand,
@@ -262,11 +263,7 @@ export class VideoProcessor {
    */
   public static async extractFrames(
     filePath: string, outputDir: string, mediaId: string,
-    options: {
-      inPoint?: number; outPoint?: number; fps?: number; scale?: number; quality?: number;
-      strategy?: string; sceneThreshold?: number; minFrameInterval?: number;
-      timePoint?: number; abortSignal?: AbortSignal;
-    } = {}
+    options: ExtractOptions = {}
   ): Promise<{ files: string[]; metrics: { durationMs: number; frameCount: number; totalSizeMB: number; processingFps: number } }> {
     const { FrameExtractionService } = await import('../../../modules/media/frames');
     const deps = {

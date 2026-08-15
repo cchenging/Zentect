@@ -9,6 +9,25 @@ import { ProcessManager } from '../../utils/processManager';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 
+/**
+ * 解析目标分辨率档位与画幅比例 → 具体的输出像素尺寸
+ * 用于 composeFinalVideo 的 scale+crop 滤镜（纵向 9:16 时宽高互换）
+ * - resolution: '4k' | '2k' | '1080p' | '720p'，缺省 1080p
+ * - ratio: '16:9' | '9:16'，缺省 16:9
+ * @returns 输出画幅的宽高
+ */
+function resolveOutputSize(resolution?: string, ratio?: string): { width: number; height: number } {
+  const base: Record<string, [number, number]> = {
+    '4k': [3840, 2160],
+    '2k': [2560, 1440],
+    '1080p': [1920, 1080],
+    '720p': [1280, 720],
+  };
+  const [w, h] = base[resolution || '1080p'] || base['1080p'];
+  const vertical = ratio === '9:16';
+  return vertical ? { width: h, height: w } : { width: w, height: h };
+}
+
 /** 渲染作业数据结构 */
 export interface RenderJob {
   projectId: string;
