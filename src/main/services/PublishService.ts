@@ -6,7 +6,6 @@ import * as path from 'path';
 import { PathManager } from '../utils/pathManager';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
-import { ProviderManager } from '../engine/config/ProviderManager';
 import { LLMFactory } from '../engine/adapters/LLMFactory';
 import sharp from 'sharp';
 
@@ -72,10 +71,9 @@ export class PublishService {
     try {
       const shotsSummary = req.shots.slice(0, 5).map(s => s.script.slice(0, 30)).join(' | ');
       const prompt = `为以下视频内容生成一个吸引人的中文标题（15字以内，不要引号）：\n视频名称：${req.projectName}\n内容摘要：${shotsSummary}`;
-      const config = ProviderManager.getLLMConfig('chat');
-      const adapter = LLMFactory.createFromConfig(config);
+      const { adapter, modelName, temperature } = LLMFactory.createAdapter('chat');
       const messages = [{ role: 'system' as const, content: '你是一个专业的视频标题生成器。' }, { role: 'user' as const, content: prompt }];
-      const result = await adapter.chat(messages, config.model, config.temperature);
+      const result = await adapter.chat(messages, modelName, temperature);
       const clean = (result.text || '').replace(/["""]/g, '').trim();
       return clean.slice(0, 30) || req.projectName;
     } catch {
@@ -89,10 +87,9 @@ export class PublishService {
     try {
       const scriptSamples = req.shots.map(s => s.script).join('\n').slice(0, 500);
       const prompt = `为以下视频写一段100字左右的中文发布描述（适合B站/抖音风格）：\n${scriptSamples}`;
-      const config = ProviderManager.getLLMConfig('chat');
-      const adapter = LLMFactory.createFromConfig(config);
+      const { adapter, modelName, temperature } = LLMFactory.createAdapter('chat');
       const messages = [{ role: 'system' as const, content: '你是一个视频内容推广专家。' }, { role: 'user' as const, content: prompt }];
-      const result = await adapter.chat(messages, config.model, config.temperature);
+      const result = await adapter.chat(messages, modelName, temperature);
       return (result.text || '').slice(0, 200).trim() || `本期视频解说：${req.shots[0]?.script?.slice(0, 50) || '精彩内容'}...`;
     } catch {
       return `📹 ${req.projectName}\n\n本期为大家带来精彩解说分析，欢迎点赞关注！#视频解说`;

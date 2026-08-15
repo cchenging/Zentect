@@ -16,8 +16,6 @@ import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { VideoProcessor } from '../engine/media/VideoProcessor';
 // P0 · 抽帧契约唯一真源（含兼容映射）
 import { normalizeFrameStrategy, type DensityPreset } from '../../modules/media/frames';
-// @deprecated 保留仅用于历史类型兼容提示
-import type { FrameStrategy } from '../../modules/media/frames';
 
 export class MediaController {
   private mediaService = new MediaService();

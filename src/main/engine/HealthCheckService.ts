@@ -3,6 +3,7 @@
 
 import { PathManager } from '../utils/pathManager';
 import { ProviderManager } from './config/ProviderManager';
+import { LLMFactory } from './adapters/LLMFactory';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import fs from 'fs';
@@ -118,7 +119,7 @@ export class HealthCheckService {
     // LLM — 脚本生成需要
     if (steps.has('script') || steps.has('translate')) {
       try {
-        const cfg = ProviderManager.getLLMConfig('script');
+        const cfg = LLMFactory.getEffectiveConfig('script');
         results.push({
           name: '解说稿生成 (LLM)',
           available: !!(cfg.apiKey && cfg.baseURL),

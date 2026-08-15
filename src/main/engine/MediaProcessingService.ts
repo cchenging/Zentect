@@ -4,7 +4,6 @@
 import { FrameExtractor } from './capabilities/FrameExtractor';
 import { ProcessManager } from '../utils/processManager';
 import { PathManager } from '../utils/pathManager';
-import { SQLiteConnection } from '../database/core/SQLiteConnection';
 import { AIDaemon } from '../core/AIDaemon';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
