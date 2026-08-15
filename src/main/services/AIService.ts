@@ -151,7 +151,8 @@ export class AIService {
     if (intent) {
       try {
         const pool = await musicLibraryService.search({
-          mood: (intent.moodTags || []).join(','),
+          // 情绪基调枚举 + LLM 中文情绪标签一起下发，本地曲库据此匹配 tone/feel
+          mood: `${emotionTone},${(intent.moodTags || []).join(',')}`,
           bpmMin: intent.bpmMin,
           bpmMax: intent.bpmMax,
           limit: 10,
@@ -168,8 +169,9 @@ export class AIService {
       }
     }
 
-    // Step3：降级——现有纯生成逻辑（保持历史行为不变）
-    return this.generateBgmFallback(factory, scriptText, emotionTone);
+    // Step3：本地曲库无可用曲目时明确失败，不再让 LLM 编造曲名（反模式已砍）
+    AppLogger.warn(LOG_TAGS.AI_AGENT, '[BGM推荐] 本地曲库无可匹配曲目');
+    return { success: false, error: '本地曲库无可用曲目，请检查 resources/bgm-library 目录是否完整' };
   }
 
   /** P1 一键应用：下载曲库曲目到本地缓存并返回本地 filePath */
@@ -184,6 +186,17 @@ export class AIService {
       }
     }
     if (!url) return { success: false, error: '未获取到可下载的曲目地址' };
+
+    // 本地曲库：downloadUrl 指向随项目分发的本地文件，直接返回路径，无需联网下载
+    const isLocalFile =
+      /^[A-Za-z]:[\\/]/.test(url) ||
+      (url.startsWith('/') && !url.startsWith('//')) ||
+      fs.existsSync(url);
+    if (isLocalFile) {
+      if (!fs.existsSync(url)) return { success: false, error: '本地曲目文件缺失' };
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[BGM下载] 命中本地曲库文件: ${url}`);
+      return { success: true, filePath: url };
+    }
 
     const bgmDir = path.join(PathManager.getCacheRootPath(), 'bgm');
     fs.mkdirSync(bgmDir, { recursive: true });
@@ -268,48 +281,53 @@ export class AIService {
   /** 从曲库候选池中精选 3 首（两段式 Step3，仅在曲库命中时调用） */
   private async selectBgmFromPool(factory: FactoryResult, pool: MusicTrack[]): Promise<any> {
     const { adapter, modelName, temperature } = factory;
+    // 💥 反模式修复：LLM 只输出曲库 id + 卡点强度，URL/BPM/时长等真实字段由代码回填，
+    //    杜绝 LLM 复述 URL 导致试听/下载不可用的反模式。
     const systemPrompt =
-      '你是短视频背景音乐(BGM)精选器。从给定候选曲目中挑选 3 首最适合解说文案的曲目。' +
+      '你是短视频背景音乐(BGM)精选器。从候选曲目中挑选最多 3 首最适合解说文案的曲目。' +
       '你必须只输出一个合法的 JSON 对象，禁止输出任何解释、前后缀或 Markdown 代码块。字段名必须严格如下：\n' +
-      '{"toneLabel":"推荐风格标签","toneDesc":"一句话选曲理由","tracks":[{"name":"曲名","artist":"作者","mood":"情绪标签","source":"来源","beatFit":"卡点强度","bpm":120,"durationMs":180000,"previewUrl":"试听URL","downloadUrl":"下载URL","libraryId":"曲库ID"}]}';
-    const userPrompt = `候选曲目（JSON）：\n${JSON.stringify(pool)}`;
+      '{"toneLabel":"推荐风格标签","toneDesc":"一句话选曲理由","tracks":[{"id":"曲库id","beatFit":"强/中/弱"}]}';
+    // 只下发候选曲目的轻量字段，避免 LLM 接触并复述 URL
+    const candidates = pool.map((t) => ({
+      id: t.id, name: t.name, artist: t.artist, bpm: t.bpm, durationMs: t.durationMs, tags: t.tags,
+    }));
+    const userPrompt = `候选曲目（JSON）：\n${JSON.stringify(candidates)}`;
     const reply: any = await adapter.chat(
       [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
       modelName, temperature,
     );
     if (reply && reply.success === false) throw new Error(reply.error || '曲目精选失败');
     const parsed = this.parseJsonFromText(reply?.text || '');
-    return this.normalizeBgmRecommendation(parsed);
-  }
+    if (!parsed || typeof parsed !== 'object') return null;
 
-  /** 纯生成降级逻辑：保持改造前的推荐行为（LLM 直接编曲名） */
-  private async generateBgmFallback(factory: FactoryResult, scriptText: string, emotionTone: string) {
-    const systemPrompt =
-      '你是短视频背景音乐(BGM)选曲专家。根据解说文案的情绪基调，推荐 3 首免费商用(CC0/创作共用)的纯音乐，要求节奏明显、便于剪辑卡点、不抢人声，曲目必须是真实存在且可搜索下载的。' +
-      '你必须只输出一个合法的 JSON 对象，禁止输出任何解释、前后缀或 Markdown 代码块。字段名必须严格如下：\n' +
-      '{"toneLabel":"推荐风格标签(如：悬疑紧张)","toneDesc":"一句话选曲理由与使用建议","tracks":[{"name":"曲名","artist":"作者","mood":"情绪标签","source":"下载站，如 Incompetech / YouTube音频库 / Pixabay","beatFit":"卡点强度：强/中/弱"}]}';
-    const userPrompt = `情绪基调：${emotionTone}\n解说文案段落：\n${scriptText}`;
-
-    try {
-      const { adapter, modelName, temperature } = factory;
-      const reply: any = await adapter.chat(
-        [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
-        modelName, temperature,
-      );
-      // 💥 关键：Adapter 调用失败时返回 { success:false, error } 而非抛异常，
-      //    必须检查 reply.success，否则 reply.text 为空会误判为"解析失败"而丢失真实错误
-      if (reply && reply.success === false) {
-        throw new Error(reply.error || 'LLM 调用失败');
-      }
-      const rawText = reply?.text || '';
-      const parsed = this.parseJsonFromText(rawText);
-      const normalized = this.normalizeBgmRecommendation(parsed);
-      AppLogger.info(LOG_TAGS.AI_AGENT, `[BGM推荐] 深度推荐完成: ${normalized?.tracks?.length ?? 0} 首`);
-      return { success: true, data: normalized, raw: rawText.slice(0, 500) };
-    } catch (e: any) {
-      AppLogger.error(LOG_TAGS.AI_AGENT, `[BGM推荐] LLM 调用失败`, e);
-      return { success: false, error: e?.message || 'LLM 调用失败' };
+    const rawTracks = Array.isArray(parsed.tracks)
+      ? parsed.tracks
+      : (Array.isArray(parsed.music) ? parsed.music : []);
+    const byId = new Map(pool.map((t) => [t.id, t]));
+    const selectedTracks: any[] = [];
+    for (const item of rawTracks) {
+      const id = String(item?.id || item?.libraryId || '').trim();
+      const track = byId.get(id);
+      if (!track) continue; // 未知 id 跳过（LLM 幻觉保护）
+      selectedTracks.push({
+        name: track.name,
+        artist: track.artist,
+        mood: (track.tags || []).join(','),
+        source: `本地曲库 · ${track.license || '免费商用'}`,
+        beatFit: String(item?.beatFit || item?.beat || '中').trim(),
+        bpm: track.bpm,
+        durationMs: track.durationMs,
+        previewUrl: track.previewUrl,
+        downloadUrl: track.downloadUrl,
+        libraryId: track.id,
+      });
     }
+    if (selectedTracks.length === 0) return null;
+    return {
+      toneLabel: String(parsed?.toneLabel || parsed?.tone || '').trim() || 'AI 推荐',
+      toneDesc: String(parsed?.toneDesc || parsed?.reason || '').trim() || '依据解说文案语义生成的选曲建议',
+      tracks: selectedTracks,
+    };
   }
 
   /** 从 LLM 自由文本中健壮提取 JSON 对象：整段解析 → 剥 ```json 代码块 → 取首个 { 起 → 清洗尾随噪音 */
@@ -337,30 +355,6 @@ export class AIService {
       if (Array.isArray(c) && c.length > 0) return c[0];
     }
     return null;
-  }
-
-  /** 归一化 AI 返回的 BGM 推荐：兼容字段别名（tracks/music/songs、toneDesc/reason），并清洗缺失字段 */
-  private normalizeBgmRecommendation(obj: any): any {
-    if (!obj || typeof obj !== 'object') return null;
-    const rawTracks = obj.tracks || obj.music || obj.songs || obj.list || obj.recommendations;
-    const tracks = (Array.isArray(rawTracks) ? rawTracks : []).map((t: any) => ({
-      name: String(t?.name || t?.title || t?.song || t?.track || '').trim(),
-      artist: String(t?.artist || t?.author || t?.singer || '').trim(),
-      mood: String(t?.mood || t?.emotion || t?.style || '').trim(),
-      source: String(t?.source || t?.where || t?.platform || '').trim(),
-      beatFit: String(t?.beatFit || t?.beat || t?.rhythm || t?.fit || '').trim(),
-      bpm: t?.bpm != null && !Number.isNaN(Number(t.bpm)) ? Number(t.bpm) : undefined,
-      durationMs: t?.durationMs != null && !Number.isNaN(Number(t.durationMs)) ? Number(t.durationMs) : undefined,
-      previewUrl: String(t?.previewUrl || t?.preview || '').trim() || undefined,
-      downloadUrl: String(t?.downloadUrl || t?.download || '').trim() || undefined,
-      libraryId: String(t?.libraryId || t?.id || '').trim() || undefined,
-    })).filter((t: any) => t.name);
-    if (tracks.length === 0) return null;
-    return {
-      toneLabel: String(obj?.toneLabel || obj?.tone || obj?.label || '').trim() || 'AI 推荐',
-      toneDesc: String(obj?.toneDesc || obj?.reason || obj?.desc || obj?.summary || '').trim() || '依据解说文案语义生成的选曲建议',
-      tracks,
-    };
   }
 
   public async executePipeline(payload: PipelinePayload, sender: Electron.WebContents) {
