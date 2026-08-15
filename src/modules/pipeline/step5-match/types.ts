@@ -40,11 +40,11 @@ export interface StepShotMatchingProps {
   /** 全局情绪基调（neutral/emotional/suspense/epic/comedy） */
   emotionTone: string;
   /** P3 多模态：步骤2 画面情绪标签（去重），参与选曲意图生成 */
-  frameEmotions: string[];
+  frameEmotions?: string[];
   /** P3 多模态：步骤2 镜头景别标签（去重），参与选曲意图生成 */
-  shotTypes: string[];
+  shotTypes?: string[];
   /** P3 多模态：源视频总时长（毫秒），用于推算目标切点密度 */
-  videoDurationMs: number;
+  videoDurationMs?: number;
   /** 已分离的伴奏音频项（mediaItems type=audio 且 extractedBgm），可直接选用 */
   bgmOptions: MediaItem[];
   /** 设置/更换 BGM */
