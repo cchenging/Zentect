@@ -263,8 +263,14 @@ class KokoroSynthesizeReq(BaseModel):
 # API 端点
 # ============================================================
 @router.post('/api/tts/kokoro/synthesize')
-async def kokoro_synthesize(req: KokoroSynthesizeReq):
-    """文本转语音：返回生成的 WAV 文件路径"""
+def kokoro_synthesize(req: KokoroSynthesizeReq):
+    """文本转语音：返回生成的 WAV 文件路径
+
+    注意：此处必须用普通 def（而非 async def）。KokoroTTS.synthesize 是同步阻塞
+    （KPipeline CPU 推理 + FFmpeg loudnorm 二阶），若用 async def 会阻塞 uvicorn
+    事件循环，导致 /health 无法响应、健康检查误判守护进程死亡并重启，正在合成的
+    TTS 请求因此中断（fetch failed）。普通 def 由 FastAPI 自动丢到线程池执行。
+    """
     try:
         out = KokoroTTS.synthesize(req.text, req.voice, req.speed, req.out_path)
         return {'success': True, 'audioPath': out, 'sampleRate': 24000}

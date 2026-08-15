@@ -18,6 +18,8 @@ export class AIDaemon {
   private healthFailCount = 0;
   private readonly HEALTH_CHECK_INTERVAL = 5000;
   private readonly HEALTH_MAX_FAILURES = 3;
+  /** 在途长任务计数：守护进程正在处理请求时，健康检查失败不触发重启，避免 CPU 密集任务（如 TTS 合成）被误杀 */
+  private inflightTaskCount = 0;
   private runtimeManager: AiRuntimeManager;
 
   private constructor() {
@@ -107,124 +109,132 @@ export class AIDaemon {
       throw new Error('AI 运行时处于离线状态，无法处理请求。请确认 AI Daemon 已启动（端口 ' + this.port + '）');
     }
 
+    // 进入长任务窗口：请求在途期间置忙，健康检查失败不触发重启（守护进程正在处理 CPU 密集任务）
+    this.inflightTaskCount++;
+
     const url = `http://127.0.0.1:${this.port}${endpoint}`;
     const maxRetries = options?.retries ?? 2;
     const timeoutMs = options?.timeout ?? 60000;
 
     let lastError: Error | null = null;
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      // 🔧 修复 TS2304：onExternalAbort 提升到 try 外，catch 块也能访问
-      let onExternalAbort: (() => void) | null = null;
-      try {
-        /** 每次重试前先做一次快速健康检查（5秒超时），确保 daemon 存活 */
-        if (attempt > 0) {
-          const isHealthy = await this.quickHealthCheck();
-          if (!isHealthy) {
-            AppLogger.warn(LOG_TAGS.AI_DAEMON, `[${endpoint}] 重试前健康检查失败，尝试重启 AI Daemon...`);
-            this.restartDaemon();
-            await new Promise(r => setTimeout(r, 3000));
+    try {
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        // 🔧 修复 TS2304：onExternalAbort 提升到 try 外，catch 块也能访问
+        let onExternalAbort: (() => void) | null = null;
+        try {
+          /** 每次重试前先做一次快速健康检查（5秒超时），确保 daemon 存活 */
+          if (attempt > 0) {
+            const isHealthy = await this.quickHealthCheck();
+            if (!isHealthy) {
+              AppLogger.warn(LOG_TAGS.AI_DAEMON, `[${endpoint}] 重试前健康检查失败，尝试重启 AI Daemon...`);
+              this.restartDaemon();
+              await new Promise(r => setTimeout(r, 3000));
+            }
           }
-        }
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-        // Fix 10: 外部取消信号触发时同步中止 fetch
-        onExternalAbort = () => controller.abort();
-        options?.signal?.addEventListener('abort', onExternalAbort);
+          // Fix 10: 外部取消信号触发时同步中止 fetch
+          onExternalAbort = () => controller.abort();
+          options?.signal?.addEventListener('abort', onExternalAbort);
 
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-        clearTimeout(timeoutId);
-        options?.signal?.removeEventListener('abort', onExternalAbort);
-        onExternalAbort = null;
-        if (!res.ok) {
-          const errText = await res.text().catch(() => '未返回详细错误');
-          const errMsg = `HTTP ${res.status} - ${errText}`;
-          /** 服务端返回 5xx → 可重试 */
-          if (res.status >= 500 && attempt < maxRetries) {
-            lastError = new Error(errMsg);
-            const delay = 2000 * (attempt + 1);
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          options?.signal?.removeEventListener('abort', onExternalAbort);
+          onExternalAbort = null;
+          if (!res.ok) {
+            const errText = await res.text().catch(() => '未返回详细错误');
+            const errMsg = `HTTP ${res.status} - ${errText}`;
+            /** 服务端返回 5xx → 可重试 */
+            if (res.status >= 500 && attempt < maxRetries) {
+              lastError = new Error(errMsg);
+              const delay = 2000 * (attempt + 1);
+              AppLogger.warn(LOG_TAGS.AI_DAEMON,
+                `服务端错误 ${res.status} [${endpoint}]，${delay}ms 后重试 (${attempt + 1}/${maxRetries})`);
+              await new Promise(r => setTimeout(r, delay));
+              continue;
+            }
+            throw new Error(errMsg);
+          }
+          return await res.json();
+        } catch (e: any) {
+          lastError = e;
+
+          /** 网络层错误分类：提供更精准的错误诊断 */
+          const errorCode = e.cause?.code || '';
+          const isConnectionRefused = errorCode === 'ECONNREFUSED';
+          const isConnectionReset = errorCode === 'ECONNRESET';
+          const isTimeout = errorCode === 'ETIMEDOUT' || e.name === 'AbortError';
+          const isNetworkError = isConnectionRefused || isConnectionReset || isTimeout ||
+            e.message?.includes('fetch failed') ||
+            e.message?.includes('Network Error') ||
+            e.message?.includes('远程主机强迫关闭');
+
+          if (attempt < maxRetries && (isNetworkError || isTimeout)) {
+            // Fix 10: 重试前清理外部 abort listener，下次迭代重新注册
+            if (onExternalAbort) {
+              options?.signal?.removeEventListener('abort', onExternalAbort);
+              onExternalAbort = null;
+            }
+            const delay = isConnectionReset ? 3000 * (attempt + 1) : 1000 * (attempt + 1);
+            const reason = isConnectionRefused ? '连接被拒绝 (端口未监听)'
+              : isConnectionReset ? '连接被重置 (进程可能崩溃)'
+              : isTimeout ? '请求超时'
+              : '网络异常';
             AppLogger.warn(LOG_TAGS.AI_DAEMON,
-              `服务端错误 ${res.status} [${endpoint}]，${delay}ms 后重试 (${attempt + 1}/${maxRetries})`);
+              `${reason} [${endpoint}]，${delay}ms 后重试 (${attempt + 1}/${maxRetries})`);
             await new Promise(r => setTimeout(r, delay));
-            continue;
-          }
-          throw new Error(errMsg);
-        }
-        return await res.json();
-      } catch (e: any) {
-        lastError = e;
+          } else {
+            AppLogger.error(LOG_TAGS.AI_DAEMON,
+              `❌ 请求失败 [${endpoint}] (已重试 ${maxRetries} 次): ${e.message}`);
 
-        /** 网络层错误分类：提供更精准的错误诊断 */
-        const errorCode = e.cause?.code || '';
-        const isConnectionRefused = errorCode === 'ECONNREFUSED';
-        const isConnectionReset = errorCode === 'ECONNRESET';
-        const isTimeout = errorCode === 'ETIMEDOUT' || e.name === 'AbortError';
-        const isNetworkError = isConnectionRefused || isConnectionReset || isTimeout ||
-          e.message?.includes('fetch failed') ||
-          e.message?.includes('Network Error') ||
-          e.message?.includes('远程主机强迫关闭');
+            // Fix 10: 清理外部 abort listener
+            if (onExternalAbort) {
+              options?.signal?.removeEventListener('abort', onExternalAbort);
+              onExternalAbort = null;
+            }
 
-        if (attempt < maxRetries && (isNetworkError || isTimeout)) {
-          // Fix 10: 重试前清理外部 abort listener，下次迭代重新注册
-          if (onExternalAbort) {
-            options?.signal?.removeEventListener('abort', onExternalAbort);
-            onExternalAbort = null;
+            /** 抛出带友好提示和解决方案的错误 */
+            if (isConnectionRefused) {
+              throw new Error(
+                `AI 运行时服务未启动 (端口 ${this.port})，请检查：\n` +
+                `1. 确认 Python 环境已安装必要依赖\n` +
+                `2. 在设置中检查 AI 服务端口配置\n` +
+                `3. 尝试重启应用或手动启动 AI Daemon`
+              );
+            }
+            if (isConnectionReset) {
+              throw new Error(
+                `AI 运行时服务异常崩溃 (端口 ${this.port})，连接已被重置。\n` +
+                `可能原因：模型加载失败、显存不足、或 Python 进程异常退出。\n` +
+                `建议：重启应用后重试，或检查系统资源。`
+              );
+            }
+            if (isTimeout) {
+              throw new Error(
+                `AI 运行时服务响应超时 (${timeoutMs / 1000}秒)，请检查：\n` +
+                `1. 系统资源是否充足 (CPU/内存/显存)\n` +
+                `2. 模型文件是否完整\n` +
+                `3. 尝试降低处理参数后重试`
+              );
+            }
+            throw e;
           }
-          const delay = isConnectionReset ? 3000 * (attempt + 1) : 1000 * (attempt + 1);
-          const reason = isConnectionRefused ? '连接被拒绝 (端口未监听)'
-            : isConnectionReset ? '连接被重置 (进程可能崩溃)'
-            : isTimeout ? '请求超时'
-            : '网络异常';
-          AppLogger.warn(LOG_TAGS.AI_DAEMON,
-            `${reason} [${endpoint}]，${delay}ms 后重试 (${attempt + 1}/${maxRetries})`);
-          await new Promise(r => setTimeout(r, delay));
-        } else {
-          AppLogger.error(LOG_TAGS.AI_DAEMON,
-            `❌ 请求失败 [${endpoint}] (已重试 ${maxRetries} 次): ${e.message}`);
-
-          // Fix 10: 清理外部 abort listener
-          if (onExternalAbort) {
-            options?.signal?.removeEventListener('abort', onExternalAbort);
-            onExternalAbort = null;
-          }
-
-          /** 抛出带友好提示和解决方案的错误 */
-          if (isConnectionRefused) {
-            throw new Error(
-              `AI 运行时服务未启动 (端口 ${this.port})，请检查：\n` +
-              `1. 确认 Python 环境已安装必要依赖\n` +
-              `2. 在设置中检查 AI 服务端口配置\n` +
-              `3. 尝试重启应用或手动启动 AI Daemon`
-            );
-          }
-          if (isConnectionReset) {
-            throw new Error(
-              `AI 运行时服务异常崩溃 (端口 ${this.port})，连接已被重置。\n` +
-              `可能原因：模型加载失败、显存不足、或 Python 进程异常退出。\n` +
-              `建议：重启应用后重试，或检查系统资源。`
-            );
-          }
-          if (isTimeout) {
-            throw new Error(
-              `AI 运行时服务响应超时 (${timeoutMs / 1000}秒)，请检查：\n` +
-              `1. 系统资源是否充足 (CPU/内存/显存)\n` +
-              `2. 模型文件是否完整\n` +
-              `3. 尝试降低处理参数后重试`
-            );
-          }
-          throw e;
         }
       }
+      /** 所有重试已用完，抛出最后错误 */
+      throw lastError || new Error(`AI Daemon 请求失败: ${endpoint}`);
+    } finally {
+      // 退出长任务窗口：无论成功、失败还是被取消，都要释放在途计数
+      this.inflightTaskCount = Math.max(0, this.inflightTaskCount - 1);
     }
-    /** 所有重试已用完，抛出最后错误 */
-    throw lastError || new Error(`AI Daemon 请求失败: ${endpoint}`);
   }
 
   /** 快速健康检查 (3秒超时)，用于重试前确认 daemon 存活 */
@@ -244,7 +254,7 @@ export class AIDaemon {
   }
 
   // ==========================================
-  // 💓 健康心跳检测 — 连续失败自动重启
+  // 💓 健康心跳检测 — 连续失败自动重启（长任务期间跳过重启判定）
   // ==========================================
   private startHealthCheck() {
     if (this.healthCheckTimer) return;
@@ -257,20 +267,38 @@ export class AIDaemon {
         if (res.statusCode === 200) {
           this.healthFailCount = 0;
         } else {
-          this.healthFailCount++;
+          this.handleHealthCheckFailure('HTTP ' + res.statusCode);
         }
         res.resume();
       });
 
-      req.on('error', () => { this.healthFailCount++; });
-      req.setTimeout(3000, () => { req.destroy(); this.healthFailCount++; });
-
-      if (this.healthFailCount >= this.HEALTH_MAX_FAILURES) {
-        AppLogger.error(LOG_TAGS.AI_DAEMON, `健康检查连续 ${this.healthFailCount} 次失败，重启守护进程`);
-        this.healthFailCount = 0;
-        this.restartDaemon();
-      }
+      req.on('error', () => this.handleHealthCheckFailure('连接错误'));
+      req.setTimeout(3000, () => { req.destroy(); this.handleHealthCheckFailure('超时'); });
     }, this.HEALTH_CHECK_INTERVAL);
+  }
+
+  /**
+   * 处理一次健康检查失败。
+   *
+   * 关键设计：当守护进程正在处理在途长任务（如 TTS 合成、ASR、音频分离等 CPU 密集操作）时，
+   * 即使 /health 响应超时或失败，也视为"守护进程忙"而非"守护进程死亡"，跳过失败计数、不触发重启。
+   * 理由：这些任务会长时间占满 CPU/GIL，导致 /health 无法在 3 秒内响应，但守护进程本身是健康的；
+   * 若此时重启，会中断正在进行的合成请求（表现为 fetch failed）。
+   * 只有当守护进程完全空闲（无在途任务）时连续失败，才判定为真死亡并重启。
+   */
+  private handleHealthCheckFailure(reason: string) {
+    if (this.inflightTaskCount > 0) {
+      AppLogger.debug(LOG_TAGS.AI_DAEMON,
+        `健康检查失败(${reason})，但守护进程有 ${this.inflightTaskCount} 个在途长任务，判定为忙非死，跳过重启`);
+      return;
+    }
+
+    this.healthFailCount++;
+    if (this.healthFailCount >= this.HEALTH_MAX_FAILURES) {
+      AppLogger.error(LOG_TAGS.AI_DAEMON, `健康检查连续 ${this.healthFailCount} 次失败，重启守护进程`);
+      this.healthFailCount = 0;
+      this.restartDaemon();
+    }
   }
 
   private stopHealthCheck() {

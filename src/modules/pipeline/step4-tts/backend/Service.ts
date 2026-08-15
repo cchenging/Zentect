@@ -10,6 +10,30 @@ import { AppError, ErrorCode } from '@modules/infra/error/AppError'
 
 export type TTSVendor = 'doubao' | 'edge' | 'kokoro'
 
+/**
+ * 判断错误消息是否为"网络/连接中断"类错误。
+ *
+ * 这类错误（如 fetch failed、连接被重置、守护进程重启导致连接断开）是因为
+ * AI 运行时进程被中断/重启，而非依赖缺失。将其与"依赖未安装"区分开，
+ * 避免在错误提示中误导用户去安装 Kokoro 依赖。
+ */
+export function isConnectionInterruptedError(msg: string | undefined): boolean {
+  const m = msg || '';
+  return (
+    m.includes('fetch failed') ||
+    m.includes('Failed to fetch') ||
+    m.includes('Network Error') ||
+    m.includes('ECONNRESET') ||
+    m.includes('ECONNREFUSED') ||
+    m.includes('ETIMEDOUT') ||
+    m.includes('连接被重置') ||
+    m.includes('连接被拒绝') ||
+    m.includes('远程主机强迫关闭') ||
+    m.includes('socket hang up') ||
+    m.includes('守护进程')
+  )
+}
+
 export class TTSProvider {
   /**
    * 按引擎优先级合成（支持首选引擎）
@@ -145,6 +169,10 @@ export class TTSProvider {
       return cachedFile
     } catch (err: any) {
       const msg = err?.message || '';
+      // 网络/连接中断类错误（如守护进程被重启导致 fetch failed）≠ 依赖缺失，不能误提示装依赖
+      if (isConnectionInterruptedError(msg)) {
+        throw new AppError(ErrorCode.AI_PROCESS_FAILED, `${msg || '语音合成失败'}（AI 运行时连接中断，可能是守护进程被重启，请重试）`)
+      }
       const hints: Record<string, string> = {
         doubao: '（请在 设置 → AI → 语音合成 中检查火山引擎配置）',
         edge: '',
