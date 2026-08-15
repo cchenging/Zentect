@@ -60,7 +60,7 @@ export interface ExtractionConfig {
     density?: SharedFrameDensityPreset | string;
   };
   audio: AudioConfig;
-  whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'auto'; language?: string };
+  whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper'; language?: string; modelSize?: string };
   faces: {
     enabled: boolean;
     engine: 'insightface' | 'mediapipe';
@@ -175,7 +175,7 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
   // 🔧 修复：默认中文走 SenseVoice（又快又稳），显式指定 language='zh'
   //   旧默认 engine='auto' 会让 Python 端用 faster-whisper 预检测语言，
   //   对电视剧片头(音乐/静音)易误判 → 误走 faster-whisper large-v3，CPU 上极慢导致超时。
-  whisper: { enabled: true, engine: 'sensevoice', language: 'zh' },
+  whisper: { enabled: true, engine: 'sensevoice', language: 'zh', modelSize: 'large-v3' },
   faces: { enabled: true, engine: 'insightface' },
 };
 
@@ -188,9 +188,11 @@ const PERSIST_PARTIAL = (state: Step1Store) => ({
  * P0 · zustand persist 版本号 + 迁移钩子
  * - version 0: 旧数据（4 枚举）；version 1: 新 2 枚举 + frameDensityPreset
  * - version 2: whisper 默认引擎收拢为 SenseVoice + language='zh'（中文电视剧稳定识别）
- * migrate：处理 0→2（策略归一化 + 密度档 + whisper 迁移）
+ * - version 3: whisper 增加 modelSize='large-v3'（faster-whisper 模型大小去硬编码，可配置）
+ * - version 4: 移除 whisper 的 'auto' 引擎，改为显式二选一（中文 SenseVoice / 英文 Faster-Whisper）
+ * migrate：处理 0→4（策略归一化 + 密度档 + whisper 迁移 + whisper 模型大小 + 去 auto）
  */
-const PERSIST_VERSION = 2;
+const PERSIST_VERSION = 4;
 
 export const useStep1Store = create<Step1Store>()(
   persist(
@@ -257,6 +259,22 @@ export const useStep1Store = create<Step1Store>()(
                 w && typeof w === 'object'
                   ? { ...w, engine: 'sensevoice', language: 'zh' }
                   : { enabled: true, engine: 'sensevoice', language: 'zh' };
+            }
+            // version < 3：whisper 补齐 modelSize（faster-whisper 模型大小去硬编码）
+            // 兼容旧持久化数据：缺失时补默认 large-v3，避免 undefined 被透传导致 Python 端用默认值
+            if (version < 3) {
+              const w = extractionConfig.whisper;
+              if (w && typeof w === 'object') {
+                if (!w.modelSize) w.modelSize = 'large-v3';
+              }
+            }
+            // version < 4：移除 whisper 的 'auto' 引擎 —— 旧数据 engine='auto' 归一为中文 SenseVoice
+            // 去自动：ASR 引擎二选一，不再按语言自动检测；旧 auto 历史数据默认走中文最稳妥
+            if (version < 4) {
+              const w = extractionConfig.whisper;
+              if (w && typeof w === 'object' && w.engine === 'auto') {
+                extractionConfig.whisper = { ...w, engine: 'sensevoice', language: 'zh' };
+              }
             }
           }
         }

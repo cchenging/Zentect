@@ -384,6 +384,10 @@ class TranscribeReq(BaseModel):
     # ASR 引擎选择：'sensevoice'(默认,中日韩) | 'faster-whisper'(英文/欧洲语言)
     # 不传或 'auto' 时根据 language 自动选择：CJK → sensevoice，其他 → faster-whisper
     engine: str = "auto"
+    # 🔧 去硬编码：faster-whisper 模型大小（tiny/base/small/medium/large-v3），
+    #   由前端配置透传，不再固定 large-v3。默认 large-v3（识别精度最高）。
+    #   可选值参考 faster-whisper 官方模型：git@hf.co openai/whisper-{size} 的 CTranslate2 版本。
+    model_size: str = "large-v3"
     # 任务 ID：由 Node 端生成，用于隔离并发 ASR 任务的进度状态（SSE 推流时按 task_id 查询）
     task_id: str | None = None
 
@@ -985,8 +989,8 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
         if task_id:
             _set_progress(task_id, pct=5, msg="正在加载 Faster-Whisper 模型...")
 
-        model = AIModels.get_faster_whisper('large-v3')
-        print(f"[ASR] 使用 faster-whisper large-v3，language={req.language}", file=sys.stderr)
+        model = AIModels.get_faster_whisper(req.model_size)
+        print(f"[ASR] 使用 faster-whisper {req.model_size}，language={req.language}", file=sys.stderr)
 
         if task_id:
             _set_progress(task_id, pct=15, msg="模型已就绪，开始语音推理...")
@@ -1127,7 +1131,7 @@ def _transcribe_via_faster_whisper(req: TranscribeReq, task_id: str = ""):
         return _error(f"{type(e).__name__}: {str(e)}")
 
 
-def _detect_language_fw(audio_path: str) -> str:
+def _detect_language_fw(audio_path: str, model_size: str = "large-v3") -> str:
     """用 faster-whisper 快速检测音频语言（只解码前几秒，不完整转写）
 
     用于 engine='auto' 且 language='auto' 时，先判定语言再路由引擎：
@@ -1135,11 +1139,12 @@ def _detect_language_fw(audio_path: str) -> str:
 
     参数：
         audio_path: 音频文件路径
+        model_size: faster-whisper 模型大小（与转写一致，去硬编码，默认 large-v3）
     返回：
         faster-whisper 语言代码（如 'zh'/'ja'/'ko'/'en'），检测失败时返回 'en'
     """
     try:
-        model = AIModels.get_faster_whisper('large-v3')
+        model = AIModels.get_faster_whisper(model_size)
         language, probability = model.detect_language(audio_path)
         print(f"[ASR] faster-whisper 检测语言: {language}, 概率: {probability:.2f}", file=sys.stderr)
         return language
@@ -1169,7 +1174,7 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
             # 🔥 修复：language='auto' 时旧逻辑用 'auto' 字符串匹配 CJK 永远不命中，
             #   中文电视剧被错误路由到 faster-whisper。现在先检测音频真实语言再路由。
             if lang_lower == 'auto':
-                lang_lower = _detect_language_fw(req.audio_path)
+                lang_lower = _detect_language_fw(req.audio_path, req.model_size)
                 print(f"[ASR] 引擎自动选择：检测语言={lang_lower}", file=sys.stderr)
             if lang_lower in CJK_LANGS:
                 selected_engine = 'sensevoice'

@@ -309,10 +309,20 @@ class AIModels:
                         model_path = model_size
                         print(f'[AI Daemon]    从 HuggingFace 自动下载: {model_size}', file=sys.stderr)
 
-                    cls._faster_whisper_model = WhisperModel(
-                        model_path,
+                    # 💥 CPU 满核线程：faster-whisper(CTranslate2) 有独立的 cpu_threads 参数，
+                    #   不显式传入时 CTranslate2 只按自身默认初始化线程池，可能用不满全部物理核。
+                    #   这里显式锁定为物理核数量，最大化 CPU 推理吞吐（int8 + 满核）。
+                    #   仅在 device='cpu' 时生效；cuda 设备忽略该参数（传给 GPU 也无副作用，但为清晰起见仅在 CPU 时传）。
+                    _cpu_threads = os.cpu_count() or 4
+                    whisper_kwargs = dict(
                         device=device,
                         compute_type=compute_type,
+                    )
+                    if device == 'cpu':
+                        whisper_kwargs['cpu_threads'] = _cpu_threads
+                    cls._faster_whisper_model = WhisperModel(
+                        model_path,
+                        **whisper_kwargs,
                     )
         return cls._faster_whisper_model
 

@@ -71,9 +71,11 @@ export interface AudioConfig {
 /** ASR 引擎配置 */
 export interface WhisperConfig {
   enabled: boolean;
-  /** ASR 引擎：'auto'(按检测语言自动选择) | 'sensevoice'(中日韩) | 'faster-whisper'(英文/欧洲语言) */
-  engine: 'sensevoice' | 'faster-whisper' | 'auto';
+  /** ASR 引擎：'sensevoice'(中文) | 'faster-whisper'(英文)，显式二选一，不再自动检测 */
+  engine: 'sensevoice' | 'faster-whisper';
   language?: string;
+  /** 🔧 去硬编码：faster-whisper 模型大小（tiny/base/small/medium/large-v3），默认 large-v3 精度最高 */
+  modelSize?: string;
 }
 
 /** 人脸检测配置 */

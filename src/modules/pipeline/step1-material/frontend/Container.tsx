@@ -82,7 +82,7 @@ export const StepMaterialAnalysis: React.FC = () => {
       const currentConfig = step1State.extractionConfig || {
         frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.25, minFrameInterval: 3.5, fps: 2 },
         audio: { enabled: true, separationMode: 'quality', engine: 'mdx' },
-        whisper: { enabled: true, engine: 'sensevoice', language: 'auto' },
+        whisper: { enabled: true, engine: 'sensevoice', language: 'zh', modelSize: 'large-v3' },
         faces: { enabled: true, engine: 'insightface' },
         targetLanguage: 'zh-CN',
       };

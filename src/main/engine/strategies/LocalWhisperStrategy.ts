@@ -23,9 +23,11 @@ export class LocalWhisperStrategy implements ITextExtractor {
     audioPath: string, outDir: string, mediaId: string,
     language: string = 'zh', engine: 'sensevoice' | 'faster-whisper' | 'auto' = 'sensevoice',
     signal?: AbortSignal,
-    onProgress?: (pct: number, msg: string) => void
+    onProgress?: (pct: number, msg: string) => void,
+    /** faster-whisper 模型大小（去硬编码，透传给 Python 端；默认 large-v3 精度最高） */
+    modelSize: string = 'large-v3',
   ): Promise<TextExtractResult> {
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 启动听写协议，目标语言: ${language}, 引擎: ${engine}`, { mediaId });
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] 启动听写协议，目标语言: ${language}, 引擎: ${engine}${engine === 'faster-whisper' ? `, 模型: ${modelSize}` : ''}`, { mediaId });
 
     if (!fs.existsSync(audioPath)) {
       throw new AppError(ErrorCode.FS_PATH_INVALID, `ASR 音频文件不存在: ${audioPath}`);
@@ -52,7 +54,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
       effectiveEngine = LocalWhisperStrategy.resolveEngineByLang(normalizedLang);
     }
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[ASR Engine] Python Daemon 在线，请求 language=${language}, engine=${engine}（effectiveEngine=${effectiveEngine}）；engine=auto 时由 Python 端预检测音频语言并选定引擎，实际结果见后续 SSE 进度日志`);
-    return await this.transcribeViaDaemon(audioPath, whisperOutPath, language, effectiveEngine, signal, onProgress);
+    return await this.transcribeViaDaemon(audioPath, whisperOutPath, language, effectiveEngine, modelSize, signal, onProgress);
   }
 
   /**
@@ -62,6 +64,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
   private async transcribeViaDaemon(
     audioPath: string, whisperOutPath: string,
     language: string, engine: string,
+    modelSize: string,
     signal?: AbortSignal, onProgress?: (pct: number, msg: string) => void
   ): Promise<TextExtractResult> {
     const audioSizeBytes = fs.statSync(audioPath).size;
@@ -79,7 +82,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
     let lastLoggedMsg = '';
     const sseResult = await PythonClient.getInstance().callAsync(
       '/api/transcribe',
-      { audio_path: audioPath, output_json_path: whisperOutPath, language: langCode, engine },
+      { audio_path: audioPath, output_json_path: whisperOutPath, language: langCode, engine, model_size: modelSize },
       (pct, msg) => {
         // 记录 Python 端 SSE 进度消息（含自动检测的语言/引擎），让用户从日志核对实际识别配置
         // 🔧 去重：仅当消息内容变化时才打印，减少 ASR 推理期间的同消息刷屏

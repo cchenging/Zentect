@@ -571,7 +571,9 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           onProgress(Math.max(lastProgress, mapped), msg || 'ASR 识别中');
         };
         whisperResult = await whisperStrategy.transcribe(
-          targetAudio, audioDir, mediaId, resolvedLang, asrEngine, signal, asrOnProgress
+          targetAudio, audioDir, mediaId, resolvedLang, asrEngine, signal, asrOnProgress,
+          // 🔧 去硬编码：faster-whisper 模型大小从配置读取（默认 large-v3），不写死
+          (whisperCfg as any)?.modelSize || 'large-v3'
         );
         lastProgress = Math.max(lastProgress, 65);
         onProgress(lastProgress, 'ASR 识别完成');
@@ -706,10 +708,13 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
              *   → roles 表 id 是 PRIMARY KEY（全局唯一），第二个项目插入时 UNIQUE constraint failed
              * 修复：id 前缀加上 mediaId，确保跨项目、跨媒体全局唯一 */
             roles = baseEntries.map(([clusterId, groupFaces]) => {
-              /** 💥 修复黑头像：统一提取 facePath（Python 返回 face_path 绝对路径）
-               * 同时设置 representative.facePath 和顶层 avatarPath，
+              /** 💥 修复黑头像 + 小头像：用「最佳代表脸」作为头像
+               * 旧版用 groupFaces[0]（检测到的第一张脸），可能是远景小脸/侧脸 → 头像看不清
+               * 新版选簇中 bbox 面积最大且清晰的代表脸，保证头像清晰易区分
+               * 同时统一设置 representative.facePath 和顶层 avatarPath，
                * 确保三条下游路径（SSE 实时结果/线性向导/DB 重读）都能拿到头像路径 */
-              const facePath = groupFaces[0].face_path || groupFaces[0].facePath || '';
+              const bestFace = VisionProcessor.pickRepresentativeFace(groupFaces) || groupFaces[0] || {};
+              const facePath = bestFace.face_path || bestFace.facePath || '';
               const tier = tierOf([clusterId, groupFaces]);
               if (tier === 'extra') {
                 AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
@@ -724,7 +729,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
                 faceCount: groupFaces.length,
                 /** representative.facePath 供 PipelineResultWriter 读取并存入 DB avatar 字段 */
                 representative: {
-                  ...groupFaces[0],
+                  ...bestFace,
                   facePath,
                 },
                 /** avatarPath 供前端 View.tsx 直接读取显示头像（getSafeMediaUrl 可处理绝对路径） */
