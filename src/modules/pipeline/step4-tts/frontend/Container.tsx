@@ -11,6 +11,7 @@ import { API } from "@renderer/api";
 import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/usePipelineResultMapper";
 import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
 import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
+import { persistProjectSnapshot } from "@modules/editor/shell/utils/persistSnapshot";
 import { AppNotifier } from "@renderer/core/AppNotifier";
 import { StepTTSSynthesisView } from "./View";
 import type { TtsVoiceOption } from "../types";
@@ -294,6 +295,15 @@ export const StepTTSSynthesis: React.FC = () => {
       if (result) mapPipelineResultToState(result?.data || result, buildMappers());
       pipelineState.setStepCompleted(4, true);
       pipelineState.setStepStatus(4, "completed");
+      // 💥 根因修复：步骤4独立流程完成时统一落盘，否则 SQLite 步骤状态不更新，
+      //   重开项目步骤4回退为 idle，导致无法进入步骤5
+      if (projectState.projectId) {
+        try {
+          await persistProjectSnapshot(projectState.projectId);
+        } catch (saveErr) {
+          console.error("[步骤4] 配音合成落盘失败:", saveErr);
+        }
+      }
     } catch (err: any) {
       pipelineState.setStepStatus(4, "failed");
       pipelineState.setPipelineError(err?.message || "配音合成失败");

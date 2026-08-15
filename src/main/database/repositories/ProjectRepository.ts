@@ -155,7 +155,20 @@ export class ProjectRepository {
     transaction();
   }
 
-  public loadFullProjectData(projectId: string) {
+  /**
+   * 加载项目完整数据（含 metadata 中散落的管线运行时字段如 vlmFrames/scriptParagraphs 等）
+   * 返回类型带索引签名，允许访问 metadata 展开后的任意字段
+   */
+  public loadFullProjectData(projectId: string): {
+    projectId: string;
+    projectName: any;
+    canvasData: any;
+    mediaItems: any;
+    roles: any;
+    shots: any;
+    aiShots: any;
+    [key: string]: any;
+  } | null {
     const project = this.findById(projectId);
     if (!project) return null;
 

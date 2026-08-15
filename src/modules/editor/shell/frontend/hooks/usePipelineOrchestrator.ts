@@ -18,6 +18,7 @@ import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
 import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
+import { persistProjectSnapshot } from '../../utils/persistSnapshot';
 
 export enum PipelineMode {
   STEP = 'step',
@@ -199,45 +200,10 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
       editorLogger.trackStep(step, 'complete');
 
       const currentProjectState = useProjectStore.getState();
-      const step1State = useStep1Store.getState();
-      const step2Final = useStep2Store.getState();
-      const step3Final = useStep3Store.getState();
-      const step4Final = useStep4Store.getState();
-      const step5Final = useStep5Store.getState();
-      const navState = useEditorNavStore.getState();
       if (currentProjectState.projectId) {
         try {
-          await API.project.saveData(currentProjectState.projectId, {
-            shots: currentProjectState.shots,
-            aiShots: currentProjectState.aiShots,
-            roles: currentProjectState.roles,
-            mediaItems: currentProjectState.mediaItems,
-            asrLines: step1State.asrLines,
-            // 统一数据源：frameCount 从 framePaths 派生，保证存库一致
-            frameCount: currentProjectState.extractedData?.framePaths?.length || 0,
-            framePaths: currentProjectState.extractedData?.framePaths || [],
-            audioSeparated: step1State.audioSeparated,
-            subStepStatuses: ps.subStepStatuses,
-            subStepProgresses: ps.subStepProgresses,
-            subStepTimings: ps.subStepTimings,
-            stepStatuses: ps.stepStatuses,
-            stepCompleted: ps.stepCompleted,
-            currentStep: navState.currentStep,
-            extractionConfig: step1State.extractionConfig,
-            vlmFrames: step2Final.vlmFrames,
-            scriptParagraphs: step3Final.scriptParagraphs,
-            scriptStyle: step3Final.scriptStyle,
-            speechRate: step3Final.speechRate,
-            pipelineParams: step3Final.pipelineParams,
-            ttsResults: step4Final.ttsResults,
-            ttsEngine: step4Final.ttsEngine,
-            ttsVoiceId: step4Final.ttsVoiceId,
-            /** 💥 步骤5 数据持久化：匹配结果/切片池/BGM 节拍，重启后从 metadata 恢复 */
-            matchResults: step5Final.matchResults,
-            videoChunks: step5Final.videoChunks,
-            activeBgm: step5Final.activeBgm,
-            beatTimestamps: step5Final.beatTimestamps,
-          });
+          // ✅ 统一走公共落盘入口，与步骤4/5独立流程保持一致
+          await persistProjectSnapshot(currentProjectState.projectId);
         } catch (saveErr) {
           console.error('[管线编排器] 步骤完工落盘失败:', saveErr);
         }
