@@ -280,10 +280,8 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                       {(t.previewUrl || t.downloadUrl || t.libraryId) && (
                         <div className="flex items-center gap-2 mt-1">
                           {t.previewUrl && (
-                            <a href={t.previewUrl} target="_blank" rel="noreferrer"
-                              className="px-2 py-1 text-[11px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer">
-                              试听
-                            </a>
+                            <audio controls preload="none" src={getSafeMediaUrl(t.previewUrl)}
+                              className="w-full h-8 mt-1" />
                           )}
                           {(t.downloadUrl || t.libraryId) && (
                             <button type="button" disabled={isProcessing || applyingTrackKey === trackKey(t)}
@@ -304,7 +302,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                     <span>BGM 应用失败：{applyError}</span>
                   </div>
                 )}
-                <div className="text-[11px] text-muted-foreground">点击「应用」可自动下载并套用为当前 BGM</div>
+                <div className="text-[11px] text-muted-foreground">点击「应用」可直接套用为当前 BGM</div>
               </>
             ) : !deepLoading && (
               <div className="text-[12px] text-muted-foreground">点击「AI 深度推荐」，AI 将依据解说文案语义生成免费商用选曲建议</div>
