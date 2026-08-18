@@ -3,6 +3,7 @@
 import type { Step3Input, Step3Output, Step3Role } from '../types';
 import type { ScriptParagraph, VlmFrame } from '../../../../shared/types/entities/editor';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
+import { breakLongParagraphs } from '../frontend/breakLongParagraphs';
 
 /** 风格到 Prompt 指令的映射（与 ScriptGenStrategy.ts 严格对齐，保证双后端行为一致） */
 const STYLE_PROMPTS: Record<string, string> = {
@@ -38,6 +39,9 @@ interface RawShot {
   shotId?: string;
   text?: string;
   duration?: number;
+  emotion?: string;
+  /** 🎭 P1 角色组合匹配：本段解说词对应的期望角色名单（断句切分后子句原样继承） */
+  characters?: string[];
   /** 原声段落标记（keep_key/original_main 策略时 LLM 可输出 true） */
   keepOriginalAudio?: boolean;
 }
@@ -268,21 +272,49 @@ ${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
       throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'LLM 返回的不是数组');
     }
 
-    return rawShots.map((raw, index) => {
+    // 逐段解析，先构造带 characters 的中间分镜，再统一过断句切分器
+    const parsed = rawShots.map((raw, index) => {
       const shotId = raw.shotId || `s_${String(index + 1).padStart(2, '0')}`;
       const text = raw.text || '';
       const duration = raw.duration || 3;
-
       return {
+        __order: index,
         id: shotId,
         shotId,
         text,
         duration,
-        editing: false,
-        /** 原声段落透传：LLM 标记 keepOriginalAudio 的段落下游 TTS 跳过合成、匹配锁定原片时间段 */
+        emotion: raw.emotion || '',
+        /** 🎭 P1 角色继承：父段落的期望角色名单，断句切分后子句原样继承，保证步骤5 Query 端角色对齐不丢失 */
+        characters: Array.isArray(raw.characters) ? raw.characters : undefined,
+        /** 原声段落标记：切分时保护，不拆分（原声定位依赖整段文本锁时间轴，拆分会破坏） */
         keepOriginalAudio: raw.keepOriginalAudio === true,
-      } satisfies ScriptParagraph;
+      };
     });
+
+    /** 长段落断句：>18 字的文案按标点切成爆款微短句，避免 TTS 超时与画面张冠李戴。
+     *  原声段落不参与切分，原样保留。 */
+    const broken = breakLongParagraphs(parsed.filter((p) => !p.keepOriginalAudio));
+    const originalParagraphs = parsed.filter((p) => p.keepOriginalAudio);
+
+    /** 按原始顺序合并：非原声断句子句 + 原声段落，保持与小洛 LLM 输出顺序一致 */
+    const merged = [...broken, ...originalParagraphs].sort((a, b) => {
+      const aOrder = (a as any).__order ?? 0;
+      const bOrder = (b as any).__order ?? 0;
+      return aOrder - bOrder;
+    });
+
+    return merged.map((p) => ({
+      id: p.id,
+      shotId: p.shotId,
+      text: p.text,
+      duration: p.duration,
+      emotion: p.emotion || '',
+      editing: false,
+      /** 🎭 子句继承父段落的期望角色名单 */
+      characters: p.characters,
+      /** 原声段落透传：LLM 标记 keepOriginalAudio 的段落下游 TTS 跳过合成、匹配锁定原片时间段 */
+      keepOriginalAudio: (p as any).keepOriginalAudio === true,
+    })) satisfies ScriptParagraph[];
   }
 
   /**

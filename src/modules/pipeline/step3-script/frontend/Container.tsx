@@ -91,6 +91,11 @@ export const StepScriptGeneration: React.FC = () => {
               /** 🎭 P1 角色组合匹配：透传步骤3 生成的角色名单，供爆破切分器子句继承 */
               characters: Array.isArray(p.characters) ? p.characters
                 : (Array.isArray(p.anchoredCharacters) ? p.anchoredCharacters : undefined),
+              /** 🎯 P3 画面意图：透传步骤3 生成的画面意图描述，供爆破切分器子句继承 */
+              visualIntent: p.visualIntent || "",
+              /** 🎯 P3 时间轴锚定：透传对应 chunk 的时间起点/时长（ms），供步骤5 锚定切片 */
+              startMs: p.startMs,
+              durationMs: p.durationMs,
             };
           });
           // 爆破切分器：将超长段落按标点拆分为卡点短句，再补充 editing 状态

@@ -1,7 +1,7 @@
 // Module: pipeline/step3-script - View
 // Version: v5 - Modernized Professional Script Studio UI
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useCallback } from "react";
 import {
   RefreshCw,
   Tag,
@@ -19,6 +19,10 @@ import {
   BookOpen,
   AlignLeft,
   Clock,
+  Copy,
+  Check,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { SCRIPT_STYLES, STYLE_PRESET_MAP } from "@modules/editor/shell/utils/pipelineConstants";
 import { Badge, EmptyState, StatHeader } from "@renderer/components/shared";
@@ -271,8 +275,35 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
   } = props;
 
   const [matchingParagraphId, setMatchingParagraphId] = useState<string | null>(null);
+  const [copied, setCopied] = useState<boolean>(false);
+  const [overviewOpen, setOverviewOpen] = useState<boolean>(false);
 
   const totalChars = useMemo(() => scriptParagraphs.reduce((s, p) => s + (p.text?.length || 0), 0), [scriptParagraphs]);
+  /** 文案总览全文：按段落顺序拼接，供一键总览与复制 */
+  const overviewText = useMemo(
+    () => scriptParagraphs.map((p) => p.text?.trim()).filter(Boolean).join("\n\n"),
+    [scriptParagraphs],
+  );
+
+  /** 一键复制全部文案到剪贴板（带成功反馈） */
+  const handleCopyAll = useCallback(async () => {
+    if (!overviewText) return;
+    try {
+      await navigator.clipboard.writeText(overviewText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      // 剪贴板 API 不可用时回退到 textarea 选择复制
+      const ta = document.createElement("textarea");
+      ta.value = overviewText;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch {}
+      document.body.removeChild(ta);
+    }
+  }, [overviewText]);
   const estimatedDuration = useMemo(() => Math.ceil(totalChars / speechRate), [totalChars, speechRate]);
   const totalDurationSec = useMemo(
     () => Math.max(0, Math.round(scriptParagraphs.reduce((s, p) => s + (p.duration || 0), 0))),
@@ -627,14 +658,48 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             <h4 className="text-[14px] font-semibold text-foreground">解说文案流 (Script Paragraphs)</h4>
           </div>
           {scriptParagraphs.length > 0 && (
-            <span className="text-[12px] text-muted-foreground">
-              共计 <span className="font-mono text-accent font-semibold">{totalChars}</span> 字
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[12px] text-muted-foreground">
+                共计 <span className="font-mono text-accent font-semibold">{totalChars}</span> 字
+              </span>
+              {/* 文案总览折叠按钮 */}
+              <button
+                onClick={() => setOverviewOpen((v) => !v)}
+                className="inline-flex items-center gap-1 text-[12px] font-medium text-muted-foreground hover:text-accent transition-colors cursor-pointer px-2 py-1 rounded-lg bg-bg-secondary/60 border border-border/30 hover:border-accent/40"
+              >
+                <BookOpen size={12} />
+                总览
+                {overviewOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+              {/* 一键复制全部文案 */}
+              <button
+                onClick={handleCopyAll}
+                className="inline-flex items-center gap-1 text-[12px] font-medium text-accent hover:text-accent/80 transition-colors cursor-pointer px-2 py-1 rounded-lg bg-accent/10 border border-accent/30 hover:bg-accent/20"
+              >
+                {copied ? <Check size={12} /> : <Copy size={12} />}
+                {copied ? "已复制" : "复制全部"}
+              </button>
+            </div>
           )}
         </div>
 
+        {/* 文案总览面板：仿步骤2 故事脉络，折叠展开通览全文 */}
+        {overviewOpen && overviewText && (
+          <div className="p-3.5 rounded-lg shrink-0 bg-gradient-to-br from-accent-purple/10 via-accent/5 to-transparent border border-accent-purple/20">
+            <div className="text-[13px] font-semibold mb-2 flex items-center gap-2 text-accent-purple">
+              <BookOpen size={13} /> 文案总览
+              <span className="text-[11px] font-normal text-muted-foreground/70">
+                {scriptParagraphs.length} 段 · {totalChars} 字
+              </span>
+            </div>
+            <div className="text-[13px] text-foreground leading-relaxed whitespace-pre-wrap max-h-[38vh] overflow-y-auto pr-1">
+              {overviewText}
+            </div>
+          </div>
+        )}
+
         {scriptParagraphs.length > 0 ? (
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3 h-[46vh] overflow-y-auto pr-1.5 visible-scrollbar">
             {scriptParagraphs.map((p, index) => {
               const pId = p.id || p.shotId || `p_${index}`;
               const charCount = p.text?.length || 0;

@@ -140,7 +140,7 @@ describe('ScriptGenerator', () => {
             narrativePerspective: 'third',
             informationLevel: 'deep',
             narrationDensity: 'full',
-            originalAudioStrategy: 'cover',
+            originalAudioStrategy: 'original_main',
             rhythmMode: 'short_fast',
             emotionTone: 'epic',
             hookIntensity: 0.8,
@@ -151,16 +151,17 @@ describe('ScriptGenerator', () => {
 
       // hookIntensity=0.8 → 80%
       expect(prompt).toContain('80%');
-      // audioVisualWeight=0.3 → 30%
-      expect(prompt).toContain('30%');
-      // narrationDensity=full → densityFillRate=1.0 → 100%
-      expect(prompt).toContain('100%');
+      // audioVisualWeight 由 originalAudioStrategy 经 SSOT 映射：original_main → 0.2 → 20%
+      expect(prompt).toContain('20%');
+      // narrationDensity=full(1.0) × original_main 折扣(0.45) → densityFillRate=0.45 → 45%
+      expect(prompt).toContain('45%');
     });
 
     it('应包含语速约束', () => {
       const prompt = generator.buildSystemPrompt(makeInput({ speechRate: 3.5 }));
 
-      expect(prompt).toContain('3.5 字/秒');
+      // 语速以"时长(秒) × 语速"形式写入字数预算公式
+      expect(prompt).toContain('× 3.5 ×');
     });
 
     it('未知风格应 fallback 为爆款短视频', () => {
@@ -185,7 +186,7 @@ describe('ScriptGenerator', () => {
       delete (input as any).speechRate;
       const prompt = generator.buildSystemPrompt(input);
 
-      expect(prompt).toContain('4.5 字/秒');
+      expect(prompt).toContain('× 4.5 ×');
     });
 
     it('应要求返回 JSON 数组格式', () => {
@@ -226,15 +227,15 @@ describe('ScriptGenerator', () => {
       expect(prompt).toContain('角色别名轮换');
     });
 
-    it('应采用四段式 Markdown 结构（## Task / ## Constraints & Rules / ## Output Format）', () => {
+    it('应采用 Markdown 结构（## Task / 爆款短句卡点规则 / ## Output Format）', () => {
       const prompt = generator.buildSystemPrompt(makeInput());
 
       expect(prompt).toContain('## Task');
-      expect(prompt).toContain('## Constraints & Rules');
+      expect(prompt).toContain('## ⚡ 爆款短句与卡点硬性规则');
       expect(prompt).toContain('## Output Format');
-      // 验证 Constraints 包含4条硬性准则
+      // 验证卡点规则包含硬性准则
       expect(prompt).toContain('角色名称绝对统一');
-      expect(prompt).toContain('字数与节奏控制');
+      expect(prompt).toContain('单句字数硬限制');
       expect(prompt).toContain('消除视觉幻觉');
       expect(prompt).toContain('拒绝流水账');
     });

@@ -7,6 +7,7 @@ import { NetworkPipeline } from '../../core/NetworkPipeline';
 import { PERSONAS } from '../prompts/personas';
 import { CONSTRAINTS } from '../prompts/constraints';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
+import { breakLongParagraphs } from '@modules/pipeline/step3-script/frontend/breakLongParagraphs';
 
 export interface ScriptGenInput {
   modelName?: string;
@@ -50,6 +51,13 @@ export interface GeneratedShot {
   keepOriginalAudio?: boolean;
   /** 🎭 P1 角色组合匹配：本段解说词对应的视频片段中出现的人物名集合（来自 step2 VLM 角色锚定），透传到步骤5 Query 端做角色契合匹配 */
   characters?: string[];
+  /** 🎯 P3 画面意图：本段解说词"应配什么画面"的画面语言描述（主体/动作/场景/景别/氛围），
+   *  步骤5 以此为匹配查询依据，与切片描述做文本↔文本语义匹配（替代解说词文本↔画面的跨空间错位） */
+  visualIntent?: string;
+  /** 🎯 P3 时间轴锚定：本段解说词对应的画面时间起点（ms），来自步骤2 微切分 chunk，供步骤5 锚定切片 */
+  startMs?: number;
+  /** 🎯 P3 时间轴锚定：本段解说词对应的画面时长（ms） */
+  durationMs?: number;
 }
 
 /** 风格到 Prompt 指令的映射（重写：去掉废话文学，改为专业解说方向） */
@@ -145,6 +153,92 @@ function extractKeyVisualAction(shot: any): {
   };
 }
 
+/**
+ * 🎯 P3 兜底：LLM 漏写 visualIntent 时，基于对应 chunk 的视觉上下文本地拼装
+ * 保证步骤5 query 端永远有"画面语言描述"可用（而非回退到解说词跨空间匹配）。
+ *
+ * 设计原则（错就错不造假）：
+ * - 只用视觉分析真实产出的字段（shotType/cameraMovement/keyAction/emotion/atmosphere/characters/keywords）
+ * - 不凭空编造动作、情绪；所有字段为空时回退解说词前 20 字 + 标注"【兜底】"
+ * - 控制在 20-40 字区间（Netflix 字幕安全框单句≤16字是前端断句器的事，这里控制上限避免 CLIP 截断）
+ *
+ * @param raw LLM 原始输出（可能缺 visualIntent）
+ * @param chunk 对应下标的 contextChunk，含 visualContext（步骤2 downstream + keyAction 提纯） + anchoredCharacters + asrContext
+ * @param fallbackText 极端情况下的回退文案（解说词 text，前 20 字截断）
+ * @returns 填充好的 visualIntent，保证非空字符串
+ */
+function ensureVisualIntentFilled(
+  raw: { text?: string; emotion?: string; visualIntent?: string },
+  chunk: any,
+  fallbackText: string,
+): string {
+  // 已有合法 visualIntent：非空、非占位词 → 直接用
+  const existing = String(raw?.visualIntent || '').trim();
+  const PLACEHOLDER_RE = /^(无|没有|未指定|未提供|none|null|empty|unknown|n\/a|\/|)$/i;
+  if (existing && !PLACEHOLDER_RE.test(existing)) return existing;
+
+  // 基于对应 chunk 的视觉上下文拼装（与步骤2 VLM 输出同源，不会凭空编造画面）
+  const vc = chunk?.visualContext || {};
+  const parts: string[] = [];
+
+  // 景别 + 运镜前缀（如【特写/推】），给步骤5提供结构化镜头语言锚点
+  const shotType = String(vc.shotType || '').trim();
+  const camera = String(vc.cameraMovement || '').trim();
+  const prefix = (() => {
+    if (!shotType && !camera) return '';
+    const cam = camera && camera !== '固定' ? `/${camera}` : '';
+    return shotType ? `【${shotType}${cam}】` : '';
+  })();
+  if (prefix) parts.push(prefix);
+
+  // 核心动作（keyAction = 蒸馏后的 narrativeAction，已提纯无环境噪点）
+  const keyAction = String(vc.keyAction || '').trim();
+  if (keyAction) {
+    // keyAction 本身可能带【景别/运镜】前缀，与外部 prefix 重复时取内部更全的那个，或直接拼
+    parts.push(keyAction.replace(/^【[^】]*】/, ''));
+  }
+
+  // 表情情绪（如：眼神凌厉/面色阴沉）
+  const emo = String(raw?.emotion || vc.emotion || '').trim();
+  if (emo) parts.push(`情绪：${emo}`);
+
+  // 光影氛围（如：昏暗压抑/柔和光线）
+  const atm = String(vc.atmosphere || '').trim();
+  if (atm) parts.push(`氛围：${atm}`);
+
+  // 角色锚定：chunk 中明确检测到谁就写谁，让步骤5 角色组合匹配更稳
+  const roles: string[] = [];
+  if (Array.isArray(chunk?.anchoredCharacters)) {
+    for (const r of chunk.anchoredCharacters) if (typeof r === 'string' && r.trim()) roles.push(r.trim());
+  }
+  if (Array.isArray(vc.characters)) {
+    for (const r of vc.characters) if (typeof r === 'string' && r.trim() && !roles.includes(r.trim())) roles.push(r.trim());
+  }
+  if (roles.length > 0) parts.push(`人物：${roles.join('、')}`);
+
+  // 关键词补位（动作/情绪/道具类，纯视觉关键词）
+  const kw: string[] = Array.isArray(vc.keywords) ? vc.keywords.filter((k: any) => typeof k === 'string' && k.trim()).slice(0, 4) : [];
+  if (kw.length > 0) parts.push(`关键词：${kw.join('、')}`);
+
+  let result = parts.filter(Boolean).join('，');
+  // 控制上限 40 字，避免 CLIP 512 token 截断浪费算力；保留前缀保证镜头语言锚点
+  if (result.length > 40) {
+    // 先尝试保留【景别】前缀，其余部分 36 字截断
+    if (prefix && result.startsWith(prefix)) {
+      result = prefix + result.slice(prefix.length).slice(0, 40 - prefix.length);
+    } else {
+      result = result.slice(0, 40);
+    }
+  }
+
+  // 极端兜底：视觉上下文全空（例如步骤2 没跑），回退解说词文本前 20 字 + 标注【兜底】
+  if (!result) {
+    const t = String(fallbackText || raw?.text || '').trim();
+    result = t ? `【兜底】${t.slice(0, 20)}` : '【兜底】通用画面';
+  }
+  return result;
+}
+
 export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, GeneratedShot[]> {
   readonly nodeType = 'script-gen';
 
@@ -190,10 +284,12 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     };
     const audioVisualWeight = AUDIO_STRATEGY_TO_WEIGHT_MAP[params.originalAudioStrategy] ?? 0.5;
 
-    // 解说密度 → 基础字数填充系数（0-1）：满配1.0 / 标准0.65 / 留白0.5
+    // 解说密度 → 基础字数填充系数（0-1）：满配1.0 / 标准0.85 / 留白0.6
+    // 提示词给 LLM 的"单段字数"以此为准（见 perChunkFillRate），保证每段能写出通顺连贯的句子，
+    // 而不是被原声/节奏折扣连环压缩成 7~12 字的碎片。
     const baseDensityFillRate = params.narrationDensity === 'full' ? 1.0
-                              : params.narrationDensity === 'sparse' ? 0.5
-                              : 0.65;
+                              : params.narrationDensity === 'sparse' ? 0.6
+                              : 0.85;
 
     /**
      * 原声策略折扣：对 densityFillRate 再打一层折，避免时间轴物理溢出
@@ -207,6 +303,10 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       original_main: 0.45,
     };
     const audioStrategyDiscount = AUDIO_STRATEGY_DISCOUNT[params.originalAudioStrategy] ?? 1.0;
+    // 原声策略折扣只应控制"全片解说总时长/总量"，避免原声时间轴物理溢出；
+    // 不应压缩"单个已选中解说段的字数"——否则 keep_key 下每段只剩 7~12 字，无法成句。
+    // perChunkFillRate = 单段字数填充系数（解耦原声折扣）；densityFillRate = 全片总量预算系数。
+    let perChunkFillRate = baseDensityFillRate;
     // 可变：若用户设置了"目标解说时长"，会在 totalDurationSec 计算后用目标时长覆盖（todo）
     let densityFillRate = baseDensityFillRate * audioStrategyDiscount;
 
@@ -290,11 +390,60 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
         chunkDurationMs = Math.max(1000, endMs - startMs); // 至少 1 秒
       }
 
-      // 角色锚定：从 shot.characters 或 shot.keywords 提取该片段出现的人物
+      // 🎯 角色名对齐：步骤1人脸识别产出权威角色名（input.roles[].name），
+      // 步骤2 VLM 输出的角色名可能带后缀/略有出入（如"崔国明（中年）"），
+      // 此处统一规范化为步骤1的权威姓名，确保文案与步骤1人脸识别的角色名一致。
+      const step1AuthoritativeNames: string[] = (input.roles || [])
+        .map((r: any) => (r && r.name ? String(r.name).trim() : ''))
+        .filter(Boolean)
+        // 自动命名的"角色_N"是机械编号，不参与对齐，VLM 对未命名人物用"男子/女子"泛称即可
+        .filter((n: string) => !/^角色_\d+$/.test(n));
+      // 归一化辅助：去括号后缀 + 去空白，用于模糊匹配
+      const cleanRole = (s: string) => s.replace(/[（(【\[].*?[）)】\]]/g, '').replace(/\s+/g, '');
+      // 将 VLM 角色名对齐到步骤1权威姓名；无法匹配时回退 VLM 原名，避免丢角色
+      const normalizeRoleName = (v: string): string => {
+        const trimmed = v.trim();
+        if (!trimmed) return trimmed;
+        if (step1AuthoritativeNames.includes(trimmed)) return trimmed;
+        const cleanV = cleanRole(trimmed);
+        if (!cleanV) return trimmed;
+        for (const name of step1AuthoritativeNames) {
+          const cleanName = cleanRole(name);
+          if (cleanV === cleanName) return name;
+          // 双向包含判同：VLM 输出"国明"或"崔国明（中年）"都能命中"崔国明"
+          if (cleanV.length >= 2 && (cleanV.includes(cleanName) || cleanName.includes(cleanV))) return name;
+        }
+        return trimmed;
+      };
+
+      // 角色锚定：从 shot.characters / primarySubject / secondarySubjects / subject 提取该片段出现的人物
+      // 视觉分析可能只输出 primarySubject（如"崔国明"）而未填 characters，须全部并入，避免 LLM 拿不到角色名而全文用"他"
       const anchoredCharacters: string[] = [];
+      // 无效占位值过滤：VLM 可能输出"无/未知/背景/路人/群众"等，需剔除，避免污染角色锚定
+      const INVALID_ROLE_PATTERN = /^(无|未知|不清楚|背景|路人|群众|群演|旁白|画外音|观众|unknown|null|none|发现|看到|画面)$/i;
+      const collectRole = (v: unknown) => {
+        if (typeof v === 'string' && v.trim() && !INVALID_ROLE_PATTERN.test(v.trim())) {
+          // 对齐到步骤1人脸识别的权威角色名
+          anchoredCharacters.push(normalizeRoleName(v.trim()));
+        }
+      };
       if (Array.isArray(shot.characters)) {
-        anchoredCharacters.push(...shot.characters.filter((c: any) => typeof c === 'string' && c));
+        shot.characters.forEach(collectRole);
       }
+      collectRole(shot.primarySubject);
+      if (Array.isArray(shot.secondarySubjects)) {
+        shot.secondarySubjects.forEach(collectRole);
+      }
+      collectRole(shot.subject);
+      // 去重且保持顺序
+      const seen = new Set<string>();
+      const uniqueRoles = anchoredCharacters.filter(r => {
+        if (seen.has(r)) return false;
+        seen.add(r);
+        return true;
+      });
+      anchoredCharacters.length = 0;
+      anchoredCharacters.push(...uniqueRoles);
 
       // ASR 上下文：找到时间轴范围内的台词
       const chunkAsrLines = hasAsrTimestamps
@@ -380,6 +529,52 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     contextChunks.length = 0;
     contextChunks.push(...microChunks);
 
+    // ========== 阶段1.6：短 chunk 合并 — 消除 1~3 秒碎片，保证每段有足够字数写连贯叙事 ==========
+    // 用户反馈：step2 的 shot 时长可能只有 1.2~3 秒，按"每 chunk 一段解说 + 字数硬上限"生成时，
+    // 每段只能写 4~15 字，被迫凑成 9~10 字孤立短句，段落间无衔接、无剧情纵深。
+    // 方案：把时长 < MIN_CHUNK_SEC(4s) 的连续 chunk 向前合并成更大的叙事单元，
+    // 让每段能容纳完整长句/多分句，真正写出"通顺连贯"的解说，再交给断句器按字幕安全框切回。
+    const MIN_CHUNK_SEC = 4;
+    if (contextChunks.length > 1) {
+      const mergedChunks: any[] = [];
+      let unit: any = null; // 当前正在累积的叙事单元
+      for (const chunk of contextChunks) {
+        if (!unit) {
+          unit = { ...chunk };
+          mergedChunks.push(unit);
+          continue;
+        }
+        // 当前单元时长未达标 → 并入该 chunk，扩展时间轴并拼接 ASR/关键动作上下文
+        if (unit.durationSec < MIN_CHUNK_SEC) {
+          unit.durationMs += chunk.durationMs;
+          unit.durationSec = parseFloat((unit.durationMs / 1000).toFixed(1));
+          unit.timeRange = `${unit.timeRange.split(' -> ')[0]} -> ${chunk.timeRange.split(' -> ')[1]}`;
+          if (chunk.asrContext) unit.asrContext = [unit.asrContext, chunk.asrContext].filter(Boolean).join(' ');
+          const prevKey = unit.visualContext?.keyAction || '';
+          const curKey = chunk.visualContext?.keyAction || '';
+          if (curKey) unit.visualContext = { ...unit.visualContext, keyAction: [prevKey, curKey].filter(Boolean).join('；') };
+        } else {
+          unit = { ...chunk };
+          mergedChunks.push(unit);
+        }
+      }
+      // 末尾若残留 < 4s 的孤立单元，并入前一段，避免尾部碎片段
+      const tail = mergedChunks[mergedChunks.length - 1];
+      if (mergedChunks.length > 1 && tail.durationSec < MIN_CHUNK_SEC) {
+        mergedChunks.pop();
+        const prev = mergedChunks[mergedChunks.length - 1];
+        prev.durationMs += tail.durationMs;
+        prev.durationSec = parseFloat((prev.durationMs / 1000).toFixed(1));
+        prev.timeRange = `${prev.timeRange.split(' -> ')[0]} -> ${tail.timeRange.split(' -> ')[1]}`;
+        if (tail.asrContext) prev.asrContext = [prev.asrContext, tail.asrContext].filter(Boolean).join(' ');
+        const pk = prev.visualContext?.keyAction || '';
+        const ck = tail.visualContext?.keyAction || '';
+        if (ck) prev.visualContext = { ...prev.visualContext, keyAction: [pk, ck].filter(Boolean).join('；') };
+      }
+      contextChunks.length = 0;
+      contextChunks.push(...mergedChunks);
+    }
+
     // 计算总时长（秒）用于字数预算（阶段4：真实时间轴替代 sceneLineCount*4 硬编码）
     const totalDurationSec = contextChunks.reduce((sum, c) => sum + c.durationSec, 0) || (totalShots * 4);
 
@@ -391,6 +586,8 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       : null;
     if (targetSec !== null && totalDurationSec > 0) {
       densityFillRate = Math.min(1, targetSec / totalDurationSec);
+      // 单段字数系数同步跟随，避免"总时长受限但单段仍按 0.85"导致总量超预算
+      perChunkFillRate = Math.min(1, Math.max(0.5, densityFillRate * 1.3));
     }
 
     // 使用 LLMFactory.createAdapter 自动读取用户配置的模型和 API Key
@@ -463,11 +660,11 @@ ${JSON.stringify(contextChunks, null, 2)}
       'deep': '深度解读：分析为什么（"张三拿起刀，因为他已经别无选择"），剖析动机与因果',
       'roast': '吐槽点评：主观评价（"张三拿起刀，这波操作我给满分"），带有个人立场',
     };
-    // 解说密度 → prompt 指令（含字数填充率）
+    // 解说密度 → prompt 指令（含字数填充率：展示单段填充率，让 LLM 知道每段可写的字数）
     const densityMap: Record<string, string> = {
-      'full': `满配（填充率${(densityFillRate * 100).toFixed(0)}%）：每秒都有解说，信息密度最大，适合硬核科幻、高智商犯罪剧情`,
-      'standard': `标准（填充率${(densityFillRate * 100).toFixed(0)}%）：关键画面有解说，过渡段静音让画面说话`,
-      'sparse': `留白（填充率${(densityFillRate * 100).toFixed(0)}%）：大量留白，只在关键节点点睛，适合纪录片/文艺向，让位给BGM和画面纯享`,
+      'full': `满配（单段填充率${(perChunkFillRate * 100).toFixed(0)}%）：每秒都有解说，信息密度最大，适合硬核科幻、高智商犯罪剧情`,
+      'standard': `标准（单段填充率${(perChunkFillRate * 100).toFixed(0)}%）：关键画面有解说，过渡段静音让画面说话`,
+      'sparse': `留白（单段填充率${(perChunkFillRate * 100).toFixed(0)}%）：大量留白，只在关键节点点睛，适合纪录片/文艺向，让位给BGM和画面纯享`,
     };
     // 原声策略 → prompt 指令
     const audioStrategyMap: Record<string, string> = {
@@ -483,10 +680,10 @@ ${JSON.stringify(contextChunks, null, 2)}
       'mixed': '长短交替：短句铺垫+长句叙事。节奏抑扬顿挫。关键转折处插入 [pause: 400ms]',
       'slow_soothing': '长句舒缓：使用优美长句与分词，多用句号。关键情感节点后追加 [pause: 800ms] 标记',
     };
-    // 节奏模式 → 单句字数上限（short_fast=12 / mixed=20 / slow_soothing=30）
-    const maxSentenceChars = params.rhythmMode === 'short_fast' ? 12
-                           : params.rhythmMode === 'slow_soothing' ? 30
-                           : 20;
+    // 节奏模式 → 单句字数上限（short_fast=18 / mixed=30 / slow_soothing=40）
+    const maxSentenceChars = params.rhythmMode === 'short_fast' ? 18
+                           : params.rhythmMode === 'slow_soothing' ? 40
+                           : 30;
     // 情绪基调 → prompt 词库
     const emotionToneMap: Record<string, string> = {
       'neutral': '客观中立：平铺直叙，不刻意渲染情绪，多用"隐喻"、"戏剧性的转变"等文学化表达',
@@ -524,7 +721,7 @@ ${hookInstruction}
 
 ## ⚡ 爆款短句与卡点硬性规则 (Core Short-Sentence Rules)
 1. **单句字数硬限制**：每个单句（两个标点之间的文字）绝对不能超过 ${maxSentenceChars} 字！多用动词、感叹句与极速短句（如："死死盯住！"、"眼神杀气顿显！"）。
-2. **镜头级微切分**：每个输入 chunk 的解说词字数必须严格 ≤ 单段字数上限，绝不能把多个动作揉合成大段落。
+2. **镜头级连贯叙事**：每个分镜的解说词应写成通顺完整的句子或短句群，字数尽量贴近单段字数上限（不要刻意压短成碎片）；相邻分镜之间善用衔接词（接着／没想到／于是／然而／下一秒）承上启下，形成连贯的剧情流，避免每段都是孤立无关联的短句。长句交给断句器按字幕安全框自动拆分。
 3. **角色名称绝对统一**：严格使用【全局已知角色列表】中的姓名，严禁混淆人名或凭空创造角色列表之外的人名。
 4. **消除视觉幻觉**：若 ASR 旁白与画面物理描述不一致，以【画面物理描述】为准描绘现场动作，以 ASR 为补充。
 5. **拒绝流水账**：严禁描述画面直观已呈现的表面动作，重点剖析言下之意、内心戏与剧情冲突。
@@ -536,10 +733,10 @@ ${CONSTRAINTS.NO_MERGE_SENTENCES}
 ${CONSTRAINTS.JSON_ONLY}
 
 ## 字数预算与参数指引
-【严格字数约束】：考虑 TTS 标点停顿，字数预算需乘以 0.85 折损系数。
-- 单段字数上限 = ⌊ 时长(秒) × ${speechRate} × ${(densityFillRate * 100).toFixed(0)}% × 0.85 ⌋
-- 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * speechRate * densityFillRate * discountFactor)} 字
-- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * speechRate * densityFillRate * discountFactor)} 字
+【严格字数约束】：每个解说段应写成通顺连贯的完整句子或短句群，确保剧情表达完整，不要为了凑字数而碎成几个字。
+- 单段字数上限 = ⌊ 时长(秒) × ${speechRate} × ${(perChunkFillRate * 100).toFixed(0)}% × ${discountFactor} ⌋
+- 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * speechRate * perChunkFillRate * discountFactor)} 字
+- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * speechRate * perChunkFillRate * discountFactor)} 字
 - 视频总时长约 ${totalDurationSec.toFixed(1)} 秒，解说词总量绝对严禁超过 ${Math.floor(totalDurationSec * speechRate * densityFillRate * discountFactor)} 字
 
 【专业解说参数指引】：
@@ -558,10 +755,19 @@ ${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
 3. 每段解说之间最多允许 1~2 个原声段落，避免整片变成原声；原声段落前后各留一段解说引导。
 4. 仅当该段原声与剧情强相关（名场面/冲突高潮/关键台词）才标记，普通背景音不标记。
 ` : ``}
+## 画面意图与情绪标注（Visual Intent & Emotion Marking）
+每个分镜除解说词外，必须输出两个辅助字段，供下游画面匹配使用：
+1. \`"emotion"\`：本段解说词的情绪基调，从以下类别中选择一个：紧张悬疑 / 悲伤沉重 / 愤怒激昂 / 欢快轻松 / 平静舒缓 / 中性。
+2. \`"visualIntent"\`（【必填】禁止空字符串/缺字段/写"无"/写"不需要"）：本段解说词"应该配什么画面"的画面意图描述，用画面语言（非文学语言）概括主体、动作、场景、景别、氛围，20~40 字。必须基于【多模态上下文片段流】中对应 chunk 的画面描述（对应位置的 visualContext.keyAction/shotType/emotion/atmosphere），不得凭空编造画面。✅ 正例：\`"男子面部特写，眼神凌厉，室内昏暗，紧张氛围"\`；❌ 反例：\`""\`、\`"无"\`、整个 JSON 对象缺 visualIntent 字段。
+
 ## Output Format
+### 必填字段声明（缺任何一项视为无效输出）
+- shotId / text / duration / emotion / visualIntent 五个字段**必须全部出现且非空**
+${allowOriginalMark ? '- keepOriginalAudio 为可选布尔字段，默认 false 时可省略' : ''}
+
 请严格按照以下 JSON 数组格式返回结果，切勿包含任何 Markdown 格式化标记或额外解释：
 [
-  { "shotId": "s_01", "text": "解说词内容", "duration": 3.5${allowOriginalMark ? ', "keepOriginalAudio": false' : ''} }
+  { "shotId": "s_01", "text": "解说词内容", "duration": 3.5, "emotion": "紧张悬疑", "visualIntent": "男子面部特写，眼神凌厉，室内昏暗，紧张氛围"${allowOriginalMark ? ', "keepOriginalAudio": false' : ''} }
 ]`;
 
     // ========== 组装用户 Prompt：ContextChunk JSON + 角色ID映射 ==========
@@ -607,7 +813,7 @@ ${roleMapLines.join('\n')}
 
     onProgress(90, '正在对生成的剧本进行反序列化...');
 
-    let rawShots: Array<{ shotId: string; text: string; duration: number; keepOriginalAudio?: boolean }> = [];
+    let rawShots: Array<{ shotId: string; text: string; duration: number; emotion?: string; visualIntent?: string; keepOriginalAudio?: boolean }> = [];
     try {
       rawShots = NetworkPipeline.strictParseJson(response.text || '');
       if (!Array.isArray(rawShots)) {
@@ -618,25 +824,74 @@ ${roleMapLines.join('\n')}
       throw new Error(`剧本解析失败，大模型输出了脏数据: ${(response.text || '').substring(0, 50)}...`);
     }
 
-    onProgress(93, '正在执行三级敏感词扫描...');
+    // 🎯 P3 兜底：对 rawShots 逐段执行 ensureVisualIntentFilled，保证 100% 有画面意图。
+    // （LLM 在 json_object 模式下常漏写 visualIntent 字段，导致步骤5 只能回退解说词跨空间匹配，
+    //  这里用对应 chunk 的真实视觉上下文（步骤2 VLM 已产出）本地化拼装，不造假，零额外 RPC）
+    const filledCount = { value: 0 };
+    const rawShotsWithVI = rawShots.map((raw, idx) => {
+      const originalVI = String(raw?.visualIntent || '').trim();
+      const filled = ensureVisualIntentFilled(raw, contextChunks[idx], raw.text || '');
+      if (!originalVI || filled !== originalVI) filledCount.value++;
+      return { ...raw, visualIntent: filled };
+    });
+    if (filledCount.value > 0) {
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[文案生成] 🎯 P3 visualIntent 兜底填充：${filledCount.value}/${rawShots.length} 段由 chunk 视觉上下文本地拼装（LLM 漏写或写了占位词）`);
+    }
+
+    onProgress(93, '正在执行长段落断句与三级敏感词扫描...');
 
     const lexiconFilter = new LexiconFilter();
-    const parsedShots: GeneratedShot[] = rawShots.map((raw, idx) => {
-      const scanResult = lexiconFilter.scan(raw.text || '');
 
-      // 画面真实时长优先：LLM 自报的 duration 不受画面约束，常出现超长段落无法匹配画面。
-      // 方案 A：用微切分得到的画面真实时长 contextChunks[idx].durationSec 覆盖 raw.duration，
-      // 保证解说时长与画面对齐；contextChunks 按 chunk 下标与 rawShots 一一对应。
+    // 画面真实时长优先：LLM 自报的 duration 不受画面约束，常出现超长段落无法匹配画面。
+    // 用微切分得到的画面真实时长 contextChunks[idx].durationSec 覆盖 raw.duration，
+    // 保证解说时长与画面对齐；contextChunks 按 chunk 下标与 rawShots 一一对应。
+    // 节奏模式影响分镜时长 — 短句快切缩短，长句舒缓加长，长短交替不变。
+    const paceFactor = params.rhythmMode === 'short_fast'
+      ? 0.8   // 短句快切：duration 缩短 20%
+      : params.rhythmMode === 'slow_soothing'
+      ? 1.3   // 长句舒缓：duration 加长 30%
+      : 1.0;  // 长短交替：不变
+
+    // 先构造带 __order 的中间分镜（__order = chunk 下标，供断句后按原始顺序合并、回查 contextChunks）
+    const parsed = rawShotsWithVI.map((raw, idx) => {
       const baseDuration = contextChunks[idx]?.durationSec ?? (raw.duration || 3);
-      // 节奏模式影响分镜时长 — 短句快切缩短，长句舒缓加长，长短交替不变
-      const paceAdjustedDuration = params.rhythmMode === 'short_fast'
-        ? baseDuration * 0.8   // 短句快切：duration 缩短 20%
-        : params.rhythmMode === 'slow_soothing'
-        ? baseDuration * 1.3   // 长句舒缓：duration 加长 30%
-        : baseDuration;        // 长短交替：不变
-
       return {
-        shotId: raw.shotId || `shot_${Math.random().toString(36).slice(2, 8)}`,
+        __order: idx,
+        id: raw.shotId || `shot_${Math.random().toString(36).slice(2, 8)}`,
+        text: raw.text || '',
+        duration: baseDuration * paceFactor,
+        /** 原声段落标记：切分时保护，不拆分（原声定位依赖整段文本锁时间轴，拆分会破坏） */
+        keepOriginalAudio: raw.keepOriginalAudio === true,
+        /** 🎭 P1 角色组合匹配：本段解说词对应的 chunk 锚定角色（按下标一一对应，子句断句后原样继承） */
+        characters: contextChunks[idx]?.anchoredCharacters || [],
+        /** 🎭 P0 意境维度：段落情绪标签（LLM 生成），断句后子句继承，供步骤5 情绪匹配 */
+        emotion: raw.emotion || '',
+        /** 🎯 P3 画面意图：已通过 ensureVisualIntentFilled 保证非空，子句继承后供步骤5 语义匹配
+         *  （优先取 LLM 原生生成；LLM 漏写/写占位词时由 chunk 视觉上下文本地拼装） */
+        visualIntent: raw.visualIntent,
+        /** 🎯 P3 时间轴锚定：对应 chunk 的画面时间起点/时长（ms），供步骤5 锚定切片 */
+        startMs: contextChunks[idx]?.startMs ?? 0,
+        durationMs: contextChunks[idx]?.durationMs ?? 0,
+      };
+    });
+
+    // 长段落断句：>18 字的文案按标点切成爆款微短句，避免 TTS 超时与画面张冠李戴。
+    // 原声段落不参与切分，原样保留（keep_key/original_main 模式下 LLM 标记的 keepOriginalAudio）。
+    const broken = breakLongParagraphs(parsed.filter((p) => !p.keepOriginalAudio));
+    const originalParagraphs = parsed.filter((p) => p.keepOriginalAudio);
+
+    // 按原始顺序合并：非原声断句子句 + 原声段落，保持与 LLM 输出顺序一致
+    const merged = [...broken, ...originalParagraphs].sort((a, b) => {
+      const aOrder = (a as any).__order ?? 0;
+      const bOrder = (b as any).__order ?? 0;
+      return aOrder - bOrder;
+    });
+
+    const parsedShots: GeneratedShot[] = merged.map((p) => {
+      const scanResult = lexiconFilter.scan(p.text || '');
+      return {
+        shotId: p.id,
         text: scanResult.original,
         cleanText: scanResult.cleanText,
         audioSafeText: lexiconFilter.getAudioSafeText(scanResult.cleanText, scanResult.original),
@@ -647,12 +902,18 @@ ${roleMapLines.join('\n')}
           level: m.level,
           replaced: m.replaced,
         })),
-        duration: paceAdjustedDuration,
+        duration: p.duration,
         /** 原声段落透传：keep_key/original_main 模式下 LLM 标记的 keepOriginalAudio 原样保留 */
-        keepOriginalAudio: raw.keepOriginalAudio === true,
-        /** 🎭 P1 角色组合匹配：本段解说词对应的 chunk 锚定角色（LLM 每个 chunk 输出一段解说，按下标一一对应）。
-         *  空数组表示该片段无可辨识人物，是合法状态；下标越界（LLM 多输出）时同样置空，不掩盖。 */
-        characters: contextChunks[idx]?.anchoredCharacters || [],
+        keepOriginalAudio: (p as any).keepOriginalAudio === true,
+        /** 🎭 P1 角色组合匹配：子句继承父段落的锚定角色（断句后每个子句沿用同一 chunk 的角色名单） */
+        characters: (p as any).characters || [],
+        /** 🎭 P0 意境维度：子句继承父段落的情绪标签 */
+        emotion: (p as any).emotion || '',
+        /** 🎯 P3 画面意图：子句继承父段落的画面意图描述 */
+        visualIntent: (p as any).visualIntent || '',
+        /** 🎯 P3 时间轴锚定：子句继承父段落对应 chunk 的时间起点/时长（ms） */
+        startMs: (p as any).startMs ?? 0,
+        durationMs: (p as any).durationMs ?? 0,
       } as GeneratedShot;
     });
 

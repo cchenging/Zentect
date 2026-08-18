@@ -79,4 +79,30 @@ describe('breakLongParagraphs 爆破切分器', () => {
   it('空数组入参返回空数组', () => {
     expect(breakLongParagraphs([])).toEqual([]);
   });
+
+  // ==================== 小数保护 ====================
+
+  it('包含小数（如 19.9）的文本不应被半角小数点切分', () => {
+    const result = breakLongParagraphs([
+      { id: 'p1', text: '价格只要19.9元，赶紧下单吧。', duration: 3 },
+    ]);
+    // 小数不能被硬切成 "19." + "9"：拼接后必须还原为 "19.9"
+    const joined = result.map((s) => s.text).join('');
+    expect(joined).toContain('19.9');
+    // 任何子句都不应以残留下的小数点片段结尾（如 "19."），这才是被切断的标志
+    result.forEach((s) => {
+      expect(s.text).not.toMatch(/\d\.\s*$/);
+    });
+  });
+
+  it('多个小数同时保护，且不影响英文句点断句', () => {
+    const result = breakLongParagraphs([
+      { id: 'p1', text: '涨幅3.5倍，成本1.2万元。这是第二句。', duration: 4 },
+    ]);
+    const joined = result.map((s) => s.text).join('');
+    expect(joined).toContain('3.5');
+    expect(joined).toContain('1.2');
+    // 句号后应正常断句（"这是第二句。"应独立成段）
+    expect(result.some((s) => s.text.includes('这是第二句'))).toBe(true);
+  });
 });
