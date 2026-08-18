@@ -675,7 +675,13 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
 
     video_chunks = req.videoChunks
     if (not video_chunks or len(video_chunks) == 0) and req.mediaId in PROJECT_MATERIAL_POOL:
-        video_chunks = PROJECT_MATERIAL_POOL[req.mediaId]
+        # 阶段 B：素材池缓存结构升级为 {"chunks","matchSegments"}，KM 消费的是匹配候选级 matchSegments
+        pool_val = PROJECT_MATERIAL_POOL[req.mediaId]
+        if isinstance(pool_val, dict) and "matchSegments" in pool_val:
+            video_chunks = pool_val.get("matchSegments") or []
+        else:
+            # 兼容旧结构（缓存为数组，阶段 A 及更早）
+            video_chunks = pool_val
         print(f"[KM] 命中 PROJECT_MATERIAL_POOL 缓存 (mediaId={req.mediaId})，切片数: {len(video_chunks)}", file=sys.stderr)
 
     n_chunks = len(video_chunks)
