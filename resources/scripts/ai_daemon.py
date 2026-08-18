@@ -71,7 +71,8 @@ device = args.device or 'cpu'
 # ============================================================
 # 导入 ai_config，初始化全局配置
 # ============================================================
-from ai_config import MODELS_DIR, FFMPEG_PATH, PROJECT_MATERIAL_POOL, INFERENCE_LOCK, AIModels
+from ai_config import (MODELS_DIR, FFMPEG_PATH, PROJECT_MATERIAL_POOL, INFERENCE_LOCK, AIModels,
+                       get_model_loading_state, _time_monotonic_sec)
 
 if args.models_dir:
     os.environ['MAGIC_MODELS_DIR'] = args.models_dir
@@ -112,8 +113,70 @@ print(f"[AI Daemon] ✅ 所有业务路由注册成功！共 {len(app.routes)} �
 
 @app.get('/health')
 async def health_check():
-    """健康检查端点：供 AiRuntimeManager 轮询确认服务就绪"""
+    """函数级中文注释：FastAPI 侧健康检查端点。
+    读取 ai_config.MODEL_LOADING_STATE：若当前有模型正在加载，status='loading' 并附上 elapsedMs；
+    否则 status='ok'。Node 侧 AIDaemon.ts 读到 status==='loading' 时不累计失败次数，避免守护进程被误重启。
+    此端点走 uvicorn 事件循环，主线程被长时间同步加载阻塞时会 3-5 秒超时；
+    为绝对根治，ai_daemon.py 启动时额外起了独立线程的轻量 HTTPD（标准库 http.server）专门健康检查，
+    输出 [AI_HEALTH_PORT]=<port> 到 stderr，Node 优先打那个端口。"""
+    loading = get_model_loading_state()
+    if loading.get("current"):
+        # 单调时钟秒差 → ms
+        start_at = loading.get("start_at")
+        elapsed_ms = int((_time_monotonic_sec() - start_at) * 1000) if start_at else 0
+        return {
+            'status': 'loading',
+            'loadingModel': loading.get("current"),
+            'elapsedMs': elapsed_ms,
+            'port': port,
+        }
     return {'status': 'ok', 'port': port}
+
+
+# 全局线程池：供 /api/preload、业务端点 run_in_executor 使用，避免反复创建线程池
+# max_workers=4：CPU 密集的模型加载/推理不适合太多线程；4 核可并行跑预热任务而不挤爆 CPU
+import concurrent.futures as _cfutures
+_GLOBAL_EXECUTOR = _cfutures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai_worker")
+
+
+@app.on_event("startup")
+async def _on_startup_set_default_executor():
+    """函数级中文注释：FastAPI 启动事件：把 asyncio 事件循环的默认 executor 设置为 4 工号线程池。
+    这样业务代码里任何 loop.run_in_executor(None, func) 都会走统一托管的 4 线程池，
+    不会每个调用都新建线程池，也不会跟 uvicorn 其他逻辑抢占线程。"""
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+    loop.set_default_executor(_GLOBAL_EXECUTOR)
+
+
+@app.get('/api/preload')
+async def preload_models(models: str = 'clip,chinese_clip,face'):
+    """函数级中文注释：预热端点 /api/preload?models=clip,chinese_clip,face
+    作用：Node 侧在用户打开项目/开始匹配前主动触发，让 CLIP/InsightFace 等权重在后台提前加载，
+    避免用户首次点"匹配"时 30 秒加载被健康检查误判为 daemon 死亡。
+    实现：把真正的同步加载放到 _GLOBAL_EXECUTOR 里执行，不阻塞事件循环，
+    所以 /health 端点在预热期间依然能返回 status='loading'，不会饿死。"""
+    import asyncio as _asyncio
+    loop = _asyncio.get_event_loop()
+
+    model_names = [m.strip() for m in (models or '').split(',') if m.strip()]
+    tasks = []
+
+    if 'clip' in model_names:
+        tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_clip))
+    if 'chinese_clip' in model_names:
+        tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_chinese_clip))
+    if 'face' in model_names:
+        tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_face_app))
+    if 'funasr' in model_names:
+        tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_funasr_sensevoice))
+    if 'faster_whisper' in model_names:
+        tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_faster_whisper))
+
+    preload_start = _time_monotonic_sec()
+    await _asyncio.gather(*tasks)
+    elapsed_ms = int((_time_monotonic_sec() - preload_start) * 1000)
+    return {'status': 'ok', 'requested': model_names, 'elapsedMs': elapsed_ms}
 
 
 @app.get('/api/check_deps')
@@ -568,8 +631,75 @@ def process_llm_json_response(raw_response_content, chinese_script_text):
 
 
 # ============================================================
+# 💓 独立健康检查 HTTPD（根治：永远不被模型加载饿死）
+#   - 用 Python 标准库 http.server，不在 uvicorn 事件循环里，
+#     即使用户代码把 uvicorn 线程/事件循环卡住 30 秒，这个端口永远 1ms 响应。
+#   - bind 到 127.0.0.1:0 让操作系统选空闲端口，输出 AI_HEALTH_PORT=xxx 到 stderr，
+#     Node 侧 AiRuntimeManager 正则解析后优先打这个端口做健康检查。
+# ============================================================
+def _start_standalone_healthd() -> int:
+    """函数级中文注释：启动独立线程的健康检查 HTTPD（只处理 GET /health），返回监听端口号。
+    HTTP Handler 读 ai_config.get_model_loading_state() 返回 JSON；即使 uvicorn 事件循环被同步模型加载完全卡死，
+    本 HTTPD 依旧可用 —— 因为它跑在 Python 标准库 http.server 的独立线程里，不依赖 asyncio/uvicorn/FastAPI。
+    响应格式和 FastAPI /health 完全一致，Node 侧无需区分。"""
+    import json as _json
+    import threading as _threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class _H(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):  # silence stderr noise
+            return
+
+        def do_GET(self):
+            path_only = (self.path or '').split('?', 1)[0]
+            if path_only not in ('/', '/health'):
+                self.send_response(404)
+                self.send_header('Content-Type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b'not found')
+                return
+            loading = get_model_loading_state()
+            body: dict
+            if loading.get("current"):
+                start_at = loading.get("start_at")
+                elapsed_ms = int((_time_monotonic_sec() - start_at) * 1000) if start_at else 0
+                body = {'status': 'loading', 'loadingModel': loading.get("current"),
+                        'elapsedMs': elapsed_ms, 'port': port}
+            else:
+                body = {'status': 'ok', 'port': port}
+            data = _json.dumps(body, ensure_ascii=False).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            self.wfile.write(data)
+
+    httpd = HTTPServer(('127.0.0.1', 0), _H)
+    health_port = httpd.server_address[1]
+
+    def _run():
+        try:
+            httpd.serve_forever(poll_interval=0.5)
+        except Exception:
+            pass
+
+    t = _threading.Thread(target=_run, name='ai_healthd', daemon=True)
+    t.start()
+    return health_port
+
+
+# ============================================================
 # 入口
 # ============================================================
 
 if __name__ == '__main__':
+    # 先起独立健康检查 HTTPD（永远可用），再把端口号打印给 Node 端 stderr 解析
+    try:
+        _health_port = _start_standalone_healthd()
+        print(f"[AI_HEALTH_PORT]={_health_port}", file=sys.stderr)
+        print(f"[AI Daemon] 💓 独立健康检查 HTTPD 监听 127.0.0.1:{_health_port}（永远在线，不被模型加载阻塞）", file=sys.stderr)
+    except Exception as _e:
+        print(f"[AI Daemon] ⚠️ 独立健康检查 HTTPD 启动失败，fallback 到业务端口健康检查: {_e}", file=sys.stderr)
+
     uvicorn.run(app, host='127.0.0.1', port=port, log_level='warning')
