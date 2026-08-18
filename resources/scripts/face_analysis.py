@@ -92,14 +92,28 @@ class VisionReq(BaseModel):
     # 🎭 四重质量门禁参数（可调，缺省用经验最优值）
     #   洋葱式过滤：先尺寸 → 再姿态角 → 再清晰度 → 再置信度，
     #   提前剔除低质量人脸，避免脏向量进入聚类污染角色识别
-    min_size: float = 60          # 人脸 BBox 最小边长（px），小于视为背景路人
-    max_pose_angle: float = 30    # 俯仰/偏航角上限（度），过滤大侧脸/低头抬头脸
-    min_clarity: float = 100      # 拉普拉斯方差下限，过滤运动模糊脸
-    min_confidence: float = 0.70  # 检测置信度下限（InsightFace det_score）
+    #   🧒 修复小孩漏检：min_size 60→40 / min_confidence 0.70→0.55，
+    #   小孩常处于画面边缘/远景，人脸更小，旧阈值会把这些小孩脸当"背景路人"过滤掉，
+    #   导致"小孩没识别出来"。适度放宽以保留更多（含儿童）人脸，由聚类阶段再甄别。
+    #   🎭 修复"女主消失"+多人物同画面漏检（诊断脚本 _diag_verify.py 验证）：
+    #   min_size 40→30 / max_pose_angle 30→45 / min_clarity 100→40 / min_confidence 0.55→0.40。
+    #   女主等人脸常带 30°+ 侧脸（yaw=-30.3°）或运动模糊（clarity≈42.7），
+    #   旧门禁会把这些关键角色脸当"低质量脸"过滤，导致女主/多人脸在聚类中消失。
+    #   放宽后由聚类阶段（含同帧互斥/年龄门禁）再甄别，避免把路人误并入主角。
+    min_size: float = 30          # 人脸 BBox 最小边长（px），小于视为背景路人
+    max_pose_angle: float = 45    # 俯仰/偏航角上限（度），过滤大侧脸/低头抬头脸
+    min_clarity: float = 40       # 拉普拉斯方差下限，过滤运动模糊脸
+    min_confidence: float = 0.40  # 检测置信度下限（InsightFace det_score）
 
 class FaceFeature(BaseModel):
     face_id: str
     embedding: List[float]
+    # 🧒 人脸年龄（InsightFace 估算），用于聚类时防止亲子等血缘相似者误合并；-1 表示未知
+    age: float = -1
+    # 🎭 P0.6 人脸所在帧的索引（-1 表示未知）。用于"同帧互斥"约束：
+    #   同一帧内两张人脸必属不同的人（同一人一帧只出现一次），
+    #   聚类时据此阻止把同一画面的路人误并入主角簇，提升多人同画面识别准确率。
+    frame_index: int = -1
 
 class ClusterRequest(BaseModel):
     media_id: str
@@ -108,9 +122,9 @@ class ClusterRequest(BaseModel):
     # 🎭 P0.5+ 余弦相似度阈值：HDBSCAN 聚类后，用于合并过拆簇 + 分配噪声点
     # InsightFace ArcFace 512维归一化 embedding 经验值：
     #   0.55 — 很宽松（同人物几乎必合并，偶有误合并多人）
-    #   0.65 — 平衡（项目规则：相似度≥0.65 归为同一人，推荐默认）
+    #   0.72 — 平衡（默认）：拦住血缘相似者（父母孩子）误合并，同一人多角度偶尔被拆开，可手动合并
     #   0.75 — 严格（同人物差异较大时可能仍拆分）
-    cosine_threshold: float = 0.65
+    cosine_threshold: float = 0.72
 
 
 class LoadClustersRequest(BaseModel):
@@ -126,10 +140,12 @@ def api_vision(req: VisionReq):
     """人脸检测 + 特征提取（带全局推理锁保护，防止并发原生库崩溃）
 
     四重质量门禁（洋葱式过滤，任一不合格直接丢弃该人脸）：
-      ① 尺寸：边长 < min_size(60px) 视为背景路人
-      ② 姿态角：yaw/pitch > max_pose_angle(30°) 的大侧脸/低头抬头脸剔除
-      ③ 清晰度：ROI 拉普拉斯方差 < min_clarity(100) 的运动模糊脸剔除
-      ④ 置信度：det_score < min_confidence(0.70) 的低置信检测剔除
+      ① 尺寸：边长 < min_size(30px) 视为背景路人
+      ② 姿态角：yaw/pitch > max_pose_angle(45°) 的大侧脸/低头抬头脸剔除
+      ③ 清晰度：ROI 拉普拉斯方差 < min_clarity(40) 的运动模糊脸剔除
+      ④ 置信度：det_score < min_confidence(0.40) 的低置信检测剔除
+
+    🎭 说明：门禁已放宽以保留女主/多人脸（诊断脚本验证），低质量脸交由聚类阶段甄别。
     """
     import cv2
     try:
@@ -190,13 +206,35 @@ def api_vision(req: VisionReq):
                     face_save_path = os.path.join(req.output_dir, face_filename)
                     cv2.imencode('.jpg', face_img)[1].tofile(face_save_path)
 
-                    gender_val = 1
-                    if isinstance(face.sex, str):
-                        gender_val = 1 if face.sex.upper() == 'M' else 0
-                    elif face.sex is not None:
-                        gender_val = int(face.sex)
+                    # 🎭 修复性别识别：InsightFace 的 face.sex 是 shape(1,2) 的 numpy 概率数组
+                    #   [女, 男] softmax 概率，取 argmax 才是性别（0=女/1=男）。
+                    #   旧版 `int(face.sex)` 对多元素数组会取到错误值或直接抛错，导致主角性别被误判为女。
+                    gender_val = 1  # 兜底默认男
+                    sex = getattr(face, 'sex', None)
+                    if sex is not None:
+                        if isinstance(sex, str):
+                            # 字符串形式：'M'/'F' 或 'Male'/'Female'
+                            gender_val = 1 if sex.strip().upper().startswith('M') else 0
+                        elif isinstance(sex, (list, tuple, np.ndarray)):
+                            arr = np.asarray(sex).reshape(-1)
+                            if arr.size == 2:
+                                # [女, 男] 概率，取 argmax
+                                gender_val = int(np.argmax(arr))
+                            elif arr.size == 1:
+                                gender_val = int(arr[0])
+                        else:
+                            try:
+                                gender_val = int(sex)
+                            except (TypeError, ValueError):
+                                gender_val = 1
 
-                    age_val = int(float(face.age)) if face.age is not None else 0
+                    # 年龄同理是 numpy 标量/数组，做安全转换避免整批失败
+                    age_val = 0
+                    if face.age is not None:
+                        try:
+                            age_val = int(float(np.asarray(face.age).reshape(-1)[0]))
+                        except (TypeError, ValueError, IndexError):
+                            age_val = 0
 
                     face_data.append({
                         "id": face_filename,
@@ -241,6 +279,12 @@ async def cluster_faces(req: ClusterRequest):
 
         embeddings = np.array([f.embedding for f in req.faces], dtype=np.float32)
         face_ids = [f.face_id for f in req.faces]
+        # 🧒 年龄列表（与 embeddings 对齐，>0 为有效年龄，否则未知）：
+        #   聚类时用它拦住"亲子/祖孙"等血缘相似却年龄差异大者被误合并/误分配
+        face_ages = [float(getattr(f, 'age', -1) or -1) for f in req.faces]
+        # 🎭 P0.6 帧号列表（与 embeddings 对齐，-1 为未知）：
+        #   聚类时用它做"同帧互斥"判断，阻止同一画面内不同的人被误并为一簇
+        face_frames = [int(getattr(f, 'frame_index', -1) or -1) for f in req.faces]
 
         clusters_map = {}
         if len(embeddings) >= 3:
@@ -263,14 +307,14 @@ async def cluster_faces(req: ClusterRequest):
             # HDBSCAN 的 leaf 法会保留小簇，导致同一人物因角度/表情差异被拆成多个簇。
             # 这里计算每个簇的中心（归一化 embedding 均值），用余弦相似度合并相似簇。
             cluster_labels = _merge_clusters_by_cosine(
-                embeddings, cluster_labels, req.cosine_threshold
+                embeddings, cluster_labels, req.cosine_threshold, ages=face_ages, frames=face_frames
             )
 
             # 🎭 P0.5+ 后处理 2：噪声点就近分配
             # label=-1 的噪声点（模糊/侧脸/远景）若与某簇心的余弦相似度超过阈值，
             # 则分配到该簇，避免高质量人脸因孤立而被丢弃。
             cluster_labels = _assign_noise_points(
-                embeddings, cluster_labels, req.cosine_threshold
+                embeddings, cluster_labels, req.cosine_threshold, ages=face_ages, frames=face_frames
             )
 
             # 统计聚类结果用于日志
@@ -317,6 +361,75 @@ async def cluster_faces(req: ClusterRequest):
 # 🎭 P0.5+ 聚类后处理：基于余弦相似度合并过拆簇 + 分配噪声点
 # ==========================================
 
+# 🧒 亲子/祖孙等血缘年龄差阈值：簇间年龄差超过该值视为"不是同一人"，即使余弦相似度高也不合并/不分配。
+#   InsightFace 年龄估算误差约 ±5 岁，取 15 能稳妥隔开"父母 vs 孩子"（通常差 20+ 岁），
+#   同时避免误伤同年龄段的成对人物（如双胞胎/同龄好友，年龄差 < 5 不受影响）。
+AGE_GAP = 15
+
+
+def _valid_ages(ages, labels, label):
+    """提取某簇/某标签下所有有效年龄（>0），无有效年龄时返回空列表。
+    @param ages [N] 每张人脸年龄（>0 有效，<=0 表示未知）
+    @param labels [N] 簇标签
+    @param label 目标标签
+    @return 有效年龄列表
+    """
+    return [float(a) for a, l in zip(ages, labels) if l == label and a and a > 0]
+
+
+def _ages_compatible(age_a: float, ages_b: "list") -> bool:
+    """判断单个人脸年龄 age_a 与一簇有效年龄 ages_b 是否兼容（不阻止归并）。
+    规则（任一不满足即视为兼容）：
+      - 任一方年龄未知（<=0）或簇无有效年龄 → 无法判断，视为兼容
+      - 相差 <= AGE_GAP → 兼容
+      - 相差 > AGE_GAP → 不兼容（如 5 岁孩子 vs 35 岁家长）
+    @param age_a 单张人脸年龄
+    @param ages_b 目标簇有效年龄列表
+    @return True 允许归并 / False 阻止归并
+    """
+    import statistics
+    if not ages_b or not age_a or age_a <= 0:
+        return True
+    return abs(age_a - statistics.median(ages_b)) <= AGE_GAP
+
+
+def _cluster_ages_compatible(ages_a: "list", ages_b: "list") -> bool:
+    """判断两个簇的年龄分布是否兼容（不阻止合并）。
+    规则（任一不满足即视为兼容）：
+      - 任一无有效年龄 → 无法判断，视为兼容
+      - 两者中位数年龄相差 > AGE_GAP → 不兼容（如亲子/祖孙，阻止合并）
+    @param ages_a 簇 A 的有效年龄列表
+    @param ages_b 簇 B 的有效年龄列表
+    @return True 允许合并 / False 阻止合并
+    """
+    import statistics
+    a_valid = [a for a in ages_a if a and a > 0]
+    b_valid = [b for b in ages_b if b and b > 0]
+    if not a_valid or not b_valid:
+        return True
+    return abs(statistics.median(a_valid) - statistics.median(b_valid)) <= AGE_GAP
+
+
+def _same_frame_conflict(frames: "list", labels: "np.ndarray", label_a, label_b) -> bool:
+    """判断标签 A、标签 B 两组人脸是否存在"同帧冲突"。
+
+    物理约束：同一帧内两张人脸必属不同的人（同一人一帧只出现一次）。
+    若 A、B 两组各含同一帧的人脸，说明它们之中有"同一画面里的不同人"，
+    把它们并作一簇必然把路人与主角混为一谈 → 视为冲突，阻止合并/分配。
+    @param frames [N] 每张人脸所在帧索引（-1 表示未知）
+    @param labels [N] 簇标签
+    @param label_a 组 A 标签
+    @param label_b 组 B 标签
+    @return True 存在同帧冲突（应阻止归并）/ False 无冲突
+    """
+    if frames is None:
+        return False
+    frames = [int(fr) if fr is not None else -1 for fr in frames]
+    fa = {fr for fr, l in zip(frames, labels) if l == label_a and fr >= 0}
+    fb = {fr for fr, l in zip(frames, labels) if l == label_b and fr >= 0}
+    return not fa.isdisjoint(fb)
+
+
 def _compute_cluster_centers(embeddings: "np.ndarray", labels: "np.ndarray") -> dict:
     """计算每个簇的中心向量（归一化 embedding 的均值，再归一化）
     @param embeddings [N, D] 所有人脸的 embedding（已归一化）
@@ -344,15 +457,17 @@ def _cosine_similarity(a: "np.ndarray", b: "np.ndarray") -> float:
     return float(np.dot(a, b))
 
 
-def _merge_clusters_by_cosine(embeddings: "np.ndarray", labels: "np.ndarray", threshold: float) -> "np.ndarray":
+def _merge_clusters_by_cosine(embeddings: "np.ndarray", labels: "np.ndarray", threshold: float, ages: "list" = None, frames: "list" = None) -> "np.ndarray":
     """合并余弦相似度超过阈值的簇
     算法：贪心合并
       1. 计算所有簇心两两余弦相似度
-      2. 按相似度降序排列，依次合并（合并后重新计算簇心）
-      3. 直到所有相似度都低于阈值
+      2. 按相似度降序排列，合并最高且【年龄兼容 + 无同帧冲突】的一对（合并后重新计算簇心）
+      3. 直到没有可合并的簇对
     @param embeddings [N, D] 所有人脸 embedding
     @param labels [N] 原始簇标签
     @param threshold 余弦相似度阈值，相似度 > threshold 的簇合并
+    @param ages [N] 每张人脸年龄（可选），用于阻止"亲子/祖孙"等血缘相似却年龄差大者误合并
+    @param frames [N] 每张人脸所在帧索引（可选），用于"同帧互斥"：阻止把同一画面内的不同人并入一簇
     @return 合并后的 labels（label 值可能不连续，后续会重排）
     """
     if threshold <= 0 or threshold >= 1:
@@ -365,32 +480,48 @@ def _merge_clusters_by_cosine(embeddings: "np.ndarray", labels: "np.ndarray", th
         if len(cluster_ids) < 2:
             break
 
-        # 计算所有簇心两两相似度，找最高的一对
-        best_pair = None
-        best_sim = threshold  # 必须严格 > threshold 才合并
+        # 收集所有相似度超过阈值的簇对，按相似度降序排列
+        pairs = []
         for i in range(len(cluster_ids)):
             for j in range(i + 1, len(cluster_ids)):
                 sim = _cosine_similarity(centers[cluster_ids[i]], centers[cluster_ids[j]])
-                if sim > best_sim:
-                    best_sim = sim
-                    best_pair = (cluster_ids[i], cluster_ids[j])
+                if sim > threshold:
+                    pairs.append((sim, cluster_ids[i], cluster_ids[j]))
+        if not pairs:
+            break
+        pairs.sort(key=lambda x: -x[0])
 
-        if best_pair is None:
+        # 选最高相似度且【年龄兼容 + 无同帧冲突】的簇对合并
+        merged = False
+        for sim, a, b in pairs:
+            keep_label, merge_label = sorted((a, b))
+            # 🧒 年龄门禁：亲子等血缘年龄差过大时不合并（孩子单独成角色，不并入大人）
+            if ages is not None and not _cluster_ages_compatible(
+                _valid_ages(ages, labels, a),
+                _valid_ages(ages, labels, b),
+            ):
+                continue  # 该对因年龄不兼容跳过，尝试下一对
+            # 🎭 同帧互斥：两簇各含同一帧的人脸 → 该画面内不同的人，合并会混入路人，跳过
+            if frames is not None and _same_frame_conflict(frames, labels, a, b):
+                continue
+            labels[labels == merge_label] = keep_label
+            print(f"[cluster] 合并簇 {merge_label} → {keep_label} (cosine={sim:.3f})", file=sys.stdout)
+            merged = True
             break
 
-        # 合并：把 j 簇的所有样本归入 i 簇（保留较小的 label）
-        keep_label, merge_label = sorted(best_pair)
-        labels[labels == merge_label] = keep_label
-        print(f"[cluster] 合并簇 {merge_label} → {keep_label} (cosine={best_sim:.3f})", file=sys.stdout)
+        if not merged:
+            break  # 所有高于阈值的簇对都因年龄/同帧不兼容，停止合并
 
     return labels
 
 
-def _assign_noise_points(embeddings: "np.ndarray", labels: "np.ndarray", threshold: float) -> "np.ndarray":
-    """将噪声点（label=-1）分配到最近的簇（若余弦相似度 > threshold）
+def _assign_noise_points(embeddings: "np.ndarray", labels: "np.ndarray", threshold: float, ages: "list" = None, frames: "list" = None) -> "np.ndarray":
+    """将噪声点（label=-1）分配到最近的簇（若余弦相似度 > threshold 且年龄兼容且无同帧冲突）
     @param embeddings [N, D] 所有人脸 embedding
     @param labels [N] 簇标签，-1 为噪声
     @param threshold 余弦相似度阈值，相似度 > threshold 时分配
+    @param ages [N] 每张人脸年龄（可选），用于阻止孩子等年龄差大的噪声点并入大人簇
+    @param frames [N] 每张人脸所在帧索引（可选），用于"同帧互斥"：阻止把同一画面的路人噪声点并入主角簇
     @return 分配后的 labels
     """
     if threshold <= 0 or threshold >= 1:
@@ -409,6 +540,15 @@ def _assign_noise_points(embeddings: "np.ndarray", labels: "np.ndarray", thresho
     cluster_ids = list(centers.keys())
     center_matrix = np.array([centers[cid] for cid in cluster_ids])  # [K, D]
 
+    # 🎭 P0.6 预计算每个簇的帧集合（-1 未知帧不参与），用于噪声点"同帧互斥"判断
+    cluster_frames = {}
+    if frames is not None:
+        norm_frames = [int(fr) if fr is not None else -1 for fr in frames]
+        for cid in cluster_ids:
+            cluster_frames[cid] = {
+                fr for fr, l in zip(norm_frames, labels) if l == cid and fr >= 0
+            }
+
     assigned_count = 0
     for idx in noise_indices:
         # 计算该噪声点到所有簇心的余弦相似度
@@ -416,7 +556,19 @@ def _assign_noise_points(embeddings: "np.ndarray", labels: "np.ndarray", thresho
         best_k = int(np.argmax(sims))
         best_sim = float(sims[best_k])
         if best_sim > threshold:
-            labels[idx] = cluster_ids[best_k]
+            target_label = cluster_ids[best_k]
+            # 🧒 年龄门禁：孩子脸（年龄差大）不就近并入大人簇，宁可保留为独立人物
+            if ages is not None and not _ages_compatible(
+                float(ages[idx]) if ages[idx] and ages[idx] > 0 else 0,
+                _valid_ages(ages, labels, target_label),
+            ):
+                continue
+            # 🎭 同帧互斥：噪声点与该簇含同一帧的人脸 → 该画面内不同的人，不就近并入主角簇
+            if frames is not None:
+                noise_frame = int(frames[idx]) if frames[idx] is not None else -1
+                if noise_frame >= 0 and noise_frame in cluster_frames.get(target_label, set()):
+                    continue
+            labels[idx] = target_label
             assigned_count += 1
 
     if assigned_count > 0:

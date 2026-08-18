@@ -7,6 +7,7 @@ import sys
 import traceback
 import re
 import json
+import math
 import asyncio
 import concurrent.futures
 
@@ -31,6 +32,12 @@ class KMMatchQuery(BaseModel):
     """🎭 P1 角色组合匹配：本段解说词期望出现的人物名集合（步骤3 透传的 chunk 锚定角色），
     用于 Query 端与切片角色集合做契合度匹配（软加成：未命中不惩罚）"""
     characters: List[str] = []
+    """🎯 P3 画面意图：本段解说词"应配什么画面"的画面语言描述（主体/动作/场景/景别/氛围），
+    来自步骤3 LLM 生成，用于与切片描述做文本↔文本语义匹配（替代解说词文本↔画面的跨空间错位）"""
+    visualIntent: str = ''
+    """🎯 P3 时间轴锚定：本段解说词对应的画面时间起点/时长（ms），覆盖该时间点的切片获得锚定加成"""
+    startMs: float = 0
+    durationMs: float = 0
 
 
 class KMMatchReq(BaseModel):
@@ -39,17 +46,19 @@ class KMMatchReq(BaseModel):
     videoChunks: List[dict]
     bgmBeats: List[float] = []
     mediaId: str = 'default'
-    translateToEnglish: bool = False
-    llmApiKey: str = ''
-    llmApiBase: str = ''
-    llmApiModel: str = ''
     vlmApiKey: str = ''
     vlmApiBase: str = ''
     vlmApiModel: str = ''
     """🎵 P2 BPM 对齐卡点：BGM 曲目 BPM（librosa tempo 检测），>0 时启用整拍网格磁吸，<=0 回退单点鼓点吸附"""
     bpm: float = 0
-    """🎵 P2 权重可配置：五项打分权重字典，键为 sem/emotion/motion/duration/role，缺省回退并归一化"""
+    """🎵 P2 权重可配置：四项打分权重字典，键为 sem/emotion/duration/role，缺省回退并归一化"""
     weights: dict = {}
+    """🔧 P2 #11 方案B：KM Top-K 行级稀疏预选。
+    格式 { shotId: [chunkId, ...] }：每个 query 只允许匹配其候选集合里的切片，
+    非候选格在代价矩阵中置强惩罚，KM 优先在候选内求解；空/缺省 = 不启用（老逻辑全量跑）。
+    设计为"强惩罚非无穷大"：若某 query 的候选恰好全部落在本时序块之外，KM 仍能兜底选一个，
+    不会因整行被禁而引发 assign 无解崩溃。"""
+    candidateIds: dict = {}
 
 
 # ==========================================
@@ -158,26 +167,77 @@ def _compute_role_score(query_roles, chunk_roles) -> float:
     return hit / len(query_set)
 
 
-def _compute_combined_score(sem_score: float, duration_penalty: float, motion_score: float,
+def _compute_duration_score(t_audio_ms: float, t_chunk_ms: float) -> float:
+    """
+    非对称裁剪友好型时长评分（0~1）：
+    - 切片时长 >= 语音时长（可裁剪）：宽容，最高 0.95，随超长比例缓慢衰减（log2 衰减）
+    - 切片时长略短于语音（0.85~1.0 倍）：线性过渡 0.80 → 0.95
+    - 切片时长明显短于语音（0.60~0.85 倍）：线性下降 0.40 → 0.80
+    - 切片过短（<0.60 倍）：二次方快速衰减，最低 0.01
+    任一参数 <= 0 时返回中性 0.5（该维度无信息，不参与加分也不惩罚）。
+    """
+    if t_audio_ms <= 0 or t_chunk_ms <= 0:
+        return 0.5
+    ratio = t_chunk_ms / t_audio_ms
+    if ratio >= 1.0:
+        return max(0.70, 0.95 - math.log2(ratio) * 0.08)
+    if ratio >= 0.85:
+        return 0.80 + (ratio - 0.85) * 1.0
+    if ratio >= 0.60:
+        return 0.40 + (ratio - 0.60) * 1.6
+    return max(0.01, 0.40 * (ratio / 0.60) ** 2)
+
+
+# 🎬 P0.5 封面多点采样：超过该时长的切片，封面用头/中/尾 3 点平均池化，缓解封面帧漂移
+MULTI_FRAME_THRESHOLD_MS = 6000
+
+
+def _extract_frames_at_times(video_path: str, times_ms: list):
+    """
+    用 OpenCV 从视频按时间点抽帧，返回 RGB PIL 图列表（失败项为 None）。
+    用于 >6s 切片封面头/中/尾 3 点采样；任一帧失败返回 None 由调用方回退封面。
+    """
+    import cv2
+    from PIL import Image
+    frames = [None] * len(times_ms)
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        cap.release()
+        return frames
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if not fps or fps <= 0:
+        fps = 25.0
+    for i, t_ms in enumerate(times_ms):
+        frame_idx = int(t_ms / 1000.0 * fps)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames[i] = Image.fromarray(frame_rgb)
+    cap.release()
+    return frames
+
+
+def _compute_combined_score(sem_score: float, duration_penalty: float,
                             emotion_score: float = 0.5, role_score: float = 0.5,
                             weights: dict = None) -> float:
     """
-    多因子综合打分：0.35 文本语义 + 0.2 情绪意境 + 0.15 画面运动 + 0.25 时长契合 + 0.05 角色契合
-    - 语义：CLIP 图文余弦相似度归一化到 0~1
+    多因子综合打分：0.55 画面意图语义 + 0.2 时长契合 + 0.15 情绪意境 + 0.1 角色契合
+    - 语义：画面意图（visualIntent）与切片描述的文本↔文本语义相似度归一化到 0~1
+      （无 visualIntent 时回退解说词文本；时间轴锚定加成已并入语义分）
+    - 时长：语音与切片时长契合度（非对称裁剪友好型评分，0~1）
     - 情绪：文案情绪与切片情绪相容度（0~1，任一方缺失给中性 0.5）
-    - 运动：切片 motionScore（0~1），画面运动越显著越贴合解说节奏
-    - 时长：语音与切片时长契合度（exp 衰减，0~1）
     - 角色：解说期望角色与切片出现角色的契合度（0~1，任一方缺失给中性 0.5）
     权重设计防止"只看文字匹配，却选中一个时长严重不匹配、被强拉变速的怪异画面"；
-    🎭 P0 意境维度：引入情绪项后语义权重从 0.5 降至 0.4，让"画面情绪符合文案意境"参与决策
-    （情绪全缺失时 emotion_score=0.5 贡献常数 0.1，其余维度权重与旧权重接近，排序基本不变）。
-    🎭 P1 角色维度：语义权重由 0.4 微降至 0.35，让出 0.05 给角色契合——软加成，命中主角加分、
-    未命中仅中性值，不因角色信息缺失或误识别而破坏既有匹配排序。
-    🎵 P2 权重可配置：从 weights 读取五项权重（缺省回退默认值），并对五项权重做归一化，
+    🎭 P0 意境维度：情绪项保留（步骤3 已真输出 emotion），权重 0.15；
+    🎯 P3 画面意图：语义权重升至 0.55 并改为主依据（visualIntent↔描述文本），
+    时间轴锚定加成并入语义分，不单独设权重；
+    🎬 P3 运动维度已删除：motionScore 仅切片侧属性、query 侧无对应，属无依据噪声，不再参与打分。
+    🎵 P2 权重可配置：从 weights 读取四项权重（缺省回退默认值），并对四项权重做归一化，
     让前端调参真正生效，不再依赖硬编码。
     """
     _default_weights = {
-        'sem': 0.35, 'emotion': 0.2, 'motion': 0.15, 'duration': 0.25, 'role': 0.05,
+        'sem': 0.55, 'emotion': 0.15, 'duration': 0.2, 'role': 0.1,
     }
     w = {key: float(weights.get(key, _default_weights[key]))
          for key in _default_weights} if isinstance(weights, dict) else dict(_default_weights)
@@ -186,81 +246,8 @@ def _compute_combined_score(sem_score: float, duration_penalty: float, motion_sc
         w = {key: value / total for key, value in w.items()}
     else:
         w = dict(_default_weights)
-    return w['sem'] * sem_score + w['emotion'] * emotion_score + w['motion'] * motion_score \
+    return w['sem'] * sem_score + w['emotion'] * emotion_score \
         + w['duration'] * duration_penalty + w['role'] * role_score
-
-
-def _call_llm_translate(texts: list, api_key: str, api_base: str, model: str) -> list:
-    """
-    调用 LLM 将中文文案批量翻译为英文，用于 CLIP 英文匹配。
-    使用 OpenAI 兼容 API 接口，支持 GPT-4o/DeepSeek/Qwen 等任意模型。
-    返回与 texts 等长的英文列表，翻译失败时返回空列表。"""
-    import requests
-
-    if not api_key or not api_base or not texts:
-        print("[KM翻译] LLM 凭据不完整或 texts 为空，跳过翻译", file=sys.stderr)
-        return []
-
-    try:
-        # 构建批量翻译 prompt
-        texts_json = json.dumps(texts, ensure_ascii=False)
-        prompt = (
-            "You are a translator. Translate each Chinese text below into concise English "
-            "suitable for CLIP image-text matching. Keep visual description keywords, "
-            "remove filler words. Return a JSON array of translated strings, one per input text.\n\n"
-            f"Input: {texts_json}\n\n"
-            "Output (JSON array only, no markdown):"
-        )
-
-        url = api_base.rstrip('/') + "/chat/completions"
-        payload = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
-            "max_tokens": 2048,
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
-        print(f"[KM翻译] 调用 {model} 翻译 {len(texts)} 条文案...", file=sys.stderr)
-        resp = requests.post(url, json=payload, headers=headers, timeout=60)
-        resp.raise_for_status()
-
-        body = resp.json()
-        content = body["choices"][0]["message"]["content"].strip()
-
-        # 清洗 markdown 代码块包裹
-        if content.startswith("```"):
-            content = re.sub(r'^```(?:json)?\s*\n?', '', content)
-            content = re.sub(r'\n?```\s*$', '', content)
-
-        translated = json.loads(content)
-        if not isinstance(translated, list):
-            print(f"[KM翻译] LLM 返回非数组: {type(translated)}", file=sys.stderr)
-            return []
-
-        # 补齐长度：LLM 可能返回数量不一致
-        result = [str(t).strip() for t in translated[:len(texts)]]
-        while len(result) < len(texts):
-            result.append("")
-        print(f"[KM翻译] 翻译成功，返回 {len(result)} 条英文文案", file=sys.stderr)
-        return result
-
-    except requests.exceptions.Timeout:
-        print(f"[KM翻译] LLM 翻译超时 (60s)", file=sys.stderr)
-        return []
-    except requests.exceptions.RequestException as e:
-        print(f"[KM翻译] HTTP 请求失败: {e}", file=sys.stderr)
-        return []
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-        print(f"[KM翻译] 响应解析失败: {e}，原始内容: {content[:200] if 'content' in dir() else 'N/A'}", file=sys.stderr)
-        return []
-    except Exception as e:
-        print(f"[KM翻译] 未知错误: {e}", file=sys.stderr)
-        traceback.print_exc()
-        return []
 
 
 # VLM 二次裁决阈值（低于此值的匹配结果将触发 GPT-4o 重排）
@@ -422,16 +409,7 @@ def _apply_vlm_rerank(results: list, queries, video_chunks: list,
             sem_score = float(semantic_sim[qi, ci_idx])
             sem_score = max(0.0, min(1.0, (sem_score + 1.0) / 2.0))
 
-            duration_penalty = 1.0
-            if audio_dur_ms > 0 and video_dur_ms > 0:
-                delta = abs(video_dur_ms - audio_dur_ms) / max(audio_dur_ms, 1)
-                if video_dur_ms < audio_dur_ms:
-                    duration_penalty = float(np.exp(-delta * 2))
-                else:
-                    duration_penalty = float(np.exp(-delta * 0.5))
-
-            motion_score = float(chunk.get("motionScore") or 0.0)
-            motion_score = max(0.0, min(1.0, motion_score))
+            duration_penalty = _compute_duration_score(audio_dur_ms, video_dur_ms)
 
             # 🎭 P0 意境维度：候选打分与 KM 主体一致计入情绪相容度
             emotion_score = float(emotion_sim[qi, ci_idx])
@@ -439,7 +417,7 @@ def _apply_vlm_rerank(results: list, queries, video_chunks: list,
             # 🎭 P1 角色契合度：候选打分与 KM 主体一致计入角色命中
             role_score = float(role_sim[qi, ci_idx])
 
-            combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score, role_score, weights=weights)
+            combined_score = _compute_combined_score(sem_score, duration_penalty, emotion_score, role_score, weights=weights)
             scores.append((ci_idx, ci, combined_score))
 
         scores.sort(key=lambda x: x[2], reverse=True)
@@ -629,13 +607,11 @@ def _apply_continuity_rerank(results: list, queries, video_chunks: list,
             sem = max(0.0, min(1.0, (float(semantic_sim[qi, ci_idx]) + 1.0) / 2.0))
             emo = float(emotion_sim[qi, ci_idx])
             role = float(role_sim[qi, ci_idx])
-            motion = max(0.0, min(1.0, float(chunk.get("motionScore") or 0.0)))
             dur = 1.0
             vdur = chunk.get("durationMs", 0)
             if audio_dur_ms > 0 and vdur > 0:
-                d = abs(vdur - audio_dur_ms) / max(audio_dur_ms, 1)
-                dur = float(np.exp(-d * 2)) if vdur < audio_dur_ms else float(np.exp(-d * 0.5))
-            return _compute_combined_score(sem, dur, motion, emo, role, weights=weights), chunk
+                dur = _compute_duration_score(audio_dur_ms, vdur)
+            return _compute_combined_score(sem, dur, emo, role, weights=weights), chunk
 
         cur_score, _ = _score(cur_ci_idx)
 
@@ -709,20 +685,10 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
 
     original_texts = [q.text for q in req.queries]
     texts = list(original_texts)
-
-    # 🚀 英文匹配：将中文文案翻译为英文后参与 CLIP 文本编码
-    if req.translateToEnglish and req.llmApiKey and req.llmApiBase and req.llmApiModel:
-        print(f"[KM] 英文匹配已启用，翻译模型: {req.llmApiModel}", file=sys.stderr)
-        try:
-            english_texts = _call_llm_translate(texts, req.llmApiKey, req.llmApiBase, req.llmApiModel)
-            if english_texts and len(english_texts) == len(texts):
-                texts = [et if et else ct for et, ct in zip(english_texts, texts)]
-                print(f"[KM] 英文匹配翻译完成，{sum(1 for i, t in enumerate(texts) if t != req.queries[i].text)}/{len(texts)} 条已替换", file=sys.stderr)
-            else:
-                print("[KM] 英文匹配翻译返回空，回退到中文匹配", file=sys.stderr)
-        except Exception as e:
-            print(f"[KM] 英文匹配翻译异常: {e}，回退到中文匹配", file=sys.stderr)
-            traceback.print_exc()
+    # 🎯 P3 画面意图优先：查询侧语义文本用 visualIntent（画面语言），无则回退解说词文本。
+    # 解说词是抽象解读、画面是具体视觉，跨空间 CLIP 图文匹配天然错位；
+    # visualIntent 与切片描述同属"画面语言"，文本↔文本匹配更准。
+    query_texts = [q.visualIntent or q.text for q in req.queries]
 
     valid_chunk_indices = []
     for i, chunk in enumerate(video_chunks):
@@ -798,7 +764,10 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
         from PIL import Image
 
         with INFERENCE_LOCK:
-            zh_inputs = zh_processor(text=original_texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
+            # 🔧 修复：中文 CLIP 文本编码器 max_position_embeddings=512，
+            #   超长输入会让 token_type buffer expand 越界崩溃（expanded size 570 vs 512），
+            #   显式 max_length=512 截断，保证 seq ≤ 512
+            zh_inputs = zh_processor(text=query_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(AIModels.device)
             with torch.no_grad():
                 zh_text_features = _extract_pooler(zh_model.get_text_features(
                     input_ids=zh_inputs["input_ids"],
@@ -810,8 +779,27 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
             all_image_features = []
             for batch_start in range(0, len(valid_chunk_indices), IMAGE_ENCODE_BATCH):
                 batch_imgs = []
+                batch_frame_counts = []  # 每个切片的帧数（>6s 多点采样为 3，其余为 1），用于平均池化
+                batch_chunk_indices = []  # 与 batch_imgs 一一对应的 video_chunks 索引，用于写回 clipZhEmbedding
                 for ci in valid_chunk_indices[batch_start:batch_start + IMAGE_ENCODE_BATCH]:
-                    cover = video_chunks[ci].get("coverPath", "")
+                    chunk = video_chunks[ci]
+                    batch_chunk_indices.append(ci)
+                    dur_ms = float(chunk.get("durationMs") or 0)
+                    video_path = chunk.get("filePath", "")
+                    cover = chunk.get("coverPath", "")
+                    # 🎬 P0.5 封面多点采样：>6s 切片头/中/尾 3 点平均池化，缓解封面帧漂移
+                    if dur_ms > MULTI_FRAME_THRESHOLD_MS and video_path and os.path.exists(video_path):
+                        start_ms = float(chunk.get("startMs") or 0)
+                        end_ms = float(chunk.get("endMs") or (start_ms + dur_ms))
+                        mid_ms = (start_ms + end_ms) / 2.0
+                        tail_ms = max(start_ms, end_ms - 200.0)
+                        frames = _extract_frames_at_times(video_path, [start_ms, mid_ms, tail_ms])
+                        valid_frames = [f for f in frames if f is not None]
+                        if len(valid_frames) >= 2:
+                            batch_imgs.extend(valid_frames)
+                            batch_frame_counts.append(len(valid_frames))
+                            continue
+                    # 回退：封面图（<=6s 或抽帧失败）
                     if cover and os.path.exists(cover):
                         try:
                             with Image.open(cover) as img:
@@ -820,27 +808,39 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                             batch_imgs.append(Image.new('RGB', (224, 224), color=(128, 128, 128)))
                     else:
                         batch_imgs.append(Image.new('RGB', (224, 224), color=(128, 128, 128)))
+                    batch_frame_counts.append(1)
 
                 image_inputs = zh_processor(images=batch_imgs, return_tensors="pt", padding=True).to(AIModels.device)
                 with torch.no_grad():
                     batch_features = _extract_pooler(zh_model.get_image_features(
                         pixel_values=image_inputs["pixel_values"],
                     ))
-                all_image_features.append(F.normalize(batch_features, p=2, dim=-1))
+                batch_features = F.normalize(batch_features, p=2, dim=-1)
+                # 按切片平均池化（>6s 多帧取均值后归一化）
+                feat_idx = 0
+                for n_frames, ci in zip(batch_frame_counts, batch_chunk_indices):
+                    pooled = batch_features[feat_idx:feat_idx + n_frames].mean(dim=0)
+                    pooled = F.normalize(pooled, p=2, dim=-1)
+                    all_image_features.append(pooled)
+                    # 🔧 P2 缓存落库：把中文 CLIP 图像特征写回 chunk，Node 侧按 id 合并回写 DB，
+                    #   下次匹配命中 DB 缓存时免去图像重编码（性能优化，不改变匹配结果）
+                    video_chunks[ci]["clipZhEmbedding"] = pooled.detach().cpu().numpy().tolist()
+                    feat_idx += n_frames
                 del image_inputs, batch_features, batch_imgs
 
             image_features = torch.cat(all_image_features, dim=0).cpu().numpy()
             del all_image_features
 
-            image_sim = zh_text_features @ image_features.T  # (n_queries, n_chunks) 文案↔封面图像
+            image_sim = zh_text_features @ image_features.T  # (n_queries, n_chunks) 画面意图↔封面图像
 
-            # 🎯 切片描述文本语义：文案 ↔ 切片描述（步骤2 逐帧 VLM 描述按时间轴聚合而来）
+            # 🎯 切片描述文本语义：画面意图 ↔ 切片描述（步骤2 逐帧 VLM 描述按时间轴聚合而来）
             #    有描述切片：语义 = 0.5*图像 + 0.5*描述文本（描述含动作/情绪/景别/台词，信息量远超单帧封面）
             #    无描述切片：语义 = 纯图像（空文本编码结果不可预测，必须掩码归零，不能参与混合）
             chunk_desc_texts = [(video_chunks[ci].get("description") or "").strip() for ci in valid_chunk_indices]
             has_desc = np.array([1.0 if t else 0.0 for t in chunk_desc_texts], dtype=np.float64)
             if has_desc.sum() > 0:
-                desc_inputs = zh_processor(text=chunk_desc_texts, return_tensors="pt", padding=True, truncation=True).to(AIModels.device)
+                # 🔧 修复：同上，切片描述文本（多帧描述拼接可能超长）截断到 512，避免 token_type buffer 越界
+                desc_inputs = zh_processor(text=chunk_desc_texts, return_tensors="pt", padding=True, truncation=True, max_length=512).to(AIModels.device)
                 with torch.no_grad():
                     desc_features = _extract_pooler(zh_model.get_text_features(
                         input_ids=desc_inputs["input_ids"],
@@ -927,6 +927,23 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
         print("[KM] CLIP 不可用，降级为时长匹配模式", file=sys.stderr)
         semantic_sim = np.ones((n_queries, len(valid_chunk_indices)), dtype=np.float64) * 0.3
 
+    # 🎯 P3 时间轴锚定加成：query 携带画面时间起点（startMs）时，覆盖该时间点的切片获得语义加成。
+    #    步骤3 的 microChunk 与步骤5 的场景切片同源于原片时间轴，锚定是"写词时已看过画面"的强信号；
+    #    但只做软加成（不锁死），保留 KM 全局排他性，避免锚定切片时长不匹配时被强拉变速。
+    #    加成幅度 0.15：与语义权重 0.4 相乘后约 +0.06 综合分，足以压过同语义候选的噪声差。
+    ANCHOR_BONUS = 0.15
+    for qi, q in enumerate(req.queries):
+        q_start = float(q.startMs or 0)
+        if q_start <= 0:
+            continue
+        for ci_idx, ci in enumerate(valid_chunk_indices):
+            chunk = video_chunks[ci]
+            c_start = float(chunk.get("startMs") or 0)
+            c_end = float(chunk.get("endMs") or c_start)
+            if c_start <= q_start < c_end:
+                semantic_sim[qi, ci_idx] = min(1.0, semantic_sim[qi, ci_idx] + ANCHOR_BONUS)
+                break  # 时间轴不重叠，命中首个覆盖切片即可
+
     # 🎭 P0 意境维度：构建文案情绪 ↔ 切片情绪相容度矩阵 (n_queries, n_chunks)
     #    切片情绪由步骤2 帧情绪按时间轴聚合而来（chunk.emotion），文案情绪来自步骤3 生成（query.emotion）
     query_emotions = [(q.emotion or '') for q in req.queries]
@@ -957,6 +974,20 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     BLOCK_DURATION_MS = 300000
     results = []
     current_timeline_ms = 0
+
+    # 🔧 P2 #11 方案B：每个 query 的候选切片 id 白名单（来自 Node 端 preselectTopK 的 perQueryTopK）。
+    #    candidateIds 为 { shotId: [chunkId, ...] }，空 dict → candidate_sets 全空 → 退化为老逻辑全量求解。
+    #    per_query 构建 Set 以便 O(1) 判候选；chunk 用 "id" 匹配（与 Node 侧 videoChunks[].id 对齐）。
+    req_candidate_ids = dict(getattr(req, 'candidateIds', None) or {})
+    candidate_sets = []
+    for q in req.queries:
+        cand = req_candidate_ids.get(q.shotId) or []
+        candidate_sets.append(set(str(c) for c in cand) if cand else None)
+    # 是否真有 query 启用了候选白名单（用于统计与告警）
+    active_candidate_rows = sum(1 for s in candidate_sets if s is not None)
+    if active_candidate_rows > 0:
+        print(f"[KM] 方案B Top-K 行级稀疏开启：{active_candidate_rows}/{n_queries} 段文案带候选白名单",
+              file=sys.stderr)
 
     query_blocks = {}
     chunk_blocks = {}
@@ -1004,19 +1035,20 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                 audio_dur_ms = req.queries[qi].audioDurationMs or 0
                 video_dur_ms = chunk.get("durationMs", 0)
 
+                # 🔧 P2 #11 方案B：非候选格置强惩罚，让 KM 尽可能在候选内求解。
+                #    用 5.0（远超 combined_score 的 [0,1] 量级）而非正无穷：
+                #    若某个 query 候选全部落在本时序块之外，KM 仍能兜底选次优，不会触发 assign 无解。
+                cand_set = candidate_sets[qi]
+                if cand_set is not None:
+                    chunk_id = str(chunk.get("id") or "")
+                    if chunk_id and chunk_id not in cand_set:
+                        local_cost[lqi, lci] = 5.0  # 强惩罚：绝不优先，但保留兜底可分配
+                        continue
+
                 sem_score = float(semantic_sim[qi, ci_idx])
                 sem_score = max(0.0, min(1.0, (sem_score + 1.0) / 2.0))
 
-                duration_penalty = 1.0
-                if audio_dur_ms > 0 and video_dur_ms > 0:
-                    delta = abs(video_dur_ms - audio_dur_ms) / max(audio_dur_ms, 1)
-                    if video_dur_ms < audio_dur_ms:
-                        duration_penalty = float(np.exp(-delta * 2))
-                    else:
-                        duration_penalty = float(np.exp(-delta * 0.5))
-
-                motion_score = float(chunk.get("motionScore") or 0.0)
-                motion_score = max(0.0, min(1.0, motion_score))
+                duration_penalty = _compute_duration_score(audio_dur_ms, video_dur_ms)
 
                 # 🎭 P0 意境维度：文案情绪与切片情绪相容度
                 emotion_score = float(emotion_sim[qi, ci_idx])
@@ -1024,7 +1056,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                 # 🎭 P1 角色契合度：解说期望角色与切片出现角色的命中率（软加成）
                 role_score = float(role_sim[qi, ci_idx])
 
-                combined_score = _compute_combined_score(sem_score, duration_penalty, motion_score, emotion_score, role_score, weights=req.weights)
+                combined_score = _compute_combined_score(sem_score, duration_penalty, emotion_score, role_score, weights=req.weights)
                 local_cost[lqi, lci] = -combined_score
 
         if local_n_queries > local_n_chunks:
@@ -1076,10 +1108,15 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                 raw_speed_factor = video_dur_ms / final_video_duration_ms
 
             # 变速超限重选：语音与素材时长严重不匹配（超出 0.85~1.15 变速能力）时，
-            # 从当前时序块候选池中重选一个时长更贴近语音的未使用切片，避免强拉变速造成的鬼畜/变相
+            # 从当前时序块候选池中重选一个"语义0.6+时长0.4联合分"最高的未使用切片，
+            # 以当前切片联合分为保底基准，只有候选联合分超过当前切片才重选，
+            # 避免为了时长丢弃语义更贴合的切片（纯时长贴近会牺牲画面内容）。
             if raw_speed_factor < 0.85 or raw_speed_factor > 1.15:
+                cur_sem = max(0.0, min(1.0, (float(semantic_sim[qi, chunk_rank[real_ci]]) + 1.0) / 2.0))
+                cur_dur = _compute_duration_score(audio_dur_ms, video_dur_ms)
+                cur_combined = 0.6 * cur_sem + 0.4 * cur_dur
                 best_ci = real_ci
-                best_gap = abs(video_dur_ms - final_video_duration_ms)
+                best_combined = cur_combined
                 for cand_idx in block_chunk_idx_list:
                     cand_ci = valid_chunk_indices[cand_idx]
                     if cand_ci in global_used_chunks:
@@ -1087,9 +1124,11 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                     cand_dur = video_chunks[cand_ci].get("durationMs", 0)
                     if cand_dur <= 0:
                         continue
-                    gap = abs(cand_dur - final_video_duration_ms)
-                    if gap < best_gap:
-                        best_gap = gap
+                    cand_sem = max(0.0, min(1.0, (float(semantic_sim[qi, chunk_rank[cand_ci]]) + 1.0) / 2.0))
+                    cand_dur_score = _compute_duration_score(audio_dur_ms, cand_dur)
+                    cand_combined = 0.6 * cand_sem + 0.4 * cand_dur_score
+                    if cand_combined > best_combined:
+                        best_combined = cand_combined
                         best_ci = cand_ci
                 if best_ci != real_ci:
                     # 重选成功：占位新切片，并重算变速与综合得分
@@ -1099,17 +1138,12 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
                     print(f"[KM] shotId={query.shotId} 时长严重不匹配（变速 {raw_speed_factor:.2f} 超限），重选切片 {best_ci} 替代 {real_ci}", file=sys.stderr)
                     best_sem = float(semantic_sim[qi, chunk_rank[best_ci]])
                     best_sem = max(0.0, min(1.0, (best_sem + 1.0) / 2.0))
-                    best_motion = float(chunk.get("motionScore") or 0.0)
-                    best_motion = max(0.0, min(1.0, best_motion))
-                    best_dur_pen = 1.0
-                    if audio_dur_ms > 0 and video_dur_ms > 0:
-                        d = abs(video_dur_ms - audio_dur_ms) / max(audio_dur_ms, 1)
-                        best_dur_pen = float(np.exp(-d * 2)) if video_dur_ms < audio_dur_ms else float(np.exp(-d * 0.5))
+                    best_dur_pen = _compute_duration_score(audio_dur_ms, video_dur_ms)
                     # 🎭 P0 意境维度：变速重选同样计入情绪相容度，避免为了时长丢弃意境更贴合的切片
                     best_emotion = float(emotion_sim[qi, chunk_rank[best_ci]])
                     # 🎭 P1 角色契合度：变速重选同样计入角色命中，避免为了时长丢弃角色更贴合的切片
                     best_role = float(role_sim[qi, chunk_rank[best_ci]])
-                    combined_score = _compute_combined_score(best_sem, best_dur_pen, best_motion, best_emotion, best_role, weights=req.weights)
+                    combined_score = _compute_combined_score(best_sem, best_dur_pen, best_emotion, best_role, weights=req.weights)
 
             speed_factor = 1.0
             if final_video_duration_ms > 0 and video_dur_ms > 0:
@@ -1147,4 +1181,5 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
             semantic_sim, emotion_sim, role_sim, req.weights,
         )
 
-    return {"success": True, "results": results}
+    # 🔧 P2 缓存落库：把带 clipZhEmbedding 的切片回传 Node 侧，按 id 合并回写 DB 缓存
+    return {"success": True, "results": results, "videoChunks": video_chunks}

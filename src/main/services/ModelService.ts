@@ -94,8 +94,8 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
   {
     id: 'chinese_clip', name: 'Chinese-CLIP', displayName: '中文 CLIP 跨模态模型', type: 'vision',
     description: 'OFA Chinese-CLIP 中文文本-图像匹配（中文文案直编无需翻译，步骤5 语义匹配优先）', version: '1.0',
-    manifestPaths: ['chinese-clip/model.safetensors'],
-    scanPaths: ['chinese-clip/model.safetensors', 'chinese-clip/config.json', 'chinese-clip/tokenizer_config.json'],
+    manifestPaths: ['chinese-clip/pytorch_model.bin'],
+    scanPaths: ['chinese-clip/pytorch_model.bin', 'chinese-clip/config.json', 'chinese-clip/vocab.txt'],
   },
   // === TTS 语音合成 ===
   {
@@ -192,8 +192,8 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
   //   用户也可手动下载整个目录放到 resources/models/faster_whisper/large-v3/
   faster_whisper_large_v3: { url: 'https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main', file: 'model.bin' },
   clip: { url: 'https://huggingface.co/openai/clip-vit-base-patch32/resolve/main', file: 'model.safetensors' },
-  // 中文 CLIP：多文件模型（config.json/tokenizer/preprocessor 需手动放置或随安装包预装），下载主体权重即可
-  chinese_clip: { url: 'https://huggingface.co/OFA-Sys/chinese-clip-vit-base-patch16/resolve/main', file: 'chinese-clip/model.safetensors' },
+  // 中文 CLIP：多文件模型（config.json/preprocessor_config.json/vocab.txt 需随权重一起放置，权重为 pytorch_model.bin）
+  chinese_clip: { url: 'https://huggingface.co/OFA-Sys/chinese-clip-vit-base-patch16/resolve/main', file: 'pytorch_model.bin' },
   buffalo_l_det_10g: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/det_10g.onnx' },
   buffalo_l_w600k_r50: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/w600k_r50.onnx' },
   buffalo_l_1k3d68: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/1k3d68.onnx' },
