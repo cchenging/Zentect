@@ -15,6 +15,7 @@ import { DEFAULT_SUBTITLE_STYLE } from '../types';
 import { assembleDraftContent } from './core/assemblers/DraftContentAssembler';
 import { exportJianying } from './core/JianyingExporter';
 import type { ExportProject } from '../../contracts/ExportProject';
+import { enrichMatchRelations } from '../../backend/enrichMatchRelations';
 import {
   probeVideoBatchSync,
   type ExportBinDeps,
@@ -109,7 +110,7 @@ export class JianyingExportService {
       (input.ttsResults || []).map((t) => [t.shotId, t]),
     );
 
-    return (input.scriptParagraphs || []).map((p) => {
+    const compiled: CompileShot[] = (input.scriptParagraphs || []).map((p) => {
       const m = matchByShotId.get(p.shotId || p.id);
       const t = ttsByShotId.get(p.id || p.shotId || '');
       const durationSec = (t?.duration && !t._failed ? t.duration : 0) || p.duration || 3;
@@ -132,6 +133,9 @@ export class JianyingExportService {
         keepOriginalAudio: p.keepOriginalAudio === true || m?.keepOriginalAudio === true,
       } as CompileShot;
     });
+    // 🎬 阶段 A：三件套路径未经过装配器，在此对 CompileShot 统一做相邻关系增强，
+    //   与 ExportProject 主路径共用同一判定逻辑（同父 + 源时间连续 → 合并组）。
+    return enrichMatchRelations(compiled);
   }
 
   /**
@@ -188,6 +192,10 @@ export class JianyingExportService {
           videoTimelineStartMs: Math.round(s.start * 1000),
           videoTimelineEndMs: Math.round(s.end * 1000),
           keepOriginalAudio: s.keepOriginalAudio === true,
+          // 🎬 阶段 A：透传装配器已算好的合并组关系（project.shots 已 enrich）
+          parentChunkId: s.parentChunkId,
+          prevRelation: s.prevRelation,
+          sceneGroupId: s.sceneGroupId,
         } as CompileShot;
       });
     }
@@ -232,6 +240,10 @@ export class JianyingExportService {
         videoTimelineStartMs: Math.round(shot.start * 1000),
         videoTimelineEndMs: Math.round(shot.end * 1000),
         keepOriginalAudio: shot.keepOriginalAudio === true || p.keepOriginalAudio === true,
+        // 🎬 阶段 A：透传装配器已算好的合并组关系（project.shots 已 enrich）
+        parentChunkId: shot.parentChunkId,
+        prevRelation: shot.prevRelation,
+        sceneGroupId: shot.sceneGroupId,
       } as CompileShot;
     });
   }

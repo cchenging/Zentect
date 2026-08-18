@@ -8,6 +8,7 @@ import traceback
 import asyncio
 import re
 import math
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -20,12 +21,17 @@ router = APIRouter()
 # DTOs
 # ==========================================
 class SceneChunkReq(BaseModel):
-    """场景切割请求"""
+    """场景切割请求（阶段 B 三层分离：chunks 镜头级 + matchSegments 匹配候选级）"""
     file_path: str
     output_dir: str
     threshold: float = 0.3
     min_chunk_duration_sec: float = 1.0
+    # 阶段 B：max_chunk_duration_sec 不再参与 Chunk 级细分（Chunk 严格=物理镜头），
+    # 仅作为"超过该时长的物理镜头需要在 MatchSegment 粒度拆分"的开关（保留请求契约兼容）。
     max_chunk_duration_sec: float = 3.0
+    # 阶段 B：匹配候选段目标时长。物理镜头时长超过该值则均匀拆 N 段生成 matchSegments；
+    # 传 null/0 表示不拆分（matchSegments == chunks，方便调试对比）。
+    target_seg_duration_sec: Optional[float] = 3.0
     mediaId: str = 'default'
 
 
@@ -43,9 +49,16 @@ async def detect_scene_chunks(req: SceneChunkReq):
             return {"success": False, "error": f"Video file not found: {req.file_path}"}
 
         # 🚀 缓存命中：如果该 media_id 已切片，直接返回缓存结果，秒级响应
+        # 阶段 B：PROJECT_MATERIAL_POOL 缓存结构升级为 {"chunks","matchSegments"}，命中时同样双写 data=chunks
         media_id = req.mediaId or "default"
-        if media_id in PROJECT_MATERIAL_POOL:
-            return {"success": True, "data": PROJECT_MATERIAL_POOL[media_id], "fromCache": True}
+        cached = PROJECT_MATERIAL_POOL.get(media_id)
+        if cached is not None:
+            if isinstance(cached, dict) and "chunks" in cached:
+                cached_chunks = cached.get("chunks") or []
+                cached_segs = cached.get("matchSegments") or []
+                return {"success": True, "data": cached_chunks, "chunks": cached_chunks, "matchSegments": cached_segs, "fromCache": True}
+            # 兼容旧结构：缓存为数组（阶段 A 及更早），直接双写返回
+            return {"success": True, "data": cached, "chunks": cached, "matchSegments": cached, "fromCache": True}
 
         os.makedirs(req.output_dir, exist_ok=True)
 
@@ -85,15 +98,20 @@ async def detect_scene_chunks(req: SceneChunkReq):
             )
 
         # 第四步：构建切片并提取封面 + CLIP 512维视觉特征（CPU密集型，放入线程池）
+        # 阶段 B：传 target_seg_duration_sec 让 Python 侧同时产出镜头级 chunks + 候选级 matchSegments
         result = await loop.run_in_executor(
             None, _build_chunks_with_covers,
             req.file_path, req.output_dir, scene_changes_sec,
-            req.min_chunk_duration_sec, req.max_chunk_duration_sec, media_id
+            req.min_chunk_duration_sec, req.max_chunk_duration_sec, media_id,
+            req.target_seg_duration_sec
         )
 
-        # 🚀 写入素材池缓存，下次相同 media_id 秒级返回
+        # 🚀 写入素材池缓存，下次相同 media_id 秒级返回（阶段 B 缓存结构升级为 {chunks, matchSegments}）
         if result.get("success") and result.get("data"):
-            PROJECT_MATERIAL_POOL[media_id] = result["data"]
+            PROJECT_MATERIAL_POOL[media_id] = {
+                "chunks": result.get("data") or [],
+                "matchSegments": result.get("matchSegments") or []
+            }
 
         return result
     except Exception as e:
@@ -320,10 +338,14 @@ def _split_long_boundaries(boundaries_sec: list, max_chunk_duration_sec: float) 
     return result
 
 
-def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec: list, min_chunk_duration_sec: float, max_chunk_duration_sec: float = 3.0, media_id: str = "default") -> dict:
+def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec: list, min_chunk_duration_sec: float, max_chunk_duration_sec: float = 3.0, media_id: str = "default", target_seg_duration_sec: Optional[float] = 3.0) -> dict:
     """
-    🚀 根据场景切换时间点构建视频切片列表，批量提取封面图 + CLIP 512维视觉语义特征
-    带全局推理锁保护，防止并发原生库崩溃
+    🎬 阶段 B：三层分离 —— 一次性产出两个数组：
+      - chunks（Layer 1 镜头级）：严格等于物理镜头边界，不按时长细分；
+        承担 VLM 帧描述聚合目标 + 导出蒙太奇衔接判断（同一物理镜头的连续子段应无缝拼接）。
+      - matchSegments（Layer 2 匹配候选级）：仅当物理镜头时长 > target_seg_duration_sec 时均匀拆 N 段，
+        每个候选段独立截中间帧当封面（解决阶段 A 残留"兄弟段共享同一张封面"问题），
+        description/emotion/shotType/characters 等语义字段由 Node 侧从父镜头聚合结果 inherit。
     """
     import cv2
     with INFERENCE_LOCK:
@@ -340,26 +362,56 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
             filtered_changes.append(t)
             last_time = t
 
+    # Layer 1：镜头级边界。阶段 B 不再调用 _split_long_boundaries（Chunk 严格=物理镜头），
+    # 长镜头的候选细化职责全部下沉到 matchSegments。
     boundaries_sec = [0.0] + filtered_changes + [duration_ms / 1000.0]
-    # 🔧 P3 切片粒度下沉：对超过 max_chunk_duration_sec 的区间均匀细分，
-    #   封面/CLIP/运动得分均基于细分后的子区间计算（Node 侧 splitLongChunks 兜底不再触发）
-    boundaries_sec = _split_long_boundaries(boundaries_sec, max_chunk_duration_sec)
-    chunks = []
 
-    # 计算每个切片的运动显著性得分（帧差法），用于镜头匹配打分与高潮动作截取
-    motion_scores = _compute_chunk_motion_scores(file_path, boundaries_sec, min_chunk_duration_sec)
+    # Layer 2：matchSegments 边界。对每个物理镜头，若时长超过 target_seg_duration_sec 则均匀拆 N 段；
+    # 传 None/0 表示不拆分（matchSegments == chunks，便于调试对比）。
+    seg_duration_ms = None
+    if target_seg_duration_sec and target_seg_duration_sec > 0:
+        seg_duration_ms = target_seg_duration_sec * 1000.0
+    seg_boundaries_sec = []
+    if seg_duration_ms:
+        for j in range(len(boundaries_sec) - 1):
+            o_start = boundaries_sec[j]
+            o_end = boundaries_sec[j + 1]
+            if (o_end - o_start) * 1000.0 <= seg_duration_ms:
+                seg_boundaries_sec.append(o_start)
+            else:
+                n = int(math.ceil((o_end - o_start) * 1000.0 / seg_duration_ms))
+                for k in range(n):
+                    seg_boundaries_sec.append(o_start + (o_end - o_start) * k / n)
+        seg_boundaries_sec.append(boundaries_sec[-1])
+    else:
+        seg_boundaries_sec = list(boundaries_sec)
 
+    def _resolve_parent_shot_index(chunk_start_sec):
+        """返回 时间点 所属物理镜头序号（boundaries_sec 区间索引），供 matchSegment 归属父镜头。"""
+        for j in range(len(boundaries_sec) - 1):
+            o_start = boundaries_sec[j]
+            o_end = boundaries_sec[j + 1]
+            if chunk_start_sec >= o_start - 1e-6 and chunk_start_sec < o_end - 1e-6:
+                return j
+        # 兜底：浮点边界误差导致未命中时归入最后一个物理镜头
+        return max(0, len(boundaries_sec) - 2)
+
+    # 运动显著性：matchSegments 粒度计算（每个候选段独立运动得分，字段不缺失），
+    # 镜头级 chunk.motionScore 取覆盖段得分均值。
+    seg_motion_scores = _compute_chunk_motion_scores(file_path, seg_boundaries_sec, min_chunk_duration_sec)
+
+    # 封面采集：chunks（镜头级）+ matchSegments（候选级）各自独立中间帧，
+    # 解决阶段 A 残留问题"兄弟段共享同一张封面导致预览无法区分"。
     cover_times = []
     for i in range(len(boundaries_sec) - 1):
-        start_ms = round(boundaries_sec[i] * 1000, 1)
-        end_ms = round(boundaries_sec[i + 1] * 1000, 1)
-        chunk_duration_ms = end_ms - start_ms
-        if chunk_duration_ms < min_chunk_duration_sec * 1000:
+        if (boundaries_sec[i + 1] - boundaries_sec[i]) * 1000.0 < min_chunk_duration_sec * 1000.0:
             continue
-        mid_sec = (boundaries_sec[i] + boundaries_sec[i + 1]) / 2.0
-        cover_times.append((i, mid_sec))
-
-    cover_times.sort(key=lambda x: x[1])
+        cover_times.append(('chunk', i, (boundaries_sec[i] + boundaries_sec[i + 1]) / 2.0))
+    for i in range(len(seg_boundaries_sec) - 1):
+        if (seg_boundaries_sec[i + 1] - seg_boundaries_sec[i]) * 1000.0 < min_chunk_duration_sec * 1000.0:
+            continue
+        cover_times.append(('seg', i, (seg_boundaries_sec[i] + seg_boundaries_sec[i + 1]) / 2.0))
+    cover_times.sort(key=lambda x: x[2])
 
     cover_paths = {}
     cover_frames_for_clip = []
@@ -368,16 +420,16 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
         try:
             with INFERENCE_LOCK:
                 cap = cv2.VideoCapture(file_path)
-                for chunk_i, mid_sec in cover_times:
+                for kind, idx, mid_sec in cover_times:
                     try:
                         cap.set(cv2.CAP_PROP_POS_MSEC, mid_sec * 1000)
                         ret, frame = cap.read()
                         if ret:
-                            cover_name = f"chunk_{chunk_i:03d}_cover.jpg"
+                            cover_name = f"{'chunk' if kind == 'chunk' else 'seg'}_{idx:03d}_cover.jpg"
                             cpath = os.path.join(output_dir, cover_name)
                             cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tofile(cpath)
-                            cover_paths[chunk_i] = cpath
-                            cover_frames_for_clip.append((chunk_i, frame[:, :, ::-1]))
+                            cover_paths[(kind, idx)] = cpath
+                            cover_frames_for_clip.append(((kind, idx), frame[:, :, ::-1]))
                             # 🎨 P1 衔接维度：封面帧 HSV 色相直方图（16 桶归一化），
                             #   供镜头匹配的"相邻切片色调连续性"检查（字段已预留 colorHistogram）
                             try:
@@ -385,7 +437,7 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
                                 hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
                                 hist = cv2.calcHist([hsv], [0], None, [16], [0, 180]).flatten()
                                 total = float(np.sum(hist)) or 1.0
-                                color_histograms[chunk_i] = (hist / total).tolist()
+                                color_histograms[(kind, idx)] = (hist / total).tolist()
                             except Exception:
                                 pass
                     except Exception:
@@ -405,11 +457,11 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
                 from PIL import Image
 
                 pil_images = []
-                chunk_indices = []
-                for chunk_i, frame_rgb in cover_frames_for_clip:
+                clip_keys = []
+                for ckey, frame_rgb in cover_frames_for_clip:
                     try:
                         pil_images.append(Image.fromarray(frame_rgb))
-                        chunk_indices.append(chunk_i)
+                        clip_keys.append(ckey)
                     except Exception:
                         continue
 
@@ -431,9 +483,9 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
 
                     image_features = np.vstack(all_features)
 
-                    for idx, (chunk_i, _) in enumerate(cover_frames_for_clip):
+                    for idx, ckey in enumerate(clip_keys):
                         if idx < len(image_features):
-                            vision_embeddings[chunk_i] = image_features[idx].tolist()
+                            vision_embeddings[ckey] = image_features[idx].tolist()
 
                     del pil_images, all_features, image_features
                     print(f"[CLIP] 预提取 {len(vision_embeddings)} 个切片的 512维视觉特征完成", file=sys.stderr)
@@ -442,33 +494,72 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
         except Exception as e:
             print(f"[CLIP] 预提取视觉特征失败: {e}", file=sys.stderr)
 
-    chunk_idx = 0
+    # 组装 Layer 1：镜头级 chunks（物理镜头边界，含父子字段：parentChunkId=自身镜头 scene_xxx）
+    chunks = []
     for i in range(len(boundaries_sec) - 1):
         start_ms = round(boundaries_sec[i] * 1000, 1)
         end_ms = round(boundaries_sec[i + 1] * 1000, 1)
         chunk_duration_ms = end_ms - start_ms
-
-        if chunk_duration_ms < min_chunk_duration_sec * 1000:
+        if chunk_duration_ms < min_chunk_duration_sec * 1000.0:
             continue
-
-        chunk_id = f"chunk_{i:03d}"
+        # 镜头级 motionScore：取该镜头覆盖的 matchSegment 运动得分均值
+        seg_scores = []
+        for si in range(len(seg_boundaries_sec) - 1):
+            if seg_boundaries_sec[si] >= boundaries_sec[i] - 1e-6 and seg_boundaries_sec[si + 1] <= boundaries_sec[i + 1] + 1e-6:
+                if si in seg_motion_scores:
+                    seg_scores.append(seg_motion_scores[si])
+        chunk_motion = round(sum(seg_scores) / len(seg_scores), 4) if seg_scores else 0.0
         chunks.append({
-            "id": chunk_id,
+            "id": f"chunk_{i:03d}",
             "filePath": file_path,
             "startMs": start_ms,
             "endMs": end_ms,
             "durationMs": chunk_duration_ms,
-            "motionScore": motion_scores.get(i, 0.0),
-            "colorHistogram": color_histograms.get(i, []),
-            "coverPath": cover_paths.get(i, ""),
-            "visionEmbedding": vision_embeddings.get(i, []),
-            "name": f"场景切片 {chunk_idx + 1}"
+            "motionScore": chunk_motion,
+            "colorHistogram": color_histograms.get(('chunk', i), []),
+            "coverPath": cover_paths.get(('chunk', i), ""),
+            "visionEmbedding": vision_embeddings.get(('chunk', i), []),
+            "name": f"镜头 {i + 1}",
+            "parentChunkId": f"scene_{i:03d}",
+            "parentStartMs": round(boundaries_sec[i] * 1000, 1),
+            "segmentIndexInParent": 0
         })
-        chunk_idx += 1
+
+    # 组装 Layer 2：匹配候选级 matchSegments
+    parent_seen_count = {}
+    match_segments = []
+    for si in range(len(seg_boundaries_sec) - 1):
+        start_ms = round(seg_boundaries_sec[si] * 1000, 1)
+        end_ms = round(seg_boundaries_sec[si + 1] * 1000, 1)
+        seg_duration_ms = end_ms - start_ms
+        parent_idx = _resolve_parent_shot_index(seg_boundaries_sec[si])
+        seg_in_parent = parent_seen_count.get(parent_idx, 0)
+        parent_seen_count[parent_idx] = seg_in_parent + 1
+        if seg_duration_ms < min_chunk_duration_sec * 1000.0:
+            continue
+        match_segments.append({
+            "id": f"scene_{parent_idx:03d}_seg{seg_in_parent}",
+            "parentChunkId": f"scene_{parent_idx:03d}",
+            "parentStartMs": round(boundaries_sec[parent_idx] * 1000, 1),
+            "segmentIndexInParent": seg_in_parent,
+            "filePath": file_path,
+            # 绝对时间戳（非父镜头内相对值）：timeline_solver 按 startMs 分块、导出层按绝对时间裁剪，
+            # 与阶段 A 的 chunks 字段语义完全一致，避免引入"相对时间"破坏既有消费方。
+            "startMs": start_ms,
+            "endMs": end_ms,
+            "durationMs": seg_duration_ms,
+            "motionScore": seg_motion_scores.get(si, 0.0),
+            "colorHistogram": color_histograms.get(('seg', si), []),
+            "coverPath": cover_paths.get(('seg', si), ""),
+            "visionEmbedding": vision_embeddings.get(('seg', si), []),
+            "name": f"匹配段 {si + 1}"
+        })
 
     return {
         "success": True,
         "data": chunks,
+        "chunks": chunks,
+        "matchSegments": match_segments,
         "totalDurationMs": round(duration_ms, 1),
         "sceneChangeCount": len(filtered_changes)
     }

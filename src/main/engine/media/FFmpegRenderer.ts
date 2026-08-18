@@ -65,6 +65,12 @@ export interface RenderShot {
   } | null;
   /** 变速因子（1.0=正常，<1.0=慢放，>1.0=快进） */
   speedFactor?: number;
+  /**
+   * 🎬 阶段 A：合并组内兄弟段的子配音（相对镜头时间线起点的偏移，秒）。
+   * 兄弟段视频合并为单个截取区间，但配音仍逐句保留：组首配音在 ttsAudioPath，
+   * 组内其余兄弟段配音在此依次列出。
+   */
+  ttsAudioTracks?: Array<{ path: string; offsetSec: number }>;
 }
 
 /** 渲染进度回调 */
@@ -404,6 +410,13 @@ export class FFmpegRenderer {
       if (shot.ttsAudioPath && fs.existsSync(shot.ttsAudioPath)) {
         audioInputs.push(shot.ttsAudioPath);
         audioDelays.push(cumulativeTime * 1000); // FFmpeg 延迟单位是毫秒
+      }
+      // 🎬 阶段 A：合并组内兄弟段的子配音（相对镜头起点偏移，秒）
+      for (const t of shot.ttsAudioTracks || []) {
+        if (t.path && fs.existsSync(t.path)) {
+          audioInputs.push(t.path);
+          audioDelays.push((cumulativeTime + t.offsetSec) * 1000);
+        }
       }
       cumulativeTime += (shot.endTime - shot.startTime);
     }

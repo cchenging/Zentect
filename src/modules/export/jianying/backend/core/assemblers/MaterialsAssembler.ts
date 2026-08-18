@@ -29,12 +29,16 @@ export interface ShotMaterialRef {
   durationUs: number;
   /** 源切片起始（微秒） */
   sourceStartUs: number;
+  /** 源切片时长（微秒，来自 chunkData.endMs-startMs；缺省退化为 durationUs） */
+  sourceDurationUs?: number;
   /** 变速因子 */
   speed: number;
   /** 是否保留原片原声（原声段音量开足，不配 TTS 配音） */
   keepOriginalAudio?: boolean;
   /** 视频变速引用 id（指向 materials.speeds，speed≠1.0 时关联） */
   speedRefId?: string;
+  /** 🎬 阶段 A：所属合并组 id（同一物理镜头内源时间连续的兄弟段共享，轨道层据此合并为单 clip） */
+  sceneGroupId?: string;
 }
 
 /** BGM 素材装配结果 */
@@ -79,6 +83,103 @@ function resolveDurationUs(shot: CompileShot): number {
   return Math.round(
     (shot.audioDuration || (shot.end - shot.start)) * MICRO_SECOND,
   );
+}
+
+/**
+ * 计算单个镜头的源切片时长（微秒）：优先 chunkData 的 endMs-startMs（源时间轴真实长度），
+ * 无切片数据时退化为目标时长。
+ */
+function resolveSourceDurationUs(shot: CompileShot): number {
+  const chunk = shot.chunkData as Record<string, unknown> | null | undefined;
+  if (
+    chunk &&
+    typeof chunk.startMs === 'number' &&
+    typeof chunk.endMs === 'number'
+  ) {
+    return Math.round((chunk.endMs - chunk.startMs) * 1000);
+  }
+  return resolveDurationUs(shot);
+}
+
+/**
+ * 🎬 阶段 A：视频素材合并组。
+ * 同一物理镜头内源时间连续的兄弟段（sceneGroupId 相同）共享一个视频素材，
+ * 轨道层据此输出单个连续 clip，消除假转场与物理接缝。
+ */
+interface ShotGroup {
+  /** 合并组 id（= 首段 sceneGroupId；无组标记的独立段自成组） */
+  groupId: string;
+  /** 组首镜头下标 */
+  leadIndex: number;
+  /** 组首镜头（决定素材 path/probe/变速） */
+  leadShot: CompileShot;
+  /** 组内成员下标 */
+  memberIndices: number[];
+  /** 整组目标时长（微秒，各成员 target 累加，已按各自 speed 换算） */
+  totalTargetUs: number;
+  /** 整组源切片时长（微秒，各成员真实源时长累加） */
+  totalSourceUs: number;
+  /** 组首变速因子 */
+  leadSpeed: number;
+  /** 组视频素材路径 */
+  videoPath: string;
+  /** 组视频素材 ffprobe 结果 */
+  probe: VideoProbeResult;
+}
+
+/**
+ * 🎬 阶段 A：按 sceneGroupId 将镜头序列分组。
+ * 未标记 sceneGroupId 的独立段各成一组（行为与旧版逐镜头素材完全一致）。
+ * 返回 { groups, shotGids }，shotGids[i] 给出 shots[i] 所属组 id。
+ */
+function buildSceneGroups(
+  shots: CompileShot[],
+  probeMap: Map<string, VideoProbeResult>,
+  safeMediaPath: string,
+): { groups: Map<string, ShotGroup>; shotGids: string[] } {
+  const groups = new Map<string, ShotGroup>();
+  const shotGids: string[] = new Array(shots.length);
+  let soloSeq = 0;
+
+  for (let i = 0; i < shots.length; i++) {
+    const shot = shots[i];
+    const gid = shot.sceneGroupId;
+    if (gid && groups.has(gid)) {
+      const g = groups.get(gid)!;
+      g.memberIndices.push(i);
+      g.totalTargetUs += resolveDurationUs(shot);
+      g.totalSourceUs += resolveSourceDurationUs(shot);
+      shotGids[i] = gid;
+    } else {
+      const chunk = shot.chunkData as Record<string, unknown> | null | undefined;
+      const videoPath = chunk?.filePath
+        ? String(chunk.filePath).replace(/\\/g, '/')
+        : safeMediaPath;
+      // ffprobe 严格 fail-fast：找不到则抛错（probeMap 必须覆盖所有用到的视频文件）
+      const probe = probeMap.get(videoPath);
+      if (!probe) {
+        throw new Error(
+          `[assembleMaterials] 缺少视频探针结果：${videoPath}。` +
+          `请先调用 probeVideoBatchSync 批量获取元数据后再装配。`,
+        );
+      }
+      const key = gid || `solo_${(soloSeq++).toString(36)}_${i}`;
+      groups.set(key, {
+        groupId: key,
+        leadIndex: i,
+        leadShot: shot,
+        memberIndices: [i],
+        totalTargetUs: resolveDurationUs(shot),
+        totalSourceUs: resolveSourceDurationUs(shot),
+        leadSpeed: shot.appliedSpeedFactor || 1.0,
+        videoPath,
+        probe,
+      });
+      shotGids[i] = key;
+    }
+  }
+
+  return { groups, shotGids };
 }
 
 /**
@@ -503,47 +604,55 @@ export function assembleMaterials(
     vocalSeparations.push(buildVocalSeparation(genHexId(), bgmId, totalDurationUs));
   }
 
-  // -- 逐镜头素材 --
-  for (const shot of shots) {
-    const durationUs = resolveDurationUs(shot);
+  // -- 逐镜头素材（🎬 阶段 A：同物理镜头连续兄弟段共享一个视频素材，轨道层合并为单 clip） --
+  // 按 sceneGroupId 分组：同组（同一物理镜头内源时间连续的兄弟段）共用一个视频素材，
+  // 消除假转场与物理接缝；未标记分组的独立段自成一组（与旧版逐镜头行为完全一致）。
+  const { groups, shotGids } = buildSceneGroups(shots, probeMap, safeMediaPath);
+  const groupVideoId = new Map<string, string>();
+  const groupSpeedId = new Map<string, string>();
+  for (const [gid, g] of groups) {
+    // A. 组视频素材（54 字段）：整组一个素材，duration = 整组目标时长
     const vMatId = genHexId();
+    videos.push(buildVideoMaterial(g.leadShot, vMatId, safeMediaPath, g.totalTargetUs, g.probe));
+
+    // B. 组变速：整组一条（即便 speed=1.0 也要填充，保证 speeds 非空）。
+    // 🎬 阶段 A：speed 用「源总时长 / 目标总时长」整体换算，与轨道层合并 clip 的 segment.speed 保持一致，
+    // 避免组内成员 appliedSpeedFactor 不一致时素材 speeds 与 segment 速度映射错乱（用户评审隐患2）。
+    const groupSpeed =
+      g.totalTargetUs > 0 && g.totalSourceUs > 0 ? g.totalSourceUs / g.totalTargetUs : g.leadSpeed;
+    const speedId = genHexId();
+    speeds.push(buildSpeedMaterial(speedId, vMatId, groupSpeed, g.totalTargetUs));
+
+    // C. 组视频声道映射 + 人声分离占位（视频原声已静音，但容器非空）
+    soundChannelMappings.push(buildSoundChannelMapping(genHexId(), vMatId, g.totalTargetUs));
+    vocalSeparations.push(buildVocalSeparation(genHexId(), vMatId, g.totalTargetUs));
+
+    groupVideoId.set(gid, vMatId);
+    groupSpeedId.set(gid, speedId);
+  }
+
+  for (let i = 0; i < shots.length; i++) {
+    const shot = shots[i];
+    const gid = shotGids[i];
+    const durationUs = resolveDurationUs(shot);
     const chunk = shot.chunkData as Record<string, unknown> | null | undefined;
-    const videoPath = chunk?.filePath
-      ? String(chunk.filePath).replace(/\\/g, '/')
-      : safeMediaPath;
-
-    // ffprobe 严格 fail-fast：找不到则抛错（probeMap 必须覆盖所有用到的视频文件）
-    const probe = probeMap.get(videoPath);
-    if (!probe) {
-      throw new Error(
-        `[assembleMaterials] 缺少视频探针结果：${videoPath}。` +
-        `请先调用 probeVideoBatchSync 批量获取元数据后再装配。`,
-      );
-    }
-
-    // A. 视频素材（54 字段）
-    videos.push(buildVideoMaterial(shot, vMatId, safeMediaPath, durationUs, probe));
-
+    const vMatId = groupVideoId.get(gid)!;
     const speed = shot.appliedSpeedFactor || 1.0;
+
     const ref: ShotMaterialRef = {
       shotId: shot.id,
       videoId: vMatId,
       durationUs,
-      sourceStartUs: shot.chunkData?.startMs != null
-        ? Math.round(Number(shot.chunkData.startMs) * 1000)
+      sourceStartUs: chunk?.startMs != null
+        ? Math.round(Number(chunk.startMs) * 1000)
         : 0,
+      sourceDurationUs: resolveSourceDurationUs(shot),
       speed,
       keepOriginalAudio: shot.keepOriginalAudio === true,
+      // 组内非首段共享首段视频素材；轨道层依据 sceneGroupId 合并为单 clip
+      sceneGroupId: shot.sceneGroupId || undefined,
     };
-
-    // B. 变速：每个视频段一条（即便 speed=1.0 也要填充，保证 speeds 非空）
-    const speedId = genHexId();
-    ref.speedRefId = speedId;
-    speeds.push(buildSpeedMaterial(speedId, vMatId, speed, durationUs));
-
-    // C. 视频声道映射 + 人声分离占位（视频原声已静音，但容器非空）
-    soundChannelMappings.push(buildSoundChannelMapping(genHexId(), vMatId, durationUs));
-    vocalSeparations.push(buildVocalSeparation(genHexId(), vMatId, durationUs));
+    ref.speedRefId = groupSpeedId.get(gid)!;
 
     // D. AI 配音音频（TTS 轨，type=extract_music）
     if (shot.audioPath) {

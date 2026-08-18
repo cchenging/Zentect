@@ -11,9 +11,9 @@ import type { Step3Input } from '../types';
 function makeInput(overrides: Partial<Step3Input> = {}): Step3Input {
   return {
     vlmFrames: [
-      { url: '/frames/01.jpg', description: '城市天际线夜景', editing: false, confirmed: true },
-      { url: '/frames/02.jpg', description: '繁忙的十字路口', editing: false, confirmed: true },
-      { url: '/frames/03.jpg', description: '人物特写微笑', editing: false, confirmed: false },
+      { url: '/frames/01.jpg', description: '城市天际线夜景', editing: false, confirmed: true, timeMs: 0 },
+      { url: '/frames/02.jpg', description: '繁忙的十字路口', editing: false, confirmed: true, timeMs: 4000 },
+      { url: '/frames/03.jpg', description: '人物特写微笑', editing: false, confirmed: false, timeMs: 8000 },
     ],
     scriptStyle: '硬核科普',
     speechRate: 4.5,
@@ -344,6 +344,48 @@ describe('ScriptGenerator', () => {
     it('空数组应正常返回', () => {
       const result = generator.parseScriptResponse('[]');
       expect(result).toHaveLength(0);
+    });
+
+    it('应按下标从 vlmFrames 填充 startMs/durationMs（时间轴锚定）', () => {
+      const raw = makeLLMResponse([
+        { shotId: 's_01', text: '第一段', duration: 3 },
+        { shotId: 's_02', text: '第二段', duration: 3 },
+        { shotId: 's_03', text: '第三段', duration: 3 },
+      ]);
+      const frames = [
+        { url: '/f1.jpg', description: 'a', editing: false, confirmed: true, timeMs: 0 },
+        { url: '/f2.jpg', description: 'b', editing: false, confirmed: true, timeMs: 4000 },
+        { url: '/f3.jpg', description: 'c', editing: false, confirmed: true, timeMs: 8000 },
+      ];
+      const result = generator.parseScriptResponse(raw, 4.5, frames as any);
+      expect(result[0].startMs).toBe(0);
+      expect(result[0].durationMs).toBe(4000);
+      expect(result[1].startMs).toBe(4000);
+      expect(result[1].durationMs).toBe(4000);
+      expect(result[2].startMs).toBe(8000);
+      expect(result[2].durationMs).toBeUndefined();
+    });
+
+    it('段落数超出帧数时，超出部分沿用最后一帧时间（锚定不漂移）', () => {
+      const raw = makeLLMResponse([
+        { shotId: 's_01', text: 'a', duration: 3 },
+        { shotId: 's_02', text: 'b', duration: 3 },
+        { shotId: 's_03', text: 'c', duration: 3 },
+      ]);
+      const frames = [
+        { url: '/f1.jpg', description: 'a', editing: false, confirmed: true, timeMs: 1000 },
+      ];
+      const result = generator.parseScriptResponse(raw, 4.5, frames as any);
+      expect(result[0].startMs).toBe(1000);
+      expect(result[1].startMs).toBe(1000);
+      expect(result[2].startMs).toBe(1000);
+    });
+
+    it('无 vlmFrames 时 startMs/durationMs 为 undefined（不破坏旧调用）', () => {
+      const raw = makeLLMResponse([{ shotId: 's_01', text: 'a', duration: 3 }]);
+      const result = generator.parseScriptResponse(raw, 4.5);
+      expect(result[0].startMs).toBeUndefined();
+      expect(result[0].durationMs).toBeUndefined();
     });
   });
 

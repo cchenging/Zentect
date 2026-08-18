@@ -130,4 +130,14 @@ export interface CompileShot extends Shot {
   videoTimelineEndMs?: number;
   /** 是否保留原片原声（true=原声段，不配 TTS 配音，剪映导出时视频段音量开足） */
   keepOriginalAudio?: boolean;
+  /**
+   * 🎬 阶段 A：所属物理镜头父 ID（enrichMatchRelations 解析 chunkData.parentChunkId）。
+   * 同一物理镜头内被细分/拆分出的连续子段共享同一 parentChunkId。
+   */
+  parentChunkId?: string;
+  /** 🎬 阶段 A：与前一段的时间线关系（FIRST / SCENE_SWITCH / SAME_SCENE_CONTINUOUS） */
+  prevRelation?: 'FIRST' | 'SCENE_SWITCH' | 'SAME_SCENE_CONTINUOUS';
+  /** 🎬 阶段 A：同物理镜头连续兄弟段的合并组 id（命中 SAME_SCENE_CONTINUOUS 且形成组时设置），
+   *  装配层据此把组内兄弟段合并为单个视频 clip（消除假转场与物理接缝） */
+  sceneGroupId?: string;
 }

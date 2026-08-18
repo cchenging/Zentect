@@ -148,6 +148,16 @@ export interface MediaItem {
 export interface VideoChunk {
   id: string; filePath?: string; coverPath?: string; thumbnail?: string; name?: string;
   startMs: number; endMs: number; motionScore?: number;
+  /**
+   * 🎬 阶段 A 父子语义：所属物理镜头 ID（Python 场景切片的原始镜头边界 / Node 超长拆分父段）。
+   * 同一物理镜头内被细分/拆分出的多个连续子段共享同一 parentChunkId，
+   * 导出层据此识别"假转场"（同镜头兄弟段被当独立镜头硬切）并合并为单个 clip。
+   */
+  parentChunkId?: string;
+  /** 所属物理镜头起始时间（ms） */
+  parentStartMs?: number;
+  /** 在物理镜头内的子段序号（0 起） */
+  segmentIndexInParent?: number;
 }
 
 /** 背景音乐 */

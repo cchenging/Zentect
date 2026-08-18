@@ -137,13 +137,19 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
 
         const vlmFramesData = shots
           .filter((s: any) => s.visionText || (s.contextFrames && s.contextFrames.length > 0))
-          .map((s: any) => ({
-            url: (Array.isArray(s.contextFrames) && s.contextFrames.length > 0)
-              ? s.contextFrames[0] : (s.coverPath || ''),
-            description: s.visionText || '',
-            editing: false,
-            confirmed: !!(s.visionText && s.visionText.trim()),
-          }));
+          .map((s: any) => {
+            const startMs = s.startMs !== undefined ? s.startMs : Math.round((s.start || 0) * 1000);
+            return {
+              url: (Array.isArray(s.contextFrames) && s.contextFrames.length > 0)
+                ? s.contextFrames[0] : (s.coverPath || ''),
+              description: s.visionText || '',
+              editing: false,
+              confirmed: !!(s.visionText && s.visionText.trim()),
+              // 🎯 锚定透传：帧绝对时间（毫秒/可读格式），供 step3 填充段落 startMs、步骤5 按时间轴锚定
+              timeMs: startMs,
+              timeStr: formatSeconds(s.start),
+            };
+          });
         if (vlmFramesData.length > 0) { useStep2Store.getState().setVlmFrames(vlmFramesData); }
 
         updatedMediaItems = updatedMediaItems.map(item => {

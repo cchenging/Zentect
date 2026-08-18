@@ -153,6 +153,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # temp / 编辑器临时文件
+/temp/
 *.tmp
 *.swp
 *.swo

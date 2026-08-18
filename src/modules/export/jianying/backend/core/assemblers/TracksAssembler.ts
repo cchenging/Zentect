@@ -74,18 +74,65 @@ export function assembleTracks(
   }
 
   // -- 逐镜头轨道 --
-  for (const ref of shotRefs) {
-    // A. 视频主轨（原声段保留原片原声并放大，普通段静音由 TTS 承载）
+  // 🎬 阶段 A：同一 sceneGroupId 的连续兄弟段合并为单个视频 clip。
+  // 合并后仅 1 条视频 segment：source_timerange 从组首源起点起、时长 = 组内各成员真实源时长累加；
+  // target_timerange 时长 = 各成员目标时长累加（已按各自 speed 换算，用户评审隐患2）；
+  // speed 取组首段。TTS 配音与字幕仍逐段保留（配音/字幕逐句，不受合并影响）。
+  let openVideo: {
+    ref: ShotMaterialRef;
+    targetStart: number;
+    totalTargetUs: number;
+    totalSourceUs: number;
+    sourceStartUs: number;
+    speed: number;
+    keepOriginalAudio: boolean;
+  } | null = null;
+
+  const flushVideo = () => {
+    if (!openVideo) return;
+    // 🎬 阶段 A：合并 clip 的 speed 用「源总时长 / 目标总时长」整体换算。
+    // 组内各成员已按各自 speed 换算过 target 时长，speed 不整体换算则
+    // source_timerange.duration 与 target_timerange.duration 比例不自洽（用户评审隐患2）。
+    const totalTargetUs = openVideo.totalTargetUs;
+    const totalSourceUs = openVideo.totalSourceUs;
+    const mergedSpeed =
+      totalTargetUs > 0 && totalSourceUs > 0 ? totalSourceUs / totalTargetUs : openVideo.speed;
     videoTrack.segments.push(
       buildVideoSegment(
-        ref.videoId,
-        globalOffset,
-        ref.durationUs,
-        ref.sourceStartUs,
-        ref.speed,
-        ref.keepOriginalAudio,
+        openVideo.ref.videoId,
+        openVideo.targetStart,
+        totalTargetUs,
+        openVideo.sourceStartUs,
+        mergedSpeed,
+        openVideo.keepOriginalAudio,
+        totalSourceUs,
       ),
     );
+    openVideo = null;
+  };
+
+  for (const ref of shotRefs) {
+    const isContinuation =
+      !!openVideo &&
+      !!ref.sceneGroupId &&
+      openVideo.ref.sceneGroupId === ref.sceneGroupId;
+
+    if (isContinuation && openVideo) {
+      // 同组兄弟段：并入当前打开的 clip，不新增 segment
+      openVideo.totalTargetUs += ref.durationUs;
+      openVideo.totalSourceUs += ref.sourceDurationUs ?? ref.durationUs;
+    } else {
+      flushVideo();
+      openVideo = {
+        ref,
+        targetStart: globalOffset,
+        totalTargetUs: ref.durationUs,
+        totalSourceUs: ref.sourceDurationUs ?? ref.durationUs,
+        sourceStartUs: ref.sourceStartUs,
+        speed: ref.speed,
+        keepOriginalAudio: ref.keepOriginalAudio === true,
+      };
+    }
 
     // B. AI 配音轨（TTS，放大音量避免听不清）
     if (ref.audioId) {
@@ -103,6 +150,7 @@ export function assembleTracks(
 
     globalOffset += ref.durationUs;
   }
+  flushVideo();
 
   return {
     tracks: [videoTrack, bgmTrack, ttsTrack, textTrack],

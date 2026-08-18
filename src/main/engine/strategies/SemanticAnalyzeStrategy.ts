@@ -92,21 +92,31 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       }
     }
 
-    /** 步骤2：检测视频场景切片（DB 持久化缓存优先，命中秒级复用，未命中调 daemon 后写库） */
+    /** 步骤2：检测视频场景切片（DB 持久化缓存优先，命中秒级复用，未命中调 daemon 后写库）
+     *  🎬 阶段 B 三层分离：Python 侧一次性产出 chunks（Layer1 镜头级）+ matchSegments（Layer2 匹配候选级）。
+     *    - chunks        → 帧描述聚合目标 + 前端切片池展示 + 导出蒙太奇衔接判断依据
+     *    - matchSegments → KM 匹配候选池（每 3s 一段，含 parentChunkId，天然支持 SAME_SCENE 识别） */
     onProgress(20, '正在检测视频场景切片...');
-    let videoChunks: any[] = [];
+    let chunks: any[] = [];
+    let matchSegments: any[] = [];
     try {
       /** 🔧 先查 SQLite 切片缓存：同视频跨会话复用，避免每次 80 秒重切片 */
-      const cachedChunks = new VideoChunkRepository().getByMediaId(mediaPath);
+      const cached = new VideoChunkRepository().getByMediaId(mediaPath);
       /** 🎨 P1 缓存契约校验：切片须含 colorHistogram（相邻切片色调连续性特征，P1 新增）。
        *  旧版缓存缺该字段，按"错就错"原则视为数据契约不满足，失效重切（不能静默跳过色调维度）。 */
-      const cacheUsable = cachedChunks && cachedChunks.length > 0
-        && cachedChunks.some((c: any) => Array.isArray(c.colorHistogram) && c.colorHistogram.length > 0);
+      const cacheUsable = cached && cached.chunks.length > 0
+        && cached.chunks.some((c: any) => Array.isArray(c.colorHistogram) && c.colorHistogram.length > 0);
       if (cacheUsable) {
-        videoChunks = cachedChunks;
-        AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 命中视频切片 DB 缓存，共 ${videoChunks.length} 个切片`);
+        chunks = cached.chunks;
+        matchSegments = cached.matchSegments && cached.matchSegments.length > 0 ? cached.matchSegments : [];
+        /** 阶段 B 兼容：v1 老缓存只有 chunks 数组（无 matchSegments）→ 用 Node 侧兜底生成候选段，
+         *  避免老缓存全部失效强制重切片（ADR B-3 要求的降级分支）。 */
+        if (matchSegments.length === 0) {
+          matchSegments = SemanticAnalyzeStrategy.buildMatchSegmentsFromChunks(chunks);
+        }
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 命中视频切片 DB 缓存，镜头 ${chunks.length} 个，匹配候选段 ${matchSegments.length} 个`);
       } else {
-        if (cachedChunks && cachedChunks.length > 0) {
+        if (cached && cached.chunks.length > 0) {
           AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 旧版切片缓存缺色调特征（colorHistogram），按契约校验失效，重新切片以启用衔接优化`);
         }
         const chunksDir = path.join(cacheDir, 'video_chunks');
@@ -116,63 +126,28 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           output_dir: chunksDir,
           threshold: 0.3,
           min_chunk_duration_sec: 1.0,
-          /** 🔧 Phase 0 修复：强制最大切片时长 3 秒，防止"场景切换少"的视频出现 30+ 秒的超大 chunk。
-           *  daemon 实现若忽略此字段，后续 Node 侧 splitLongChunks（>6s）会做第二层兜底拆分。
-           *  匹配粒度：短字幕（1~2s） + 2~3s chunk，匹配才不会全部挤在同一个长 chunk 里。 */
+          /** 阶段 B：max_chunk_duration_sec 保留请求契约兼容（Python 侧不再据此细分镜头）；
+           *  target_seg_duration_sec=3 让 Python 侧按 3s 拆分生成 matchSegments 候选段。 */
           max_chunk_duration_sec: 3.0,
+          target_seg_duration_sec: 3.0,
           /** 用视频路径作为缓存 key：同视频重复匹配走 daemon 的 PROJECT_MATERIAL_POOL，秒级返回 */
           mediaId: mediaPath,
         }, { timeout: 300000 });
         const chunkData = chunkResult?.data || chunkResult;
-        videoChunks = Array.isArray(chunkData) ? chunkData : [];
-        /** 切片成功后持久化到 SQLite，供后续任意会话复用 */
-        if (videoChunks.length > 0) {
-          new VideoChunkRepository().save(mediaPath, videoChunks);
+        chunks = Array.isArray(chunkData)
+          ? chunkData
+          : (Array.isArray((chunkData as any)?.chunks) ? (chunkData as any).chunks : []);
+        const segs = Array.isArray((chunkData as any)?.matchSegments) ? (chunkData as any).matchSegments : [];
+        /** 阶段 B 兜底：daemon 为旧版本（仅返回数组、无 matchSegments）时原地生成候选段，避免候选池契约缺项 */
+        matchSegments = segs.length > 0 ? segs : SemanticAnalyzeStrategy.buildMatchSegmentsFromChunks(chunks);
+        /** 切片成功后持久化到 SQLite，供后续任意会话复用（阶段 B 缓存契约升级为 {version:2,chunks,matchSegments}） */
+        if (chunks.length > 0) {
+          new VideoChunkRepository().save(mediaPath, chunks, matchSegments);
         }
-        AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 场景切片检测完成，共 ${videoChunks.length} 个切片`);
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 场景切片检测完成，镜头 ${chunks.length} 个，匹配候选段 ${matchSegments.length} 个`);
       }
     } catch (e: any) {
       AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] 场景切片检测失败: ${e.message}，回退到帧匹配模式`);
-    }
-    /** 🔧 Phase 0 修复第二层兜底：把 > 6s 的超长 chunk 强拆成 3s 一段的子 chunk。
-     *  适用情形：
-     *    - daemon 的 detect_scene_chunks 未实现 max_chunk_duration_sec 参数
-     *    - SQLite 老缓存中已经存在 31.6s 这类超长 chunk，不想失效重切片浪费 80s
-     *  拆分策略：子 chunk id 追加 _sN 后缀；start/end 按 3s 切分；其他字段（cover_path/histogram/description 等）原样继承，
-     *    后续 L258+ 的帧描述聚合会基于新的 start/end 重新给每个子 chunk 填入正确的 description/emotion，不会互相污染。 */
-    if (videoChunks.length > 0) {
-      const MAX_CHUNK_MS = 6000;
-      const SEGMENT_MS = 3000;
-      const split: any[] = [];
-      let hadLong = 0;
-      for (const c of videoChunks) {
-        const start = Number(c.startMs) || 0;
-        const end = Number(c.endMs) || start;
-        const dur = end - start;
-        if (dur <= MAX_CHUNK_MS) { split.push(c); continue; }
-        hadLong++;
-        let cur = start, idx = 0;
-        while (cur < end) {
-          const segEnd = Math.min(end, cur + SEGMENT_MS);
-          split.push({
-            ...c,
-            id: `${c.id || 'chunk'}_s${idx}`,
-            startMs: cur,
-            endMs: segEnd,
-            // 注：老 description/shotType 被故意保留不清理，帧聚合时 L258 的赋值会覆盖非空有值的情况，
-            // 且 L266 之后 parseVlmDescriptionToStructured 的兜底会再次从 description 解析，
-            // 不会引入拆分后数据不一致的 bug。
-          });
-          cur = segEnd;
-          idx++;
-        }
-      }
-      if (hadLong > 0) {
-        AppLogger.info(LOG_TAGS.AI_AGENT,
-          `[镜头匹配] Phase 0 切片兜底拆分：发现 ${hadLong} 个超长(>${MAX_CHUNK_MS / 1000}s)切片，` +
-          `按 ${SEGMENT_MS / 1000}s/段 拆成 ${split.length} 个子切片（原 ${videoChunks.length}）`);
-        videoChunks = split;
-      }
     }
 
     /** 步骤2 逐帧 VLM 描述聚合：按时间轴把帧描述归入切片（chunk.description），
@@ -207,7 +182,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         characters: mergedRoles.size > 0 ? Array.from(mergedRoles) : undefined,
       };
     });
-    if (frameDescs.length > 0 && videoChunks.length > 0) {
+    if (frameDescs.length > 0 && chunks.length > 0) {
       /**
        * 双指针聚合帧描述到切片：sortedDescs 与 videoChunks 都按时间有序，
        * 维护 [winLeft, winRight) 滑窗，每帧只入/出窗一次，复杂度从 O(C×F) 降到 O(F + C)。
@@ -281,7 +256,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       let winLeft = 0; // sortedDescs[winLeft..winRight-1] 属于当前 chunk 的 [start-500, end+500] 窗口
       let winRight = 0;
 
-      for (const chunk of videoChunks) {
+      for (const chunk of chunks) {
         const start = Number(chunk.startMs) || 0;
         const end = Number(chunk.endMs) || start;
         const winStart = start - 500;
@@ -319,18 +294,37 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           VisionExtractStrategy.fillStructuredFromDescription(chunk, chunk.description);
         }
       }
-      const withDesc = videoChunks.filter((c) => (c.description || '').trim().length > 0).length;
-      const withEmotion = videoChunks.filter((c) => (c.emotion || '').trim().length > 0).length;
-      const withShotType = videoChunks.filter((c) => (c.shotType || '').trim().length > 0).length;
-      const withCharacters = videoChunks.filter((c) => Array.isArray(c.characters) && c.characters.length > 0).length;
-      const withKeywords = videoChunks.filter((c) => Array.isArray(c.keywords) && c.keywords.length > 0).length;
+      const withDesc = chunks.filter((c) => (c.description || '').trim().length > 0).length;
+      const withEmotion = chunks.filter((c) => (c.emotion || '').trim().length > 0).length;
+      const withShotType = chunks.filter((c) => (c.shotType || '').trim().length > 0).length;
+      const withCharacters = chunks.filter((c) => Array.isArray(c.characters) && c.characters.length > 0).length;
+      const withKeywords = chunks.filter((c) => Array.isArray(c.keywords) && c.keywords.length > 0).length;
       AppLogger.info(LOG_TAGS.AI_AGENT,
         `[镜头匹配] 帧描述聚合完成（含 Phase 0 结构化回捞）：` +
-        `${withDesc}/${videoChunks.length} 带画面描述，` +
-        `${withEmotion}/${videoChunks.length} 带情绪，` +
-        `${withShotType}/${videoChunks.length} 带景别shotType，` +
-        `${withCharacters}/${videoChunks.length} 带角色characters，` +
-        `${withKeywords}/${videoChunks.length} 带关键词keywords`);
+        `${withDesc}/${chunks.length} 带画面描述，` +
+        `${withEmotion}/${chunks.length} 带情绪，` +
+        `${withShotType}/${chunks.length} 带景别shotType，` +
+        `${withCharacters}/${chunks.length} 带角色characters，` +
+        `${withKeywords}/${chunks.length} 带关键词keywords`);
+      /** 🎬 阶段 B：把镜头级语义字段 inherit 到匹配候选级 matchSegments。
+       *  matchSegments 是 Python 侧按 3s 拆出的候选段（无独立 VLM 帧聚合），
+       *  它们的 description/emotion/shotType/characters 全部继承自所属物理镜头的聚合结果，
+       *  保证 KM 的"文案↔候选段"匹配与"文案↔镜头"匹配共享同一套语义口径。 */
+      if (matchSegments.length > 0) {
+        /** 镜头级 chunks 的 id 形如 chunk_003、parentChunkId 形如 scene_003，需按 parentChunkId 建索引，
+         *  候选段 seg.parentChunkId 才能命中其所属物理镜头。 */
+        const chunkById = new Map<string, any>();
+        for (const c of chunks) chunkById.set(String(c.parentChunkId || c.id), c);
+        for (const seg of matchSegments) {
+          const parent = chunkById.get(String(seg.parentChunkId));
+          if (!parent) continue;
+          if (parent.description) seg.description = parent.description;
+          if (parent.emotion) seg.emotion = parent.emotion;
+          if (parent.shotType) seg.shotType = parent.shotType;
+          if (Array.isArray(parent.characters) && parent.characters.length > 0) seg.characters = parent.characters;
+          if (Array.isArray(parent.keywords) && parent.keywords.length > 0) seg.keywords = parent.keywords;
+        }
+      }
     }
 
     /** 步骤3：构建 KM 匹配请求 */
@@ -353,7 +347,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         originalQueries.map((q) => () => Promise.resolve().then(() => ({
           shotId: q.shotId,
           query: q,
-          loc: SemanticAnalyzeStrategy.locateOriginalClip(q.text, asrLines, videoChunks),
+          loc: SemanticAnalyzeStrategy.locateOriginalClip(q.text, asrLines, matchSegments),
         }))),
         8,
       );
@@ -376,17 +370,17 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       /** 全部段落都是已命中的原声段落：直接组装结果，无需 KM */
       onProgress(100, '原声段落定位完成（无语义匹配段落）');
       const matches = allQueries.map((q) => SemanticAnalyzeStrategy.buildMatchResult(q, originalMatches.get(q.shotId), true));
-      return { matches, segments: [], videoChunks, bgmBeats, originalMatchedCount: originalMatches.size };
+      return { matches, segments: [], videoChunks: chunks, matchSegments, bgmBeats, originalMatchedCount: originalMatches.size };
     }
 
     /** 🔧 P2 #11 方案 A：KM Top-K 预选（Node 侧整体收窄 videoChunks，不改 daemon 契约）。
      *   仅在"送 KM 的查询子集"上执行预选，避免原声段落导致 query 池与 chunk 池尺度不一致。 */
-    const preselect = SemanticAnalyzeStrategy.preselectTopK(kmQueries, videoChunks, {
+    const preselect = SemanticAnalyzeStrategy.preselectTopK(kmQueries, matchSegments, {
       logProjectId: _context.projectId ? `[${_context.projectId}]` : '',
     });
-    /** 记住原始 chunks，用于 matches→segment 回填（chunkData 里完整原始字段） */
+    /** 记住原始匹配候选段，用于 matches→segment 回填（chunkData 里完整原始字段） */
     const originalChunksById = new Map<string, any>();
-    for (const c of videoChunks) originalChunksById.set(String(c.id), c);
+    for (const c of matchSegments) originalChunksById.set(String(c.id), c);
     /** 用预选过滤后的 chunk 池跑 KM；audit 用 perQueryTopK 放在闭包内 */
     const kmVideoChunks = preselect.filteredChunks;
     const perQueryTopKForAudit = preselect.perQueryTopK;
@@ -425,14 +419,14 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
       onProgress(80, '匹配完成，正在整理结果...');
 
-      /** 🔧 P2 缓存落库：daemon 返回带 clipZhEmbedding 的切片子集，按 id 合并回写全量 videoChunks 并持久化，
+      /** 🔧 P2 缓存落库：daemon 返回带 clipZhEmbedding 的切片子集，按 id 合并回写全量 matchSegments 并持久化，
        *  下次匹配命中 DB 缓存时免去中文 CLIP 图像重编码（性能优化，不改变匹配结果）。 */
       const kmChunks: any[] = (kmResult as any)?.videoChunks || [];
       if (kmChunks.length > 0) {
         const kmById = new Map<string, any>();
         for (const c of kmChunks) kmById.set(String(c.id), c);
         let merged = 0;
-        for (const c of videoChunks) {
+        for (const c of matchSegments) {
           const enriched = kmById.get(String(c.id));
           if (enriched && Array.isArray(enriched.clipZhEmbedding) && enriched.clipZhEmbedding.length > 0) {
             c.clipZhEmbedding = enriched.clipZhEmbedding;
@@ -441,8 +435,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         }
         if (merged > 0) {
           try {
-            new VideoChunkRepository().save(mediaPath, videoChunks);
-            AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] clipZhEmbedding 缓存落库：${merged}/${videoChunks.length} 切片已回写 DB`);
+            new VideoChunkRepository().save(mediaPath, chunks, matchSegments);
+            AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] clipZhEmbedding 缓存落库：${merged}/${matchSegments.length} 切片已回写 DB`);
           } catch (e: any) {
             AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] clipZhEmbedding 缓存落库失败: ${e.message}`);
           }
@@ -482,7 +476,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       SemanticAnalyzeStrategy.auditPreselectTopK(perQueryTopKForAudit, matches, _context.projectId);
 
       onProgress(100, '镜头匹配完成');
-      return { matches, segments: matchData, videoChunks, bgmBeats, originalMatchedCount: originalMatches.size };
+      return { matches, segments: matchData, videoChunks: chunks, matchSegments, bgmBeats, originalMatchedCount: originalMatches.size };
     } catch (e: any) {
       AppLogger.error(LOG_TAGS.AI_AGENT, 'KM 匹配算法失败，回退到 CLIP 帧匹配', e);
 
@@ -503,8 +497,52 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         }
         return fallbackById.get(q.shotId) || SemanticAnalyzeStrategy.buildMatchResult(q, null, false);
       });
-      return { matches, segments: fallback.segments, videoChunks, bgmBeats, originalMatchedCount: originalMatches.size };
+      return { matches, segments: fallback.segments, videoChunks: chunks, matchSegments, bgmBeats, originalMatchedCount: originalMatches.size };
     }
+  }
+
+  /** 🎬 阶段 B 兜底：把镜头级 chunks 原地生成匹配候选级 matchSegments。
+   *  适用：v1 老缓存（只有 chunks 数组）或旧版 daemon（未实现 matchSegments）时，
+   *  按 3s 粒度对 >6s 的物理镜头拆分，短镜头原样保留；id 语义与 Python 侧一致（scene_xxx_segN），
+   *  parentChunkId 指向物理镜头，天然供导出层 SAME_SCENE 识别与衔接判断。 */
+  static buildMatchSegmentsFromChunks(chunks: any[]): any[] {
+    const MAX_CHUNK_MS = 6000;
+    const SEGMENT_MS = 3000;
+    const segs: any[] = [];
+    for (const c of chunks) {
+      const start = Number(c.startMs) || 0;
+      const end = Number(c.endMs) || start;
+      const dur = end - start;
+      const parentId = c.parentChunkId || c.id || 'chunk';
+      const parentStart = c.parentStartMs != null ? c.parentStartMs : start;
+      if (dur <= MAX_CHUNK_MS) {
+        segs.push({
+          ...c,
+          id: `${parentId}_seg0`,
+          parentChunkId: parentId,
+          parentStartMs: parentStart,
+          segmentIndexInParent: 0,
+        });
+        continue;
+      }
+      let cur = start, idx = 0;
+      while (cur < end) {
+        const segEnd = Math.min(end, cur + SEGMENT_MS);
+        segs.push({
+          ...c,
+          id: `${parentId}_seg${idx}`,
+          parentChunkId: parentId,
+          parentStartMs: parentStart,
+          segmentIndexInParent: idx,
+          startMs: cur,
+          endMs: segEnd,
+          durationMs: segEnd - cur,
+        });
+        cur = segEnd;
+        idx++;
+      }
+    }
+    return segs;
   }
 
   /**

@@ -4,6 +4,7 @@
 // 设计原则：错就错、不降级、不兜底；所有失败场景 fail-fast 抛错，不静默用默认值。
 
 import type { ExportProject, ExportShot } from '../contracts/ExportProject';
+import { enrichMatchRelations } from './enrichMatchRelations';
 import { AppError, ErrorCode } from '../../infra/error/AppError';
 
 // ──────────────────────────────────────────────
@@ -145,9 +146,13 @@ export function assembleExportProjectSync(
     };
   });
 
-  // 5. S8 导出范围过滤：集中执行，无命中 fail-fast（不静默降级为全部）
+  // 5. 阶段 A 相邻镜头关系增强：识别同物理镜头连续子段（假转场），写入 parentChunkId/prevRelation/sceneGroupId
+  //    在 S8 过滤之前执行——基于完整时间线计算组归属，过滤只做子集投影不破坏组内关系。
+  const enrichedShots = enrichMatchRelations(shots);
+
+  // 6. S8 导出范围过滤：集中执行，无命中 fail-fast（不静默降级为全部）
   const exportRange = options.exportRange ?? 'all';
-  const scopedShots = applyExportRange(shots, exportRange, options.selectedShotIds);
+  const scopedShots = applyExportRange(enrichedShots, exportRange, options.selectedShotIds);
 
   // 6. BGM 装配：优先 extractedBgm（mediaItems type=audio 且 extractedBgm）→ 其次 activeBgm → 都无则 undefined
   const bgmItem = mediaItems.find((mi: any) => mi && mi.type === 'audio' && mi.extractedBgm);
@@ -156,7 +161,7 @@ export function assembleExportProjectSync(
     bgmPath = deps.dehydratePath(bgmPath).replace('file://', '');
   }
 
-  // 7. 字幕样式（按需读取）
+  // 8. 字幕样式（按需读取）
   let subtitleStyle: Record<string, unknown> | undefined;
   if (options.includeSubtitleStyle !== false) {
     if (!deps.settingsService || typeof deps.settingsService.getSubtitleStyle !== 'function') {
@@ -179,7 +184,7 @@ export function assembleExportProjectSync(
     // ratio / resolution / fps / preview 属出口专属参数，由各出口自行写入 job.payload，不在此处装配
   };
 
-  // 9. extras：按 extraPayloadFields 透传原始 DB 结构化字段（剪映端需要 scriptParagraphs 做字幕段落）
+  // 10. extras：按 extraPayloadFields 透传原始 DB 结构化字段（剪映端需要 scriptParagraphs 做字幕段落）
   const extras: Record<string, unknown> = {};
   const extraFields = options.extraPayloadFields || [];
   for (const f of extraFields) {

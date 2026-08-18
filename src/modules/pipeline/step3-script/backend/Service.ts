@@ -287,7 +287,8 @@ ${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
       const duration = raw.duration || 3;
       // 🎯 P3 时间轴锚定：按下标从 vlmFrames 取帧绝对时间作为 startMs（相邻帧差值作为 durationMs）。
       //    段落数超出帧数时，超出部分沿用最后一帧时间（LLM 偶发多输出段落时锚定不漂移）。
-      const frame = vlmFrames && vlmFrames[index];
+      const lastFrame = vlmFrames && vlmFrames[vlmFrames.length - 1];
+      const frame = vlmFrames && (vlmFrames[index] || lastFrame);
       const nextFrame = vlmFrames && vlmFrames[index + 1];
       const startMs = frame?.timeMs != null ? Math.round(frame.timeMs) : undefined;
       const durationMs = (frame?.timeMs != null && nextFrame?.timeMs != null)
