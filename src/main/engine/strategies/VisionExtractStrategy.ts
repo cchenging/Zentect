@@ -391,6 +391,282 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     };
   }
 
+  /**
+   * 🎭 Phase 0 新增：从 VLM 输出的自然语言 description 文本中，正则回捞结构化字段（双保险兜底）。
+   *
+   * 背景：VLM 即使被 Prompt 要求输出 JSON 结构化字段，仍有较高概率违反约定——把【特写】/主体:xxx/情绪:xxx/场景:xxx
+   * 这类结构化标签直接写进自然语言 description 里（8月12日真实项目诊断中 47% description 覆盖率的 chunks 全是这种格式）。
+   * jsonItem.shotType / jsonItem.characters 就会是 undefined，导致 Step3/Step5 丢掉这些高权重匹配信号。
+   *
+   * 适用输入格式示例（任一前缀命中即可，多种混合格式并存）：
+   *   "【中景】男子搂着女子肩膀大笑 场景:餐厅聚餐 主体:黑衣男子 情绪:开怀大笑，表情愉悦 光影:温馨明亮 看点:欢乐聚餐氛围"
+   *   "【特写】一双布满老茧的手  主体：老妇人  氛围：怀旧温暖  关键词：手、老茧、皱纹、岁月痕迹"
+   *   "[近景] 张三和李四拥抱在一起  情绪：激动，热泪盈眶  地点：医院门口  关键人物：张三、李四"
+   *
+   * 提取规则（多来源取并集，不覆盖已有非空真实值——仅填补 undefined/空字符串的"缺口"）：
+   *   1. 【...】/[...] 开头括号 → 如果括号内命中景别词白名单，填入 shotType（若不是景别词则放到 keywords 里）
+   *   2. 中文冒号/英文冒号前缀字段（全半角兼容）：
+   *      - 情绪/氛围/基调 → emotion（取第一个逗号/分号前的核心情绪词，太长截断）
+   *      - 主体/核心人物/角色/人物/主角 → characters[]（按"和/与/及、，； "拆分）
+   *      - 景别/镜头/镜头类型/镜头语言 → shotType
+   *      - 场景/地点/环境/空间 → keywords（场景关键词）
+   *      - 看点/冲突/张力/核心信息 → keywords（剧情关键词）
+   *      - 光影/光线/色调/氛围/构图 → keywords（氛围关键词）
+   *      - 关键词/关键字/标签 → keywords 数组原样拆分
+   *
+   * @param rawDescription 任意 VLM 输出的 description 文本（可能 null/undefined/空）
+   * @returns 提取到的结构化增量对象（所有字段缺省 undefined/falsy，只填成功提取到的值，不产生占位假值）
+   */
+  public static parseVlmDescriptionToStructured(
+    rawDescription: string | null | undefined,
+  ): {
+    shotType?: string;
+    emotion?: string;
+    characters?: string[];
+    keywords?: string[];
+  } {
+    if (!rawDescription) return {};
+    const desc = String(rawDescription).trim();
+    if (desc.length === 0) return {};
+
+    let shotType: string | undefined;
+    let emotion: string | undefined;
+    const charactersSet = new Set<string>();
+    const keywordsSet = new Set<string>();
+
+    /** 景别白名单：命中括号/冒号后才归类为 shotType，否则作为普通 keyword */
+    const SHOT_TYPES = new Set([
+      '特写', '近景', '中景', '全景', '远景',
+      '中近景', '中远景', '大特写', '特写镜头', '大全景', '远景镜头',
+      '过肩镜头', '正反打', '反打', '跟拍', '推镜', '拉镜', '主观镜头', '客观镜头',
+      '远景', '空镜头',
+    ]);
+
+    // ========================================================================
+    // Step 1：提取开头的 【...】/[...] 括号内容（同时支持方括号和中文书名号/方头括号）
+    // ========================================================================
+    const bracketMatch = desc.match(/^[【\[\(（《]([^\]】\)）》]{1,20})[】\]\)）》]/);
+    if (bracketMatch && bracketMatch[1]) {
+      let tag = bracketMatch[1].trim();
+      // 括号里可能是 "中景/近景" 这种并列，或 "3-5 中景"，取最长命中的景别词
+      let matchedShot: string | undefined;
+      for (const st of SHOT_TYPES) {
+        if (tag.includes(st)) {
+          if (!matchedShot || st.length > matchedShot.length) matchedShot = st;
+        }
+      }
+      if (matchedShot) {
+        shotType = matchedShot;
+      } else if (tag.length <= 12) {
+        // 不是景别但看起来像短标签（例如"餐厅"/"室外"），扔到 keywords
+        keywordsSet.add(tag);
+      }
+    }
+
+    // ========================================================================
+    // Step 2：按 "字段名:值" 匹配，支持 中文冒号 英文冒号 全角/半角+混合空格
+    //   - 兼容：主体:黑衣男子 / 主体：黑衣男子 / 主体 : 黑衣男子
+    //   - 值截止：遇到 空格+下一个两字以上中文大写字母开头的"字段名:" 格式为止，或字符串尾
+    // ========================================================================
+    const fieldPatterns: Array<{ names: string[]; handler: (val: string) => void }> = [
+      // —— shotType ——
+      {
+        names: ['景别', '镜头', '镜头类型', '镜头语言', '镜头景别'],
+        handler: (v) => {
+          const cleaned = v.trim();
+          let matched: string | undefined;
+          for (const st of SHOT_TYPES) {
+            if (cleaned.includes(st)) {
+              if (!matched || st.length > matched.length) matched = st;
+            }
+          }
+          if (matched) shotType = shotType || matched;
+        },
+      },
+      // —— emotion ——
+      {
+        names: ['情绪', '氛围', '基调', '情感', '表情', '气氛'],
+        handler: (v) => {
+          let cleaned = v.trim();
+          // 只截取第一个主分隔符（逗号/分号/句号/顿号）之前的核心情绪词，过长截断不污染
+          const m = cleaned.match(/^([^，,；;。.、]{1,16})/);
+          if (m) cleaned = m[1].trim();
+          if (cleaned && !/^(无|空|none|未检测)$/i.test(cleaned)) {
+            emotion = emotion || cleaned;
+          }
+        },
+      },
+      // —— characters ——
+      {
+        names: ['主体', '核心人物', '角色', '人物', '主角', '关键人物', '核心主体', '主要人物'],
+        handler: (v) => {
+          const cleaned = v.trim();
+          if (!cleaned || /^(无|无人|none|未检测)$/i.test(cleaned)) return;
+          // 按常见分隔符切分：和 / 与 / 及 / 、 ， ； , ; 空格。
+          // 💥 Phase 0 额外修复：聚合文本（chunk.description）是多个帧用 ； 连接的，
+          //    这里必须也把中文分号 ； 作为分隔符，防止 "白衣男子 场景:户外；【全景】车辆" 里的
+          //    "白衣男子 场景:户外" 被当成一整个角色名塞进 characters。
+          const parts = cleaned.split(/[和与及、，；;；\/\s、]+/).map(s => s.trim()).filter(Boolean);
+          /** 非人物词黑名单（颜色+车辆/场景/情绪/动作等组合，命中任一则踢出 characters，丢到 keywords） */
+          const isProbablyNotPerson = (name: string): boolean => {
+            const notPersonKw = ['车', '车', '道路', '街道', '餐厅', '舞台', '公园', '房间', '客厅', '卧室', '办公室',
+              '轿车', '卡车', '摩托', '自行', '飞机', '火车', '船', '建筑', '楼', '风景', '天空', '树', '花', '山', '水',
+              '场景', '氛围', '光影', '色调', '构图', '情绪', '看点', '景别', '镜头', '视角', '环境', '关键信息'];
+            for (const kw of notPersonKw) if (name.includes(kw)) return true;
+            // 过长（>12 字）基本不是人名
+            if (name.length > 12) return true;
+            // 只含数字/符号不是人名
+            if (/^[\d\s\p{P}]+$/u.test(name)) return true;
+            return false;
+          };
+          for (let p of parts) {
+            p = p.trim();
+            if (!p || /^(无|无人|none|未检测)$/i.test(p)) continue;
+            if (p.length < 12) {
+              if (isProbablyNotPerson(p)) {
+                // 非人名 → 放到 keywords 作为场景/主体关键词，不浪费
+                keywordsSet.add(p);
+              } else {
+                charactersSet.add(p);
+              }
+            } else if (p.length <= 24) {
+              // 超过人名长度阈值但不长的，判定不是人就去 keywords，超长直接忽略避免噪声
+              if (isProbablyNotPerson(p)) keywordsSet.add(p);
+            }
+          }
+        },
+      },
+      // —— keywords: 场景 / 地点 / 环境 / 空间 ——
+      {
+        names: ['场景', '地点', '环境', '空间', '位置', '区域', '场所'],
+        handler: (v) => {
+          const cleaned = v.trim();
+          if (!cleaned) return;
+          // 多个地点用"或/和/、/,"拆分
+          const parts = cleaned.split(/[或和与、，；,;\/\s]+/).map(s => s.trim()).filter(Boolean);
+          for (const p of parts) {
+            if (p.length <= 16) keywordsSet.add(p);
+          }
+        },
+      },
+      // —— keywords: 看点 / 冲突 / 张力 / 核心信息 / 戏剧冲突 ——
+      {
+        names: ['看点', '冲突', '张力', '核心信息', '核心看点', '戏剧冲突', '剧情要点'],
+        handler: (v) => {
+          const cleaned = v.trim();
+          if (!cleaned) return;
+          // 💥 Phase 0 修复：聚合文本用 ； 连接多 frame 描述，这里关键词段可能跨句子
+          //   所以先按 ；/；/。/？/！ 等句末标点拆成单句，每句再单独处理
+          const sentences = cleaned.split(/[；;。.？?！!、]+/).map(s => s.trim()).filter(Boolean);
+          for (const sent of sentences) {
+            if (sent.length <= 24 && sent.length >= 2) {
+              keywordsSet.add(sent);
+            } else {
+              // 过长则按逗号拆，前 3 条最有信息量
+              sent.split(/[，,；;]/).map(s => s.trim()).filter(Boolean).slice(0, 3).forEach(s => {
+                if (s.length >= 2 && s.length <= 16) keywordsSet.add(s);
+              });
+            }
+          }
+        },
+      },
+      // —— keywords: 光影 / 色调 / 光线 / 构图 / 氛围 （氛围这里和上面不冲突，取短值）——
+      {
+        names: ['光影', '色调', '光线', '构图', '光线氛围', '画面色调'],
+        handler: (v) => {
+          const cleaned = v.trim();
+          if (cleaned && cleaned.length <= 16) keywordsSet.add(cleaned);
+        },
+      },
+      // —— keywords: 显式 关键词/关键字/标签 ——
+      {
+        names: ['关键词', '关键字', '标签', '关键标签'],
+        handler: (v) => {
+          const cleaned = v.trim();
+          if (!cleaned) return;
+          const parts = cleaned.split(/[、，,；;\/\s]+/).map(s => s.trim()).filter(Boolean);
+          for (const p of parts) {
+            if (p.length <= 16) keywordsSet.add(p);
+          }
+        },
+      },
+    ];
+
+    // 构造 regex：所有字段名的 OR，后面跟 (:|：) 再跟一个可选空格，最后是非贪婪值
+    const namesUnion = fieldPatterns.flatMap(fp => fp.names).map(n => n.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|');
+    const kvRegex = new RegExp(`(${namesUnion})\\s*[:：]\\s*(.+?)(?=\\s*(?:${namesUnion})\\s*[:：]|$)`, 'g');
+    let m: RegExpExecArray | null;
+    while ((m = kvRegex.exec(desc)) !== null) {
+      const fieldName = m[1];
+      const value = m[2].trim().replace(/[，,；;。.]+$/g, '').trim(); // 去掉末尾标点
+      if (!value) continue;
+      for (const fp of fieldPatterns) {
+        if (fp.names.includes(fieldName)) {
+          fp.handler(value);
+          break;
+        }
+      }
+    }
+
+    // ========================================================================
+    // Step 3：组装结果（只返回非空值）
+    // ========================================================================
+    const out: { shotType?: string; emotion?: string; characters?: string[]; keywords?: string[] } = {};
+    if (shotType) out.shotType = shotType;
+    if (emotion) out.emotion = emotion;
+    if (charactersSet.size > 0) out.characters = Array.from(charactersSet);
+    if (keywordsSet.size > 0) out.keywords = Array.from(keywordsSet);
+    return out;
+  }
+
+  /**
+   * 🎭 Phase 0：把 parseVlmDescriptionToStructured 的提取结果，合并填补到已有 downstream（或 chunk 对象）上。
+   * 原则：只填补"缺口"—— 原对象已有真实值（非空字符串/非空数组）的字段不覆盖，保留高质量的 VLM 原生结构化输出；
+   *       只有原生字段为 undefined/空字符串/空数组 时，才用 description 回捞的结果。
+   *
+   * @param target  要被填补的对象（FrameDetail.downstream 或 chunk 对象）
+   * @param desc    用于回捞的原始 VLM description 文本（来自 frame.description 或 chunk.description）
+   * @returns       返回传入的 target 引用（原地修改），便于链式调用
+   */
+  public static fillStructuredFromDescription<
+    T extends Record<string, any> & {
+      shotType?: string;
+      emotion?: string;
+      characters?: string[];
+      keywords?: string[];
+    },
+  >(target: T, desc: string | null | undefined): T {
+    if (!target) return target;
+    const extracted = VisionExtractStrategy.parseVlmDescriptionToStructured(desc);
+    // shotType 填补
+    if (!String(target.shotType || '').trim() && extracted.shotType) {
+      target.shotType = extracted.shotType;
+    }
+    // emotion 填补（downstream.emotion 也处理一下以防万一，帧级是 downstream.emotion）
+    if (!String(target.emotion || '').trim() && extracted.emotion) {
+      target.emotion = extracted.emotion;
+    }
+    // characters 填补（并集到已存在数组上，不直接替换）
+    if (extracted.characters && extracted.characters.length > 0) {
+      const cur = Array.isArray(target.characters) ? target.characters.filter(Boolean) : [];
+      const merged = new Set<string>();
+      for (const r of cur) if (typeof r === 'string' && r.trim()) merged.add(r.trim());
+      for (const r of extracted.characters) if (r && r.trim()) merged.add(r.trim());
+      if (merged.size > 0) target.characters = Array.from(merged);
+    }
+    // keywords 填补（并集）
+    if (extracted.keywords && extracted.keywords.length > 0) {
+      const cur = Array.isArray(target.keywords) ? target.keywords.filter(Boolean) : [];
+      const merged = new Set<string>();
+      for (const k of cur) if (typeof k === 'string' && k.trim()) merged.add(k.trim());
+      for (const k of extracted.keywords) if (k && k.trim()) merged.add(k.trim());
+      if (merged.size > 0) target.keywords = Array.from(merged);
+    }
+    // 如果 target 是 FrameDetail.downstream（还带 downstream.emotion / downstream.shotType），
+    //   这一步在调用方会先把 extracted 填到 downstream 字段，这里再单独处理 target.top 字段即可。
+    return target;
+  }
+
   protected async validate(input: VisionExtractInput): Promise<void> {
     const physicalPath = dehydrateMagicPath(input.mediaPath);
     if (!physicalPath || !fs.existsSync(physicalPath)) throw new Error('视觉提取失败：未找到原始媒体文件');
@@ -1053,9 +1329,16 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
        * 💬 asrText 透传：该帧时间区间匹配到的 ASR 台词，step3 无需重新按时间戳匹配 */
       const frameAsrText = matchedAsr.map(l => l.text).join(' ');
       /** GAP 3：下游规范化 — VLM 违规输出的"无/None/null/空数组"等占位词一律转 undefined（错就错不兜底假值） */
-      const downstream = jsonItem
+      let downstream = jsonItem
         ? VisionExtractStrategy.normalizeDownstreamFields(jsonItem, frameAsrText)
         : undefined;
+      /** 🔧 Phase 0 双保险（帧级）：若 VLM 违反约定没填结构化字段（shotType/emotion/…），
+       *  但 description 自然语言里其实写了 【中景】/主体:/情绪: 这类前缀，
+       *  我们用 parseVlmDescriptionToStructured 从文本里正则回捞，填补缺口。
+       *  （绝不覆盖已有非空值，只填空，确保原生高置信度结构化输出优先） */
+      if (downstream && frameDescriptions[i] && frameDescriptions[i].trim()) {
+        VisionExtractStrategy.fillStructuredFromDescription(downstream, frameDescriptions[i]);
+      }
 
       /**
        * 🎭 P0.5 帧级锚定：从 effectiveFrameRoles 取本帧已检测到的人物名称列表
@@ -1063,6 +1346,12 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
        * 未启用帧级锚定时 effectiveFrameRoles 为 undefined，characters 字段不写入
        */
       const frameCharacters = effectiveFrameRoles ? (effectiveFrameRoles[i] || []) : undefined;
+
+      /** 顶层 emotion 字段兜底：L1316 原来只从 jsonItem 原生取，若 VLM 漏填但我们刚才从 description 填补到 downstream.emotion，
+       *  则把该值同步到顶层，供 SemanticAnalyzeStrategy.L157 的帧描述聚合逻辑（它读的是 f.emotion 顶层）读到 */
+      const topEmotion = (jsonItem?.emotionalState || jsonItem?.emotionTone || '')?.toString().trim()
+        || (downstream?.emotion ?? '')?.toString().trim()
+        || '';
 
       return {
         url,
@@ -1075,7 +1364,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         timeStr: formatTimeStr(frameTimeSec),
         editing: false,
         confirmed: !!(frameDescriptions[i] && frameDescriptions[i].trim()),
-        emotion: jsonItem?.emotionalState || jsonItem?.emotionTone || '',
+        emotion: topEmotion,
         downstream,
         characters: frameCharacters,
       };

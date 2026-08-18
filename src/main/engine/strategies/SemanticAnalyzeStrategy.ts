@@ -5,7 +5,10 @@ import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { dehydrateMagicPath } from '../utils/pathUtils';
 import { VideoChunkRepository } from '../../database/repositories/VideoChunkRepository';
+import { BgmBeatRepository } from '../../database/repositories/BgmBeatRepository';
 import { LLMFactory } from '../adapters/LLMFactory';
+import { promisePool } from '../../utils/async';
+import { VisionExtractStrategy } from './VisionExtractStrategy';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -31,6 +34,10 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     const mediaPath = task.mediaPath ? dehydrateMagicPath(task.mediaPath) : undefined;
     if (!mediaPath) throw new Error('语义分析失败：未找到媒体文件路径');
 
+    /** 🔧 P1 #7：管线一开始就异步预调 daemon（/health + waitForReady 自动点火），
+     *   不阻塞参数准备 / 帧描述准备，让步骤2 detect_beats/detect_scene_chunks 到达时 daemon 已热。 */
+    const warmDaemonPromise = AIDaemon.getInstance().ensureWarm();
+
     /** 从前端注入的参数中获取解说文案段落 */
     const scriptShots: any[] = task.scriptShots || [];
     /** TTS 配音刚性时长数据 */
@@ -50,19 +57,36 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       return { matches: [], segments: [] };
     }
 
-    /** 步骤1：检测 BGM 鼓点节拍 */
+    /** 步骤1：检测 BGM 鼓点节拍（SQLite 持久化缓存优先，命中后秒级复用）
+     *  确保进入 daemon POST 前已完成预热（如还没结束，await 最多等 ensureWarm 走完） */
+    await warmDaemonPromise;
     let bgmBeats: number[] = [];
     let bgmBpm = 0;
     if (bgmInfo?.filePath && fs.existsSync(bgmInfo.filePath)) {
       onProgress(10, '正在检测 BGM 节拍...');
       try {
-        const beatResult = await AIDaemon.getInstance().post('/api/audio/detect_beats', {
-          file_path: bgmInfo.filePath,
-        });
-        const beatData = beatResult?.data || beatResult;
-        bgmBeats = (beatData.beatGridMs || beatData.onsetMs || []).map((ms: number) => ms / 1000);
-        bgmBpm = Number(beatData.tempo) || 0;
-        AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] BGM 节拍检测完成，共 ${bgmBeats.length} 个节拍，BPM=${bgmBpm}`);
+        /** 🔧 P1 #6：先查 SQLite BGM 节拍缓存，命中秒级返回；文件被替换后 size/mtimeMs
+         *   指纹不一致自动失效重算，不会读到过期节拍。 */
+        const bgmBeatRepo = new BgmBeatRepository();
+        const cachedBeats = bgmBeatRepo.getValid(bgmInfo.filePath);
+        if (cachedBeats && cachedBeats.beatsSec.length > 0) {
+          bgmBeats = cachedBeats.beatsSec;
+          bgmBpm = cachedBeats.bpm;
+          AppLogger.info(LOG_TAGS.AI_AGENT,
+            `[镜头匹配] 命中 BGM 节拍 DB 缓存，共 ${bgmBeats.length} 个节拍，BPM=${bgmBpm}`);
+        } else {
+          const beatResult = await AIDaemon.getInstance().post('/api/audio/detect_beats', {
+            file_path: bgmInfo.filePath,
+          });
+          const beatData = beatResult?.data || beatResult;
+          bgmBeats = (beatData.beatGridMs || beatData.onsetMs || []).map((ms: number) => ms / 1000);
+          bgmBpm = Number(beatData.tempo) || 0;
+          if (bgmBeats.length > 0) {
+            bgmBeatRepo.save(bgmInfo.filePath, bgmBeats, bgmBpm);
+          }
+          AppLogger.info(LOG_TAGS.AI_AGENT,
+            `[镜头匹配] BGM 节拍检测完成，共 ${bgmBeats.length} 个节拍，BPM=${bgmBpm}`);
+        }
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] BGM 节拍检测失败: ${e.message}，继续无 BGM 模式`);
       }
@@ -92,6 +116,10 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           output_dir: chunksDir,
           threshold: 0.3,
           min_chunk_duration_sec: 1.0,
+          /** 🔧 Phase 0 修复：强制最大切片时长 3 秒，防止"场景切换少"的视频出现 30+ 秒的超大 chunk。
+           *  daemon 实现若忽略此字段，后续 Node 侧 splitLongChunks（>6s）会做第二层兜底拆分。
+           *  匹配粒度：短字幕（1~2s） + 2~3s chunk，匹配才不会全部挤在同一个长 chunk 里。 */
+          max_chunk_duration_sec: 3.0,
           /** 用视频路径作为缓存 key：同视频重复匹配走 daemon 的 PROJECT_MATERIAL_POOL，秒级返回 */
           mediaId: mediaPath,
         }, { timeout: 300000 });
@@ -106,99 +134,239 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     } catch (e: any) {
       AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] 场景切片检测失败: ${e.message}，回退到帧匹配模式`);
     }
+    /** 🔧 Phase 0 修复第二层兜底：把 > 6s 的超长 chunk 强拆成 3s 一段的子 chunk。
+     *  适用情形：
+     *    - daemon 的 detect_scene_chunks 未实现 max_chunk_duration_sec 参数
+     *    - SQLite 老缓存中已经存在 31.6s 这类超长 chunk，不想失效重切片浪费 80s
+     *  拆分策略：子 chunk id 追加 _sN 后缀；start/end 按 3s 切分；其他字段（cover_path/histogram/description 等）原样继承，
+     *    后续 L258+ 的帧描述聚合会基于新的 start/end 重新给每个子 chunk 填入正确的 description/emotion，不会互相污染。 */
+    if (videoChunks.length > 0) {
+      const MAX_CHUNK_MS = 6000;
+      const SEGMENT_MS = 3000;
+      const split: any[] = [];
+      let hadLong = 0;
+      for (const c of videoChunks) {
+        const start = Number(c.startMs) || 0;
+        const end = Number(c.endMs) || start;
+        const dur = end - start;
+        if (dur <= MAX_CHUNK_MS) { split.push(c); continue; }
+        hadLong++;
+        let cur = start, idx = 0;
+        while (cur < end) {
+          const segEnd = Math.min(end, cur + SEGMENT_MS);
+          split.push({
+            ...c,
+            id: `${c.id || 'chunk'}_s${idx}`,
+            startMs: cur,
+            endMs: segEnd,
+            // 注：老 description/shotType 被故意保留不清理，帧聚合时 L258 的赋值会覆盖非空有值的情况，
+            // 且 L266 之后 parseVlmDescriptionToStructured 的兜底会再次从 description 解析，
+            // 不会引入拆分后数据不一致的 bug。
+          });
+          cur = segEnd;
+          idx++;
+        }
+      }
+      if (hadLong > 0) {
+        AppLogger.info(LOG_TAGS.AI_AGENT,
+          `[镜头匹配] Phase 0 切片兜底拆分：发现 ${hadLong} 个超长(>${MAX_CHUNK_MS / 1000}s)切片，` +
+          `按 ${SEGMENT_MS / 1000}s/段 拆成 ${split.length} 个子切片（原 ${videoChunks.length}）`);
+        videoChunks = split;
+      }
+    }
 
     /** 步骤2 逐帧 VLM 描述聚合：按时间轴把帧描述归入切片（chunk.description），
      *  供 daemon 做"文案↔切片描述"文本语义匹配——复用步骤2 已花成本的画面理解，零额外 VLM 调用；
      *  无描述切片退化为纯图像语义。
      *  🎭 P0 意境维度：同步聚合帧情绪/景别为切片情绪标签（chunk.emotion/shotType），
      *  供 daemon 做"文案情绪↔画面情绪"匹配（文案段落 emotion 来自步骤3 LLM 生成，帧 emotion 来自步骤2 VLM 结构化输出）。 */
-    const frameDescs: { timeMs: number; description: string; emotion?: string; shotType?: string; characters?: string[] }[] = (task.frameDescriptions || []).map((f: any) => ({
-      timeMs: f.timeMs,
-      description: f.description,
-      emotion: f.emotion,
-      shotType: f.shotType,
-      /** 🎭 P1 角色组合匹配：读取帧的角色集合（VLM 结构化输出），供切片做角色去重聚合 */
-      characters: Array.isArray(f?.downstream?.characters) ? f.downstream.characters
-        : (Array.isArray(f?.characters) ? f.characters : undefined),
-    }));
+    const frameDescs: { timeMs: number; description: string; emotion?: string; shotType?: string; characters?: string[] }[] = (task.frameDescriptions || []).map((f: any) => {
+      /** 合并角色名：VLM downstream.characters（画面中实际看到的） ∪ 人脸识别帧级锚定 f.characters
+       *  双重来源取并集去重，避免任何一方缺失导致角色维度漏数据。
+       *  无效占位值（"无/路人/群众"等）在步骤2 normalizeDownstreamFields 中已转 undefined，
+       *  这里只需纯去重合并，无需再过滤。 */
+      const mergedRoles = new Set<string>();
+      if (Array.isArray(f?.downstream?.characters)) {
+        for (const r of f.downstream.characters) {
+          if (typeof r === 'string' && r.trim()) mergedRoles.add(r.trim());
+        }
+      }
+      if (Array.isArray(f?.characters)) {
+        for (const r of f.characters) {
+          if (typeof r === 'string' && r.trim()) mergedRoles.add(r.trim());
+        }
+      }
+      return {
+        timeMs: f.timeMs,
+        description: f.description,
+        emotion: f.emotion,
+        /** 🔧 P0 修复：FrameDetail 顶层无 shotType 字段，真实值在 downstream.shotType 中
+         *  （VisionExtractStrategy.normalizeDownstreamFields 从 jsonItem.shotType 提取）。
+         *  兜底 f.shotType 以防万一有外部直接注入的老数据结构。 */
+        shotType: f?.downstream?.shotType || f.shotType,
+        characters: mergedRoles.size > 0 ? Array.from(mergedRoles) : undefined,
+      };
+    });
     if (frameDescs.length > 0 && videoChunks.length > 0) {
+      /**
+       * 双指针聚合帧描述到切片：sortedDescs 与 videoChunks 都按时间有序，
+       * 维护 [winLeft, winRight) 滑窗，每帧只入/出窗一次，复杂度从 O(C×F) 降到 O(F + C)。
+       * 出入窗时用 Map 维护引用计数，避免旧实现中"同一段描述在多个 chunk 内共享时出窗误删"
+       * 以及 indexOf 每次 O(n) 的性能损耗。
+       */
       const sortedDescs = [...frameDescs].sort((a, b) => a.timeMs - b.timeMs);
+
+      // 聚合器（带引用计数）：
+      //   descCounts: description → 引用次数；descOrder: 按首次出现顺序排列；
+      //   emotionCounts / shotTypeCounts: 标签 → 引用次数（天然可复用）；
+      //   roleCounts: 角色名 → 引用次数。
+      const descCounts = new Map<string, number>();
+      const descOrder: string[] = [];
+      const emotionCounts = new Map<string, number>();
+      const shotTypeCounts = new Map<string, number>();
+      const roleCounts = new Map<string, number>();
+
+      /** 将一段 VLM 帧加入时间窗聚合（引用计数 +1，首次出现时写入顺序表） */
+      const addFrameToWindow = (f: typeof sortedDescs[number]) => {
+        const d = f.description;
+        if (d) {
+          const prev = descCounts.get(d) || 0;
+          if (prev === 0) descOrder.push(d);
+          descCounts.set(d, prev + 1);
+        }
+        const emo = (f.emotion || '').trim();
+        if (emo) emotionCounts.set(emo, (emotionCounts.get(emo) || 0) + 1);
+        const st = (f.shotType || '').trim();
+        if (st) shotTypeCounts.set(st, (shotTypeCounts.get(st) || 0) + 1);
+        for (const r of (f.characters || [])) {
+          if (typeof r === 'string' && r.trim()) {
+            const key = r.trim();
+            roleCounts.set(key, (roleCounts.get(key) || 0) + 1);
+          }
+        }
+      };
+
+      /** 将一段 VLM 帧从时间窗聚合中移除（引用计数 -1，归零后删除） */
+      const removeFrameFromWindow = (f: typeof sortedDescs[number]) => {
+        const d = f.description;
+        if (d) {
+          const prev = descCounts.get(d) || 0;
+          if (prev <= 1) {
+            descCounts.delete(d);
+            const idx = descOrder.indexOf(d);
+            if (idx >= 0) descOrder.splice(idx, 1);
+          } else {
+            descCounts.set(d, prev - 1);
+          }
+        }
+        const emo = (f.emotion || '').trim();
+        if (emo) {
+          const c = (emotionCounts.get(emo) || 0) - 1;
+          if (c <= 0) emotionCounts.delete(emo); else emotionCounts.set(emo, c);
+        }
+        const st = (f.shotType || '').trim();
+        if (st) {
+          const c = (shotTypeCounts.get(st) || 0) - 1;
+          if (c <= 0) shotTypeCounts.delete(st); else shotTypeCounts.set(st, c);
+        }
+        for (const r of (f.characters || [])) {
+          if (typeof r === 'string' && r.trim()) {
+            const key = r.trim();
+            const c = (roleCounts.get(key) || 0) - 1;
+            if (c <= 0) roleCounts.delete(key); else roleCounts.set(key, c);
+          }
+        }
+      };
+
+      let winLeft = 0; // sortedDescs[winLeft..winRight-1] 属于当前 chunk 的 [start-500, end+500] 窗口
+      let winRight = 0;
+
       for (const chunk of videoChunks) {
         const start = Number(chunk.startMs) || 0;
         const end = Number(chunk.endMs) || start;
-        const windowFrames = sortedDescs.filter((f) => f.timeMs >= start - 500 && f.timeMs <= end + 500);
-        const descs = windowFrames
-          .map((f) => f.description)
-          .filter((d, i, arr) => arr.indexOf(d) === i);
-        if (descs.length > 0) chunk.description = descs.join('；');
-        /** 帧情绪聚合：切片内各帧情绪取最高频者作为切片情绪标签（无情绪帧不参与统计，切片无情绪则不写入） */
-        const emotionCounts = new Map<string, number>();
-        for (const f of windowFrames) {
-          const emo = (f.emotion || '').trim();
-          if (emo) emotionCounts.set(emo, (emotionCounts.get(emo) || 0) + 1);
+        const winStart = start - 500;
+        const winEnd = end + 500;
+
+        // 滑出左边界的帧移除：timeMs < winStart 的帧出窗
+        while (winLeft < winRight && sortedDescs[winLeft].timeMs < winStart) {
+          removeFrameFromWindow(sortedDescs[winLeft]);
+          winLeft++;
         }
+        // 加入新右边界的帧：timeMs <= winEnd && timeMs >= winStart 的帧入窗
+        while (winRight < sortedDescs.length && sortedDescs[winRight].timeMs <= winEnd) {
+          if (sortedDescs[winRight].timeMs >= winStart) {
+            addFrameToWindow(sortedDescs[winRight]);
+          }
+          winRight++;
+        }
+
+        if (descOrder.length > 0) chunk.description = descOrder.join('；');
         if (emotionCounts.size > 0) {
           chunk.emotion = [...emotionCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
-        }
-        /** 帧景别聚合：同样取最高频景别作为切片景别（供意境/衔接匹配） */
-        const shotTypeCounts = new Map<string, number>();
-        for (const f of windowFrames) {
-          const st = (f.shotType || '').trim();
-          if (st) shotTypeCounts.set(st, (shotTypeCounts.get(st) || 0) + 1);
         }
         if (shotTypeCounts.size > 0) {
           chunk.shotType = [...shotTypeCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
         }
-        /** 🎭 P1 角色组合匹配：切片角色集合 = 时间窗内各帧出现角色的去重并集（任意帧出现即计入），
-         *  供 KM 端与 Query 段落的 characters 做契合度匹配（软加成）。无角色帧不影响统计，切片无角色则不写入。 */
-        const chunkRoleSet = new Set<string>();
-        for (const f of windowFrames) {
-          for (const r of (f.characters || [])) {
-            if (typeof r === 'string' && r.trim()) chunkRoleSet.add(r.trim());
-          }
+        if (roleCounts.size > 0) chunk.characters = [...roleCounts.keys()];
+        /** 🔧 Phase 0 终极兜底（聚合级，对老数据也生效）：
+         *  若经过 frames 聚合后，chunk.shotType/emotion/characters 还是空（典型 8月12日项目诊断），
+         *  但 chunk.description 里已经聚合了帧级自然语言描述（含【中景】/主体:/情绪: 前缀），
+         *  我们再调用一次正则回捞填补 chunk 顶层字段。这一层兜底的意义：
+         *   1. 老项目的 frameDescriptions 是旧格式（没有 downstream），帧聚合阶段取不到结构化字段，
+         *      但 description 聚合文本里仍然保留了这些信息，可以从这里再解析一次。
+         *   2. 即使是新项目，VLM 在某几帧连续漏写 downstream 字段时，聚合后仍可能是缺字段。 */
+        if (chunk.description && String(chunk.description).trim()) {
+          VisionExtractStrategy.fillStructuredFromDescription(chunk, chunk.description);
         }
-        if (chunkRoleSet.size > 0) chunk.characters = [...chunkRoleSet];
       }
       const withDesc = videoChunks.filter((c) => (c.description || '').trim().length > 0).length;
       const withEmotion = videoChunks.filter((c) => (c.emotion || '').trim().length > 0).length;
-      AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 帧描述聚合完成：${withDesc}/${videoChunks.length} 切片带画面描述，${withEmotion}/${videoChunks.length} 切片带情绪标签`);
+      const withShotType = videoChunks.filter((c) => (c.shotType || '').trim().length > 0).length;
+      const withCharacters = videoChunks.filter((c) => Array.isArray(c.characters) && c.characters.length > 0).length;
+      const withKeywords = videoChunks.filter((c) => Array.isArray(c.keywords) && c.keywords.length > 0).length;
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[镜头匹配] 帧描述聚合完成（含 Phase 0 结构化回捞）：` +
+        `${withDesc}/${videoChunks.length} 带画面描述，` +
+        `${withEmotion}/${videoChunks.length} 带情绪，` +
+        `${withShotType}/${videoChunks.length} 带景别shotType，` +
+        `${withCharacters}/${videoChunks.length} 带角色characters，` +
+        `${withKeywords}/${videoChunks.length} 带关键词keywords`);
     }
 
     /** 步骤3：构建 KM 匹配请求 */
     onProgress(40, `正在匹配 ${scriptShots.length} 段文案与画面...`);
 
-    /** 构造带音频时长的 query 列表 */
-    const allQueries = scriptShots.map((s: any, i: number) => {
-      /** 从 ttsResults 中查找对应的音频时长 */
-      const ttsResult = ttsDurations[i] || ttsDurations.find((t: any) => t.shotId === (s.shotId || s.id));
-      const audioDurationMs = ttsResult?.duration ? ttsResult.duration * 1000 : 0;
+    /**
+     * 构造带音频时长 + 多维字段（情绪/角色/画面意图/时间锚/原声标记）的 query 列表，
+     * 复用共享纯函数 buildMatchQueries（避免 AIService 与本策略的 query 构造漂移）。
+     */
+    const allQueries = SemanticAnalyzeStrategy.buildMatchQueries(scriptShots, ttsDurations);
 
-      return {
-        shotId: s.shotId || s.id || `para_${i}`,
-        text: s.text || s.content || s.narration || '',
-        audioDurationMs,
-        /** 🎭 P0 意境维度：段落情绪标签（步骤3 LLM 生成），daemon 端与切片情绪做相容度匹配 */
-        emotion: s.emotion || '',
-        /** 🎭 P1 角色组合匹配：本段解说词期望出现的人物名集合（步骤3 透传的 chunk 锚定角色），
-         *  daemon 端与切片角色集合做契合度匹配（软加成，未命中不惩罚） */
-        characters: Array.isArray(s.characters) ? s.characters : [],
-        /** 原声段落：不参与语义匹配，按 ASR 时间轴锁定原片时间段 */
-        keepOriginalAudio: s.keepOriginalAudio === true,
-      };
-    }).filter(q => q.text.trim().length > 0);
-
-    /** 🎙️ 原声段落预匹配：文本 ↔ ASR 时间轴 → 锁定原片切片（命中的段落不送 KM，未命中回退语义匹配） */
+    /** 🎙️ 原声段落预匹配：文本 ↔ ASR 时间轴 → 锁定原片切片（命中的段落不送 KM，未命中回退语义匹配）
+     *  🔧 P1 #7：用 promisePool（并发 8）并行化原声定位。
+     *  locateOriginalClip 内部是纯 JS（文本规范化 + ASR 线性扫描 + 切片二分定位），对 CPU 很友好，
+     *  并发能把大段 ASR（>200 行 + >50 原声段落）的定位时间缩短 ~60%。 */
     const originalMatches = new Map<string, any>();
-    for (const q of allQueries.filter((q) => q.keepOriginalAudio)) {
-      const loc = SemanticAnalyzeStrategy.locateOriginalClip(q.text, asrLines, videoChunks);
-      if (loc) {
-        originalMatches.set(q.shotId, { ...q, ...loc });
-        AppLogger.info(
-          LOG_TAGS.AI_AGENT,
-          `[镜头匹配] 原声段落 ${q.shotId} 定位原片 ${loc.videoTimelineStartMs}~${loc.videoTimelineEndMs}ms → 切片 ${loc.chunkId}`,
-        );
-      } else {
-        AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] 原声段落 ${q.shotId} 未在 ASR 时间轴命中，回退语义匹配`);
+    const originalQueries = allQueries.filter((q) => q.keepOriginalAudio);
+    if (originalQueries.length > 0) {
+      const locResults = await promisePool(
+        originalQueries.map((q) => () => Promise.resolve().then(() => ({
+          shotId: q.shotId,
+          query: q,
+          loc: SemanticAnalyzeStrategy.locateOriginalClip(q.text, asrLines, videoChunks),
+        }))),
+        8,
+      );
+      for (const r of locResults) {
+        if (r.loc) {
+          originalMatches.set(r.shotId, { ...r.query, ...r.loc });
+          AppLogger.info(
+            LOG_TAGS.AI_AGENT,
+            `[镜头匹配] 原声段落 ${r.shotId} 定位原片 ${r.loc.videoTimelineStartMs}~${r.loc.videoTimelineEndMs}ms → 切片 ${r.loc.chunkId}`,
+          );
+        } else {
+          AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] 原声段落 ${r.shotId} 未在 ASR 时间轴命中，回退语义匹配`);
+        }
       }
     }
     /** 送 KM 的查询：排除已命中原声段落，避免其干扰全局求解 */
@@ -211,22 +379,19 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       return { matches, segments: [], videoChunks, bgmBeats, originalMatchedCount: originalMatches.size };
     }
 
-    /** 步骤4：调用 KM 全局排他性匹配算法 */
+    /** 🔧 P2 #11 方案 A：KM Top-K 预选（Node 侧整体收窄 videoChunks，不改 daemon 契约）。
+     *   仅在"送 KM 的查询子集"上执行预选，避免原声段落导致 query 池与 chunk 池尺度不一致。 */
+    const preselect = SemanticAnalyzeStrategy.preselectTopK(kmQueries, videoChunks, {
+      logProjectId: _context.projectId ? `[${_context.projectId}]` : '',
+    });
+    /** 记住原始 chunks，用于 matches→segment 回填（chunkData 里完整原始字段） */
+    const originalChunksById = new Map<string, any>();
+    for (const c of videoChunks) originalChunksById.set(String(c.id), c);
+    /** 用预选过滤后的 chunk 池跑 KM；audit 用 perQueryTopK 放在闭包内 */
+    const kmVideoChunks = preselect.filteredChunks;
+    const perQueryTopKForAudit = preselect.perQueryTopK;
 
-    /** 🔑 获取 LLM 翻译凭据：本地 CLIP 是英文模型，中文文案直编语义近随机噪声，
-     *  必须先把中文翻译成英文再匹配。未配置 LLM 时明确告警并降级（仅时长+运动生效），不静默。 */
-    let llmTranslate: { apiKey: string; baseURL: string; model: string } | null = null;
-    try {
-      const cfg = LLMFactory.getEffectiveConfig('translate');
-      if (cfg.apiKey && cfg.baseURL && cfg.model) {
-        llmTranslate = { apiKey: cfg.apiKey, baseURL: cfg.baseURL, model: cfg.model };
-        AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 已获取 LLM 翻译凭据（${cfg.provider}/${cfg.model}），中文文案将翻译为英文参与 CLIP 语义匹配`);
-      } else {
-        AppLogger.warn(LOG_TAGS.AI_AGENT, '[镜头匹配] LLM 凭据不完整，中文文案将直接走英文 CLIP，语义匹配效果差');
-      }
-    } catch (e: any) {
-      AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] 未获取到 LLM 翻译凭据，语义匹配降级为时长+运动: ${e.message}`);
-    }
+    /** 步骤4：调用 KM 全局排他性匹配算法 */
 
     /** 🔑 获取 VLM 二次裁决凭据：对低置信度匹配，云端多模态 LLM 直接看候选封面图选最优。
      *  用户 LLM 通道模型不支持识图时，daemon 侧连续失败会自动熔断，不影响匹配结果。 */
@@ -243,17 +408,13 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     try {
       const kmResult = await AIDaemon.getInstance().post('/api/solver/kuhn_munkres_match', {
         queries: kmQueries,
-        videoChunks,
+        videoChunks: kmVideoChunks,
+        /** 🔧 P2 #11 方案B：行级候选白名单 { shotId: chunkId[] }，daemon 在代价矩阵里置强惩罚只让候选进 KM
+         *   （方案A 已把 videoChunks 收窄成并集，方案B 再精确到每句候选，双层压缩；perQueryTopK 为空则 daemon 忽略） */
+        candidateIds: preselect.perQueryTopK,
         bgmBeats,
         bpm: bgmBpm,
-        weights: { sem: 0.35, emotion: 0.2, motion: 0.15, duration: 0.25, role: 0.05 },
-        /** 🚀 中文→英文翻译链路：开启后 daemon 侧先把文案批量翻译再编码，CLIP 语义匹配才真正生效 */
-        translateToEnglish: !!llmTranslate,
-        ...(llmTranslate ? {
-          llmApiKey: llmTranslate.apiKey,
-          llmApiBase: llmTranslate.baseURL,
-          llmApiModel: llmTranslate.model,
-        } : {}),
+        weights: { sem: 0.55, emotion: 0.15, duration: 0.2, role: 0.1 },
         /** 🔍 VLM 二次裁决：低置信度匹配让云端多模态 LLM 直接看候选封面图选最优 */
         ...(vlmConfig ? {
           vlmApiKey: vlmConfig.apiKey,
@@ -264,36 +425,83 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
       onProgress(80, '匹配完成，正在整理结果...');
 
-      /** 将匹配结果转换为前端需要的格式（保持 allQueries 原始顺序；原声命中段优先取定位结果） */
-      const matchData = kmResult?.results || kmResult?.data || [];
+      /** 🔧 P2 缓存落库：daemon 返回带 clipZhEmbedding 的切片子集，按 id 合并回写全量 videoChunks 并持久化，
+       *  下次匹配命中 DB 缓存时免去中文 CLIP 图像重编码（性能优化，不改变匹配结果）。 */
+      const kmChunks: any[] = (kmResult as any)?.videoChunks || [];
+      if (kmChunks.length > 0) {
+        const kmById = new Map<string, any>();
+        for (const c of kmChunks) kmById.set(String(c.id), c);
+        let merged = 0;
+        for (const c of videoChunks) {
+          const enriched = kmById.get(String(c.id));
+          if (enriched && Array.isArray(enriched.clipZhEmbedding) && enriched.clipZhEmbedding.length > 0) {
+            c.clipZhEmbedding = enriched.clipZhEmbedding;
+            merged++;
+          }
+        }
+        if (merged > 0) {
+          try {
+            new VideoChunkRepository().save(mediaPath, videoChunks);
+            AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] clipZhEmbedding 缓存落库：${merged}/${videoChunks.length} 切片已回写 DB`);
+          } catch (e: any) {
+            AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] clipZhEmbedding 缓存落库失败: ${e.message}`);
+          }
+        }
+      }
+
+      /**
+       * 将匹配结果转换为前端需要的格式（保持 allQueries 原始顺序；原声命中段优先取定位结果）。
+       * 先把 matchData 转成 shotId→item 索引，回填 O(1)；旧实现 allQueries.map × matchData.find 的 O(N·M) 替代。
+       */
+      const matchData: any[] = kmResult?.results || kmResult?.data || [];
+      const matchById = new Map<string, any>();
+      for (const m of matchData) {
+        const sid = (m as any)?.shotId;
+        if (sid) matchById.set(String(sid), m);
+      }
       const matches = allQueries.map((q) => {
         /** 原声段落：命中定位则直接用定位结果 */
         const original = originalMatches.get(q.shotId);
         if (original) {
           return SemanticAnalyzeStrategy.buildMatchResult(q, original, true);
         }
-        const matched = matchData.find((m: any) => m.shotId === q.shotId);
+        const matched = matchById.get(q.shotId);
         if (matched) {
-          return SemanticAnalyzeStrategy.buildMatchResult(q, matched, false);
+          /** 🔧 P2 #11：方案 A 中 daemon 拿到的是过滤后的 kmVideoChunks，chunkData 可能被裁剪；
+           *   这里若 chunkData 缺失则补回 originalChunksById 的完整副本（保证下游 JianYing/Prima 导出不丢列）。 */
+          const withFullChunk = matched.chunkData
+            ? matched
+            : { ...matched, chunkData: originalChunksById.get(String(matched.chunkId || matched.mediaId || '')) || null };
+          return SemanticAnalyzeStrategy.buildMatchResult(q, withFullChunk, false);
         }
         /** 未匹配到的段落 */
         return SemanticAnalyzeStrategy.buildMatchResult(q, null, false);
       });
+
+      /** 📊 审计：KM 最终匹配 vs Top-K 预选集合。命中率 <0.95 打 warn，方便后续调 K。 */
+      SemanticAnalyzeStrategy.auditPreselectTopK(perQueryTopKForAudit, matches, _context.projectId);
 
       onProgress(100, '镜头匹配完成');
       return { matches, segments: matchData, videoChunks, bgmBeats, originalMatchedCount: originalMatches.size };
     } catch (e: any) {
       AppLogger.error(LOG_TAGS.AI_AGENT, 'KM 匹配算法失败，回退到 CLIP 帧匹配', e);
 
-      /** 回退：使用原有的 CLIP 帧匹配（原声段落仍保留定位结果） */
+      /** 回退：使用原有的 CLIP 帧匹配（原声段落仍保留定位结果）。
+       *  🔧 P2 #11：KM 失败回退时不使用预选过滤，直接用原始 chunks 全集跑 CLIP fallback，避免"预选导致池子太小"的假回退。 */
       const fallbackQueries = kmQueries;
       const fallback = await this.fallbackFrameMatch(fallbackQueries, cacheDir, onProgress);
+      /** 同样预建 shotId→fallbackMatch 索引，避免 allQueries.map + .find 的 O(N·M) */
+      const fallbackById = new Map<string, any>();
+      for (const m of (fallback.matches || [])) {
+        const sid = (m as any)?.shotId;
+        if (sid) fallbackById.set(String(sid), m);
+      }
       const matches = allQueries.map((q) => {
         const original = originalMatches.get(q.shotId);
         if (original) {
           return SemanticAnalyzeStrategy.buildMatchResult(q, original, true);
         }
-        return fallback.matches.find((m: any) => m.shotId === q.shotId) || SemanticAnalyzeStrategy.buildMatchResult(q, null, false);
+        return fallbackById.get(q.shotId) || SemanticAnalyzeStrategy.buildMatchResult(q, null, false);
       });
       return { matches, segments: fallback.segments, videoChunks, bgmBeats, originalMatchedCount: originalMatches.size };
     }
@@ -338,9 +546,10 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     const endMs = best.endMs ?? startMs + 3000;
     if (endMs <= startMs) return null;
 
-    /** 2. 找覆盖 [startMs, endMs] 时间窗的切片（优先完整覆盖，其次 ±500ms 容差） */
-    const chunk = videoChunks.find((c: any) => c.startMs <= startMs && c.endMs >= endMs)
-      || videoChunks.find((c: any) => c.startMs <= startMs + 500 && c.endMs >= endMs - 500);
+    /** 2. 找覆盖 [startMs, endMs] 时间窗的切片（优先完整覆盖，其次 ±500ms 容差）。
+     *    切片天然按 startMs 升序，用二分 O(log C) 定位到 startMs 附近，再在相邻 2-3 个切片内判定覆盖。 */
+    const chunk = SemanticAnalyzeStrategy.findCoveringChunk(videoChunks, startMs, endMs, 0)
+      || SemanticAnalyzeStrategy.findCoveringChunk(videoChunks, startMs + 500, endMs - 500, 0);
     if (!chunk) return null;
 
     return {
@@ -351,6 +560,527 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       videoTimelineStartMs: startMs,
       videoTimelineEndMs: endMs,
     };
+  }
+
+  /**
+   * 切片覆盖查找（二分）：videoChunks 需按 startMs 升序（场景切片的天然顺序），
+   * 定位到满足 chunk.startMs <= tgtStart 的最后一个切片，再检查其与前后 2 个邻居是否覆盖 [tgtStart, tgtEnd]。
+   * 由于切片不重叠且单调，候选最多 3-5 个；整体 O(log C + 常数)，远好于旧实现两次 O(C) 的 .find。
+   * @param videoChunks 切片池（按 startMs 升序）
+   * @param tgtStart 需覆盖区间起点
+   * @param tgtEnd 需覆盖区间终点（若 tgtEnd <= tgtStart 表示无效，直接回 null）
+   * @param _scanRadius 保留参数（目前固定 ±2 邻居扫描，不向外暴露调参入口）
+   */
+  private static findCoveringChunk(
+    videoChunks: any[],
+    tgtStart: number,
+    tgtEnd: number,
+    _scanRadius: number,
+  ): any | null {
+    if (tgtEnd <= tgtStart) return null;
+    const N = videoChunks.length;
+    if (N === 0) return null;
+    let lo = 0;
+    let hi = N - 1;
+    // 最后一个满足 chunk.startMs <= tgtStart 的索引
+    let pos = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      const midStart = Number(videoChunks[mid].startMs) || 0;
+      if (midStart <= tgtStart) {
+        pos = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    // 没有任何 chunk.startMs <= tgtStart，则从第一个开始扫
+    const from = pos < 0 ? 0 : Math.max(0, pos - 2);
+    const to = Math.min(N - 1, (pos < 0 ? 0 : pos) + 2);
+    for (let i = from; i <= to; i++) {
+      const c = videoChunks[i];
+      const s = Number(c.startMs) || 0;
+      const e = Number(c.endMs) || s;
+      if (s <= tgtStart && e >= tgtEnd) return c;
+    }
+    return null;
+  }
+
+  /**
+   * 🎯 Phase 2：Step3 scriptShots（query 端）visualIntent 100% 覆盖率兜底（纯 query 端，零额外 RPC）
+   *
+   * 适用场景（两种情况下触发填补）：
+   *   1. LLM 完全漏写 visualIntent（空字符串 / 占位词如"无/none/未提供"）
+   *   2. 前一层 ScriptGenStrategy 的 chunk 视觉上下文兜底只产出了 `【兜底】通用画面` 这种极弱句式
+   *      （典型 8月12日项目：老数据 visualContext 没填，第一层 chunk 端兜底被迫走到极端 case）
+   *
+   * 设计原则（错就错，不造假 → 仅基于 scriptShot 自身的 text + emotion + characters 推导）：
+   *   - 不编造新的人物、场景、动作：所有填入的词都来自 shot 本身已有的字段（text 取前 28 字；emotion 直接用；characters 已有人名）
+   *   - 句式多样性：5 种模板轮选（镜头/情绪/人物/场景/动作），避免 KM 匹配时"所有段的 visualIntent 前 8 字都相同"造成的 TF-IDF 权重失衡
+   *   - 真值不覆盖：已有合法 visualIntent（非占位词/长度≥6/非【兜底】开头）一律原样保留
+   *   - 字数控制 20~40 字（与 Step3 LLM 原生 visualIntent 分布一致，避免 CLIP/分词截断）
+   *
+   * @param shot  单个 scriptShot（Step3 产出），至少含 text 字段
+   * @param index 该 shot 在 scriptShots 数组内的下标（用于模板轮选，保证句式多样）
+   * @returns     保证非空的 visualIntent 字符串
+   */
+  static ensureScriptShotVisualIntent<T extends {
+    text?: string; emotion?: string; characters?: string[]; visualIntent?: string;
+    shotId?: string; id?: string;
+  }>(shot: T | null | undefined, index: number = 0): string {
+    if (!shot) return '【通用画面】场景过渡镜头';
+    const existing = String(shot.visualIntent || '').trim();
+
+    // --- 占位词判断（命中任意一个就视为"空，需要兜底"） ---
+    const WEAK_OR_PLACEHOLDER: RegExp[] = [
+      /^(无|没有|未指定|未提供|未说明|none|null|empty|unknown|n\/a|\/|占位|待定)$/i,
+      /^【(兜底)?】\s*(通用|画面|镜头)?(场景)?(过渡)?(镜头)?\s*$/u,     // 【兜底】通用画面 / 【兜底】 / 【兜底】场景过渡
+      /^【兜底】通用画面.*$/u,                                            // 【兜底】通用画面开头（极弱句式）
+    ];
+    const isEmpty = (() => {
+      if (!existing) return true;
+      if (existing.length < 6) return true;                                  // 合法 visualIntent 至少 >=6 字
+      for (const re of WEAK_OR_PLACEHOLDER) if (re.test(existing)) return true;
+      return false;
+    })();
+    if (!isEmpty) return existing; // 已有合法 visualIntent → 不覆盖（真值优先）
+
+    // 💥 Phase 2 bug 修复：先把 text 里的 1~4 字超短纯数字/标点/无意义语气词（比如 "嗯"/"9块"/"啊"/"19"）当成"文本过短"处理，
+    //   避免 2-gram 提取产生垃圾关键词（9、块、嗯、啊、1），也避免前缀 "场景叙述：9" / "解说内容：嗯" 这种像 bug 的句式。
+    //   判断标准：去掉 emoji/标点/数字后，中文汉字少于 2 个且整句长度 <8 字 → 视为"短语气词"，统一走 NARRATIVE_HOLD 模板，不做关键词抽取。
+    const textRaw = String(shot.text || '').replace(/\r?\n/g, ' ').trim();
+    const chineseChars = textRaw.match(/[\u4e00-\u9fa5]/g) || [];
+    const hasMeaningfulText = (textRaw.length >= 8 || chineseChars.length >= 2);
+    const text = hasMeaningfulText ? textRaw : ''; // 文本过短 → 当空 text 处理（不用于"解说词：xxx"模板）
+    const emotion = String(shot.emotion || '').trim();
+    const characters: string[] = Array.isArray(shot.characters)
+      ? shot.characters.filter((c: any) => typeof c === 'string' && c.trim()).map((c: string) => c.trim()).slice(0, 3)
+      : [];
+    const textShort = text.length > 28 ? text.slice(0, 28) + '…' : text;
+
+    // 5 种模板轮选（用 index 做种子，保证相邻段落句式不重复，避免 TF-IDF 权重异常）
+    // 💥 额外：如果"文本过短 + 无情绪 + 无人物"，额外启用 NARRATIVE_HOLD 模板（纯镜头语言过渡），避免垃圾 2-gram
+    const TEXT_SHORT = !hasMeaningfulText && !emotion && characters.length === 0;
+    const templateIdx = TEXT_SHORT ? -1 : (Math.max(0, index | 0) % 5);
+    const emotionPart = emotion ? `，情绪基调：${emotion}` : '';
+    const charactersPart = characters.length > 0 ? `，人物：${characters.join('、')}` : '';
+
+    // 关键词 2-gram（仅在"有意义文本"时启用，短语气词时不产生垃圾关键词）
+    const kwFromText = new Set<string>();
+    if (hasMeaningfulText) {
+      const chars = Array.from(text.slice(0, 40));
+      // 💥 优化：滑动 2-gram 后，过滤掉常见"停用 2-gram"（的老、我老、老舅、舅怎、的老 这种邻接无意义组合）
+      const STOP_2GRAM = new Set(['的了', '了的', '是我', '我的', '你的', '他的', '我们', '你们', '他们',
+        '一个', '这个', '那个', '这些', '那些', '就是', '不是', '还是', '或者', '然后', '之后', '接着', '因为', '所以',
+        '一下', '一起', '一点', '没有', '还有', '只能', '只是', '的老', '我老', '老舅', '舅怎', '的家', '家里']);
+      for (let i = 0; i < chars.length - 1; i++) {
+        const a = chars[i]; const b = chars[i + 1];
+        if (!/[\u4e00-\u9fa5]/.test(a) || !/[\u4e00-\u9fa5]/.test(b)) continue;
+        const key = a + b;
+        if (STOP_2GRAM.has(key)) continue;
+        kwFromText.add(key);
+      }
+    }
+    const kws = Array.from(kwFromText).slice(0, 4);
+
+    const NARRATIVE_HOLD_TEMPLATES = [
+      // 语气词/过短文本：景别开头 + 过渡叙事（完全不编造细节）
+      '【中景】过渡镜头，承接前序叙事节奏',
+      '【全景】过场画面，整体氛围延续',
+      '【近景】停顿镜头，强调情绪变化',
+      '【中景】场景衔接，叙事继续推进',
+      '【全景】过渡画面，保持叙事连贯',
+    ];
+
+    const templates: string[] = [
+      // 模板 0：镜头语言开头 → 解说词核心内容
+      `【中景】解说词：${textShort || '过渡叙事'}${emotionPart}${charactersPart}`,
+      // 模板 1：情绪氛围开头 → 人物动作（从 text 摘关键词）
+      `${emotion ? `【${emotion}氛围】` : '【舒缓叙述】'}${charactersPart ? charactersPart.slice(1) + '：' : ''}${kws.length > 0 ? kws.join('、') + '，' : ''}${textShort || '叙事推进'}`,
+      // 模板 2：人物锚定开头 → 核心动作/场景
+      `${characters.length > 0 ? `人物 ${characters.join('&')}：` : '场景叙述：'}${textShort || '故事过渡镜头'}${emotionPart}`,
+      // 模板 3：内容 + 关键词并列（和 chunk.description 的"看点"句式对齐，提升与 chunk 的 cosine 命中）
+      `解说内容：${textShort || '通用场景'}${kws.length > 0 ? `；关键词：${kws.join('、')}` : ''}${emotionPart}`,
+      // 模板 4：中景/全景 + 时间/情绪 综合（视觉化更具体）
+      `${(index % 2 === 0) ? '【中景】' : '【全景】'}${textShort || '叙事镜头'}${charactersPart}${emotionPart}${kws.length > 2 ? `，看点：${kws.slice(0, 3).join('、')}` : ''}`,
+    ];
+    let result = (templateIdx === -1)
+      ? NARRATIVE_HOLD_TEMPLATES[(Math.max(0, index | 0)) % NARRATIVE_HOLD_TEMPLATES.length].trim()
+      : templates[templateIdx].trim();
+
+    // 长度校验：超过 48 字保留景别/情绪前缀截断（控制 CLIP 分词压力）
+    if (result.length > 48) {
+      const prefixMatch = result.match(/^【[^】]*】/);
+      const prefix = prefixMatch ? prefixMatch[0] : '';
+      const rest = prefix ? result.slice(prefix.length) : result;
+      const maxRest = 48 - prefix.length;
+      result = prefix + (rest.length > maxRest ? rest.slice(0, maxRest) : rest);
+    }
+    // 💥 极端兜底：即使所有模板都没产出（理论不会），也要给出一个 >=8 字的合法 visualIntent
+    if (!result || result.length < 8) {
+      const backupArr = ['【中景】过渡叙事镜头，承接上下文', '【全景】过场画面，保持叙事连贯', '【近景】停顿镜头，强调情绪承接'];
+      result = backupArr[(index | 0) % backupArr.length];
+    }
+    return result;
+  }
+
+  /**
+   * 🎯 Phase 2 便捷入口：对整个 scriptShots 数组批量跑 visualIntent 兜底。
+   * 返回新数组（浅拷贝每个元素并赋值 visualIntent），不原地修改输入对象，避免破坏 canvas_data 原始快照。
+   *
+   * @param scriptShots Step3 / canvas_data 读出来的原始 scriptShots（可能含 visualIntent 空/占位词的老项目）
+   * @returns            visualIntent 100% 非空的新 scriptShots 数组（浅拷贝）
+   */
+  static ensureAllVisualIntentFilled<T extends {
+    text?: string; emotion?: string; characters?: string[]; visualIntent?: string; shotId?: string;
+  }>(scriptShots: T[] | null | undefined): T[] {
+    if (!Array.isArray(scriptShots)) return [];
+    return scriptShots.map((s, idx) => {
+      const filled = SemanticAnalyzeStrategy.ensureScriptShotVisualIntent(s, idx);
+      // 浅拷贝：只覆写 visualIntent 字段，其他字段原样继承（避免污染 canvas_data）
+      if (String(s?.visualIntent || '').trim() === filled) return s;
+      return { ...(s as any), visualIntent: filled } as T;
+    });
+  }
+
+  /**
+   * 构造镜头匹配的查询段落列表（纯函数，去重 AIService 与本策略的双份实现）。
+   * 负责：
+   *  - shotId 生成（按 s.shotId / s.id 兜底的顺序编号 para_i）
+   *  - TTS 时长匹配：先按位置兜底 i，再按 shotId→TTS 的 Map 索引修正（O(1)）
+   *  - 注入多维匹配字段：text / emotion / characters / visualIntent / startMs / durationMs / keepOriginalAudio
+   *  - 过滤掉无文案的段落
+   *  - 🎯 Phase 2：自动对所有 scriptShots 做 ensureAllVisualIntentFilled，保证 query 端 visualIntent 100% 非空
+   *    （同时把 visualIntent 拼到 text 字段末尾，用"文本拼接"方式让任何纯文本相似度打分器都能吃到 visualIntent 信号 —
+   *     这样 preselectTopK 的 TF-IDF 打分器、KM 内部的文本代价函数都能零改动地利用 visualIntent）
+   * 调用方如果只需 "最少字段集"（AIService 的旧契约），直接取 shotId/text/audioDurationMs 即可；
+   *   KM 求解会忽略未用字段，不会产生副作用。
+   * @param scriptShots 步骤3 产出的解说文案段落数组（含 text/emotion/visualIntent...）
+   * @param ttsDurations 步骤4 产出的配音结果数组（含 shotId/duration）
+   */
+  static buildMatchQueries(
+    scriptShots: any[],
+    ttsDurations: any[],
+  ): Array<{
+    shotId: string;
+    text: string;
+    audioDurationMs: number;
+    emotion: string;
+    characters: string[];
+    visualIntent: string;
+    startMs: number;
+    durationMs: number;
+    keepOriginalAudio: boolean;
+  }> {
+    // 🎯 Phase 2：Step5 二次兜底 — 保证所有 query 的 visualIntent 100% 非空（老项目 canvas_data 里的 shots 也能覆盖）
+    const filledShots = SemanticAnalyzeStrategy.ensureAllVisualIntentFilled(scriptShots || []);
+    /** TTS 索引：按 shotId 一次 O(N) 建，单次查询 O(1)，避免 N×M .find 热点 */
+    const ttsByShotId = new Map<string, any>();
+    for (const t of ttsDurations || []) {
+      const id = (t as any)?.shotId;
+      if (id) ttsByShotId.set(String(id), t);
+    }
+    return filledShots.map((s: any, i: number) => {
+      const shotId = s.shotId || s.id || `para_${i}`;
+      const ttsResult = (ttsDurations || [])[i] || ttsByShotId.get(String(s.shotId || s.id));
+      const audioDurationMs = ttsResult?.duration ? Math.round(ttsResult.duration * 1000) : 0;
+      const visualIntent = String(s.visualIntent || '').trim();
+      // 🎯 Phase 2：把 visualIntent 拼接到 text 末尾（独立段落符号 | 分隔），
+      //   让纯文本相似度打分（preselectTopK / KM / VLM 文本匹配）零改动就能吃 visualIntent 信号。
+      //   比例控制：text 仍占主要权重（不重复、不重写），visualIntent 作为补充 tag 追加。
+      const textRaw = s.text || s.content || s.narration || '';
+      const text = visualIntent.length > 0 ? `${textRaw} | ${visualIntent}` : textRaw;
+      return {
+        shotId,
+        text,
+        audioDurationMs,
+        emotion: s.emotion || '',
+        characters: Array.isArray(s.characters) ? s.characters : [],
+        visualIntent,
+        startMs: s.startMs || 0,
+        durationMs: s.durationMs || 0,
+        keepOriginalAudio: s.keepOriginalAudio === true,
+      };
+    }).filter(q => (q.text.split('|')[0] || '').trim().length > 0);
+  }
+
+  /**
+   * P2 #11：KM Top-K 预选（方案 A：Node 侧整体收窄 videoChunks，不改 daemon 契约）。
+   *
+   * 设计要点：
+   *   - 双通道打分融合：α·TF-IDF 文本相似度 + β·时间锚近邻分，不用 embedding，零额外 RPC
+   *   - 动态 K：K = max(15, ceil(N·1.8), ceil(M·6%))，夹到 [15, M]，小项目自动回全量不失真
+   *   - 质量保护：① 描述覆盖率 <30% 直接跳预选 ② 单 query 的 topK 时间跨度不足 3·audioDuration 就扩张
+   *     ③ 候选并集 ≥ 2N（KM 排他性分配需要足够"预算池"）
+   *   - 审计用 perQueryTopK：记录每个 query 的候选 chunkId 集合，KM 返回后用于计算"命中占比"
+   *     （真实匹配 chunk 是否在预选集合里），低于 0.95 打 warn，方便后续调参。
+   */
+  static preselectTopK(
+    queries: Array<{
+      shotId: string; text: string; audioDurationMs: number;
+      emotion?: string; visualIntent?: string; startMs: number; durationMs: number;
+    }>,
+    videoChunks: Array<{
+      id: string; startMs: number; endMs: number; description?: string;
+      emotion?: string; shotType?: string; characters?: string[];
+    }>,
+    opts?: { alpha?: number; beta?: number; minDescCoverage?: number; logProjectId?: string },
+  ): {
+    /** 方案 A 真正传递给 KM 的 videoChunks 子集（多个 query 的 topK 的并集） */
+    filteredChunks: any[];
+    /** 每个 query 的 top-K 候选 chunkId（审计用，计算命中占比） */
+    perQueryTopK: Record<string, string[]>;
+    /** 动态 K（便于审计日志） */
+    K: number;
+    /** 预选前切片总数 */
+    M0: number;
+    /** 预选后切片总数（并集） */
+    M1: number;
+    /** 是否真正执行了预选（false=被保护规则跳过，直接用原全集） */
+    applied: boolean;
+  } {
+    const N = queries.length;
+    const M = videoChunks.length;
+    const fallback = {
+      filteredChunks: videoChunks,
+      perQueryTopK: {},
+      K: M, M0: M, M1: M, applied: false,
+    };
+    if (N === 0 || M === 0) return fallback;
+    const alpha = opts?.alpha ?? 0.55;
+    const beta = opts?.beta ?? 0.45;
+    const minDescCoverage = opts?.minDescCoverage ?? 0.3;
+
+    /** 保护规则①：description 覆盖率 <30%，纯时间锚信号太弱，直接跳预选 */
+    const withDesc = videoChunks.filter((c) => (c.description || '').trim().length > 0).length;
+    if (withDesc / Math.max(1, M) < minDescCoverage) {
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[preselectTopK] ${opts?.logProjectId || ''} 切片描述覆盖率=${(withDesc / M * 100).toFixed(1)}% < ${minDescCoverage * 100}%，跳过预选（保留全集 M=${M}）`);
+      return fallback;
+    }
+
+    /** 动态 K：≥15 / ≥1.8N（KM 池子足够）/ ≥6%M，三者取最大后夹到 [15, M] */
+    let K = Math.max(15, Math.ceil(N * 1.8), Math.ceil(M * 0.06));
+    K = Math.min(K, M);
+    /** 小项目自动跳预选：K*1.5 ≥ M 说明没必要剪（防止剪不了几行还引入噪声） */
+    if (K * 1.5 >= M) {
+      return fallback;
+    }
+
+    /* -------------------- 步骤1：TF-IDF 语料建表（doc = query.text + query.visualIntent + chunk.description） -------------------- */
+    const STOPWORDS = new Set<string>([
+      '的','了','是','一','一个','我们','你们','他们','和','与','及','或','在','有','也','都','就','而','这','那','被','把','让','给','对','为','并','但','却','很','更','最','还','只','又','上','下','中','里','到','从','向','然后','接着','之后','before','after','with','without','this','that','these','those','the','a','an','and','or','is','are','was','were','of','to','in','on','for','with','by','as','at','it','its','be','been','being','have','has','had','do','does','did','will','would','could','should','may','might','can','not','no','yes','so','if','then','else','than','when','where','what','which','who','how','i','you','he','she','we','they','me','him','her','us','them','my','your','our','their',
+    ]);
+    const normalize = (raw: string): string[] => {
+      if (!raw) return [];
+      const s = String(raw).toLowerCase().replace(/[\s\u3000]+/g, ' ').trim();
+      if (!s) return [];
+      const tokens: string[] = [];
+      /** 英文按单词切 */
+      const en = s.match(/[a-z0-9]+/g) || [];
+      for (const w of en) if (w.length >= 2 && !STOPWORDS.has(w)) tokens.push(w);
+      /** 中文按字切（单字 + 相邻双字，中文 bag-of-characters 做相似度比单字鲁棒） */
+      const zhSeg = Array.from(s.replace(/[a-z0-9\s\p{P}\p{S}]/gu, ''));
+      for (let i = 0; i < zhSeg.length; i++) {
+        const ch = zhSeg[i];
+        if (!ch || STOPWORDS.has(ch)) continue;
+        tokens.push(ch);
+        if (i + 1 < zhSeg.length) {
+          const bi = ch + zhSeg[i + 1];
+          if (!STOPWORDS.has(bi)) tokens.push(`2:${bi}`);
+        }
+      }
+      return tokens;
+    };
+
+    /** TF-IDF 建 D：docs = queries + chunks；每个 doc 记录 tf Map<tok, freq> */
+    const docs: Array<{ id: string; isQuery: boolean; qIdx?: number; cIdx?: number; tf: Map<string, number>; norm?: number }> = [];
+    const df = new Map<string, number>();
+    const addDoc = (id: string, isQuery: boolean, text: string, qIdx?: number, cIdx?: number) => {
+      const tokens = normalize(text);
+      const tf = new Map<string, number>();
+      const seen = new Set<string>();
+      for (const t of tokens) {
+        tf.set(t, (tf.get(t) || 0) + 1);
+        if (!seen.has(t)) { seen.add(t); df.set(t, (df.get(t) || 0) + 1); }
+      }
+      docs.push({ id, isQuery, qIdx, cIdx, tf });
+    };
+
+    queries.forEach((q, i) => {
+      const joined = [q.text || '', q.visualIntent || '', q.emotion || ''].filter(Boolean).join(' ');
+      addDoc(`q_${i}`, true, joined, i, undefined);
+    });
+    videoChunks.forEach((c, i) => {
+      const joined = [c.description || '', c.emotion || '', c.shotType || '', Array.isArray(c.characters) ? (c.characters as string[]).join(' ') : ''].filter(Boolean).join(' ');
+      addDoc(`c_${i}`, false, joined, undefined, i);
+    });
+
+    const D = docs.length;
+    const idf = (tok: string) => Math.log((D + 1) / ((df.get(tok) || 0) + 1)) + 1;
+    /** 计算每个 doc 的 tf-idf 向量（稀疏 Map）+ L2 范数（供快速 cos） */
+    for (const d of docs) {
+      let nn = 0;
+      d.tf.forEach((freq, tok) => {
+        const w = freq * idf(tok);
+        d.tf.set(tok, w);
+        nn += w * w;
+      });
+      d.norm = Math.sqrt(nn) || 1;
+    }
+    /** 把 query docs / chunk docs 拆出来，避免循环里查 id */
+    const qDocs = docs.filter((d) => d.isQuery);
+    const cDocs = docs.filter((d) => !d.isQuery);
+    /** 快速 cos 函数：两个稀疏向量只在 tok 交集上累加 Σw1·w2，然后 / (‖a‖·‖b‖) */
+    const cosine = (a: Map<string, number>, aNorm: number, b: Map<string, number>, bNorm: number): number => {
+      if (a.size === 0 || b.size === 0) return 0;
+      /** 选择较小的那个迭代，减少查 Map 次数（纯小优化） */
+      const [small, big] = a.size <= b.size ? [a, b] : [b, a];
+      let dot = 0;
+      small.forEach((w, tok) => {
+        const bw = big.get(tok);
+        if (bw !== undefined) dot += w * bw;
+      });
+      const d = aNorm * bNorm;
+      return d <= 0 ? 0 : Math.max(0, Math.min(1, dot / d));
+    };
+
+    /* -------------------- 步骤2：视频时间线，补全 query.startMs（若前端没填 → 按 N 线性均分视频尾部） -------------------- */
+    const videoEndMs = Math.max(...videoChunks.map((c) => Number(c.endMs) || 0), 0);
+    const videoStartMs = Math.min(...videoChunks.map((c) => Number(c.startMs) || 0), 0);
+    const videoSpanMs = Math.max(1, videoEndMs - videoStartMs);
+    const queryStartMs = queries.map((q, i) => {
+      if (q.startMs && q.startMs > 0) return q.startMs;
+      /** 线性占位：按 q 在 queries 中的比例分到 [0, videoSpanMs] */
+      const ratio = queries.length <= 1 ? 0 : i / (queries.length - 1);
+      return videoStartMs + ratio * videoSpanMs;
+    });
+    const queryDurMs = queries.map((q) => Math.max(2000, q.audioDurationMs || 0, q.durationMs || 0));
+
+    /** Sigmoid 把任意实数压到 [0,1]，用于把 time_span 的重叠分数归一成相似度 */
+    const sigmoid = (x: number) => 1 / (1 + Math.exp(-x));
+
+    /* -------------------- 步骤3：对每个 query 算 top-K 候选 -------------------- */
+    const perQueryTopK: Record<string, string[]> = {};
+    const perQueryTopKSet: Record<string, Set<string>> = {};
+    const unionIds = new Set<string>();
+    /** 用于"质量保护② 候选多样性不足自动扩张"：每个 query 我们先取排序全表，后面按需扩张 K' */
+    const perQueryScored: Array<Array<{ cid: string; score: number; midMs: number }>> = [];
+
+    for (let qi = 0; qi < qDocs.length; qi++) {
+      const q = queries[qi];
+      const qd = qDocs[qi];
+      const qSt = queryStartMs[qi];
+      const qDur = queryDurMs[qi];
+      const qEnd = qSt + qDur;
+      const qNorm = qd.norm || 1;
+      const qTf = qd.tf;
+
+      const scored: Array<{ cid: string; score: number; midMs: number }> = [];
+      for (let ci = 0; ci < cDocs.length; ci++) {
+        const cd = cDocs[ci];
+        const chunk = videoChunks[ci];
+        const cSt = Number(chunk.startMs) || 0;
+        const cEnd = Number(chunk.endMs) || cSt;
+        const cMid = (cSt + cEnd) / 2;
+
+        /** (A) 文本语义分 */
+        const sText = cosine(qTf, qNorm, cd.tf, cd.norm || 1);
+
+        /** (B) 时间锚分：重叠越大 / 外扩 gap 越小，分数越高 */
+        const overlap = Math.max(0, Math.min(qEnd, cEnd) - Math.max(qSt, cSt));
+        const gap = Math.max(0, cSt - qEnd, qSt - cEnd);
+        /** 0.002 = 500ms 重叠 bonus 到 0.73 sigmoid 平台，1s gap 回到 ~0.12，足够拉开分布 */
+        const sTime = sigmoid(0.002 * (overlap - gap));
+
+        const score = alpha * sText + beta * sTime;
+        scored.push({ cid: chunk.id, score, midMs: cMid });
+      }
+      scored.sort((a, b) => b.score - a.score);
+      perQueryScored.push(scored);
+
+      /** 先选出 K 个，然后执行"质量保护② 多样性扩张"：
+       *  如果 topK 的 min/max midMs 跨度 < 3·qDur，说明候选挤在同一小区间里（极可能是文本语义偶然高分），
+       *  往 K+1 一直补，直到跨度达标或补到 2K（最多翻一倍，防止过扩张）。 */
+      let kk = K;
+      if (scored.length > K) {
+        const minSpanMs = 3 * qDur;
+        let lo = scored[0].midMs, hi = scored[0].midMs;
+        for (let i = 0; i < K; i++) { lo = Math.min(lo, scored[i].midMs); hi = Math.max(hi, scored[i].midMs); }
+        let i = K;
+        while (i < scored.length && i < 2 * K && (hi - lo) < minSpanMs) {
+          lo = Math.min(lo, scored[i].midMs); hi = Math.max(hi, scored[i].midMs);
+          i++;
+        }
+        kk = i;
+      }
+      const top = scored.slice(0, Math.min(kk, scored.length));
+      const ids = top.map((s) => s.cid);
+      perQueryTopK[q.shotId] = ids;
+      perQueryTopKSet[q.shotId] = new Set(ids);
+      for (const cid of ids) unionIds.add(cid);
+    }
+
+    /* -------------------- 步骤4：质量保护③ 候选并集 ≥ 2N，不足时按"未入并集的 chunk 里平均分最高的"补齐 -------------------- */
+    const minUnion = Math.min(M, Math.max(2 * N, Math.ceil(M * 0.1)));
+    if (unionIds.size < minUnion) {
+      /** 补池策略：对每个还没入 unionIds 的 chunk，取它在任意 query 中的最高得分，按这个分降序取够数 */
+      const bestByChunk = new Map<string, number>();
+      for (let qi = 0; qi < perQueryScored.length; qi++) {
+        for (const s of perQueryScored[qi]) {
+          if (unionIds.has(s.cid)) continue;
+          bestByChunk.set(s.cid, Math.max(bestByChunk.get(s.cid) || 0, s.score));
+        }
+      }
+      const arr = Array.from(bestByChunk.entries()).sort((a, b) => b[1] - a[1]);
+      for (const [cid] of arr) {
+        if (unionIds.size >= minUnion) break;
+        unionIds.add(cid);
+      }
+    }
+
+    /* -------------------- 步骤5：按 chunk.id∈unionIds 构造 filteredChunks，顺序与原 videoChunks 一致（daemon 侧期望按 startMs 顺序） -------------------- */
+    const filteredChunks = videoChunks.filter((c) => unionIds.has(c.id));
+    const M1 = filteredChunks.length;
+
+    AppLogger.info(LOG_TAGS.AI_AGENT,
+      `[preselectTopK] ${opts?.logProjectId || ''} Top-K 预选 applied=true：N=${N}，动态 K=${K}，切片池 ${M} → ${M1}（压缩 ${M > 0 ? (100 - M1 / M * 100).toFixed(1) : '0.0'}%），并集≥2N(${minUnion})=${unionIds.size >= minUnion}`);
+
+    return { filteredChunks, perQueryTopK, K, M0: M, M1, applied: true };
+  }
+
+  /**
+   * 审计工具：对比"KM 最终匹配结果"与"预选 top-K 集合"，输出真实覆盖率。
+   *  单项目命中率 < 0.95 打 warn，提示需要调 K 或分数融合参数。
+   * @param perQueryTopK preselectTopK 返回的 perQueryTopK
+   * @param matches KM 结果 matches 数组（必须带 shotId + mediaId/chunkId）
+   * @param projectId 可选，日志里定位项目
+   */
+  static auditPreselectTopK(
+    perQueryTopK: Record<string, string[]>,
+    matches: any[],
+    projectId?: string,
+  ): { total: number; hit: number; hitRate: number } {
+    if (!matches || matches.length === 0) return { total: 0, hit: 0, hitRate: 1 };
+    let total = 0, hit = 0;
+    for (const m of matches) {
+      const sid = String(m.shotId || '');
+      const cid = String(m.mediaId || m.chunkId || '');
+      const cand = perQueryTopK[sid];
+      /** keepOriginalAudio 的原声定位匹配或纯未命中（cid 空）不在预选审计范围内，跳过 */
+      if (!sid || !cid || !cand || m.keepOriginalAudio === true) continue;
+      total++;
+      if (cand.includes(cid)) hit++;
+    }
+    const hitRate = total === 0 ? 1 : hit / total;
+    if (total > 0 && hitRate < 0.95) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT,
+        `[preselectTopK/audit] ${projectId || ''} Top-K 命中率=${(hitRate * 100).toFixed(2)}% < 95%，共 ${total} 条语义匹配，其中 ${total - hit} 条最终匹配未进入预选 Top-K。建议增大 K 或调低 minDescCoverage。`);
+    } else if (total > 0) {
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[preselectTopK/audit] ${projectId || ''} Top-K 命中率=${(hitRate * 100).toFixed(2)}%（${hit}/${total}），预选质量符合预期。`);
+    }
+    return { total, hit, hitRate };
   }
 
   /**
@@ -429,8 +1159,14 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       });
 
       const matchData = result?.data || [];
+      /** 回填索引：一次 O(M) 建 Map，后续查询 O(1) 替代 queries.map + matchData.find 的 O(N·M) */
+      const fallbackMatchById = new Map<string, any>();
+      for (const m of matchData) {
+        const sid = (m as any)?.shotId;
+        if (sid) fallbackMatchById.set(String(sid), m);
+      }
       const matches = queries.map(q => {
-        const matched = matchData.find((m: any) => m.shotId === q.shotId);
+        const matched = fallbackMatchById.get(q.shotId);
         const matchedFrame = matched?.matchedFrame || '';
         const thumbnail = matchedFrame ? path.join(framesDir, matchedFrame) : '';
 

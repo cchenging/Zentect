@@ -189,6 +189,7 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
     matchResults: Array.isArray(rawData.matchResults) ? rawData.matchResults : [],
     activeBgm: rawData.activeBgm || null,
     beatTimestamps: Array.isArray(rawData.beatTimestamps) ? rawData.beatTimestamps : [],
+    deepRecommendation: rawData.deepRecommendation || null,
     // Canvas
     canvasData: rawData.canvasData,
     // 分镜模式('original' | 'ai'):存于 metadata,需回传给前端 hydrate 恢复

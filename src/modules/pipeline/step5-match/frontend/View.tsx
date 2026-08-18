@@ -8,6 +8,9 @@ import { Badge, StatHeader, EmptyState } from "@renderer/components/shared";
 import { DragReorderList } from "@renderer/components/shared/drag-reorder-list";
 import { API } from "@renderer/api";
 import type { StepShotMatchingProps } from "../types";
+import { useStep5Store } from "../../stores/useStep5Store";
+import type { BgmTrack, BgmRecommendation } from "../../stores/useStep5Store";
+import { BgmTrackPlayer } from "./BgmTrackPlayer";
 
 /** 时长毫秒 → 整数秒文案（去掉小数点，如 3500ms → "4s"） */
 const formatIntSeconds = (ms?: number | null): string => {
@@ -15,33 +18,24 @@ const formatIntSeconds = (ms?: number | null): string => {
   return `${Math.round(ms / 1000)}s`;
 };
 
-/** BGM 推荐曲目 */
-interface BgmTrack {
-  name: string;
-  artist: string;
-  mood: string;
-  source: string;
-  beatFit: string;
-  bpm?: number;
-  durationMs?: number;
-  previewUrl?: string;
-  downloadUrl?: string;
-  libraryId?: string;
-}
-
-/** BGM 个性化推荐结果 */
-interface BgmRecommendation {
-  toneLabel: string;
-  toneDesc: string;
-  tracks: BgmTrack[];
-}
-
 /** 默认推荐占位：未生成前的空推荐（不硬编码曲目，全部由 AI 生成） */
 const EMPTY_RECOMMENDATION: BgmRecommendation = {
   toneLabel: '',
   toneDesc: '',
   tracks: [],
 };
+
+/** 本地曲库分类标签页 */
+const LOCAL_TONE_TABS = [
+  { value: 'all', label: '全部' },
+  { value: 'neutral', label: '中性' },
+  { value: 'emotional', label: '情感' },
+  { value: 'suspense', label: '悬疑' },
+  { value: 'epic', label: '史诗' },
+  { value: 'comedy', label: '喜剧' },
+];
+/** 本地曲库每页展示数量 */
+const LOCAL_PAGE_SIZE = 6;
 
 export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   matchResults, videoChunks, mediaItems, ttsResults, hasBgm, isProcessing,
@@ -60,14 +54,60 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
     return videoChunks.length > 0 ? videoChunks : mediaItems.filter((m) => m.type === "video_chunk" || m.type === "frame");
   }, [videoChunks, mediaItems]);
 
-  /** AI 深度推荐状态：LLM 依据文案语义生成的推荐（唯一数据源，不再硬编码） */
-  const [deepRecommendation, setDeepRecommendation] = useState<BgmRecommendation | null>(null);
+  /** AI 深度推荐状态：LLM 依据文案语义生成的推荐（提升到 useStep5Store，随快照落盘不丢失） */
+  const deepRecommendation = useStep5Store((s) => s.deepRecommendation);
+  const setDeepRecommendation = useStep5Store((s) => s.setDeepRecommendation);
   const [deepLoading, setDeepLoading] = useState(false);
   const [deepError, setDeepError] = useState('');
   /** 一键应用：正在下载的曲目 key（用于按钮 loading 态） */
   const [applyingTrackKey, setApplyingTrackKey] = useState<string | null>(null);
   /** 一键应用失败提示 */
   const [applyError, setApplyError] = useState('');
+
+  /** 本地曲库：分类分页自选 */
+  const [localTracks, setLocalTracks] = useState<BgmTrack[]>([]);
+  const [localTone, setLocalTone] = useState('all');
+  const [localPage, setLocalPage] = useState(0);
+  const [localLoading, setLocalLoading] = useState(false);
+
+  /** 加载本地曲库全量列表（分类分页自选） */
+  const loadLocalLibrary = useCallback(async () => {
+    setLocalLoading(true);
+    try {
+      const res: any = await API.ai.bgmLocalList();
+      if (res && (res as any).success === false) return;
+      const data = (res as any)?.data;
+      if (Array.isArray(data)) {
+        setLocalTracks(data.map((t: any) => ({
+          name: t.name,
+          artist: t.artist,
+          mood: (t.tags || []).join(','),
+          source: `本地曲库 · ${t.license || '免费商用'}`,
+          beatFit: '中',
+          bpm: t.bpm,
+          durationMs: t.durationMs,
+          previewUrl: t.previewUrl,
+          downloadUrl: t.downloadUrl,
+          libraryId: t.id,
+        })));
+      }
+    } catch { /* 忽略 */ } finally {
+      setLocalLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadLocalLibrary(); }, [loadLocalLibrary]);
+
+  /** 按分类过滤 + 分页 */
+  const filteredLocalTracks = useMemo(() => {
+    if (localTone === 'all') return localTracks;
+    return localTracks.filter((t) => (t.mood || '').includes(localTone));
+  }, [localTracks, localTone]);
+  const localTotalPages = Math.max(1, Math.ceil(filteredLocalTracks.length / LOCAL_PAGE_SIZE));
+  const pageLocalTracks = useMemo(() => {
+    const start = localPage * LOCAL_PAGE_SIZE;
+    return filteredLocalTracks.slice(start, start + LOCAL_PAGE_SIZE);
+  }, [filteredLocalTracks, localPage]);
 
   /** 当前展示的推荐：AI 生成结果优先，未生成时为占位空对象 */
   const currentRecommendation = deepRecommendation || EMPTY_RECOMMENDATION;
@@ -278,20 +318,12 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                         <Badge variant="success" className="text-[10px]">卡点 {t.beatFit}</Badge>
                       </div>
                       {(t.previewUrl || t.downloadUrl || t.libraryId) && (
-                        <div className="flex items-center gap-2 mt-1">
-                          {t.previewUrl && (
-                            <audio controls preload="none" src={getSafeMediaUrl(t.previewUrl)}
-                              className="w-full h-8 mt-1" />
-                          )}
-                          {(t.downloadUrl || t.libraryId) && (
-                            <button type="button" disabled={isProcessing || applyingTrackKey === trackKey(t)}
-                              className="px-2 py-1 text-[11px] bg-accent/15 text-accent hover:bg-accent hover:text-accent-foreground rounded transition-all cursor-pointer disabled:opacity-50 flex items-center gap-1"
-                              onClick={() => handleApplyBgm(t)}>
-                              {applyingTrackKey === trackKey(t) && <Loader2 size={11} className="animate-spin" />}
-                              {applyingTrackKey === trackKey(t) ? '下载中' : '应用'}
-                            </button>
-                          )}
-                        </div>
+                        <BgmTrackPlayer
+                          track={t}
+                          isProcessing={isProcessing}
+                          applying={applyingTrackKey === trackKey(t)}
+                          onApply={handleApplyBgm}
+                        />
                       )}
                     </div>
                   ))}
@@ -302,12 +334,76 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                     <span>BGM 应用失败：{applyError}</span>
                   </div>
                 )}
-                <div className="text-[11px] text-muted-foreground">点击「应用」可直接套用为当前 BGM</div>
+                <div className="text-[11px] text-muted-foreground">以上为全网搜索推荐，请自行在音乐平台搜索下载后上传使用</div>
               </>
             ) : !deepLoading && (
-              <div className="text-[12px] text-muted-foreground">点击「AI 深度推荐」，AI 将依据解说文案语义生成免费商用选曲建议</div>
+              <div className="text-[12px] text-muted-foreground">点击「AI 深度推荐」，AI 将依据解说文案语义生成全网选曲建议</div>
             )}
           </div>
+
+        {/* 本地曲库：分类分页自选 */}
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5 text-[13px] font-medium">
+              <Music2 size={13} className="text-accent" /> 本地曲库
+              <span className="text-muted-foreground font-normal text-[11px]">（{localTracks.length} 首 · 免费商用）</span>
+            </div>
+          </div>
+          {/* 分类标签 */}
+          <div className="flex items-center gap-1 flex-wrap">
+            {LOCAL_TONE_TABS.map((tab) => (
+              <button key={tab.value}
+                onClick={() => { setLocalTone(tab.value); setLocalPage(0); }}
+                className={`px-2.5 py-1 text-[12px] rounded-md transition-all cursor-pointer ${
+                  localTone === tab.value
+                    ? 'bg-accent text-accent-foreground'
+                    : 'bg-bg-secondary text-muted-foreground hover:text-foreground'
+                }`}>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+          {/* 曲目列表 + 分页 */}
+          {localLoading ? (
+            <div className="text-[12px] text-muted-foreground">加载中...</div>
+          ) : pageLocalTracks.length > 0 ? (
+            <>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {pageLocalTracks.map((t) => (
+                  <div key={t.libraryId} className="border border-border rounded-lg p-2.5 flex flex-col gap-1 bg-bg-secondary/30">
+                    <div className="text-[12px] font-medium truncate" title={t.name}>{t.name}</div>
+                    <div className="text-[11px] text-muted-foreground truncate">{t.artist} · {t.source}</div>
+                    <div className="flex items-center gap-1 flex-wrap">
+                      <Badge variant="warning" className="text-[10px]">{t.mood}</Badge>
+                      {t.bpm ? <Badge variant="success" className="text-[10px]">{t.bpm} BPM</Badge> : null}
+                    </div>
+                    <BgmTrackPlayer
+                      track={t}
+                      isProcessing={isProcessing}
+                      applying={applyingTrackKey === trackKey(t)}
+                      onApply={handleApplyBgm}
+                    />
+                  </div>
+                ))}
+              </div>
+              {localTotalPages > 1 && (
+                <div className="flex items-center justify-center gap-2">
+                  <button onClick={() => setLocalPage((p) => Math.max(0, p - 1))} disabled={localPage === 0}
+                    className="px-2.5 py-1 text-[12px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded-md transition-all cursor-pointer disabled:opacity-40">
+                    上一页
+                  </button>
+                  <span className="text-[11px] text-muted-foreground">{localPage + 1} / {localTotalPages}</span>
+                  <button onClick={() => setLocalPage((p) => Math.min(localTotalPages - 1, p + 1))} disabled={localPage >= localTotalPages - 1}
+                    className="px-2.5 py-1 text-[12px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded-md transition-all cursor-pointer disabled:opacity-40">
+                    下一页
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="text-[12px] text-muted-foreground">本地曲库为空或加载失败</div>
+          )}
+        </div>
 
         {/* 操作：上传本地 / 使用已分离伴奏 */}
         <div className="flex items-center gap-2 flex-wrap">
