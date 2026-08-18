@@ -18,9 +18,15 @@ export class AIDaemon {
   private healthCheckTimer: NodeJS.Timeout | null = null;
   private healthFailCount = 0;
   private readonly HEALTH_CHECK_INTERVAL = 5000;
-  private readonly HEALTH_MAX_FAILURES = 3;
+  /** 🔧 P0 修复（根治：模型加载 26s 不被误杀）：失败窗口从 15s 拉长到 40s
+   *   旧逻辑 3 次 × 5 秒 = 15 秒 —— CLIP 首次加载耗时 26 秒，被判定为 daemon 死误重启
+   *   新逻辑 8 次 × 5 秒 = 40 秒 —— 搭配独立健康检查 HTTPD 和 loading 状态识别，三重保险 */
+  private readonly HEALTH_MAX_FAILURES = 8;
   /** 在途长任务计数：守护进程正在处理请求时，健康检查失败不触发重启，避免 CPU 密集任务（如 TTS 合成）被误杀 */
   private inflightTaskCount = 0;
+  /** 专用健康检查端口：ai_daemon.py 启动独立线程 HTTPD，在 stderr 中打印 [AI_HEALTH_PORT]=xxx
+   *   AiRuntimeManager 解析后通过 setHealthPort() 注入；健康检查优先打此端口，1ms 响应永不饿死 */
+  private healthPort?: number;
   private runtimeManager: AiRuntimeManager;
   /** P1 #7：ensureWarm() 的幂等单飞 Promise。
    *  同一进程内并发调用 ensureWarm，仅真正跑一次 /health 拉活流程，其他调用直接复用同一 Promise。 */
@@ -68,9 +74,10 @@ export class AIDaemon {
         }
 
         this.port = this.runtimeManager.getPort();
+        this.setHealthPort(this.runtimeManager.getHealthPort());
         this.isReady = true;
         this.startHealthCheck();
-        AppLogger.info(LOG_TAGS.AI_DAEMON, 'AI Daemon 已上线', { port: this.port });
+        AppLogger.info(LOG_TAGS.AI_DAEMON, 'AI Daemon 已上线', { port: this.port, healthPort: this.healthPort });
       })
       .catch((err) => {
         AppLogger.error(LOG_TAGS.AI_DAEMON, 'AiRuntimeManager 启动异常', err);
@@ -116,6 +123,35 @@ export class AIDaemon {
     return this.port;
   }
 
+  /** 函数级中文注释：设置专用健康检查端口（AiRuntimeManager 解析 stderr 的 [AI_HEALTH_PORT]=xxx 后调用）。
+   *  undefined 表示 fallback 到业务端口 this.port。 */
+  public setHealthPort(port: number | undefined) {
+    this.healthPort = port;
+    if (port) AppLogger.debug(LOG_TAGS.AI_DAEMON, `[healthd] 使用独立健康检查端口 ${port}（永不阻塞）`);
+  }
+
+  /** 函数级中文注释：返回当前健康检查的 URL —— 优先独立 HTTPD，fallback 业务端口。 */
+  private getHealthCheckUrl(): string {
+    const p = this.healthPort ?? this.port;
+    return `http://127.0.0.1:${p}/health`;
+  }
+
+  /** 函数级中文注释：从 /health JSON 响应体中解析 status 字段。
+   *  status==='loading' 表示 Python 正在加载模型（CLIP/InsightFace/…），此时 HTTP 200 但不应视为健康失败。
+   *  返回值：{healthy:boolean, loading:boolean, loadingModel?:string, elapsedMs?:number} */
+  private parseHealthBody(body: string): { healthy: boolean; loading: boolean; loadingModel?: string; elapsedMs?: number } {
+    try {
+      const json = JSON.parse(body || '{}');
+      const status: string = json?.status;
+      if (status === 'loading') {
+        return { healthy: false, loading: true, loadingModel: json?.loadingModel, elapsedMs: json?.elapsedMs };
+      }
+      return { healthy: status === 'ok', loading: false };
+    } catch {
+      return { healthy: true, loading: false }; // 没按约定格式就当正常，避免反复误判
+    }
+  }
+
   /**
    * P1 #7 预调 daemon：提前打 /health 把 Python 子进程 + 运行时模型热起来。
    * 关键语义：
@@ -146,14 +182,34 @@ export class AIDaemon {
         try {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), this.WARM_TIMEOUT_MS);
-          const res = await fetch(`http://127.0.0.1:${this.port}/health`, {
+          const res = await fetch(this.getHealthCheckUrl(), {
             method: 'GET',
             signal: controller.signal,
           });
           clearTimeout(timeoutId);
           if (res.ok) {
             this.lastWarmAt = Date.now();
-            AppLogger.info(LOG_TAGS.AI_DAEMON, `[ensureWarm] /health 拉活成功，daemon 已热 (port=${this.port})`);
+            AppLogger.info(LOG_TAGS.AI_DAEMON, `[ensureWarm] /health 拉活成功 (port=${this.healthPort ?? this.port})`);
+            /** 🔧 P0 根治：拉活成功后调用 /api/preload 把 CLIP/InsightFace 权重提前加载到内存
+             *   使用业务端口 34567 发请求（/api/preload 是 FastAPI 端点，不走 health HTTPD）；
+             *   预热 60 秒超时并静默失败，不阻塞后续业务请求。*/
+            try {
+              const c2 = new AbortController();
+              const t2 = setTimeout(() => c2.abort(), 60000);
+              const r2 = await fetch(`http://127.0.0.1:${this.port}/api/preload?models=clip,chinese_clip,face`, {
+                method: 'GET',
+                signal: c2.signal,
+              });
+              clearTimeout(t2);
+              if (r2.ok) {
+                const j2 = await r2.json().catch(() => ({}));
+                AppLogger.info(LOG_TAGS.AI_DAEMON, `[ensureWarm] /api/preload 预热成功，耗时 ${j2?.elapsedMs ?? -1}ms，模型=${JSON.stringify(j2?.requested ?? [])}`);
+              } else {
+                AppLogger.warn(LOG_TAGS.AI_DAEMON, `[ensureWarm] /api/preload 预热返回非 200: HTTP ${r2.status}，不影响后续请求`);
+              }
+            } catch (e2: any) {
+              AppLogger.warn(LOG_TAGS.AI_DAEMON, `[ensureWarm] /api/preload 预热失败（不影响业务）: ${e2.message}`);
+            }
           } else {
             AppLogger.warn(LOG_TAGS.AI_DAEMON, `[ensureWarm] /health 返回非 200: HTTP ${res.status}`);
           }
@@ -316,24 +372,30 @@ export class AIDaemon {
     }
   }
 
-  /** 快速健康检查 (3秒超时)，用于重试前确认 daemon 存活 */
+  /** 快速健康检查 (3秒超时)，用于重试前确认 daemon 存活。
+   *  函数级中文注释：使用 healthPort 优先 URL；若 /health 返回 loading 视为"存活"（正在加载权重），
+   *  仅 HTTP 层失败（超时/ECONNREFUSED）才返回 false，避免 loading 期间触发不必要重启。 */
   private async quickHealthCheck(): Promise<boolean> {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 3000);
-      const res = await fetch(`http://127.0.0.1:${this.port}/health`, {
+      const res = await fetch(this.getHealthCheckUrl(), {
         method: 'GET',
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      return res.ok;
+      if (!res.ok) return false;
+      const txt = await res.text().catch(() => '{}');
+      const parsed = this.parseHealthBody(txt);
+      // loading 或 ok 均视为"活着"
+      return parsed.healthy || parsed.loading;
     } catch {
       return false;
     }
   }
 
   // ==========================================
-  // 💓 健康心跳检测 — 连续失败自动重启（长任务期间跳过重启判定）
+  // 💓 健康心跳检测 — 连续失败自动重启（长任务期间 / 模型加载期间跳过重启判定）
   // ==========================================
   private startHealthCheck() {
     if (this.healthCheckTimer) return;
@@ -342,13 +404,29 @@ export class AIDaemon {
     this.healthCheckTimer = setInterval(() => {
       if (!this.runtimeManager.online) return;
 
-      const req = http.get(`http://localhost:${this.port}/health`, (res: any) => {
-        if (res.statusCode === 200) {
-          this.healthFailCount = 0;
-        } else {
+      const url = this.getHealthCheckUrl();
+      const req = http.get(url, (res: any) => {
+        // 🔧 P0 根治：读取响应 body，判断 status==='loading' 不算失败。
+        // loading 代表 Python 正在加载模型（CLIP/chinese_clip 等 26 秒），但 daemon 实际是活着的。
+        let chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf8');
+          if (res.statusCode === 200) {
+            const parsed = this.parseHealthBody(body);
+            if (parsed.loading) {
+              AppLogger.debug(LOG_TAGS.AI_DAEMON,
+                `健康检查: 模型 ${parsed.loadingModel ?? '?'} 正在加载，已耗时 ${parsed.elapsedMs ?? -1}ms，不计入失败`);
+              this.healthFailCount = 0;
+              return;
+            }
+            if (parsed.healthy) {
+              this.healthFailCount = 0;
+              return;
+            }
+          }
           this.handleHealthCheckFailure('HTTP ' + res.statusCode);
-        }
-        res.resume();
+        });
       });
 
       req.on('error', () => this.handleHealthCheckFailure('连接错误'));
@@ -357,13 +435,12 @@ export class AIDaemon {
   }
 
   /**
-   * 处理一次健康检查失败。
+   * 处理一次健康检查失败（HTTP 失败 / 超时 / 连接拒绝 / 返回非 ok+非 loading ）。
    *
-   * 关键设计：当守护进程正在处理在途长任务（如 TTS 合成、ASR、音频分离等 CPU 密集操作）时，
-   * 即使 /health 响应超时或失败，也视为"守护进程忙"而非"守护进程死亡"，跳过失败计数、不触发重启。
-   * 理由：这些任务会长时间占满 CPU/GIL，导致 /health 无法在 3 秒内响应，但守护进程本身是健康的；
-   * 若此时重启，会中断正在进行的合成请求（表现为 fetch failed）。
-   * 只有当守护进程完全空闲（无在途任务）时连续失败，才判定为真死亡并重启。
+   * 三重防护（从外到内，层层过滤误重启）：
+   *   ① 有在途长任务（POST 请求 inflight / ensureWarm / preload）→ 跳过
+   *   ② /health 返回 status==='loading'（Python 侧 AIModels._MODEL_LOADING_STATE 有值）→ 已在上面归零，不进这里
+   *   ③ 失败窗口 40s（8 次 × 5s）≥ CLIP 最大加载 26s → 极端情况也不触发
    */
   private handleHealthCheckFailure(reason: string) {
     if (this.inflightTaskCount > 0) {
@@ -377,6 +454,9 @@ export class AIDaemon {
       AppLogger.error(LOG_TAGS.AI_DAEMON, `健康检查连续 ${this.healthFailCount} 次失败，重启守护进程`);
       this.healthFailCount = 0;
       this.restartDaemon();
+    } else {
+      AppLogger.warn(LOG_TAGS.AI_DAEMON,
+        `健康检查失败(${reason})，累计 ${this.healthFailCount}/${this.HEALTH_MAX_FAILURES}，仍在容忍窗口 ${this.HEALTH_MAX_FAILURES * this.HEALTH_CHECK_INTERVAL / 1000}s`);
     }
   }
 
@@ -394,7 +474,8 @@ export class AIDaemon {
         if (r.success) {
           this.isReady = true;
           this.port = this.runtimeManager.getPort();
-          AppLogger.info(LOG_TAGS.AI_DAEMON, 'AI 运行时已重启');
+          this.setHealthPort(this.runtimeManager.getHealthPort());
+          AppLogger.info(LOG_TAGS.AI_DAEMON, 'AI 运行时已重启', { healthPort: this.healthPort });
         }
       })
       .catch((err) => {

@@ -35,6 +35,9 @@ export class AiRuntimeManager {
   private settings = new SettingsRepository()
   private runtimePid: number | null = null
   private runtimePort = 34567
+  /** 函数级中文注释：独立健康检查 HTTPD 端口。ai_daemon.py 启动时在 stderr 输出 [AI_HEALTH_PORT]=xxx
+   *  Node 侧解析到此值后通过 setHealthPort() 传递给 AIDaemon；undefined 则 fallback 到业务端口。 */
+  private healthPort: number | undefined
   private isOnline = false
 
   private constructor() {}
@@ -44,6 +47,24 @@ export class AiRuntimeManager {
       AiRuntimeManager.instance = new AiRuntimeManager()
     }
     return AiRuntimeManager.instance
+  }
+
+  /** 函数级中文注释：返回独立健康检查端口（若 daemon 已在 stderr 中申明过），否则 undefined。 */
+  public getHealthPort(): number | undefined {
+    return this.healthPort
+  }
+
+  /** 函数级中文注释：从 daemon stderr 的任意一行中解析 [AI_HEALTH_PORT]=<int>，成功后写入 this.healthPort。
+   *  幂等可多次调用：后续重启时端口号会被刷新。 */
+  private parseAndApplyHealthPort(line: string): void {
+    if (!line) return
+    const m = /\[AI_HEALTH_PORT\]\s*=\s*(\d+)/.exec(line)
+    if (m) {
+      const p = Number(m[1])
+      if (Number.isFinite(p) && p > 0 && p < 65536) {
+        this.healthPort = p
+      }
+    }
   }
 
   /** 启动 AI 运行时（Python daemon） */
@@ -112,8 +133,14 @@ export class AiRuntimeManager {
       })
 
       proc.stderr?.on('data', (data: Buffer) => {
-        const output = data.toString().trim()
-        if (!output) return
+        const raw = data.toString()
+        if (!raw.trim()) return
+        // 先抽取独立健康检查端口号：按行切，每行单独解析（data chunk 可能多行拼接）
+        for (const ln of raw.split(/\r?\n/)) {
+          if (!ln) continue
+          this.parseAndApplyHealthPort(ln)
+        }
+        const output = raw.trim()
         if (output.includes('%|') || (output.includes('M/s]') && output.includes('<00:'))) return
         if (output.includes('INFO:') || output.includes('Application startup') || output.includes('Uvicorn running')) {
           AppLogger.debug(LOG_TAGS.AI_DAEMON, `[Uvicorn] ${output}`)
@@ -290,6 +317,17 @@ export class AiRuntimeManager {
 
       this.runtimePid = proc.pid
       this.isOnline = false
+
+      proc.stderr?.on('data', (data: Buffer) => {
+        const raw = data.toString()
+        if (!raw.trim()) return
+        // 函数级中文注释：重启后的新 daemon 同样会在 stderr 输出 [AI_HEALTH_PORT]=xxx，
+        // 必须在这里解析并更新 this.healthPort，否则旧端口号会把健康检查打到空端口。
+        for (const ln of raw.split(/\r?\n/)) {
+          if (!ln) continue
+          this.parseAndApplyHealthPort(ln)
+        }
+      })
 
       proc.on('close', (code) => {
         this.isOnline = false
