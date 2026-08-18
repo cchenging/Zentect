@@ -71,7 +71,13 @@ export class ScriptGenerator {
       throw new AppError(ErrorCode.AI_PROCESS_FAILED, '缺少视觉帧数据，无法生成讲解文案');
     }
     return frames
-      .map((f, i) => `[Frame ${i + 1}]: ${f.description || '(无描述)'}`)
+      .map((f, i) => {
+        // 🎯 P3 时间轴锚定：把帧绝对时间拼进上下文，让 LLM 感知画面时间轴（步骤5 锚定依赖）
+        const timeTag = f.timeMs != null
+          ? ` (${f.timeStr || `${(f.timeMs / 1000).toFixed(1)}s`})`
+          : '';
+        return `[Frame ${i + 1}]${timeTag}: ${f.description || '(无描述)'}`;
+      })
       .join('\n');
   }
 
@@ -167,6 +173,7 @@ ${style}：${styleInstruction}
 ## ⚡ 爆款短句与卡点硬性规则 (Core Short-Sentence Rules)
 1. **单句字数硬限制**：每个单句（两个标点之间的文字）绝对不能超过 ${maxSentenceChars} 字！多用动词、感叹句与极速短句（如："死死盯住！"、"眼神杀气顿显！"）。
 2. **镜头级微切分**：每个输入 chunk 的解说词字数必须严格 ≤ 单段字数上限，绝不能把多个动作揉合成大段落。
+3. **段落与画面一一对应**：输出段落数量必须与输入 Frame 数量一致，第 N 段解说词对应第 N 个 Frame（含其标注的时间点），严禁合并、跳帧或凭空多输出段落。
 3. **角色名称绝对统一**：严格使用【全局已知角色列表】中的姓名，严禁混淆人名或凭空创造角色列表之外的人名。
 4. **消除视觉幻觉**：若 ASR 旁白与画面物理描述不一致，以【画面物理描述】为准描绘现场动作，以 ASR 为补充。
 5. **拒绝流水账**：严禁描述画面直观已呈现的表面动作，重点剖析言下之意、内心戏与剧情冲突。
@@ -243,8 +250,9 @@ ${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
 
   /**
    * 解析 LLM 返回的原始 JSON → ScriptParagraph[]
+   * @param vlmFrames 步骤2 的视觉帧（含 timeMs），按下标为段落填充时间轴锚定 startMs/durationMs
    */
-  parseScriptResponse(rawText: string, _speechRate?: number): ScriptParagraph[] {
+  parseScriptResponse(rawText: string, _speechRate?: number, vlmFrames?: VlmFrame[]): ScriptParagraph[] {
     if (!rawText || rawText.trim().length === 0) {
       throw new AppError(ErrorCode.AI_PROCESS_FAILED, 'LLM 返回了空文本');
     }
@@ -277,6 +285,14 @@ ${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
       const shotId = raw.shotId || `s_${String(index + 1).padStart(2, '0')}`;
       const text = raw.text || '';
       const duration = raw.duration || 3;
+      // 🎯 P3 时间轴锚定：按下标从 vlmFrames 取帧绝对时间作为 startMs（相邻帧差值作为 durationMs）。
+      //    段落数超出帧数时，超出部分沿用最后一帧时间（LLM 偶发多输出段落时锚定不漂移）。
+      const frame = vlmFrames && vlmFrames[index];
+      const nextFrame = vlmFrames && vlmFrames[index + 1];
+      const startMs = frame?.timeMs != null ? Math.round(frame.timeMs) : undefined;
+      const durationMs = (frame?.timeMs != null && nextFrame?.timeMs != null)
+        ? Math.round(nextFrame.timeMs - frame.timeMs)
+        : undefined;
       return {
         __order: index,
         id: shotId,
@@ -288,6 +304,9 @@ ${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
         characters: Array.isArray(raw.characters) ? raw.characters : undefined,
         /** 原声段落标记：切分时保护，不拆分（原声定位依赖整段文本锁时间轴，拆分会破坏） */
         keepOriginalAudio: raw.keepOriginalAudio === true,
+        /** 🎯 P3 时间轴锚定：父段落对应帧的时间起点/时长（ms），断句后子句原样继承 */
+        startMs,
+        durationMs,
       };
     });
 
@@ -314,6 +333,9 @@ ${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
       characters: p.characters,
       /** 原声段落透传：LLM 标记 keepOriginalAudio 的段落下游 TTS 跳过合成、匹配锁定原片时间段 */
       keepOriginalAudio: (p as any).keepOriginalAudio === true,
+      /** 🎯 P3 时间轴锚定：子句继承父段落对应帧的时间起点/时长（ms），供步骤5 锚定切片 */
+      startMs: (p as any).startMs,
+      durationMs: (p as any).durationMs,
     })) satisfies ScriptParagraph[];
   }
 
@@ -336,8 +358,8 @@ ${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
     // 4. 调用 LLM
     const rawResponse = await this.llmChat(systemPrompt, userPrompt);
 
-    // 5. 解析响应
-    const scriptParagraphs = this.parseScriptResponse(rawResponse, input.speechRate);
+    // 5. 解析响应（注入 vlmFrames 供时间轴锚定 startMs/durationMs 填充）
+    const scriptParagraphs = this.parseScriptResponse(rawResponse, input.speechRate, input.vlmFrames);
 
     return { scriptParagraphs };
   }

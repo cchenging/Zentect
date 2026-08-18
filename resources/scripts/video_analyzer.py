@@ -7,6 +7,7 @@ import sys
 import traceback
 import asyncio
 import re
+import math
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -24,6 +25,7 @@ class SceneChunkReq(BaseModel):
     output_dir: str
     threshold: float = 0.3
     min_chunk_duration_sec: float = 1.0
+    max_chunk_duration_sec: float = 3.0
     mediaId: str = 'default'
 
 
@@ -86,7 +88,7 @@ async def detect_scene_chunks(req: SceneChunkReq):
         result = await loop.run_in_executor(
             None, _build_chunks_with_covers,
             req.file_path, req.output_dir, scene_changes_sec,
-            req.min_chunk_duration_sec, media_id
+            req.min_chunk_duration_sec, req.max_chunk_duration_sec, media_id
         )
 
         # 🚀 写入素材池缓存，下次相同 media_id 秒级返回
@@ -297,7 +299,28 @@ def _compute_chunk_motion_scores(file_path: str, boundaries_sec: list, min_chunk
     return motion_scores
 
 
-def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec: list, min_chunk_duration_sec: float, media_id: str = "default") -> dict:
+def _split_long_boundaries(boundaries_sec: list, max_chunk_duration_sec: float) -> list:
+    """将超过 max_chunk_duration_sec 的区间均匀细分为多个子区间，返回新的边界列表。
+    细分后索引 i 与切片一一对应，封面/CLIP/运动得分均基于细分后的子区间计算，
+    从源头解决"目标画面只占长切片一部分导致整段时长永远对不上"的粒度问题。"""
+    if not boundaries_sec or max_chunk_duration_sec <= 0:
+        return boundaries_sec
+    result = []
+    for i in range(len(boundaries_sec) - 1):
+        start = boundaries_sec[i]
+        end = boundaries_sec[i + 1]
+        dur = end - start
+        if dur <= max_chunk_duration_sec:
+            result.append(start)
+            continue
+        n = int(math.ceil(dur / max_chunk_duration_sec))
+        for k in range(n):
+            result.append(start + dur * k / n)
+    result.append(boundaries_sec[-1])
+    return result
+
+
+def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec: list, min_chunk_duration_sec: float, max_chunk_duration_sec: float = 3.0, media_id: str = "default") -> dict:
     """
     🚀 根据场景切换时间点构建视频切片列表，批量提取封面图 + CLIP 512维视觉语义特征
     带全局推理锁保护，防止并发原生库崩溃
@@ -318,6 +341,9 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
             last_time = t
 
     boundaries_sec = [0.0] + filtered_changes + [duration_ms / 1000.0]
+    # 🔧 P3 切片粒度下沉：对超过 max_chunk_duration_sec 的区间均匀细分，
+    #   封面/CLIP/运动得分均基于细分后的子区间计算（Node 侧 splitLongChunks 兜底不再触发）
+    boundaries_sec = _split_long_boundaries(boundaries_sec, max_chunk_duration_sec)
     chunks = []
 
     # 计算每个切片的运动显著性得分（帧差法），用于镜头匹配打分与高潮动作截取
