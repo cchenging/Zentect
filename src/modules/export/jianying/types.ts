@@ -84,6 +84,19 @@ export interface SubtitleStyle {
    * 用于将字幕定位到屏幕指定高度，如底部居中（正数，如 0.3）
    */
   verticalOffset: number;
+  /**
+   * 竖屏专用的字幕垂直偏移（相对画布高度的比值）。
+   * 竖屏画布更高，同一 verticalOffset 在竖屏下会抬得比横屏更高，
+   * 故竖屏需单独取值（通常更小），横屏仍用 verticalOffset。
+   * 缺省时由装配层按横屏值等比换算，保证距底部视觉一致。
+   */
+  verticalOffsetPortrait?: number;
+  /**
+   * 横屏专用的字幕字号（可选项）。
+   * 竖屏按当前逻辑自动放大（窄画布补足占比）；横屏无线条补足，若默认 3.5 偏小，
+   * 可在此单独放大而不影响竖屏。缺省时横屏用 fontSize。
+   */
+  fontSizeLandscape?: number;
 }
 
 /** 字幕样式默认值（按用户参数表：字号 3.5、描边 0.02、底部居中） */
@@ -97,6 +110,9 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   lineSpacing: 0.02,
   lineMaxWidth: 0.82,
   verticalOffset: 0.3,
+  // 横屏 1920 宽不触发竖屏窄画布放大逻辑，默认字号 3.5 会偏小，
+  // 单独设横屏字号放大到接近竖屏可读性；不影响竖屏（竖屏走 fontSize）。
+  fontSizeLandscape: 5.0,
 };
 
 /**

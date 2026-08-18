@@ -53,15 +53,15 @@ const { mockExecFileSync } = vi.hoisted(() => ({
  * 构造假 ffprobe JSON 输出（1920x1080 h264 + aac 音频，30fps，时长走 input 透传）
  * probeVideoSync 会解析 stdout 为 {width,height,hasAudio,durationSec}
  */
-function buildFakeFfprobeOutput(durationSec = 10): string {
+function buildFakeFfprobeOutput(durationSec = 10, width = 1920, height = 1080): string {
   return JSON.stringify({
     streams: [
       {
         index: 0,
         codec_type: 'video',
         codec_name: 'h264',
-        width: 1920,
-        height: 1080,
+        width,
+        height,
         r_frame_rate: '30/1',
       },
       {
@@ -155,18 +155,57 @@ describe('JianyingExportService', () => {
       expect(cc).toEqual({ height: 1080, width: 1920, ratio: 'original' });
     });
 
+    it('横屏源视频（默认 1920x1080）：字幕字号用横屏专用值放大且位置贴近底部', () => {
+      // 默认 mock 即 1920x1080 横屏
+      const draft = JianyingExportService.compileDraft(baseShots, 'C:/media/video.mp4');
+      const cc = (draft as any).canvas_config as any;
+      expect(cc.width).toBe(1920);
+      // 横屏字号用 fontSizeLandscape（缺省 5.0）放大，不再保持过小的 3.5
+      const texts = (draft as any).materials?.texts as any[];
+      expect(Number(texts[0].font_size)).toBeCloseTo(5.0, 3);
+      // 横屏位置贴近底部：verticalOffset=0.12（往上抬一点不透底），clip.transform.y = -0.73
+      const tracks = (draft as any).tracks as any[];
+      const seg = tracks.find((t: any) => t.type === 'text').segments[0];
+      expect(seg.clip.transform.y).toBeCloseTo(-0.73, 3);
+    });
+
+    it('竖屏源视频：画布应为 1080x1920 且字幕字号按宽比自适应放大', () => {
+      // mock ffprobe 返回竖屏 1080x1920
+      mockExecFileSync.mockImplementation(() => buildFakeFfprobeOutput(10, 1080, 1920));
+      const draft = JianyingExportService.compileDraft(baseShots, 'C:/media/video.mp4');
+
+      // 画布跟随竖屏分辨率
+      const cc = (draft as any).canvas_config as any;
+      expect(cc).toEqual({ width: 1080, height: 1920, ratio: 'original' });
+      // 画布占位素材同步为竖屏
+      const canvases = (draft as any).materials?.canvases as any[];
+      expect(canvases[0].width).toBe(1080);
+      expect(canvases[0].height).toBe(1920);
+      // 字幕字号相对 1920 宽基准放大：3.5 * 1920/1080 ≈ 6.222，保证观感一致
+      const texts = (draft as any).materials?.texts as any[];
+      expect(texts.length).toBeGreaterThan(0);
+      expect(Number(texts[0].font_size)).toBeCloseTo(3.5 * (1920 / 1080), 3);
+      // 字幕位置：竖屏画布更高，verticalOffset 单独换算（0.3 * 1080/1920）保持距底部视觉一致
+      const tracks = (draft as any).tracks as any[];
+      const textTrack = tracks.find((t: any) => t.type === 'text');
+      const seg = textTrack.segments[0];
+      // 默认 verticalOffset=0.3，竖屏换算下的 clip.transform.y = -0.85 + verticalOffsetPortrait
+      const expectedVertical = 0.3 * (1080 / 1920);
+      expect((seg.clip.transform.y as number) - (-0.85)).toBeCloseTo(expectedVertical, 3);
+    });
+
     it('relationships 应为数组（剪映原生草稿为数组，非对象）', () => {
       const draft = JianyingExportService.compileDraft(baseShots, 'C:/media/video.mp4');
 
       expect(Array.isArray((draft as any).relationships)).toBe(true);
     });
 
-    it('轨道名应与剪映一致（video→main / audio→audio / text→subs）', () => {
+    it('轨道名应与剪映一致（video→main / audio-bgm / audio-tts / text→subs）', () => {
       const draft = JianyingExportService.compileDraft(baseShots, 'C:/media/video.mp4', 'C:/music/bgm.mp3');
 
       const tracks = (draft as any).tracks as any[];
       expect(tracks[0].name).toBe('main');
-      expect(tracks[1].name).toBe('audio');
+      expect(tracks[1].name).toBe('bgm');
       expect(tracks[2].name).toBe('audio');
       expect(tracks[3].name).toBe('subs');
     });

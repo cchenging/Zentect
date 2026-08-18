@@ -81,6 +81,12 @@ export interface ScriptParagraph {
    * 用户手动修改本段解说后，前端更新此字段，步骤5 重新匹配即可实时感知。
    */
   characters?: string[];
+  /** 🎯 P3 画面意图：本段解说词"应配什么画面"的画面语言描述（主体/动作/场景/景别/氛围），
+   *  步骤5 以此为匹配查询依据，与切片描述做文本↔文本语义匹配 */
+  visualIntent?: string;
+  /** 🎯 P3 时间轴锚定：本段解说词对应的画面时间起点/时长（ms），供步骤5 锚定切片 */
+  startMs?: number;
+  durationMs?: number;
 }
 
 /**

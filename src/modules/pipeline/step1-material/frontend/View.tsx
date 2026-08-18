@@ -14,6 +14,29 @@ import type { SubStepTiming } from "../../../../renderer/src/store/usePipelineSt
 import type { StepMaterialAnalysisViewProps } from "../types";
 
 /**
+ * 角色列表确定性整理（前端兜底）：按自动编号"角色_N"升序排序 + 自动名去重。
+ * 后端 Strategy 已做过同一清洗，这里再兜底一层，保证任何数据来源（DB 回读、
+ * 历史数据、SSE 增量）渲染时都按编号排列且不出现重复"角色_N"。
+ * @param roles 原始角色数组
+ * @returns 整理后的新数组
+ */
+function sortAndDedupeRoles(roles: any[]): any[] {
+  const autoIndex = (r: any): number => {
+    const m = /角色_(\d+)/.exec(r?.name || '');
+    return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER;
+  };
+  const seen = new Set<number>();
+  const result: any[] = [];
+  for (const r of roles) {
+    const idx = autoIndex(r);
+    if (idx !== Number.MAX_SAFE_INTEGER && seen.has(idx)) continue; // 自动名去重
+    if (idx !== Number.MAX_SAFE_INTEGER) seen.add(idx);
+    result.push(r);
+  }
+  return result.sort((a, b) => autoIndex(a) - autoIndex(b));
+}
+
+/**
  * 格式化毫秒为简洁文本
  * - <1s: 显示毫秒
  * - <60s: 显示秒（保留1位小数）
@@ -27,6 +50,33 @@ function formatMs(ms: number): string {
   const m = Math.floor(sec / 60);
   const s = Math.round(sec % 60);
   return `${m}m${s}s`;
+}
+
+/**
+ * 人脸来源秒数：人脸识别用 1fps 均匀抽帧，来源帧文件名 frame_NNNNNNNN.jpg 的序号即视频秒。
+ * ⚠️ 不能用 face.frame_index 直接当秒：超过 120 帧会被均匀采样，frame_index 是采样后下标，失去秒含义；
+ *    而文件名序号保留原始 1fps 帧号，始终等于视频秒，故从帧路径解析最可靠。
+ * @param face 人脸对象（含来源帧路径 frame / frame_path / framePath）
+ * @returns 视频秒数；无法解析（如回退到 VLM 帧）时返回 undefined
+ */
+function parseFaceSeconds(face: any): number | undefined {
+  const framePath = face.frame || face.frame_path || face.framePath;
+  if (!framePath) return undefined;
+  const m = /frame_(\d+)\.jpg$/i.exec(String(framePath));
+  return m ? parseInt(m[1], 10) : undefined;
+}
+
+/**
+ * 人脸来源帧时间：把秒格式化为 mm:ss，用于在缩略图上标注"这张脸来自视频哪个时间点"。
+ * @param faceSec 人脸来源秒数（parseFaceSeconds 的返回值）
+ * @returns mm:ss 字符串；无有效秒数时返回空串
+ */
+function formatFaceTime(faceSec: number | undefined): string {
+  if (typeof faceSec !== 'number' || !isFinite(faceSec) || faceSec < 0) return '';
+  const total = Math.floor(faceSec);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
 /**
@@ -156,8 +206,9 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
   /** 🎭 背景路人折叠区：extra 级角色默认收纳，点击展开查看 */
   const [showExtras, setShowExtras] = useState(false);
   /** 🎭 角色主次分组：main 主角 + supporting 配角平铺主体区，extra 背景路人折叠收纳 */
-  const mainRoles = roles.filter((r) => r.tier !== 'extra');
-  const extraRoles = roles.filter((r) => r.tier === 'extra');
+  const sortedRoles = useMemo(() => sortAndDedupeRoles(roles), [roles]);
+  const mainRoles = sortedRoles.filter((r) => r.tier !== 'extra');
+  const extraRoles = sortedRoles.filter((r) => r.tier === 'extra');
 
   /**
    * 获取角色可显示的头像路径（修复黑头像）
@@ -344,7 +395,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                 </button>
               </div>
             )}
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               {mainRoles.map((role) => {
                 /** 提取角色属性：gender(1=男/0=女)、age、出现次数 */
                 const rep = role.representative || {};
@@ -388,8 +439,8 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                         setExpandedRole(isExpanded ? null : role.id);
                       }}
                     >
-                      {/* 方形大头像 96x96，比旧版 48x48 大 4 倍，让角色脸更清晰可辨 */}
-                      <div className="relative w-24 h-24 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
+                      {/* 方形大头像 80x80，让角色脸清晰可辨的同时给角色名/属性留足横向空间 */}
+                      <div className="relative w-20 h-20 rounded-md bg-bg-primary overflow-hidden shrink-0 border border-border/30">
                         {avatarUrl
                           ? <img src={getSafeMediaUrl(avatarUrl)} className="w-full h-full object-cover" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
                           : <div className="w-full h-full flex items-center justify-center text-muted-foreground/40"><Users size={28} /></div>}
@@ -462,11 +513,25 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                       <div className="px-2 pb-2 pt-0.5 flex gap-1">
                         {allFaces.slice(0, 5).map((face: any, idx: number) => {
                           const fUrl = face.face_path || face.facePath;
-                          return fUrl ? (
-                            <div key={idx} className="w-10 h-10 rounded border border-border/20 overflow-hidden shrink-0 bg-bg-primary">
+                          if (!fUrl) return null;
+                          // 🎬 来源帧可追溯：从帧文件名解析真实视频秒（帧序号），点击可跳转播放器到该帧核对剧情上下文
+                          const faceSec = parseFaceSeconds(face);
+                          const faceTime = formatFaceTime(faceSec);
+                          return (
+                            <button
+                              key={idx}
+                              type="button"
+                              disabled={typeof faceSec !== 'number'}
+                              onClick={() => { if (typeof faceSec === 'number') onSetCurrentTime(faceSec); }}
+                              className="relative w-10 h-10 rounded border border-border/20 overflow-hidden shrink-0 bg-bg-primary group/face cursor-pointer hover:border-accent/40 transition-colors disabled:cursor-default disabled:hover:border-border/20"
+                              title={faceTime ? `跳转到该帧 ${faceTime}` : '该人脸无来源帧信息'}
+                            >
                               <img src={getSafeMediaUrl(fUrl)} className="w-full h-full object-cover" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
-                            </div>
-                          ) : null;
+                              {faceTime && (
+                                <span className="absolute bottom-0 right-0 px-0.5 text-[9px] leading-tight bg-black/60 text-white rounded-tl">{faceTime}</span>
+                              )}
+                            </button>
+                          );
                         })}
                       </div>
                     )}
@@ -499,15 +564,29 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                         {/* 多张人脸缩略图（3 列网格，每张较大） */}
                         {allFaces.length > 0 && (
                           <>
-                            <div className="text-[11px] text-muted-foreground mb-1.5">检测到的人脸 ({role.faces?.length || 0})</div>
+                            <div className="text-[11px] text-muted-foreground mb-1.5">检测到的人脸 ({role.faces?.length || 0})（点击可跳转到来源帧）</div>
                             <div className="grid grid-cols-3 gap-1.5">
                               {allFaces.map((face: any, idx: number) => {
                                 const faceUrl = face.face_path || face.facePath;
-                                return faceUrl ? (
-                                  <div key={idx} className="aspect-square rounded bg-bg-primary overflow-hidden border border-border/20">
+                                if (!faceUrl) return null;
+                                // 🎬 来源帧可追溯：从帧文件名解析真实视频秒（帧序号），点击跳转播放器到该帧核对
+                                const faceSec = parseFaceSeconds(face);
+                                const faceTime = formatFaceTime(faceSec);
+                                return (
+                                  <button
+                                    key={idx}
+                                    type="button"
+                                    disabled={typeof faceSec !== 'number'}
+                                    onClick={() => { if (typeof faceSec === 'number') onSetCurrentTime(faceSec); }}
+                                    className="relative aspect-square rounded bg-bg-primary overflow-hidden border border-border/20 group/face cursor-pointer hover:border-accent/40 transition-colors disabled:cursor-default disabled:hover:border-border/20"
+                                    title={faceTime ? `跳转到该帧 ${faceTime}` : '该人脸无来源帧信息'}
+                                  >
                                     <img src={getSafeMediaUrl(faceUrl)} className="w-full h-full object-cover" />
-                                  </div>
-                                ) : null;
+                                    {faceTime && (
+                                      <span className="absolute bottom-0 right-0 px-1 text-[10px] leading-tight bg-black/60 text-white rounded-tl">{faceTime}</span>
+                                    )}
+                                  </button>
+                                );
                               })}
                             </div>
                           </>

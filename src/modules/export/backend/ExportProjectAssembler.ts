@@ -90,9 +90,11 @@ export function assembleExportProjectSync(
 
   // 2. 源视频路径（mediaItems[0].filePath）：空 → fail-fast
   const mediaItems: any[] = Array.isArray(projectData.mediaItems) ? projectData.mediaItems : [];
-  const rawMediaPath = mediaItems[0]?.filePath || '';
+  // 源视频路径必须是字符串；历史脏数据若把 filePath 存成对象等非字符串，视为缺失走 fail-fast（不静默传空）
+  const sourceFilePath = mediaItems[0]?.filePath;
+  const rawMediaPath = typeof sourceFilePath === 'string' ? sourceFilePath : '';
   if (!rawMediaPath) {
-    throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, '装配失败：未找到源视频路径（mediaItems[0].filePath 为空）');
+    throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, '装配失败：未找到源视频路径（mediaItems[0].filePath 为空或非字符串）');
   }
   // magic:// → 物理路径
   const mediaPath = deps.dehydratePath ? deps.dehydratePath(rawMediaPath) : rawMediaPath;
@@ -103,11 +105,18 @@ export function assembleExportProjectSync(
   const ttsByShotId = new Map<string, any>(ttsResults.map((t: any) => [t.shotId, t]));
 
   // 4. 逐镜头装配 ExportShot[]：主数据源为 matchResults（镜头匹配结果）
-  const shots: ExportShot[] = matchResults.map((m: any) => {
+  const shots: ExportShot[] = matchResults.flatMap((m: any) => {
     const chunk = m?.chunkData || null;
     const startMs = chunk?.startMs ?? m?.videoTimelineStartMs ?? 0;
     const endMs = chunk?.endMs ?? m?.videoTimelineEndMs ?? startMs + (m?.audioDurationMs ?? 3000);
-    // 不变式：start < end，否则时间窗非法
+    // 未匹配镜头：无切片、无媒体、时间窗为 0（KM 求解未命中该段文案）。
+    // 这类空镜头没有可导出的画面，直接跳过并由日志告警，不因单个未匹配镜头中断整次导出。
+    const isUnmatched = !m?.mediaId && !chunk && startMs === 0 && endMs === 0;
+    if (isUnmatched) {
+      console.warn(`[导出装配] 跳过未匹配镜头 ${m?.shotId ?? '?'}（无切片/时间窗，未参与导出）`);
+      return [] as ExportShot[];
+    }
+    // 不变式：start < end，否则时间窗非法（对真实数据仍 fail-fast，不静默兜底）
     if (!(startMs < endMs)) {
       throw new AppError(
         ErrorCode.SYS_INVALID_INPUT,

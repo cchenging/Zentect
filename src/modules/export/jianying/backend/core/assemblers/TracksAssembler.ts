@@ -58,7 +58,9 @@ export function assembleTracks(
   subtitleStyle: SubtitleStyle = DEFAULT_SUBTITLE_STYLE,
 ): TracksResult {
   const videoTrack = createTrack('video', 'main');
-  const bgmTrack = createTrack('audio', 'audio');
+  // 剪映按轨道 name 识别/合并音频轨，同名会让 BGM 与配音被当成同一条音轨。
+  // 这里用不同 name 区分：BGM 命 "bgm"、配音命 "audio"，保证剪映渲染出两条独立音轨。
+  const bgmTrack = createTrack('audio', 'bgm');
   const ttsTrack = createTrack('audio', 'audio');
   const textTrack = createTrack('text', 'subs');
 

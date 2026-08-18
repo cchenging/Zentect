@@ -17,6 +17,63 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 /**
+ * 🎭 解析命中全局人物后的本地角色名
+ * 人物库打通：当本地角色命中已有全局人物时，把人物库里的权威真名（matchedName）回填给本地。
+ * 仅当本地是自动命名（"角色_N"）时才回填，避免覆盖用户在当前项目已手动命名的称呼。
+ * @param localName 本地角色当前名称（可能为 undefined）
+ * @param matchedName 命中全局人物的权威名（可能为空）
+ * @returns 回填后的新名；无需回填时返回 undefined（保持原值）
+ */
+export function resolveNameFromGlobalMatch(
+  localName: string | undefined,
+  matchedName: string | undefined,
+): string | undefined {
+  // 只有人物库有权威名、且本地是自动命名的机械编号时，才回填真名
+  if (matchedName && /^角色_\d+$/.test(localName || '')) {
+    return matchedName;
+  }
+  return undefined;
+}
+
+/**
+ * 从角色对象提取自动编号"角色_N"中的数字 N，用于排序与自动名去重。
+ * 解析优先级：name 的"角色_N" → id 尾部的 _role_N → 兜底返回 MAX 排最后。
+ * @param role 角色对象
+ * @returns 编号数字；无法解析时返回 Number.MAX_SAFE_INTEGER
+ */
+function roleAutoIndex(role: any): number {
+  const nameMatch = /角色_(\d+)/.exec(role?.name || '');
+  if (nameMatch) return parseInt(nameMatch[1], 10);
+  const idMatch = /_role_(\d+)$/.exec(role?.id || '');
+  return idMatch ? parseInt(idMatch[1], 10) : Number.MAX_SAFE_INTEGER;
+}
+
+/**
+ * 角色确定性清洗：按自动编号升序排序 + 自动名去重。
+ * 修复两个问题：
+ *  1. 排序不稳定：roles 由 Object.entries(roleGroups) 遍历生成，该顺序不保证按编号数字排列，
+ *     导致 UI 里"角色_0/角色_1/..."顺序错乱。这里统一按编号升序排。
+ *  2. 同名叠加：多次识别后可能与旧数据/回填产生同名"角色_N"（同编号不同 id），
+ *     这里对自动名按编号去重，保留首个，避免 UI 出现重复角色_0。
+ * @param roles 后端生成的角色数组
+ * @returns 清洗后的新数组（不修改入参）
+ */
+function normalizeRoleOrder(roles: any[]): any[] {
+  const seenAutoIndex = new Set<number>();
+  const result: any[] = [];
+  for (const role of roles) {
+    const index = roleAutoIndex(role);
+    if (index !== Number.MAX_SAFE_INTEGER && seenAutoIndex.has(index)) {
+      continue; // 自动名去重：同编号只保留首个，后续同编号角色跳过
+    }
+    if (index !== Number.MAX_SAFE_INTEGER) seenAutoIndex.add(index);
+    result.push(role);
+  }
+  result.sort((a, b) => roleAutoIndex(a) - roleAutoIndex(b));
+  return result;
+}
+
+/**
  * 清理 magic:// 协议 URL 为本地文件系统绝对路径
  *
  * DB 中可能存储了三种格式的路径：
@@ -655,7 +712,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               mediaId,
               detectedFaces,
               facesDir,
-              // 🎭 P0.5+ 透传余弦相似度阈值（未配置时 Python 端使用默认 0.70）
+              // 🎭 P0.5+ 透传余弦相似度阈值（未配置时 Python 端使用默认 0.72）
               typeof config.faces === 'object' && config.faces
                 ? (config.faces as any).cosineThreshold
                 : undefined,
@@ -737,6 +794,10 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
                 faces: groupFaces,
               };
             });
+            /** 🔧 确定性清洗：按自动编号排序 + 自动名去重
+             * 放在全局人物匹配之前，保证后续 matchOrCreate / DB 回写拿到的
+             * roles 顺序稳定且不重复（修复"不按数字排序"与"重复角色_0"）。 */
+            roles = normalizeRoleOrder(roles);
             AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
               `[Step1] 人脸聚类完成: ${roles.length} 个角色 (${detectedFaces.length} 张人脸)`, { mediaId });
 
@@ -781,6 +842,13 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
                   // 命中现有人物：吸收新样本（更新中心向量 + 累加出现次数 + 追加项目 ID）
                   globalCharRepo.absorbEmbedding(matchResult.character.id, normalizedCenter, context.projectId);
                   matchCount++;
+                  // 🎯 打通人物库：命中已有全局人物时，把人物库里的权威真名回填到本地角色，
+                  // 否则本地角色仍叫"角色_1"，人物库维护的姓名无法流入步骤2/3 文案。
+                  // 仅当本地是自动命名（"角色_N"）时才回填，避免覆盖用户在当前项目已手动命名。
+                  const newName = resolveNameFromGlobalMatch((role as any).name, matchResult.character.name);
+                  if (newName !== undefined) {
+                    (role as any).name = newName;
+                  }
                   // 如果全局人物有 voiceId 而本地角色没有，回填 voiceId
                   if (matchResult.character.voiceId && !(role as any).voiceId) {
                     (role as any).voiceId = matchResult.character.voiceId;
@@ -802,6 +870,14 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
             '[Step1] 人脸检测失败，降级跳过', { mediaId, error: e.message });
           facesFailed = true;
+          // 🛡️ 防复发：重试识别人物（forceRetryStep==='faces'）时若检测失败/不完整，
+          //   roles 已被初始化为 []（见上方 roles 声明），直接写库会清空已有完整角色。
+          //   这里回退保留旧角色，宁可沿用旧结果也不覆盖成空，让用户重试得到正确结果后再更新。
+          if (forceRetryStep === 'faces' && existingRoles.length > 0) {
+            roles = [...existingRoles];
+            AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+              `[Step1] 人脸检测失败，已回退保留 ${existingRoles.length} 个旧角色（避免覆盖）`, { mediaId });
+          }
         }
       }
     }

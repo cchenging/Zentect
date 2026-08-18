@@ -144,6 +144,35 @@ function buildConfigContainer(): Record<string, unknown> {
  * @param subtitleStyle 字幕样式（缺省用默认样式）
  * @returns 剪映 v360000 草稿 JSON 对象
  */
+/**
+ * 从 ffprobe 结果推断画布尺寸：画布跟随源视频真实分辨率，实现横竖屏自适应。
+ * 优先级：首镜头切片(chunkData.filePath) → 源 mediaPath；均取不到时兜底 1920×1080。
+ * @param shots     编译镜头
+ * @param mediaPath 源视频路径
+ * @param probeMap  视频探针结果（按路径缓存）
+ * @returns 画布宽×高
+ */
+function resolveCanvasSize(
+  shots: CompileShot[],
+  mediaPath: string,
+  probeMap: Map<string, VideoProbeResult>,
+): { width: number; height: number } {
+  // 优先首镜头切片，否则源视频；probeMap 的 key 统一为正斜杠物理路径
+  const chunkPath = shots[0]?.chunkData?.filePath as string | undefined;
+  const primary = chunkPath
+    ? String(chunkPath).replace(/\\/g, '/')
+    : String(mediaPath || '').replace(/\\/g, '/');
+  const probe = probeMap.get(primary);
+  if (probe?.width && probe?.height) {
+    return { width: probe.width, height: probe.height };
+  }
+  // 兜底：取任意一个可用探针
+  for (const p of probeMap.values()) {
+    if (p?.width && p?.height) return { width: p.width, height: p.height };
+  }
+  return { width: 1920, height: 1080 };
+}
+
 export function assembleDraftContent(
   shots: CompileShot[],
   mediaPath: string,
@@ -151,22 +180,50 @@ export function assembleDraftContent(
   bgmPath?: string,
   subtitleStyle: SubtitleStyle = DEFAULT_SUBTITLE_STYLE,
 ): Record<string, unknown> {
-  // 1. 素材装配（含支撑 4 容器，字段齐全）
+  // ✅ 横竖屏自适应：画布尺寸跟随源视频真实分辨率（canvas_config 与画布素材都引用）
+  const canvasSize = resolveCanvasSize(shots, mediaPath, probeMap);
+  // 是否竖屏（宽 < 高）。竖屏画布更窄更高，字号需放大、位置偏移需单独处理。
+  const isPortrait = canvasSize.height > canvasSize.width;
+  // 字幕字号是相对画布宽度的比例（基准 1920 宽）。
+  // 画布变窄（竖屏）时不改字号会显得偏小，这里按宽比 1920/画布宽 放大，保证不同画布下观感一致。
+  // 横屏:1920 宽是基准，按横屏专用字号（fontSizeLandscape，缺省回退 fontSize）取比例，避免 3.5 偏小。
+  // 位置偏移：竖屏画布更高，同一 verticalOffset 会抬得比横屏更高，故竖屏换算更小值保持距底部视觉一致。
+  const baseFontSize = subtitleStyle.fontSize ?? DEFAULT_SUBTITLE_STYLE.fontSize;
+  const baseVerticalOffset = subtitleStyle.verticalOffset ?? DEFAULT_SUBTITLE_STYLE.verticalOffset;
+  // 横屏：字号可独立放大贴近易读（横向条幅缺窄画布的占比补足）；位置贴近底部（垂直偏移取极小值，y 贴近 -0.85）
+  const fontSize = isPortrait
+    ? baseFontSize * (1920 / Math.max(canvasSize.width, 1))
+    : (subtitleStyle.fontSizeLandscape ?? baseFontSize) * (1920 / Math.max(canvasSize.width, 1));
+  const verticalOffset = isPortrait
+    ? (subtitleStyle.verticalOffsetPortrait ??
+      baseVerticalOffset * (canvasSize.width / Math.max(canvasSize.height, 1)))
+    // 横屏贴近底部基准 -0.85，加一个正值让字幕往上抬（不透底即可读）。
+    // 值越大抬得越高；如需再调，直接改此常量或接入配置。
+    : 0.12;
+  // 传给装配的样式：字号与位置都按方向决定；其余字段透传原样式
+  const effectiveSubtitleStyle = {
+    ...subtitleStyle,
+    fontSize,
+    verticalOffset,
+  };
+
+  // 1. 素材装配（含支撑 4 容器，字段齐全；画布尺寸随源视频横竖屏，字幕用方向自适应字号）
   const materialsResult = assembleMaterials(shots, mediaPath, probeMap, {
     bgmPath,
-    subtitleStyle,
+    subtitleStyle: effectiveSubtitleStyle,
+    canvasSize,
   });
 
-  // 2. 轨道装配
+  // 2. 轨道装配（字幕 segment 用同一方向自适应样式，保证字号与位置都随横竖屏生效）
   const tracksResult = assembleTracks(
     materialsResult.shotRefs,
     materialsResult.bgmRef,
-    subtitleStyle,
+    effectiveSubtitleStyle,
   );
 
   // 3. 组装 28 根级字段骨架（键序对齐 template.tmp，Jianying 8.9.0 对此敏感）
   return {
-    canvas_config: { width: 1920, height: 1080, ratio: 'original' },
+    canvas_config: { width: canvasSize.width, height: canvasSize.height, ratio: 'original' },
     color_space: 0,
     config: buildConfigContainer(),
     cover: null,

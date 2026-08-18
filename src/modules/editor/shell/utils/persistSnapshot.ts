@@ -64,5 +64,6 @@ export async function persistProjectSnapshot(projectId: string): Promise<void> {
     videoChunks: step5Final.videoChunks,
     activeBgm: step5Final.activeBgm,
     beatTimestamps: step5Final.beatTimestamps,
+    deepRecommendation: step5Final.deepRecommendation,
   });
 }

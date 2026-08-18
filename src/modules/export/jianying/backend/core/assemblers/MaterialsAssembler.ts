@@ -343,10 +343,16 @@ function buildTextMaterial(
 }
 
 /**
- * 构建画布素材（canvases 容器，手册 §4.2 标记"非空"）。
- * 一条即可，格式按原生 test_doc_draft 的画布最小化骨架。
+ * 构建画布占位素材（materials.canvases 容器，手册 §4.2 标记"非空"，一条即可）。
+ * @param canvasId 画布素材 id
+ * @param durationUs 总时长（微秒）
+ * @param size 画布尺寸（宽×高）；跟随源视频分辨率，横竖屏自适应，默认兜底 1920×1080
  */
-function buildCanvasMaterial(canvasId: string, durationUs: number): unknown {
+function buildCanvasMaterial(
+  canvasId: string,
+  durationUs: number,
+  size: { width: number; height: number } = { width: 1920, height: 1080 },
+): unknown {
   return {
     id: canvasId,
     material_id: canvasId,
@@ -358,8 +364,8 @@ function buildCanvasMaterial(canvasId: string, durationUs: number): unknown {
     path: '',
     media_path: '',
     duration: durationUs,
-    width: 1920,
-    height: 1080,
+    width: size.width,
+    height: size.height,
     has_audio: false,
     source: 0,
     source_platform: 0,
@@ -459,7 +465,12 @@ export function assembleMaterials(
   shots: CompileShot[],
   mediaPath: string,
   probeMap: Map<string, VideoProbeResult>,
-  options: { bgmPath?: string; subtitleStyle?: SubtitleStyle } = {},
+  options: {
+    bgmPath?: string;
+    subtitleStyle?: SubtitleStyle;
+    /** 画布尺寸（宽×高）：跟随源视频分辨率，缺省 1920×1080 */
+    canvasSize?: { width: number; height: number };
+  } = {},
 ): MaterialsResult {
   const subtitleStyle = options.subtitleStyle ?? DEFAULT_SUBTITLE_STYLE;
   const safeMediaPath = (mediaPath || '').replace(/\\/g, '/');
@@ -558,8 +569,10 @@ export function assembleMaterials(
     shotRefs.push(ref);
   }
 
-  // -- 画布：固定 1 条，时长 = 总时长 --
-  const canvases = [buildCanvasMaterial(genHexId(), totalDurationUs || 1_000_000)];
+  // -- 画布：固定 1 条，时长 = 总时长，尺寸跟随源视频分辨率（横竖屏自适应） --
+  const canvases = [
+    buildCanvasMaterial(genHexId(), totalDurationUs || 1_000_000, options.canvasSize),
+  ];
 
   return {
     videos,

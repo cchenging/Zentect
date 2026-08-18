@@ -95,7 +95,7 @@ vi.mock('@modules/infra/error/AppError', () => ({
 }));
 
 // 动态导入被测模块（mock 已在顶层设置）
-import { Step1MaterialStrategy } from '../backend/Strategy';
+import { Step1MaterialStrategy, resolveNameFromGlobalMatch } from '../backend/Strategy';
 import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
 import { VisionProcessor } from '../../../../main/engine/media/VisionProcessor';
 
@@ -123,6 +123,27 @@ describe('Step1MaterialStrategy', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  // ========== 人物库回填：resolveNameFromGlobalMatch ==========
+
+  describe('resolveNameFromGlobalMatch（人物库真名回填）', () => {
+    it('自动命名"角色_1"命中全局人物时，回填为人物库权威真名', () => {
+      expect(resolveNameFromGlobalMatch('角色_1', '崔国明')).toBe('崔国明');
+    });
+
+    it('本地已手动命名（非"角色_N"）时，不覆盖用户命名', () => {
+      expect(resolveNameFromGlobalMatch('老舅', '崔国明')).toBeUndefined();
+    });
+
+    it('人物库无权威名时，保持自动命名原值', () => {
+      expect(resolveNameFromGlobalMatch('角色_2', '')).toBeUndefined();
+      expect(resolveNameFromGlobalMatch('角色_2', undefined)).toBeUndefined();
+    });
+
+    it('本地名缺失时，不因人物库名而臆造名字', () => {
+      expect(resolveNameFromGlobalMatch(undefined, '崔国明')).toBeUndefined();
+    });
   });
 
   // ========== 基础属性 ==========

@@ -217,7 +217,7 @@ export class ProjectRepository {
       'speechRate', 'pipelineParams', 'ttsResults', 'ttsEngine', 'ttsVoiceId',
       'videoChunks', 'storyboardMode',
       // 🔧 步骤5 匹配数据：以 metadata（步骤5 完成时持久化）为准，不让 canvas_data 瞬态快照覆盖
-      'matchResults', 'activeBgm', 'beatTimestamps',
+      'matchResults', 'activeBgm', 'beatTimestamps', 'deepRecommendation',
     ]);
     for (const [key, val] of Object.entries(canvasObj)) {
       if (CANVAS_SKIP_KEYS.has(key)) continue;
@@ -411,6 +411,11 @@ export class ProjectRepository {
       }
       if (data.beatTimestamps && Array.isArray(data.beatTimestamps) && data.beatTimestamps.length > 0) {
         metadata.beatTimestamps = data.beatTimestamps;
+      }
+      /** 💥 持久化步骤5 AI 深度 BGM 推荐结果，确保重进项目后推荐不丢失 */
+      if (data.deepRecommendation && typeof data.deepRecommendation === 'object'
+          && !Array.isArray(data.deepRecommendation)) {
+        metadata.deepRecommendation = data.deepRecommendation;
       }
 
       // 保存 mediaItems 到 metadata（因为 media 表主要用于视频，而关键帧和音频是临时的）

@@ -116,6 +116,10 @@ export const useEditorHydration = (id: string | undefined) => {
           if (Array.isArray(projectSnapshot.beatTimestamps) && projectSnapshot.beatTimestamps.length > 0) {
             step5State.setBeatTimestamps(projectSnapshot.beatTimestamps);
           }
+          if (projectSnapshot.deepRecommendation && typeof projectSnapshot.deepRecommendation === 'object'
+              && !Array.isArray(projectSnapshot.deepRecommendation)) {
+            step5State.setDeepRecommendation(projectSnapshot.deepRecommendation);
+          }
 
           // 💥 崩溃恢复：检查 IndexedDB 中是否有未同步的 PENDING 草稿
           // 正常关闭流程：SyncDaemon 已将草稿同步至 SQLite 并标记 SYNCED
@@ -156,6 +160,10 @@ export const useEditorHydration = (id: string | undefined) => {
               }
               if (Array.isArray(draftData.beatTimestamps) && draftData.beatTimestamps.length > 0) {
                 useStep5Store.getState().setBeatTimestamps(draftData.beatTimestamps);
+              }
+              if (draftData.deepRecommendation && typeof draftData.deepRecommendation === 'object'
+                  && !Array.isArray(draftData.deepRecommendation)) {
+                useStep5Store.getState().setDeepRecommendation(draftData.deepRecommendation);
               }
 
               // 立刻将草稿同步到 SQLite，使其不再是 PENDING 状态
