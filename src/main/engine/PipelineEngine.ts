@@ -20,6 +20,7 @@ import { generateStateHash } from '../utils/crypto';
 import { WorkflowService } from '../services/WorkflowService';
 import { EngineStateGuard } from '../core/EngineStateGuard';
 import { ExceptionHub } from '../core/ExceptionHub';
+import { AIDaemon } from '../core/AIDaemon';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -79,6 +80,11 @@ export class PipelineEngine {
   ): Promise<any> {
     this.isAborted = false;
     this.abortController = new AbortController();
+
+    /** 🔧 P1 #7：DAG 启动前先 fire-and-forget 预调 daemon（/health 拉活），
+     *   让第一波节点（VisionExtract / TTS / SemanticAnalyze 等）到达时 AI Runtime 已经是热的。
+     *   不 await，避免阻塞立即进入 DAG 拓扑调度。 */
+    void AIDaemon.getInstance().ensureWarm();
 
     const workflowService = new WorkflowService();
     const snapshot = workflowService.load(projectId);
@@ -220,6 +226,11 @@ export class PipelineEngine {
     this.isAborted = false;
     this.abortController = new AbortController();
     
+    /** 🔧 P1 #7：线性序列启动前先 fire-and-forget 预调 daemon，
+     *   第一波 Step1 / VisionExtract 节点执行时 daemon 进程/模型已热。
+     *   不 await，避免阻塞节点准备。 */
+    void AIDaemon.getInstance().ensureWarm();
+
     // 💥 核心：建立贯穿整个管线的总线，节点连线的数据传递全靠它
     const context: ExecutionContext = {
       projectId: payload.projectId,

@@ -173,6 +173,8 @@ export const API = {
     /** P1 一键应用：下载曲库曲目到本地缓存 */
     bgmDownload: (data: { downloadUrl?: string; libraryId?: string; name?: string }) =>
       invokeSafe(IPC_CHANNELS.AI_BGM_DOWNLOAD, data),
+    /** 本地 BGM 曲库全量列表（按 tone 分组，供前端分类分页自选） */
+    bgmLocalList: () => invokeSafe(IPC_CHANNELS.AI_BGM_LOCAL_LIST),
     streamText: (payload: any) => window.api.ai.streamText(payload),
     searchSemantics: (mediaId: string, query: string) => invokeSafe(IPC_CHANNELS.AI_SEARCH_SEMANTICS, mediaId, query),
     // 🔧 修复 TS2339：usePipelineOrchestrator 调用 visionExtract

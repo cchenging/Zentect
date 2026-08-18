@@ -38,6 +38,8 @@ export interface MusicLibraryProvider {
   search(query: MusicLibraryQuery): Promise<MusicTrack[]>;
   /** 获取曲目下载地址（供前端「一键应用」下载到本地） */
   getDownloadUrl(id: string): Promise<string>;
+  /** 返回 provider 全量曲目（供前端分类分页自选）；不支持时返回空数组 */
+  listAll?(): MusicTrack[];
 }
 
 /** 默认空 provider：未接入任何曲库时返回空结果，触发上层降级纯生成 */
@@ -90,6 +92,12 @@ class MusicLibraryService {
   /** 委托获取下载地址 */
   async getDownloadUrl(id: string): Promise<string> {
     return this.getActive().getDownloadUrl(id);
+  }
+
+  /** 委托获取全量曲目（当前 provider 不支持时返回空数组） */
+  listAll(): MusicTrack[] {
+    const provider = this.getActive();
+    return provider.listAll ? provider.listAll() : [];
   }
 }
 

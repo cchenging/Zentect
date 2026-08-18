@@ -137,8 +137,16 @@ export class VisionProcessor {
 
     try {
       const pythonClient = PythonClient.getInstance();
-      const BATCH_SIZE = 100; // 每批最多 100 帧，避免 HTTP 请求过大
+      // 🎭 P0.6 修复批次超时：
+      //   门禁放宽后每帧人脸更多、特征提取更慢，100帧/批在默认 90s 内处理不完，
+      //   且客户端超时后 Python 端仍持 INFERENCE_LOCK 继续算，导致后续批次排队级联超时。
+      //   对策：① 缩小单批帧数到 10，保证每批在超时内完成；② 放宽 /api/vision 超时到 300s 并关闭重试，
+      //   避免"整批重试"进一步放大耗时（重试只在本次请求失败时才有意义，慢响应不应重试）。
+      const BATCH_SIZE = 10;
+      const VISION_TIMEOUT_MS = 300000; // 人脸检测单批超时放宽到 5 分钟
       const allFaces: any[] = [];
+      const totalBatches = Math.ceil(frames.length / BATCH_SIZE);
+      let failedBatches = 0; // 🛡️ 防复发：累计失败的批次，用于检测不完整时整体失败
 
       /** 分批送入人脸检测 */
       for (let i = 0; i < frames.length; i += BATCH_SIZE) {
@@ -146,7 +154,6 @@ export class VisionProcessor {
         if (signal?.aborted) break;
         const batch = frames.slice(i, i + BATCH_SIZE);
         const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-        const totalBatches = Math.ceil(frames.length / BATCH_SIZE);
 
         AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: 批次 ${batchNum}/${totalBatches} (${batch.length} 帧)`);
 
@@ -159,7 +166,7 @@ export class VisionProcessor {
             ...(qualityGate?.maxPoseAngle !== undefined ? { max_pose_angle: qualityGate.maxPoseAngle } : {}),
             ...(qualityGate?.minClarity !== undefined ? { min_clarity: qualityGate.minClarity } : {}),
             ...(qualityGate?.minConfidence !== undefined ? { min_confidence: qualityGate.minConfidence } : {}),
-          }, signal);
+          }, signal, { timeoutMs: VISION_TIMEOUT_MS, maxRetries: 0 });
           // 🔧 修复 P0-3：Python 返回 {success, data: [{frame, faces: [...]}, ...]}
           //   data 是数组而非对象，需 flatMap 展平所有帧的人脸
           // 🎭 P0.5 帧级锚定：把 item.frame / item.frame_index 注入到每个 face 对象
@@ -177,14 +184,27 @@ export class VisionProcessor {
             : [];
           allFaces.push(...batchFaces);
         } catch (batchErr: any) {
-          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces 批次 ${batchNum} 失败: ${batchErr.message}`);
+          failedBatches++;
+          AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces 批次 ${batchNum}/${totalBatches} 失败: ${batchErr.message}`);
         }
+      }
+
+      // 🛡️ 防复发：只要存在批次失败，说明检测不完整（只拿到部分批次结果）。
+      //   若静默返回，会用不完整结果覆盖已有完整角色（旧 bug 根源：检测到 3 张却覆盖了 17 张的正常结果）。
+      //   改为整体抛错，让上层走"检测失败"路径，从而不覆盖已有角色并提示重试。
+      if (failedBatches > 0 && !signal?.aborted) {
+        const incompleteErr = new Error(
+          `人脸检测不完整：${totalBatches} 个批次中 ${failedBatches} 个失败（已检测到 ${allFaces.length} 张人脸）。为避免用不完整结果覆盖已有角色，本次人脸识别判定失败，请重试。`
+        );
+        AppLogger.error(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] ${incompleteErr.message}`);
+        throw incompleteErr;
       }
 
       return allFaces;
     } catch (error) {
-      console.error('[VisionProcessor] 物理修复 - 人脸识别通信断裂:', error);
-      return [];
+      // 🛡️ 防复发：不再静默吞掉异常返回空数组，而是向上抛出，让上层感知检测失败（不覆盖已有角色）
+      AppLogger.error(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces 失败: ${(error as Error)?.message || String(error)}`);
+      throw error;
     }
   }
 
@@ -193,10 +213,10 @@ export class VisionProcessor {
    * @param mediaId 媒体ID
    * @param faces 检测到的人脸列表（元素含 {id, embedding, ...}）
    * @param persistDir 可选，聚类持久化目录（Python 端写入 clusters_{media_id}.json）
-   * @param cosineThreshold 可选，余弦相似度阈值（默认 0.65），用于 HDBSCAN 后处理：
+   * @param cosineThreshold 可选，余弦相似度阈值（默认 0.72），用于 HDBSCAN 后处理：
    *   - 合并过拆簇：簇心余弦相似度 > threshold 的簇合并
    *   - 分配噪声点：噪声点与某簇心余弦相似度 > threshold 时分配到该簇
-   *   经验值：0.55 宽松 / 0.65 平衡（项目规则：相似度≥0.65 归为同一人） / 0.75 严格
+   *   经验值：0.55 宽松 / 0.72 平衡（默认，拦住血缘相似者误合并）/ 0.75 严格
    * @returns 人脸到聚类ID的映射（{ faceId: "role_X" }）
    */
   public static async clusterFaces(
@@ -205,7 +225,7 @@ export class VisionProcessor {
     persistDir?: string,
     cosineThreshold?: number,
   ): Promise<Record<string, string>> {
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] clusterFaces: clustering ${faces.length} faces for ${mediaId} (cosine_threshold=${cosineThreshold ?? 0.65})`);
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] clusterFaces: clustering ${faces.length} faces for ${mediaId} (cosine_threshold=${cosineThreshold ?? 0.72})`);
 
     if (!faces || faces.length === 0) {
       return {};
@@ -216,13 +236,18 @@ export class VisionProcessor {
         media_id: mediaId,
         faces: faces.map((f: any) => ({
           face_id: f.id || f.face_id || '',
-          embedding: f.embedding || []
+          embedding: f.embedding || [],
+          // 🧒 透传人脸年龄（InsightFace 估算），供 Python 端聚类时防止"亲子/祖孙"血缘相似者误合并
+          age: typeof f.age === 'number' ? f.age : -1,
+          // 🎭 透传人脸所在帧索引，供 Python 端聚类时做"同帧互斥"：
+          //   同一帧内两张人脸必属不同的人，据此阻止把同一画面的路人误并入主角簇
+          frame_index: typeof f.frame_index === 'number' ? f.frame_index : -1,
         })),
         persist_dir: persistDir || '',
-        // 🎭 P0.5+ 透传余弦相似度阈值，未传入时 Python 端使用默认值 0.65
+        // 🎭 P0.5+ 透传余弦相似度阈值，未传入时 Python 端使用默认值 0.72
         cosine_threshold: typeof cosineThreshold === 'number' && cosineThreshold > 0 && cosineThreshold < 1
           ? cosineThreshold
-          : 0.65,
+          : 0.72,
       });
       // 🔧 修复 P0-5：Python 返回 { success, clusters }，旧版读 clustersMap → 永远空
       if (result && result.clusters) {

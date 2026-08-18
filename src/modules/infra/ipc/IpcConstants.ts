@@ -109,6 +109,8 @@ export const IPC_CHANNELS = {
   AI_BGM_RECOMMEND: 'ai:bgmRecommend',
   /** P1 一键应用：下载曲库曲目到本地缓存 */
   AI_BGM_DOWNLOAD: 'ai:bgmDownload',
+  /** 本地 BGM 曲库全量列表（按 tone 分组，供前端分类分页自选） */
+  AI_BGM_LOCAL_LIST: 'ai:bgmLocalList',
 
   // --- AI 智能体流式域 ---
   AGENT_CHAT_INVOKE: 'agent:chatInvoke',

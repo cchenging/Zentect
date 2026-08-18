@@ -1,4 +1,3 @@
-// &#x1F4C1; 新建文件: src/main/services/AIService.ts
 import { AIEngine } from '../engine/AIEngine';
 import { healthCheckService } from '../engine/HealthCheckService';
 import { ttsEngine } from '../engine/TTSEngine';
@@ -16,7 +15,9 @@ import { MultiChannelPipeline } from '../core/MultiChannelPipeline';
 import * as fs from 'fs';
 import * as path from 'path';
 import { PathManager } from '../utils/pathManager';
-import { musicLibraryService, MusicTrack } from './MusicLibraryService';
+import { musicLibraryService } from './MusicLibraryService';
+import { SemanticAnalyzeStrategy } from '../engine/strategies/SemanticAnalyzeStrategy';
+import { BgmBeatRepository } from '../database/repositories/BgmBeatRepository';
 
 /** BGM 选曲意图（两段式 Step1 输出） */
 interface BgmIntent {
@@ -111,8 +112,9 @@ export class AIService {
 
   /**
    * AI 深度 BGM 推荐：两段式——①LLM 生成选曲意图（moodTags + 目标 BPM 区间）
-   * ②调 MusicLibraryService 检索真实曲目；曲库无结果时降级为原有纯生成逻辑。
-   * 返回结构与前端 BgmRecommendation 对齐：{ toneLabel, toneDesc, tracks:[{name,artist,mood,source,beatFit,...}] }
+   * ②LLM 依据文案语义生成「全网可搜索歌曲清单」（歌名+歌手+平台），仅展示推荐，
+   *    不提供下载/试听，由用户自行在音乐平台搜索获取。
+   * 返回结构与前端 BgmRecommendation 对齐：{ toneLabel, toneDesc, tracks:[{name,artist,mood,source,beatFit}] }
    */
   public async recommendBgm(payload: {
     scriptParagraphs: string[];
@@ -147,31 +149,30 @@ export class AIService {
       AppLogger.warn(LOG_TAGS.AI_AGENT, `[BGM推荐] 选曲意图生成失败，降级纯生成: ${e?.message}`);
     }
 
-    // Step2：调曲库检索真实曲目（默认空 provider 返回空，命中后再走精选）
+    // Step2：全网搜索推荐——LLM 依据文案语义生成「可搜索歌曲清单」（歌名+歌手+平台），
+    //        仅展示推荐，不提供下载/试听，由用户自行在音乐平台搜索获取。
     if (intent) {
       try {
-        const pool = await musicLibraryService.search({
-          // 情绪基调枚举 + LLM 中文情绪标签一起下发，本地曲库据此匹配 tone/feel
-          mood: `${emotionTone},${(intent.moodTags || []).join(',')}`,
+        const selected = await this.generateWebRecommendation(factory, {
+          scriptText,
+          emotionTone,
+          moodTags: intent.moodTags || [],
+          styleNotes: intent.styleNotes || '',
           bpmMin: intent.bpmMin,
           bpmMax: intent.bpmMax,
-          limit: 10,
         });
-        if (pool.length > 0) {
-          const selected = await this.selectBgmFromPool(factory, pool);
-          if (selected) {
-            AppLogger.info(LOG_TAGS.AI_AGENT, `[BGM推荐] 曲库精选完成: ${selected.tracks?.length ?? 0} 首`);
-            return { success: true, data: selected };
-          }
+        if (selected) {
+          AppLogger.info(LOG_TAGS.AI_AGENT, `[BGM推荐] 全网推荐完成: ${selected.tracks?.length ?? 0} 首`);
+          return { success: true, data: selected };
         }
       } catch (e: any) {
-        AppLogger.warn(LOG_TAGS.AI_AGENT, `[BGM推荐] 曲库检索失败，降级纯生成: ${e?.message}`);
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[BGM推荐] 全网推荐生成失败: ${e?.message}`);
       }
     }
 
-    // Step3：本地曲库无可用曲目时明确失败，不再让 LLM 编造曲名（反模式已砍）
-    AppLogger.warn(LOG_TAGS.AI_AGENT, '[BGM推荐] 本地曲库无可匹配曲目');
-    return { success: false, error: '本地曲库无可用曲目，请检查 resources/bgm-library 目录是否完整' };
+    // Step3：全网推荐生成失败时明确报错，不编造曲目
+    AppLogger.warn(LOG_TAGS.AI_AGENT, '[BGM推荐] 全网推荐生成失败');
+    return { success: false, error: '全网 BGM 推荐生成失败，请确认 LLM 通道可用后重试' };
   }
 
   /** P1 一键应用：下载曲库曲目到本地缓存并返回本地 filePath */
@@ -229,6 +230,17 @@ export class AIService {
     return { success: true, filePath };
   }
 
+  /** 本地曲库全量列表（按 tone 分组），供前端分类分页自选 */
+  public async listLocalBgm() {
+    try {
+      const tracks = musicLibraryService.listAll();
+      return { success: true, data: tracks };
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT, `[BGM列表] 本地曲库读取失败: ${e?.message}`);
+      return { success: false, error: e?.message || '本地曲库读取失败' };
+    }
+  }
+
   /** 根据 Content-Type 或 URL 推断 BGM 文件扩展名，默认 .mp3 */
   private inferBgmExtension(url: string, contentType: string): string {
     const ct = (contentType || '').toLowerCase();
@@ -278,55 +290,60 @@ export class AIService {
     return { moodTags, bpmMin, bpmMax, styleNotes };
   }
 
-  /** 从曲库候选池中精选 3 首（两段式 Step3，仅在曲库命中时调用） */
-  private async selectBgmFromPool(factory: FactoryResult, pool: MusicTrack[]): Promise<any> {
+  /** 全网搜索推荐：LLM 依据文案语义生成「可搜索歌曲清单」（仅展示，用户自行搜索下载） */
+  private async generateWebRecommendation(
+    factory: FactoryResult,
+    context: {
+      scriptText: string;
+      emotionTone: string;
+      moodTags: string[];
+      styleNotes: string;
+      bpmMin: number;
+      bpmMax: number;
+    },
+  ): Promise<any> {
     const { adapter, modelName, temperature } = factory;
-    // 💥 反模式修复：LLM 只输出曲库 id + 卡点强度，URL/BPM/时长等真实字段由代码回填，
-    //    杜绝 LLM 复述 URL 导致试听/下载不可用的反模式。
     const systemPrompt =
-      '你是短视频背景音乐(BGM)精选器。从候选曲目中挑选最多 3 首最适合解说文案的曲目。' +
+      '你是短视频背景音乐(BGM)全网选曲推荐器。根据解说文案的情绪基调与内容，推荐 3~5 首全网可搜索到的真实歌曲。' +
       '你必须只输出一个合法的 JSON 对象，禁止输出任何解释、前后缀或 Markdown 代码块。字段名必须严格如下：\n' +
-      '{"toneLabel":"推荐风格标签","toneDesc":"一句话选曲理由","tracks":[{"id":"曲库id","beatFit":"强/中/弱"}]}';
-    // 只下发候选曲目的轻量字段，避免 LLM 接触并复述 URL
-    const candidates = pool.map((t) => ({
-      id: t.id, name: t.name, artist: t.artist, bpm: t.bpm, durationMs: t.durationMs, tags: t.tags,
-    }));
-    const userPrompt = `候选曲目（JSON）：\n${JSON.stringify(candidates)}`;
+      '{"toneLabel":"推荐风格标签","toneDesc":"一句话选曲理由","tracks":[{"name":"歌名","artist":"歌手","platform":"来源平台","mood":"情绪标签","beatFit":"强/中/弱"}]}\n' +
+      '要求：歌名与歌手必须真实准确，来源平台标注可搜索到的平台（如网易云音乐/QQ音乐/酷狗音乐/YouTube Audio Library 等），禁止编造 URL 或下载地址。';
+    const contextLine = [
+      `情绪基调：${context.emotionTone || '（未指定）'}`,
+      context.moodTags.length > 0 ? `选曲情绪标签：${context.moodTags.join('、')}` : '',
+      context.styleNotes ? `选曲说明：${context.styleNotes}` : '',
+      context.bpmMin > 0 && context.bpmMax > 0 ? `目标 BPM 区间：${context.bpmMin}~${context.bpmMax}` : '',
+      `解说文案段落：\n${(context.scriptText || '（无文案）').slice(0, 2000)}`,
+    ].filter(Boolean).join('\n');
     const reply: any = await adapter.chat(
-      [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
+      [{ role: 'system', content: systemPrompt }, { role: 'user', content: contextLine }],
       modelName, temperature,
     );
-    if (reply && reply.success === false) throw new Error(reply.error || '曲目精选失败');
+    if (reply && reply.success === false) throw new Error(reply.error || '全网推荐生成失败');
     const parsed = this.parseJsonFromText(reply?.text || '');
     if (!parsed || typeof parsed !== 'object') return null;
 
     const rawTracks = Array.isArray(parsed.tracks)
       ? parsed.tracks
       : (Array.isArray(parsed.music) ? parsed.music : []);
-    const byId = new Map(pool.map((t) => [t.id, t]));
-    const selectedTracks: any[] = [];
+    const tracks: any[] = [];
     for (const item of rawTracks) {
-      const id = String(item?.id || item?.libraryId || '').trim();
-      const track = byId.get(id);
-      if (!track) continue; // 未知 id 跳过（LLM 幻觉保护）
-      selectedTracks.push({
-        name: track.name,
-        artist: track.artist,
-        mood: (track.tags || []).join(','),
-        source: `本地曲库 · ${track.license || '免费商用'}`,
+      const name = String(item?.name || '').trim();
+      const artist = String(item?.artist || item?.singer || '').trim();
+      if (!name) continue; // 无歌名跳过（LLM 幻觉保护）
+      tracks.push({
+        name,
+        artist: artist || '未知歌手',
+        mood: String(item?.mood || item?.tag || '').trim() || '通用',
+        source: `全网搜索 · ${String(item?.platform || item?.source || '音乐平台').trim()}`,
         beatFit: String(item?.beatFit || item?.beat || '中').trim(),
-        bpm: track.bpm,
-        durationMs: track.durationMs,
-        previewUrl: track.previewUrl,
-        downloadUrl: track.downloadUrl,
-        libraryId: track.id,
       });
     }
-    if (selectedTracks.length === 0) return null;
+    if (tracks.length === 0) return null;
     return {
       toneLabel: String(parsed?.toneLabel || parsed?.tone || '').trim() || 'AI 推荐',
-      toneDesc: String(parsed?.toneDesc || parsed?.reason || '').trim() || '依据解说文案语义生成的选曲建议',
-      tracks: selectedTracks,
+      toneDesc: String(parsed?.toneDesc || parsed?.reason || '').trim() || '依据解说文案语义生成的全网选曲建议，请自行在音乐平台搜索下载',
+      tracks,
     };
   }
 
@@ -633,16 +650,41 @@ export class AIService {
     const { scriptShots, ttsDurations, bgmInfo, mediaPath } = payload;
     AppLogger.info(LOG_TAGS.AI_AGENT, `[AIService] 启动 Layer-5 多维松弛代价矩阵解算程序`);
 
+    /** 🔧 P1 #7：一进入管线先异步预调 daemon，不阻塞参数准备，
+     *   detect_beats / detect_scene_chunks / KM 求解到达时 daemon 已热（Python 子进程 + 模型加载） */
+    const warmDaemonPromise = AIDaemon.getInstance().ensureWarm();
+
     try {
-      /** 步1：触发本地听觉原子算子，对背景音执行 STFT 低频重音能量追踪 */
-      let bgmBeats: number[] = [];
+      /** 步1：触发本地听觉原子算子，对背景音执行 STFT 低频重音能量追踪
+       *   🔧 P1 #6：先查 SQLite BGM 节拍缓存（与 SemanticAnalyzeStrategy 共用同一仓库），
+       *   命中秒级复用；文件被替换后 size/mtimeMs 指纹不一致自动失效重算。
+       *   🔧 P1 #7：进入 daemon 请求前确保已预热，若 ensureWarm 还在进行则 await 补等（很短） */
+      await warmDaemonPromise;
+      let bgmBeatsMs: number[] = [];
+      let bgmBeatsSec: number[] = [];
       if (bgmInfo && fs.existsSync(bgmInfo.filePath)) {
         AppLogger.info(LOG_TAGS.AI_AGENT, `[音频算子] 异步提取 BGM 重低音能量起音阵列`);
-        const beatResponse = await AIDaemon.getInstance().post('/api/audio/detect_beats', {
-          file_path: bgmInfo.filePath,
-        });
-        const beatData = beatResponse?.data || beatResponse;
-        bgmBeats = beatData.beatGridMs || beatData.onsetMs || [];
+        const bgmBeatRepo = new BgmBeatRepository();
+        const cachedBeats = bgmBeatRepo.getValid(bgmInfo.filePath);
+        if (cachedBeats && cachedBeats.beatsSec.length > 0) {
+          bgmBeatsSec = cachedBeats.beatsSec;
+          bgmBeatsMs = bgmBeatsSec.map((s: number) => s * 1000);
+          AppLogger.info(LOG_TAGS.AI_AGENT,
+            `[AIService] 命中 BGM 节拍 DB 缓存，共 ${bgmBeatsSec.length} 个节拍`);
+        } else {
+          const beatResponse = await AIDaemon.getInstance().post('/api/audio/detect_beats', {
+            file_path: bgmInfo.filePath,
+          });
+          const beatData = beatResponse?.data || beatResponse;
+          bgmBeatsMs = beatData.beatGridMs || beatData.onsetMs || [];
+          bgmBeatsSec = bgmBeatsMs.map((ms: number) => ms / 1000);
+          const tempo = Number(beatData.tempo) || 0;
+          if (bgmBeatsSec.length > 0) {
+            bgmBeatRepo.save(bgmInfo.filePath, bgmBeatsSec, tempo);
+          }
+          AppLogger.info(LOG_TAGS.AI_AGENT,
+            `[AIService] BGM 节拍检测完成，共 ${bgmBeatsSec.length} 个节拍，BPM=${tempo}`);
+        }
       }
 
       /** 步2：获取动态视频切片池 */
@@ -658,20 +700,30 @@ export class AIService {
         AppLogger.warn(LOG_TAGS.AI_AGENT, `[AIService] 动态视频切片池为空，回退到帧匹配`);
       }
 
-      /** 步3：组装多维约束负载并调起 KM 求解器 */
-      const queries = scriptShots.map((s: any, i: number) => {
-        const ttsResult = ttsDurations[i] || ttsDurations.find((t: any) => t.shotId === (s.shotId || s.id));
-        return {
-          shotId: s.shotId || s.id || `para_${i}`,
-          text: s.text || s.content || s.narration || '',
-          audioDurationMs: ttsResult?.duration ? Math.round(ttsResult.duration * 1000) : 0,
-        };
-      }).filter(q => q.text.trim().length > 0);
+      /** 步3：组装多维约束负载并调起 KM 求解器
+       *  ✅ 调用 SemanticAnalyzeStrategy.buildMatchQueries 共享纯函数：
+       *    - 避免 N×M .find 的 TTS 查找热点（内部 Map 索引 O(1)）；
+       *    - 自动注入情绪/角色/画面意图/时间锚/原声标记多维字段；
+       *    - AIService 与 SemanticAnalyzeStrategy 共用实现，防止漂移。 */
+      const queries = SemanticAnalyzeStrategy.buildMatchQueries(scriptShots, ttsDurations);
+
+      /** 🔧 P2 #11 方案 A：KM Top-K 预选（与 SemanticAnalyzeStrategy 共用同一 preselectTopK）。
+       *   AIService 这条老接口没有"原声段落预匹配"步骤，直接全部 queries 送预选。 */
+      const preselect = SemanticAnalyzeStrategy.preselectTopK(queries, videoChunks, {
+        logProjectId: payload.projectId ? `[AIService:${payload.projectId}]` : '',
+      });
+      const kmVideoChunks = preselect.filteredChunks;
+      const perQueryTopKForAudit = preselect.perQueryTopK;
+      const originalChunksByIdAIS = new Map<string, any>();
+      for (const c of videoChunks) originalChunksByIdAIS.set(String(c.id), c);
 
       const solverResult = await AIDaemon.getInstance().post('/api/solver/kuhn_munkres_match', {
         queries,
-        videoChunks,
-        bgmBeats: bgmBeats.map((b: number) => b / 1000), // 毫秒转秒
+        videoChunks: kmVideoChunks,
+        /** 🔧 P2 #11 方案B：行级候选白名单 { shotId: chunkId[] }（preselectTopK 输出的 perQueryTopK），
+         *   配合方案A 的并集收窄做双层行级稀疏；perQueryTopK 为空则 daemon 忽略，老逻辑全量跑 */
+        candidateIds: preselect.perQueryTopK,
+        bgmBeats: bgmBeatsSec, // 直接用秒级节拍数组（BgmBeatRepository 统一存的就是 s）
         alpha: 0.6,
         beta: 0.3,
         gamma: 0.1,
@@ -682,24 +734,33 @@ export class AIService {
       }
 
       /** 步4：封装高契约数据结构回传 */
+      const rawMatches: any[] = solverResult.results || [];
+      const matches = rawMatches.map((r: any) => {
+        const chunkId = r.chunkId || r.mediaId || '';
+        const fullChunk = originalChunksByIdAIS.get(String(chunkId));
+        return {
+          shotId: r.shotId,
+          mediaType: 'video_chunk' as const,
+          mediaId: chunkId,
+          score: r.confidence || 0,
+          thumbnail: r.coverPath || (fullChunk?.coverPath || ''),
+          chunkData: r.chunkData || fullChunk || null,
+          audioDurationMs: r.audioDurationMs || 0,
+          videoTimelineStartMs: r.videoTimelineStartMs || (fullChunk?.startMs ?? 0),
+          videoTimelineEndMs: r.videoTimelineEndMs || (fullChunk?.endMs ?? 0),
+          appliedSpeedFactor: r.appliedSpeedFactor || 1.0,
+          confirmed: (r.confidence || 0) >= 0.88,
+        };
+      });
+      /** 📊 审计覆盖率（同 SemanticAnalyzeStrategy 逻辑） */
+      SemanticAnalyzeStrategy.auditPreselectTopK(perQueryTopKForAudit, matches, payload.projectId ? `AIService:${payload.projectId}` : undefined);
+
       return {
         type: 'match',
         success: true,
-        matches: (solverResult.results || []).map((r: any) => ({
-          shotId: r.shotId,
-          mediaType: 'video_chunk',
-          mediaId: r.chunkId || '',
-          score: r.confidence || 0,
-          thumbnail: r.coverPath || '',
-          chunkData: r.chunkData || null,
-          audioDurationMs: r.audioDurationMs || 0,
-          videoTimelineStartMs: r.videoTimelineStartMs || 0,
-          videoTimelineEndMs: r.videoTimelineEndMs || 0,
-          appliedSpeedFactor: r.appliedSpeedFactor || 1.0,
-          confirmed: (r.confidence || 0) >= 0.88,
-        })),
+        matches,
         videoChunks,
-        bgmBeats,
+        bgmBeats: bgmBeatsMs, // 对外保持历史契约：毫秒级数组
       };
     } catch (error: any) {
       AppLogger.error(LOG_TAGS.AI_AGENT, `[Layer-5] 智能视听匹配管线发生致命崩溃`, error);

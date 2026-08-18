@@ -3,6 +3,7 @@ import { AppLogger } from './AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { SettingsRepository } from '../database/repositories/SettingsRepository';
 import { AiRuntimeManager } from './AiRuntimeManager';
+import { Semaphore } from '../utils/async';
 
 /**
  * AI 守护进程 Facade
@@ -21,9 +22,24 @@ export class AIDaemon {
   /** 在途长任务计数：守护进程正在处理请求时，健康检查失败不触发重启，避免 CPU 密集任务（如 TTS 合成）被误杀 */
   private inflightTaskCount = 0;
   private runtimeManager: AiRuntimeManager;
+  /** P1 #7：ensureWarm() 的幂等单飞 Promise。
+   *  同一进程内并发调用 ensureWarm，仅真正跑一次 /health 拉活流程，其他调用直接复用同一 Promise。 */
+  private warmPromise: Promise<void> | null = null;
+  private lastWarmAt = 0;
+  /** 预热有效时间窗：10 分钟内再次调用视为仍然热，不重复打 /health */
+  private readonly WARM_TTL_MS = 10 * 60 * 1000;
+  /** 预热超时：/health 超过 10 秒仍未返回就算失败（不抛错，仅日志，继续执行后续请求） */
+  private readonly WARM_TIMEOUT_MS = 10000;
+  /** P1 #7：全局请求并发上限信号量（默认 4）。
+   *  Python 守护进程因 GIL，CPU 密集任务（TTS/ASR/beat 检测/KM 求解）并发 8+ 会互相拖垮；
+   *  设 4 并发保证吞吐可控，超出部分自动排队 FIFO。 */
+  private requestSem: Semaphore;
+  /** 队列深度告警阈值：排队请求超过此值打 warn，便于诊断上游是否暴打 daemon */
+  private readonly QUEUE_WARN_THRESHOLD = 8;
 
   private constructor() {
     this.runtimeManager = AiRuntimeManager.getInstance();
+    this.requestSem = new Semaphore(4, 'AIDaemon.post');
   }
 
   public static getInstance(): AIDaemon {
@@ -100,6 +116,58 @@ export class AIDaemon {
     return this.port;
   }
 
+  /**
+   * P1 #7 预调 daemon：提前打 /health 把 Python 子进程 + 运行时模型热起来。
+   * 关键语义：
+   *   - 幂等并发（单飞）：同一时间 N 处调用，只执行一次 /health，其余共享 Promise
+   *   - 冷启动复用 waitForReady：进程未启动时自动点火，不会因为"提前拉活"导致还没 spawn
+   *   - TTL 防抖：10 分钟内重复调用视为仍然 warm，不重复发 /health
+   *   - 失败静默：/health 挂了只打 warn，绝不抛错（不能因为预热失败阻塞后续真正业务请求）
+   *   - 长任务安全：会把 inflightTaskCount 短暂 +1，避免 /health 被健康检查判定为 daemon 死
+   */
+  public async ensureWarm(): Promise<void> {
+    const now = Date.now();
+    /** TTL 内仍然 warm → 立即返回 */
+    if (this.lastWarmAt > 0 && now - this.lastWarmAt < this.WARM_TTL_MS && this.isOnline()) return;
+    /** 有在途 Promise → 复用（并发单飞） */
+    if (this.warmPromise) return this.warmPromise;
+
+    this.warmPromise = (async () => {
+      try {
+        /** 进入轻量长任务窗口：/health 期间的健康检查失败判为"忙非死" */
+        this.inflightTaskCount++;
+        try {
+          await this.waitForReady();
+        } catch (e: any) {
+          AppLogger.warn(LOG_TAGS.AI_DAEMON, `[ensureWarm] 自动点火失败（继续由首次 POST 兜底）: ${e.message}`);
+          return;
+        }
+
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), this.WARM_TIMEOUT_MS);
+          const res = await fetch(`http://127.0.0.1:${this.port}/health`, {
+            method: 'GET',
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          if (res.ok) {
+            this.lastWarmAt = Date.now();
+            AppLogger.info(LOG_TAGS.AI_DAEMON, `[ensureWarm] /health 拉活成功，daemon 已热 (port=${this.port})`);
+          } else {
+            AppLogger.warn(LOG_TAGS.AI_DAEMON, `[ensureWarm] /health 返回非 200: HTTP ${res.status}`);
+          }
+        } catch (e: any) {
+          AppLogger.warn(LOG_TAGS.AI_DAEMON, `[ensureWarm] /health 失败（不影响后续请求）: ${e.message}`);
+        }
+      } finally {
+        this.inflightTaskCount = Math.max(0, this.inflightTaskCount - 1);
+        this.warmPromise = null;
+      }
+    })();
+    return this.warmPromise;
+  }
+
   /** 向 Python 运行时发 POST 请求 */
   public async post(endpoint: string, payload: any, options?: { timeout?: number; retries?: number; signal?: AbortSignal }): Promise<any> {
     await this.waitForReady();
@@ -109,7 +177,16 @@ export class AIDaemon {
       throw new Error('AI 运行时处于离线状态，无法处理请求。请确认 AI Daemon 已启动（端口 ' + this.port + '）');
     }
 
-    // 进入长任务窗口：请求在途期间置忙，健康检查失败不触发重启（守护进程正在处理 CPU 密集任务）
+    /** 🔧 P1 #7：并发窗口信号量。
+     *   Daemon 是 Python（GIL 单解释器），CPU 密集任务（TTS/ASR/detect_beats/KM 求解/切片）并发过高会导致
+     *   彼此切换开销 + /health 响应变慢 → 健康检查误杀 → 重启打断业务。
+     *   限 4 并发，超出部分 FIFO 排队，队列深度 > 8 打 warning 便于观测。 */
+    if (this.requestSem.queueDepth >= this.QUEUE_WARN_THRESHOLD) {
+      AppLogger.warn(LOG_TAGS.AI_DAEMON,
+        `[${endpoint}] Daemon 请求排队深度=${this.requestSem.queueDepth}，超过阈值 ${this.QUEUE_WARN_THRESHOLD}，请留意下游是否卡 CPU/显存`);
+    }
+    const release = await this.requestSem.acquire();
+    /** 进入长任务窗口：请求在途期间置忙，健康检查失败不触发重启（守护进程正在处理 CPU 密集任务） */
     this.inflightTaskCount++;
 
     const url = `http://127.0.0.1:${this.port}${endpoint}`;
@@ -234,6 +311,8 @@ export class AIDaemon {
     } finally {
       // 退出长任务窗口：无论成功、失败还是被取消，都要释放在途计数
       this.inflightTaskCount = Math.max(0, this.inflightTaskCount - 1);
+      // 归还并发窗口信号量许可：必须与 acquire 配对，否则下一波请求会饿死
+      try { release(); } catch { /* ignore */ }
     }
   }
 

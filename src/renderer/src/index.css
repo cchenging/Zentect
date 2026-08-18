@@ -528,6 +528,16 @@ body {
 *:hover::-webkit-scrollbar-thumb { background-color: rgba(99, 102, 241, 0.2); }
 *:hover::-webkit-scrollbar-thumb:hover { background-color: rgba(99, 102, 241, 0.35); }
 
+/* 常显滚动条：覆盖全局"悬停才显示"的透明样式，用于文案区等需要明确滚动提示的区域 */
+.visible-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+.visible-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.visible-scrollbar::-webkit-scrollbar-thumb {
+  background-color: rgba(99, 102, 241, 0.35);
+  border-radius: 3px;
+}
+.visible-scrollbar::-webkit-scrollbar-thumb:hover { background-color: rgba(99, 102, 241, 0.55); }
+.visible-scrollbar { scrollbar-width: thin; scrollbar-color: rgba(99, 102, 241, 0.35) transparent; }
+
 /* =========================================
    Allotment 布局覆盖
 ========================================= */

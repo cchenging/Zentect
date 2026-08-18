@@ -72,6 +72,11 @@ export class AIController {
       return await this.aiService.downloadBgm(payload);
     });
 
+    // 🎵 本地 BGM 曲库全量列表（按 tone 分组，供前端分类分页自选）
+    IpcRouter.handle(IPC_CHANNELS.AI_BGM_LOCAL_LIST, async () => {
+      return await this.aiService.listLocalBgm();
+    });
+
     IpcRouter.handle(IPC_CHANNELS.AI_VISION_SINGLE, async (_, data) => {
       return await this.aiService.visionSingle(data);
     });

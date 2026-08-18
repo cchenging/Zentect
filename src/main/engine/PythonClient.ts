@@ -45,12 +45,25 @@ export class PythonClient {
   /**
    * 同步调用 Python 端点（非 SSE 短任务，如 /api/vision /api/cluster_faces）
    * 返回 Python 端原始响应 JSON，由调用方按各自契约解析
+   *
+   * @param path    端点路径
+   * @param body    请求体
+   * @param signal  取消信号（可选）
+   * @param options 可选：覆盖本次调用的超时/重试配置（缺省用本客户端默认 90s/2 次重试）
+   *                耗时端点（如 /api/vision 人脸检测）用它放宽超时、关闭重试，避免级联超时
    */
-  async call(path: string, body: any, signal?: AbortSignal): Promise<any> {
+  async call(path: string, body: any, signal?: AbortSignal, options?: { timeoutMs?: number; maxRetries?: number }): Promise<any> {
     const port = await this.getPort();
     const url = this.buildUrl(path, port);
     try {
-      return await this.httpClient.post(url, body, { signal });
+      // 仅在显式覆盖超时/重试时新建 HttpClient，否则复用共享实例（保持默认行为）
+      const http = options && (options.timeoutMs !== undefined || options.maxRetries !== undefined)
+        ? new HttpClient({
+            timeoutMs: options.timeoutMs ?? this.httpClient['config'].timeoutMs,
+            maxRetries: options.maxRetries ?? this.httpClient['config'].maxRetries,
+          })
+        : this.httpClient;
+      return await http.post(url, body, { signal });
     } catch (err: any) {
       AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[PythonClient] ${path} 调用失败: ${err?.message || err}`);
       throw err;

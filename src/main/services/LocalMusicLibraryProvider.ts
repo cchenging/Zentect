@@ -112,39 +112,37 @@ export class LocalMusicLibraryProvider implements MusicLibraryProvider {
       else if (MOOD_TO_TONE[t]) targetTones.add(MOOD_TO_TONE[t]);
     }
 
-    // 2. 评分：tone 命中权重最高，feel 子串命中次之
-    const moodLower = mood.toLowerCase();
-    const scored = this.entries.map((e) => {
-      let score = 0;
-      if (targetTones.size > 0 && targetTones.has(e.tone)) score += 100;
-      for (const f of e.feel) {
-        if (moodLower.includes(f.toLowerCase())) score += 5;
-      }
-      return { e, score };
-    });
+    // 2. 情绪硬匹配：目标 tone 集合为空或没有任何曲目命中时，直接返回空，
+    //    不再静默兜底返回情绪无关曲目（否则等于"随机选几首"）。
+    if (targetTones.size === 0) return [];
+    let toneHits = this.entries.filter((e) => targetTones.has(e.tone));
+    if (toneHits.length === 0) return [];
 
-    // 3. BPM 区间过滤：区间内优先；若区间内为空则忽略过滤（保证有结果）
-    let inRange = scored;
+    // 3. BPM 区间过滤：区间内优先；若区间内为空则忽略过滤（BPM 为软条件）
     if (bpmMin > 0 && bpmMax > 0) {
-      const filtered = scored.filter((s) => s.e.bpm >= bpmMin && s.e.bpm <= bpmMax);
-      if (filtered.length > 0) inRange = filtered;
+      const filtered = toneHits.filter((e) => e.bpm >= bpmMin && e.bpm <= bpmMax);
+      if (filtered.length > 0) toneHits = filtered;
     }
 
-    // 4. 排序：tone 命中 > feel 命中 > bpm 与目标区间中点距离
+    // 4. 排序：tone 命中集内按 bpm 与目标区间中点距离
     const mid = bpmMin > 0 && bpmMax > 0 ? (bpmMin + bpmMax) / 2 : 100;
-    inRange.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return Math.abs(a.e.bpm - mid) - Math.abs(b.e.bpm - mid);
-    });
+    toneHits.sort((a, b) => Math.abs(a.bpm - mid) - Math.abs(b.bpm - mid));
 
     const libraryRoot = path.join(PathManager.getResourcesPath(), 'bgm-library');
-    return inRange.slice(0, limit).map((s) =>
-      this.toTrack(s.e, path.join(libraryRoot, s.e.relativePath)),
+    return toneHits.slice(0, limit).map((e) =>
+      this.toTrack(e, path.join(libraryRoot, e.relativePath)),
     );
   }
 
   async getDownloadUrl(id: string): Promise<string> {
     this.ensureLoaded();
     return this.byId.get(id)?.downloadUrl || '';
+  }
+
+  /** 返回全部曲目（含本地文件路径），供前端本地曲库分类分页自选 */
+  listAll(): MusicTrack[] {
+    this.ensureLoaded();
+    const libraryRoot = path.join(PathManager.getResourcesPath(), 'bgm-library');
+    return this.entries.map((e) => this.toTrack(e, path.join(libraryRoot, e.relativePath)));
   }
 }
