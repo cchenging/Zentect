@@ -18,6 +18,9 @@ import { PathManager } from '../utils/pathManager';
 import { musicLibraryService } from './MusicLibraryService';
 import { SemanticAnalyzeStrategy } from '../engine/strategies/SemanticAnalyzeStrategy';
 import { BgmBeatRepository } from '../database/repositories/BgmBeatRepository';
+// 🎬 OP/ED 片头片尾裁剪（P1 源头裁剪：视觉匹配切片池只喂正剧段）
+import { resolveForMedia } from '../engine/utils/MediaTrimPolicy';
+import { TrimmedSourceResolver } from '../engine/utils/TrimmedSourceResolver';
 
 /** BGM 选曲意图（两段式 Step1 输出） */
 interface BgmIntent {
@@ -401,21 +404,23 @@ export class AIService {
       .map(f => path.join(outputDir, f));
   }
 
-  public async testLLM(provider: string, apiKey: string, baseURL?: string) {
+  /**
+   * 测试 LLM 连通性（旧版入口）
+   * 🔧 修复：新增 model 参数，不传 model 时走 GET /models（仅测鉴权）；
+   *      传 model 时真实测该模型是否可用（避免硬编码 gpt-3.5-turbo 导致"测试通过但实际报错"的假象）。
+   */
+  public async testLLM(provider: string, apiKey: string, baseURL?: string, model?: string) {
     if (!apiKey) throw new Error("API Key 不能为空，请先填写");
 
     const adapter = LLMFactory.create(provider, apiKey, baseURL);
-    await adapter.testConnection();
+    await adapter.testConnection(model);
     return true;
   }
 
   public async testNetwork(type: string, config: any) {
-    if (type === 'openai_like') {
-      // 🔧 修复：用 /models 接口同时完成测试和拉取，废弃用 gpt-3.5-turbo 测试的错误逻辑
-      const models = await this.fetchModels(config);
-      return `连接成功，共获取 ${models.length} 个可用模型`;
-    }
-
+    // 🔧 修复：openai_like 由"拉取 /models 列表代替测试"改为"真实最小推理"
+    // （POST /chat/completions 带真实 model），使测试真正验证所选模型可用性。
+    // 模型列表拉取仍走 fetchModels（AI_FETCH_MODELS 通道），与连接测试解耦。
     return await healthCheckService.testNetwork(type as 'doubao_tts' | 'openai_like', config);
   }
 
@@ -672,28 +677,62 @@ export class AIService {
           AppLogger.info(LOG_TAGS.AI_AGENT,
             `[AIService] 命中 BGM 节拍 DB 缓存，共 ${bgmBeatsSec.length} 个节拍`);
         } else {
-          const beatResponse = await AIDaemon.getInstance().post('/api/audio/detect_beats', {
-            file_path: bgmInfo.filePath,
-          });
-          const beatData = beatResponse?.data || beatResponse;
-          bgmBeatsMs = beatData.beatGridMs || beatData.onsetMs || [];
-          bgmBeatsSec = bgmBeatsMs.map((ms: number) => ms / 1000);
-          const tempo = Number(beatData.tempo) || 0;
-          if (bgmBeatsSec.length > 0) {
-            bgmBeatRepo.save(bgmInfo.filePath, bgmBeatsSec, tempo);
+          try {
+            const beatResponse = await AIDaemon.getInstance().post('/api/audio/detect_beats', {
+              file_path: bgmInfo.filePath,
+            });
+            const beatData = beatResponse?.data || beatResponse;
+            bgmBeatsMs = beatData.beatGridMs || beatData.onsetMs || [];
+            bgmBeatsSec = bgmBeatsMs.map((ms: number) => ms / 1000);
+            const tempo = Number(beatData.tempo) || 0;
+            if (bgmBeatsSec.length > 0) {
+              bgmBeatRepo.save(bgmInfo.filePath, bgmBeatsSec, tempo);
+            }
+            AppLogger.info(LOG_TAGS.AI_AGENT,
+              `[AIService] BGM 节拍检测完成，共 ${bgmBeatsSec.length} 个节拍，BPM=${tempo}`);
+          } catch (e: any) {
+            // 🛑 行为对齐 SemanticAnalyzeStrategy.ts#L95：BGM 节拍检测失败不阻塞整体匹配，
+            //   降级为"无 BGM 模式"（bgmBeats=[]，KM 代价矩阵 BGM 权重自动忽略）。
+            AppLogger.warn(LOG_TAGS.AI_AGENT,
+              `[镜头匹配] BGM 节拍检测失败: ${e.message}，继续无 BGM 模式`);
+            bgmBeatsMs = [];
+            bgmBeatsSec = [];
           }
-          AppLogger.info(LOG_TAGS.AI_AGENT,
-            `[AIService] BGM 节拍检测完成，共 ${bgmBeatsSec.length} 个节拍，BPM=${tempo}`);
         }
       }
 
       /** 步2：获取动态视频切片池 */
       const cacheDir = PathManager.getProjectDir(payload.projectId);
+      /** 🎬 P1-4 OP/ED 源头裁剪：有裁剪时先按 body 窗口切视频，切片池只含正剧段（省算力 + 天然 body 坐标）；
+       *  resolve 失败回退整段；mediaId 用切片路径隔离 daemon 素材池缓存。 */
+      let chunkSource = mediaPath;
+      /** P1-4 坐标回写：body 切片后 chunk 时间戳为 body 坐标，匹配结果须换算回源坐标（导出定位用） */
+      let chunkOffsetMs = 0;
+      try {
+        const trim = resolveForMedia(payload.projectId, payload.mediaId);
+        if (trim.trimStartMs > 0 || trim.trimEndMs > 0) {
+          const src = await TrimmedSourceResolver.resolve({
+            projectId: payload.projectId, mediaId: payload.mediaId, mediaPath,
+            mode: 'body', ext: '.mp4',
+            getFfmpegPath: () => PathManager.getBinPath('ffmpeg.exe'),
+          });
+          if (src.shouldTrim && src.trimmedPath && src.trimmedPath !== mediaPath) {
+            chunkSource = src.trimmedPath;
+            chunkOffsetMs = Math.round(src.window.offsetSec * 1000);
+            AppLogger.info(LOG_TAGS.AI_AGENT,
+              `[AIService] OP/ED: 视觉匹配切片池按 body 窗口裁剪源 ${src.window.durationSec !== undefined ? src.window.durationSec.toFixed(1) : '?'}s（偏移 ${(chunkOffsetMs / 1000).toFixed(1)}s，结果回写源坐标）`);
+          }
+        }
+      } catch (e: any) {
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[AIService] OP/ED 切片池源裁剪失败，回退整段: ${e.message}`);
+      }
       const chunkResponse = await AIDaemon.getInstance().post('/api/video/detect_scene_chunks', {
-        file_path: mediaPath,
+        file_path: chunkSource,
         output_dir: path.join(cacheDir, 'video_chunks'),
         threshold: 0.3,
         min_chunk_duration_sec: 1.0,
+        /** body 窗口切片时用切片路径做缓存 key，整段时用视频路径 */
+        mediaId: chunkSource,
       });
       const videoChunks = chunkResponse?.data || chunkResponse || [];
       if (!Array.isArray(videoChunks) || videoChunks.length === 0) {
@@ -746,8 +785,8 @@ export class AIService {
           thumbnail: r.coverPath || (fullChunk?.coverPath || ''),
           chunkData: r.chunkData || fullChunk || null,
           audioDurationMs: r.audioDurationMs || 0,
-          videoTimelineStartMs: r.videoTimelineStartMs || (fullChunk?.startMs ?? 0),
-          videoTimelineEndMs: r.videoTimelineEndMs || (fullChunk?.endMs ?? 0),
+          videoTimelineStartMs: (r.videoTimelineStartMs || (fullChunk?.startMs ?? 0)) + chunkOffsetMs,
+          videoTimelineEndMs: (r.videoTimelineEndMs || (fullChunk?.endMs ?? 0)) + chunkOffsetMs,
           appliedSpeedFactor: r.appliedSpeedFactor || 1.0,
           confirmed: (r.confidence || 0) >= 0.88,
         };

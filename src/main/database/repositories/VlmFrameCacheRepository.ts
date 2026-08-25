@@ -24,8 +24,12 @@ export type VlmCacheBatchResult = Map<string, VlmCacheRecord>;
 export class VlmFrameCacheRepository {
   private db = SQLiteConnection.getInstance().getDB();
 
-  /** 当前 prompt 版本（修改 prompt 时递增，如 v1 → v2，使旧缓存自动失效） */
-  private static readonly PROMPT_VERSION = 'v2';
+  /** 当前 prompt 版本（修改 prompt/schema 时递增，如 v1 → v2，使旧缓存自动失效）
+   *  🔧 v4：拉片式场景重写 + 新增 keyProps 道具字段 + scene/narrativeAction 约束变更，
+   *        旧 v2/v3 缓存（短场景描述）必须全部失效，否则重跑会命中旧结果不生效。
+   *  ⚠️ 必须与 VisionExtractStrategy 写入侧引用同一常量，避免查询/写入版本不一致。
+   */
+  static readonly PROMPT_VERSION = 'v4';
 
   /**
    * 批量查询缓存（一次 SQL 拿回多帧结果，避免 N 次 SELECT）

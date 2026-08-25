@@ -147,12 +147,51 @@ export interface VisionExtractOutput {
   };
 }
 
-/** VLM 并发批次路数（按模型限流与并发配额取平衡值） */
-const CONCURRENT_VLM = 3;
+/**
+ * VLM 并发批次路数（🚀 提速：效率优先，6 路并发）
+ * 背景：此前为防"假 429"把并发压到 1，但真正根因是 API Key/路径，并非真限流。
+ * 现在放开到 6 路（多数付费/自建中转 QPS≥10，6 路在速度和稳定性间取平衡；
+ * 真遇到限流由全局节流器+批次退避自动兜底，不会打爆服务）。
+ */
+const CONCURRENT_VLM = 6;
 /** 🔧 fail fast：连续失败达到此阈值时终止整批任务，避免无效 API 调用 */
-const FAIL_FAST_THRESHOLD = 3;
+const FAIL_FAST_THRESHOLD = 5;
 /** 单次 VLM 调用最大图片数（按 qwen3.7-plus 2048 / flash-plus 系列 256 取保守值 256） */
 const MAX_BATCH_IMAGES = 256;
+/** 批次启动错峰延迟（毫秒）：保留极小错峰，避免并发批次在同一毫秒瞬时打满 QPS（500ms→100ms 提速） */
+const BATCH_STAGGER_MS = 100;
+/** 当 VLM 批次遇到 429/限流时，在 fail-fast 计数前强制全局退避（毫秒），防止其它并发批次继续撞限流 */
+const RATE_LIMIT_GLOBAL_BACKOFF_MS = 2000;
+/**
+ * P3 全局摘要 VLM 请求与第 1 个批次 VLM 请求之间的冷却等待（毫秒）
+ * 目的：全局摘要消耗大量 TPM，紧接着发批次请求易触发 TPM/RPM 双限流。
+ * 🔧 提速：从 2000ms 降到 500ms（根因已确认非限流，保留极小冷却即可避免瞬时撞限流）
+ */
+const GLOBAL_CONTEXT_BATCH_COOLDOWN_MS = 500;
+
+/**
+ * 异步等待（毫秒）
+ * @param ms 等待时长
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 判断错误消息是否属于"限流/429类问题"，用于在批次级触发额外退避
+ * 🔧 关键修复：如果是"伪装成429的致命错误"（API Key鉴权失败/余额不足/模型不存在等），
+ *      即使消息里含"429"也绝不能按限流处理 —— 限流退避 sleep 3秒 对这种情况完全无效，
+ *      还会让用户误以为是并发太高而反复调整参数。
+ * @param err catch 到的错误对象
+ */
+function isRateLimitError(err: any): boolean {
+  const msg = String(err?.message || err || '');
+  const low = msg.toLowerCase();
+  // 致命黑名单（供应商伪装HTTP 429但实际是鉴权/余额/模型问题）→ 一律当非限流处理，立即终止后续批次避免白等
+  const fatalPseudo429 = /invalid token|unauthorized|forbidden|401|403|api.?key.*invalid|鉴权|认证失败|auth.?fail|权限不足|没有权限|insufficient balance|arrearage|余额不足|欠费|额度不足|账户.*(过期|失效)|model.*not.?found|模型不存在|模型未开通|无效的模型|unsupported model|上下文.*过长|prompt.?too.?long/i;
+  if (fatalPseudo429.test(low)) return false;
+  return /429|过于频繁|限流|rate.?limit|too many requests|quota|qps|rps/i.test(low);
+}
 
 /**
  * 构建人物名单注入段（用于 VLM prompt）
@@ -1078,24 +1117,28 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
                 items: {
                     type: 'object',
                     properties: {
-                      scene: { type: 'string', description: '关键场景/环境（2-6字概括，如"深夜办公室""车内"，画面匹配第一抓手，禁止"无"）' },
+                      // 🎬 拉片式场景：交代物理空间+关键陈设/道具布局，不再压缩成2-6字（2-6字会丢掉"牌匾"这类关键空间物品）
+                      scene: { type: 'string', description: '场景空间：交代画面所在的物理空间与关键陈设/道具布局，如"昏暗室内，桌面中央放着一面裂开的牌匾，背景墙斑驳"或"车内副驾驶座，挡风玻璃映着雨夜街灯"。不啰嗦材质/花纹/衣料，但空间与关键物品必须说清楚，禁止只用2-6字概括，禁止"无"' },
                       subject: { type: 'string', description: '画面核心主体（优先用已知角色真实姓名，如"张三"；无人用泛称，空镜写"空镜头"）' },
                       // 👥 P0 多人物关系建模：主焦点/陪体/交互/场景分类/角色集合
                       primarySubject: { type: 'string', description: '多人物主焦点：画面中核心叙事人物（优先用已知角色真实姓名，如"张三"；单人画面同 subject）' },
                       secondarySubjects: { type: 'array', items: { type: 'string' }, description: '多人物陪体列表：辅助/次要人物（如 ["李四"]）；背景路人/群众禁止入此列' },
-                      interaction: { type: 'string', description: '人物间交互动作：谁对谁做了什么（15字内动词主导，如"张三举枪质问角落里的李四"；单人画面写该人物的动作）' },
+                      interaction: { type: 'string', description: '人物间交互动作：谁对谁做了什么（15字内动词主导，如"张三举枪质问角落里的李四"；单人画面写该人物对道具/对象的动作）' },
                       shotStyle: { type: 'string', description: '多人物场景分类：单人|双人对峙|过肩镜头|群戏|主角+背景人群', enum: ['单人', '双人对峙', '过肩镜头', '群戏', '主角+背景人群'] },
                       characters: { type: 'array', items: { type: 'string' }, description: '该帧出现的所有角色名集合（主焦点+陪体+可辨识路人；优先用已知角色名）' },
-                      narrativeAction: { type: 'string', description: '主体核心动作/状态（聚焦戏剧动作或静态具体状态，禁止"无动作"占位）' },
+                      // 🎬 拉片式动作：必须包含动作对象/交互道具/对手，让观众仅凭此句就知道"对什么做了什么"
+                      narrativeAction: { type: 'string', description: '主体核心动作/状态：必须写明动作对象与交互道具/对手（如"手指轻触牌匾上的裂纹仔细端详"而非"手指轻触裂纹"；"张三举枪质问李四"而非"张三举枪"）。禁止"无动作"；禁止只写动作不写对象' },
                       emotionalState: { type: 'string', description: '主体的微表情/情绪（如眼神/咬牙/冷笑；静态写具体状态，禁止"无表情"占位）' },
                       shotType: { type: 'string', description: '镜头语言：特写|近景|中景|全景', enum: ['特写', '近景', '中景', '全景'] },
                       cameraMovement: { type: 'string', description: '运镜方式：固定|推|拉|摇|移', enum: ['固定', '推', '拉', '摇', '移'] },
                       dramaticConflict: { type: 'string', description: '剧情看点/张力（如"面临危险""发现秘密"；平静写"平静，无冲突"）' },
                       visualAtmosphere: { type: 'string', description: '光影/色调/氛围（2-4字概括，禁止"无氛围"占位）' },
                       spatialRelation: { type: 'string', description: '人物空间位置/构图（如"张三前景居主体，李四后景阴影中"；禁止"无构图"占位）' },
+                      // 🎬 关键道具字段：独立展示，避免"牌匾/手枪/信封"这类关键物品被压缩进 keywords 后不可见
+                      keyProps: { type: 'string', description: '画面中与剧情相关或主体交互的关键道具/物品（如"裂开的牌匾""手枪""旧信封""手机屏幕显示未读消息"），无关键道具时写"无道具"' },
                       keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词（仅动作/情绪/道具/人物，禁止环境词）' },
                     },
-                    required: ['scene', 'subject', 'primarySubject', 'secondarySubjects', 'interaction', 'shotStyle', 'narrativeAction', 'emotionalState', 'shotType', 'cameraMovement', 'dramaticConflict', 'visualAtmosphere', 'spatialRelation'],
+                    required: ['scene', 'subject', 'primarySubject', 'secondarySubjects', 'interaction', 'shotStyle', 'narrativeAction', 'emotionalState', 'shotType', 'cameraMovement', 'dramaticConflict', 'visualAtmosphere', 'spatialRelation', 'keyProps'],
                   },
               },
             },
@@ -1142,6 +1185,8 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
             parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
             parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
             parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
+            // 🎬 关键道具独立展示：牌匾/手枪/信封等剧情线索必须可见（原 keywords 有但不展示，导致道具丢失）
+            parsedItem.keyProps && parsedItem.keyProps !== '无道具' ? `道具:${parsedItem.keyProps}` : '',
             parsedItem.dramaticConflict ? `看点:${parsedItem.dramaticConflict}` : '',
           ].filter(Boolean);
           frameDescriptions[frameIdx] = parts.join(' ');
@@ -1175,12 +1220,16 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
               parsedItem.emotionalState ? `情绪:${parsedItem.emotionalState}` : '',
               parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
               parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
+              // 🎬 与 UI 实时推送保持一致：关键道具独立展示
+              parsedItem.keyProps && parsedItem.keyProps !== '无道具' ? `道具:${parsedItem.keyProps}` : '',
               parsedItem.dramaticConflict ? `看点:${parsedItem.dramaticConflict}` : '',
             ].filter(Boolean);
             cacheRecords.push({
               frameHash: contentHash,
               modelName: model,
-              promptVersion: 'v3',
+              // 🔧 与 VlmFrameCacheRepository.PROMPT_VERSION 引用同一常量（v4），
+              // 避免此前"查询用v2/写入用v3"不一致导致重跑命中旧短场景缓存
+              promptVersion: VlmFrameCacheRepository.PROMPT_VERSION,
               resultJson: JSON.stringify(parsedItem),
               description: parts.join(' '),
             });
@@ -1195,6 +1244,16 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         consecutiveFailures = 0;
       } catch (err: any) {
         AppLogger.error(LOG_TAGS.AI_AGENT, `[画面描述] 批次 ${batchIdx + 1} 异常: ${err.message}`);
+
+        // 🔧 修复 429 连锁撞限流：如果本批次是"限流类错误"，先全局退避一段时间，
+        // 让其它并发批次/后续批次不至于紧跟着撞在同一个限流窗口上，导致连续计数 fail-fast
+        const rateLimited = isRateLimitError(err);
+        if (rateLimited && !aborted) {
+          AppLogger.warn(LOG_TAGS.AI_AGENT,
+            `[画面描述] 批次 ${batchIdx + 1} 触发限流类错误，全局退避 ${RATE_LIMIT_GLOBAL_BACKOFF_MS}ms 再处理计数`);
+          await sleep(RATE_LIMIT_GLOBAL_BACKOFF_MS);
+        }
+
         consecutiveFailures++;
         if (consecutiveFailures >= FAIL_FAST_THRESHOLD && !aborted) {
           aborted = true;
@@ -1270,17 +1329,34 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     if (framesToAnalyze.length >= GLOBAL_SUMMARY_MIN_FRAMES) {
       onProgress(28, '正在构建全局场景摘要...');
       globalContext = await buildGlobalContext(framesToAnalyze);
+      // 🔧 关键修复：全局摘要刚完成了一次大输入 VLM 请求，与批次1请求之间强制冷却，
+      // 避免在服务商 60s TPM/RPM 滑动窗口内瞬间堆积连续请求
+      if (globalContext !== null) {
+        AppLogger.debug(LOG_TAGS.AI_AGENT,
+          `[画面描述] P3 全局摘要完成，与批次分析间冷却等待 ${GLOBAL_CONTEXT_BATCH_COOLDOWN_MS}ms`);
+        await sleep(GLOBAL_CONTEXT_BATCH_COOLDOWN_MS);
+      }
     }
 
-    /** 并发调度批次 */
+    /** 并发调度批次（带错峰延迟，避免瞬间并发把 QPS 打爆） */
     const batchQueue = batches.slice();
     const running: Promise<void>[] = [];
+    /** 已启动过的批次计数器（用于错峰递增偏移） */
+    let launchedCount = 0;
     while (batchQueue.length > 0 || running.length > 0) {
       if (aborted) break;
       while (batchQueue.length > 0 && running.length < CONCURRENT_VLM && !aborted) {
         const batchIdx = batches.length - batchQueue.length;
         const batch = batchQueue.shift()!;
-        const promise = processBatch(batchIdx, batch.frames, batch.layout).then(() => {
+        // 🔧 批次错峰：第 N 个启动的批次在真正创建请求前等待 N × BATCH_STAGGER_MS
+        // 🚀 提速后 BATCH_STAGGER_MS=100ms：6 路并发下第 6 批最多延迟 500ms，
+        //    既避免所有并发请求在同一毫秒瞬时打满 QPS，又不拖慢整体进度
+        const staggerDelay = launchedCount * BATCH_STAGGER_MS;
+        launchedCount++;
+        const promise = (async () => {
+          if (staggerDelay > 0) await sleep(staggerDelay);
+          await processBatch(batchIdx, batch.frames, batch.layout);
+        })().then(() => {
           const idx = running.indexOf(promise);
           if (idx >= 0) running.splice(idx, 1);
         });

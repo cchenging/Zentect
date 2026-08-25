@@ -25,9 +25,10 @@ export class AIController {
       return await this.aiService.getNodeOutput(projectId, nodeId, type);
     });
 
-    // 🌟 修复：移除多余的 try-catch 套娃
+    // 🌟 修复：优先拿 payload 里的 model（或 models[0]）传入，真实测"用户选中的模型"，不再硬编码无关小模型
     IpcRouter.handle(IPC_CHANNELS.SYSTEM_TEST_LLM, async (_, payload) => {
-      return await this.aiService.testLLM(payload.provider, payload.apiKey, payload.baseURL);
+      const model: string | undefined = payload?.model || (Array.isArray(payload?.models) && payload.models[0]) || undefined;
+      return await this.aiService.testLLM(payload.provider, payload.apiKey, payload.baseURL, model);
     });
 
     IpcRouter.handle(IPC_CHANNELS.AI_GENERATE_TTS, async (_, text, roleId, projectId) => {
