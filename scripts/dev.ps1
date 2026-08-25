@@ -35,7 +35,11 @@ $env:ELECTRON_ENABLE_LOGGING = '1'
 $env:LANG  = 'zh_CN.UTF-8'
 $env:LC_ALL= 'zh_CN.UTF-8'
 
-# --- 3) 在 UTF-8 代码页下启动 electron-vite dev ---
+# --- 3) 清理 src 下 tsc 遗留的孤儿 .js（防止 .ts 修改不生效）---
+# 见 clean-src-js.cjs 顶部注释：.js/.ts 同名并存时 electron-vite 会优先加载旧 .js
+& node "$PSScriptRoot/clean-src-js.cjs"
+
+# --- 4) 在 UTF-8 代码页下启动 electron-vite dev ---
 #    通过 cmd /c 保证 chcp 65001 对同一命令链上的 electron-vite 生效
 $cmdLine = 'chcp 65001 > nul & node "./node_modules/electron-vite/bin/electron-vite.js" dev'
 Push-Location $PSScriptRoot/..

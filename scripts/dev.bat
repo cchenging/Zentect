@@ -22,6 +22,11 @@ REM --- Kill stale processes from previous run (matched by project path) ---
 echo [dev] Killing stale processes...
 node "scripts\kill-dev.js"
 
+REM --- Clean orphan .js artifacts that shadow .ts sources ---
+REM (tsc 裸编译残留，会覆盖 .ts 源码导致修改不生效；见 clean-src-js.cjs 注释)
+echo [dev] Cleaning stale tsc .js artifacts...
+node "scripts\clean-src-js.cjs"
+
 REM --- Start dev server ---
 echo [dev] Starting electron-vite dev...
 node "node_modules\electron-vite\bin\electron-vite.js" dev

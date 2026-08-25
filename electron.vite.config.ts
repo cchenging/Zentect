@@ -6,6 +6,11 @@ import tailwindcss from '@tailwindcss/vite' // ⚡ Tailwind v4 Vite 插件替代
 export default defineConfig({
   main: {
     resolve: {
+      // 🔧 关键修复：强制 .ts/.tsx 优先于 .js！
+      // 背景：src/main 下存在大量 tsc 遗留的旧 .js 编译产物（与 .ts 同名，2026/8/24 全量生成）。
+      // 若不加此项，Vite 默认 extensions 是 .js 排在 .ts 前面，打包会加载旧 .js，
+      // 导致所有 .ts 源码修改（并发/限流/prompt/缓存版本）全部不生效。
+      extensions: ['.ts', '.tsx', '.mts', '.js', '.mjs', '.jsx', '.json'],
       alias: {
         '@modules': resolve('src/modules'),
         '@shared': resolve('src/shared')
@@ -20,6 +25,8 @@ export default defineConfig({
   },
   preload: {
     resolve: {
+      // 🔧 与 main 一致：.ts/.tsx 优先于 .js，避免加载 tsc 遗留旧 .js 产物
+      extensions: ['.ts', '.tsx', '.mts', '.js', '.mjs', '.jsx', '.json'],
       alias: {
         '@modules': resolve('src/modules'),
         '@shared': resolve('src/shared')
@@ -29,6 +36,8 @@ export default defineConfig({
   },
   renderer: {
     resolve: {
+      // 🔧 与 main/preload 一致：.ts/.tsx 优先于 .js/.jsx，防止加载旧 JS/JSX 残留
+      extensions: ['.tsx', '.ts', '.mts', '.jsx', '.js', '.mjs', '.json'],
       alias: {
         '@renderer': resolve('src/renderer/src'),
         '@modules': resolve('src/modules'),

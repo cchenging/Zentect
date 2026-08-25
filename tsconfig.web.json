@@ -33,6 +33,10 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    // 🔧 防污染：禁止 tsc 输出文件（noEmit）。
+    // 与 tsconfig.node.json 一致，防止裸 `tsc` 把 .js 编译产物输出到 .ts 同目录
+    // （否则 electron-vite 会优先加载旧 .js，导致 .ts 修改不生效）。
+    "noEmit": true
   }
 }

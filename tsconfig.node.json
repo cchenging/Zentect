@@ -18,6 +18,12 @@
       "@modules/*": ["./src/modules/*"],
       "@renderer/*": ["./src/renderer/src/*"]
     },
-    "types": ["electron-vite/node"]
+    "types": ["electron-vite/node"],
+    // 🔧 防污染：禁止 tsc 输出任何文件（noEmit）。
+    // 背景：此前有人跑过不带 --noEmit 的裸 `tsc`，且本项目未配置 outDir，
+    //       tsc 会把编译产物 .js 直接输出到 .ts 同目录（src/main 等共 416 个），
+    //       与 .ts 同名并存后 electron-vite 优先加载旧 .js，导致所有 .ts 修改不生效。
+    // 加上 noEmit 后，任何人/脚本执行裸 `tsc` 都不会再生成 .js 污染源码目录。
+    "noEmit": true
   }
 }
