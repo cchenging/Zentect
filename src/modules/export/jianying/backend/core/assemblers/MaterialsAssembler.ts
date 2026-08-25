@@ -643,9 +643,11 @@ export function assembleMaterials(
       shotId: shot.id,
       videoId: vMatId,
       durationUs,
-      sourceStartUs: chunk?.startMs != null
+      // 素材同系坐标：素材=body 切片（有 filePath）时用 chunk.startMs（body 坐标）；
+      // 素材=源视频（无 filePath）时用 videoTimelineStartMs（源坐标，OP/ED 裁剪后与 body 相差 offset，缺陷 D1 同源修正）
+      sourceStartUs: chunk?.filePath && chunk?.startMs != null
         ? Math.round(Number(chunk.startMs) * 1000)
-        : 0,
+        : Math.round((shot.videoTimelineStartMs ?? Number(chunk?.startMs ?? 0)) * 1000),
       sourceDurationUs: resolveSourceDurationUs(shot),
       speed,
       keepOriginalAudio: shot.keepOriginalAudio === true,

@@ -7,7 +7,9 @@
  * @param basePath 可选的项目基础路径，用于拼接相对路径
  */
 export const getSafeMediaUrl = (rawPath?: string | null): string => {
-  if (!rawPath) return '';
+  // 类型防御：rawPath 运行时可能是 number/object/null 等非字符串
+  // （如 framePaths 混入非法项、hydration 置 null），直接调 .trim 会崩溃
+  if (!rawPath || typeof rawPath !== 'string') return '';
 
   const trimmedPath = rawPath.trim();
 

@@ -99,6 +99,9 @@ export class MediaRepository {
           : media.vocalsIsFallback
             ? 1
             : 0,
+      // 🎬 P1-1 裁剪指纹：抽帧/音频分离所用的 trim 配置指纹（undefined→null→COALESCE 保留原值）
+      framesTrimSig: media.framesTrimSig ?? null,
+      audioTrimSig: media.audioTrimSig ?? null,
     });
   }
 

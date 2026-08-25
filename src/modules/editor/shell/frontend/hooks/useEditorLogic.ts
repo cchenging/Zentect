@@ -130,17 +130,56 @@ export const useEditorHydration = (id: string | undefined) => {
               const draftData = JSON.parse(crashDraft.canvasSnapshot);
               console.log('[CrashRecovery] 发现未同步草稿，正在恢复...', Object.keys(draftData));
 
-              // 恢复管线运行时状态 — 仅覆盖 SQLite 中可能过时的字段
+              // 恢复管线运行时状态 — 采用「只升级不降级」合并策略
+              // 根因：SQLite 是步骤完成时立即写入的 SSOT（单一真相源），
+              //       IndexedDB 草稿可能因 beforeunload 时序比 SQLite 数据更旧（例如草稿记的是 2/5 完成但 DB 已是 5/5）。
+              //       旧代码无条件 set 全量覆盖，会把已完成的状态拉回 idle，造成肉眼可见的「状态丢失」。
+              // 修复：只把草稿中更强的状态（idle→running/completed/failed，running→completed/failed）
+              //       合并进 store，绝不反向降级（completed→idle）。
+              const pipelineNow = usePipelineStore.getState();
+
+              /** 步骤状态强度排序：completed > failed > running > idle；返回 true 表示 draft 值更强（应采用） */
+              const isStepStatusStronger = (draft: string, db: string): boolean => {
+                const ORDER: Record<string, number> = { completed: 4, failed: 3, running: 2, idle: 1 };
+                return (ORDER[draft] || 0) > (ORDER[db] || 0);
+              };
+
+              // 合并 stepStatuses（只升级不降级）
+              if (Array.isArray(draftData.stepStatuses)) {
+                const mergedStatuses = [...pipelineNow.stepStatuses];
+                let changed = false;
+                for (let i = 0; i < Math.max(draftData.stepStatuses.length, mergedStatuses.length); i++) {
+                  const dbVal = mergedStatuses[i] || 'idle';
+                  const draftVal = draftData.stepStatuses[i] || 'idle';
+                  if (isStepStatusStronger(draftVal, dbVal)) {
+                    mergedStatuses[i] = draftVal as any;
+                    changed = true;
+                  }
+                }
+                if (changed) usePipelineStore.setState({ stepStatuses: mergedStatuses });
+              }
+
+              // 合并 stepCompleted（true 永远更强，草稿为 true 时若 store 为 false 才升级）
+              if (Array.isArray(draftData.stepCompleted)) {
+                const mergedCompleted = [...pipelineNow.stepCompleted];
+                let changed = false;
+                for (let i = 0; i < Math.max(draftData.stepCompleted.length, mergedCompleted.length); i++) {
+                  if (draftData.stepCompleted[i] === true && mergedCompleted[i] !== true) {
+                    mergedCompleted[i] = true;
+                    changed = true;
+                  }
+                }
+                if (changed) usePipelineStore.setState({ stepCompleted: mergedCompleted });
+              }
+
+              // 子步骤状态同样采用只升级不降级
               if (draftData.subStepStatuses && typeof draftData.subStepStatuses === 'object') {
                 for (const [key, status] of Object.entries(draftData.subStepStatuses)) {
-                  usePipelineStore.getState().setSubStepStatus?.(key, status as any);
+                  const dbVal = pipelineNow.subStepStatuses[key] || 'idle';
+                  if (isStepStatusStronger(status as string, dbVal)) {
+                    usePipelineStore.getState().setSubStepStatus?.(key, status as any);
+                  }
                 }
-              }
-              if (draftData.stepStatuses) {
-                usePipelineStore.setState({ stepStatuses: draftData.stepStatuses });
-              }
-              if (draftData.stepCompleted) {
-                usePipelineStore.setState({ stepCompleted: draftData.stepCompleted });
               }
               if (draftData.frameCount != null) {
                 useStep1Store.getState().setFrameCount?.(draftData.frameCount);

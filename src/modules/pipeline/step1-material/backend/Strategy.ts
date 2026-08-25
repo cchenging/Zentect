@@ -7,6 +7,8 @@ import { PathManager } from '../../../../main/utils/pathManager';
 import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
 import { VisionProcessor } from '../../../../main/engine/media/VisionProcessor';
 import { LocalWhisperStrategy } from '../../../../main/engine/strategies/LocalWhisperStrategy';
+import { TrimmedSourceResolver } from '../../../../main/engine/utils/TrimmedSourceResolver';
+import { resolveForMedia, toMediaWindow, buildTrimFingerprint } from '../../../../main/engine/utils/MediaTrimPolicy';
 import { AppLogger } from '../../../../main/core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { AppError, ErrorCode } from '@modules/infra/error/AppError';
@@ -171,6 +173,16 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     let skipFaces = false;
 
     const dbMedia = existingMedia || (mediaId ? mediaRepo.findById(mediaId) : null);
+
+    // 🎬 P1-1 裁剪指纹：当前 media 的 trim 配置指纹（无裁剪=trim_s0_e0）。
+    // 供 skipFrames/skipAudio 判定"已有产物是否在当前裁剪下生成"；不一致则强制重抽/重分离，
+    // 修复"先配裁剪→抽帧→改裁剪→复用旧帧仍含 OP/ED"的残留问题。
+    // 兼容旧数据：DB 无指纹(NULL)且当前无裁剪 → 视为一致可复用；当前有裁剪 → 强制重抽一次。
+    const mediaTrimSig = buildTrimFingerprint(resolveForMedia(context.projectId, mediaId));
+    // 指纹一致性判断：DB 无指纹(NULL)且当前无裁剪(trim_s0_e0) → 视为一致（旧数据兼容）；否则严格相等
+    const trimSigMatches = (dbSig: string | null | undefined, curSig: string): boolean =>
+      dbSig !== null && dbSig !== undefined ? dbSig === curSig : curSig === 'trim_s0_e0';
+
     if (dbMedia && !forceRetryStep) {
       AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 检测到已有媒体数据，开始检查可跳过的子步骤`, { mediaId });
 
@@ -179,9 +191,17 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           .map((f: string) => resolveDbPath(f, projectDir))
           .filter((f: string | undefined): f is string => !!f && fs.existsSync(f));
         if (absoluteFrames.length > 0) {
-          existingFrames = absoluteFrames;
-          skipFrames = true;
-          AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有帧数据 (${absoluteFrames.length}帧)，跳过抽帧`, { mediaId });
+          // 🎬 P1-1 裁剪指纹校验：仅当已有帧与当前 trim 配置一致时才复用；
+          // 不一致（含旧数据无指纹但当前有裁剪）→ 强制重新抽帧，避免复用含 OP/ED 的旧帧
+          if (trimSigMatches(dbMedia.framesTrimSig, mediaTrimSig)) {
+            existingFrames = absoluteFrames;
+            skipFrames = true;
+            AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有帧数据 (${absoluteFrames.length}帧)，跳过抽帧`, { mediaId });
+          } else {
+            AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+              `[Step1] ⚠️ 已有帧与当前裁剪配置不一致，重新抽帧（DB sig=${dbMedia.framesTrimSig ?? 'null'} / 当前=${mediaTrimSig}）`,
+              { mediaId });
+          }
         }
       }
 
@@ -189,13 +209,20 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       const bgmAbs = dbMedia.extractedBgm ? resolveDbPath(dbMedia.extractedBgm, projectDir) : undefined;
       const audioAbs = dbMedia.extractedAudio ? resolveDbPath(dbMedia.extractedAudio, projectDir) : undefined;
       const audioExists = !!(audioAbs && fs.existsSync(audioAbs));
+      // 🎬 P1-1 裁剪指纹校验：音频产物与当前 trim 配置不一致时强制重新分离
+      const audioSigOk = trimSigMatches(dbMedia.audioTrimSig, mediaTrimSig);
+      if (!audioSigOk) {
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+          `[Step1] ⚠️ 已有音频与当前裁剪配置不一致，重新分离（DB sig=${dbMedia.audioTrimSig ?? 'null'} / 当前=${mediaTrimSig}）`,
+          { mediaId });
+      }
       if (vocalsAbs && fs.existsSync(vocalsAbs) && bgmAbs && fs.existsSync(bgmAbs)) {
-        existingVocalsPath = vocalsAbs;
-        existingBgmPath = bgmAbs;
+        existingVocalsPath = audioSigOk ? vocalsAbs : undefined;
+        existingBgmPath = audioSigOk ? bgmAbs : undefined;
         // 🔧 修复：ASR 只用原始音频降采样（extractedAudio），不复用分离后 vocals
         // 原因：Demucs 分离损失高频细节，导致 faster-whisper 误识别（如 "I'm"→"Mom"）
         // vocals/bgm 仍复用分离产物供 BGM 提取、TTS 等其他用途
-        existingAudioPath = audioExists ? audioAbs : undefined;
+        existingAudioPath = audioSigOk && audioExists ? audioAbs : undefined;
         existingVocalsIsFallback = !!dbMedia.vocalsIsFallback;
         // 仅当 16k ASR 音频存在时才跳过音频处理；否则需重新生成
         skipAudio = !!existingAudioPath;
@@ -203,9 +230,9 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           `[Step1] 🟢 检测到已有音频分离产物，跳过音频分离${existingAudioPath ? '（ASR用原始音轨降采样）' : '（需重新生成 ASR 音频）'}`,
           { mediaId });
       } else if (separationMode === 'fast' && audioExists) {
-        existingAudioPath = audioAbs;
+        existingAudioPath = audioSigOk ? audioAbs : undefined;
         existingVocalsIsFallback = true;
-        skipAudio = true;
+        skipAudio = audioSigOk;
         AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 极速模式：检测到已有音频，跳过提取`, { mediaId });
       }
 
@@ -314,8 +341,15 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             projectDir,
           });
           if (absoluteFrames.length > 0) {
-            existingFrames = absoluteFrames;
-            skipFrames = true; // 🔧 修复：加载成功后标记为跳过，不重复抽帧
+            // 🎬 P1-1 裁剪指纹校验（同增量分支）：trim 配置不一致的旧帧不复用，强制重抽
+            if (trimSigMatches(dbMedia.framesTrimSig, mediaTrimSig)) {
+              existingFrames = absoluteFrames;
+              skipFrames = true; // 🔧 修复：加载成功后标记为跳过，不重复抽帧
+            } else {
+              AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+                `[Step1] ⚠️ [forceRetry] 已有帧与当前裁剪配置不一致，重新抽帧（DB sig=${dbMedia.framesTrimSig ?? 'null'} / 当前=${mediaTrimSig}）`,
+                { mediaId });
+            }
           }
         }
       }
@@ -341,21 +375,33 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         // 🔧 修复：ASR 只用原始音频降采样（extractedAudio），不使用分离后 vocals
         // 原因：Demucs 分离损失高频细节，导致 faster-whisper 误识别（如 "I'm"→"Mom"）
         // vocals/bgm 仅复用分离产物供其他用途（BGM 提取、TTS 等），不作为 ASR 音频源
+        // 🎬 P1-1 裁剪指纹校验：音频产物与当前 trim 配置不一致时强制重新分离
+        const audioSigOk = trimSigMatches(dbMedia.audioTrimSig, mediaTrimSig);
         if (vocalsExists) {
-          existingVocalsPath = vocalsAbs;
-          existingBgmPath = bgmExists ? bgmAbs : undefined;
+          existingVocalsPath = audioSigOk ? vocalsAbs : undefined;
+          existingBgmPath = audioSigOk && bgmExists ? bgmAbs : undefined;
           existingVocalsIsFallback = false;
           // 仅当 16k ASR 音频存在时才跳过音频处理；否则需重新跑 extractAndSeparate 生成
-          existingAudioPath = audioExists ? audioAbs : undefined;
+          existingAudioPath = audioSigOk && audioExists ? audioAbs : undefined;
           skipAudio = !!existingAudioPath;
+          if (!audioSigOk) {
+            AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+              `[Step1] ⚠️ [forceRetry] 已有音频与当前裁剪配置不一致，重新分离（DB sig=${dbMedia.audioTrimSig ?? 'null'} / 当前=${mediaTrimSig}）`,
+              { mediaId });
+          }
           AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
             `[Step1] 🟢 检测到已有人声分离产物，跳过音频分离${existingAudioPath ? '（ASR用原始音轨降采样）' : '（需重新生成 ASR 音频）'}`,
             { mediaId });
         } else if (audioExists) {
           // 回退到原始音轨（极速模式或分离失败后的降级）
-          existingAudioPath = audioAbs;
+          existingAudioPath = audioSigOk ? audioAbs : undefined;
           existingVocalsIsFallback = true;
-          skipAudio = true; // 🔧 修复：加载成功后标记为跳过
+          skipAudio = audioSigOk; // 🔧 修复：加载成功后标记为跳过
+          if (!audioSigOk) {
+            AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+              `[Step1] ⚠️ [forceRetry] 已有音频与当前裁剪配置不一致，重新分离（DB sig=${dbMedia.audioTrimSig ?? 'null'} / 当前=${mediaTrimSig}）`,
+              { mediaId });
+          }
           AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[Step1] 🟢 检测到已有音频，跳过音频分离（ASR将使用原始音轨）`, { mediaId });
         } else {
           AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[Step1] ⚠️ 未找到可用音频文件，ASR可能无法执行`, { mediaId });
@@ -484,6 +530,13 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         lastProgress = Math.max(lastProgress, 5);
         onProgress(lastProgress, '正在提取关键帧...');
         try {
+          // 🎬 P1-1 OP/ED 源头裁剪：抽帧只抽正剧段（body 窗口）。
+          //   时间换算唯一来源是策略层（SSOT）：inPoint=offsetSec(源坐标起点)，
+          //   outPoint=durationSec(body 长度)。ffmpeg -ss 前置(input seek)输出时间戳归零，
+          //   帧 timeMs 天然为 body 坐标，与 shots/chunks 平移后语义一致，严禁自行换算。
+          const trimForFrames = resolveForMedia(context.projectId, mediaId);
+          const trimForFramesWin = toMediaWindow(trimForFrames);
+          const frameShouldTrim = trimForFrames.trimStartMs > 0 || trimForFrames.trimEndMs > 0;
           const framesConfig = typeof config.frames === 'object' ? config.frames : {};
           const strategy = framesConfig.mode || config.frameStrategy || 'VLM_OPTIMIZED';
           const frameService = new FrameExtractionService({
@@ -498,6 +551,9 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             // P0 · 系统级黄金参数：VLM 抽帧默认 longEdge=1024，JPEG -q:v 2（后端自动接管）
             timePoint: framesConfig.timePoint,
             abortSignal: signal,
+            // 🎬 P1-1 抽帧只覆盖 body 窗口（OP/ED 不抽帧）
+            inPoint: frameShouldTrim ? trimForFramesWin.offsetSec : undefined,
+            outPoint: frameShouldTrim && trimForFramesWin.durationSec !== undefined ? trimForFramesWin.durationSec : undefined,
             // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重 + timeMs 元数据
             postProcess: true,
           });
@@ -513,6 +569,9 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               strategy: 'UNIFORM_FPS',
               fps: framesConfig.fps || config.frameFps || 2,
               abortSignal: signal,
+              // 🎬 P1-1 降级抽帧同样只覆盖 body 窗口
+              inPoint: frameShouldTrim ? trimForFramesWin.offsetSec : undefined,
+              outPoint: frameShouldTrim && trimForFramesWin.durationSec !== undefined ? trimForFramesWin.durationSec : undefined,
               postProcess: true,
             });
           }
@@ -529,6 +588,9 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
       })());
     }
 
+    // 🎬 P1-2：音频分离已在源头切好 body 段（true 时 ASR 直接转录该段，不再二次 resolve）
+    let audioCutToBody = false;
+
     if (needRunAudio) {
       tasks.push((async () => {
         const skipSeparation = separationMode === 'fast';
@@ -543,9 +605,20 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           onProgress(lastProgress, msg || '正在分离人声...');
         };
 
+        // 🎬 P1-2 OP/ED 源头裁剪：音频分离只处理正剧段（body 窗口）。
+        //   trimStartSec/trimEndSec 为源坐标秒（-ss/-to output seek），
+        //   产物 vocals/bgm/asrAudio 时间轴从 0 起（body 坐标）。
+        const trimForAudio = resolveForMedia(context.projectId, mediaId);
+        const trimForAudioWin = toMediaWindow(trimForAudio);
+        const audioShouldTrim = trimForAudio.trimStartMs > 0 || trimForAudio.trimEndMs > 0;
+        const audioTrimStartSec = audioShouldTrim ? trimForAudioWin.offsetSec : undefined;
+        const audioTrimEndSec = audioShouldTrim && trimForAudioWin.endSec !== undefined
+          ? trimForAudioWin.toSource(trimForAudioWin.endSec)
+          : undefined;
+
         const result = await AudioProcessor.extractAndSeparate(
           mediaPath, audioDir, mediaId, signal,
-          { skipSeparation, engine, onProgress: onSubProgress }
+          { skipSeparation, engine, onProgress: onSubProgress, trimStartSec: audioTrimStartSec, trimEndSec: audioTrimEndSec }
         );
 
         if (!result.hasAudio) {
@@ -559,6 +632,8 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         vocalsPath = result.vocalsPath;
         bgmPath = result.bgmPath;
         vocalsIsFallback = result.isFallback;
+        // 🎬 P1-2：本次分离产物已是 body 段，ASR 无需再切（audioTrimStartSec 同时供 ASR 偏移换算）
+        audioCutToBody = audioShouldTrim && !!result.asrAudioPath;
 
         if (result.isFallback && !skipSeparation) {
           AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
@@ -585,12 +660,47 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     }
 
     const targetAudio = audioPath;
+    let asrSourcePath: string = targetAudio ?? ''; // audioPath 参数可为 undefined，但 ASR 分支有 targetAudio 存在性守卫
+    let asrTrimOffsetMs = 0; // P0-2 OP/ED 源头裁剪：>0 时 ASR 结果(body坐标)需换算回源坐标
     if (!skipAsr && !audioFailed && runWhisper && targetAudio && fs.existsSync(targetAudio)) {
       onProgress(Math.max(lastProgress, 50), '正在进行 ASR 识别...');
       if (vocalsIsFallback) {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[Step1] 人声分离降级模式，ASR 使用含 BGM 的原始音轨，识别质量可能下降', { mediaId });
       }
       try {
+        // 🆕 P0-2 / P1-2 OP/ED 源头裁剪：只转录正剧段（body 窗口），从源头清除 OP/ED 残留台词。
+        //   切片后 ASR 时间戳为 body 坐标，下方解析时统一换算回源坐标，保证 DB 数据流不变。
+        if (audioCutToBody) {
+          // 🎬 P1-2：音频分离已在源头切好 body 段，直接转录该段，避免双重裁剪
+          asrSourcePath = targetAudio;
+          asrTrimOffsetMs = Math.round(toMediaWindow(resolveForMedia(context.projectId, mediaId)).offsetSec * 1000);
+          AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+            '[Step1] OP/ED 裁剪生效：音频分离已按 body 窗口切好，ASR 直接转录正剧段' +
+            `（偏移 ${(asrTrimOffsetMs / 1000).toFixed(1)}s），结果将换算回源坐标`, { mediaId });
+        } else {
+          try {
+            const src = await TrimmedSourceResolver.resolve({
+              projectId: context.projectId,
+              mediaId,
+              mediaPath: targetAudio,
+              mode: 'body',
+              ext: '.wav',
+              ar: 16000,
+              ac: 1,
+              getFfmpegPath: () => PathManager.getBinPath('ffmpeg.exe'),
+            });
+            if (src.shouldTrim && src.trimmedPath !== targetAudio) {
+              asrSourcePath = src.trimmedPath;
+              asrTrimOffsetMs = Math.round(src.window.offsetSec * 1000);
+              AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
+                `[Step1] OP/ED 裁剪生效：ASR 仅转录正剧段${src.window.durationSec !== undefined ? ` ${src.window.durationSec.toFixed(1)}s` : ''}` +
+                `（偏移 ${src.window.offsetSec.toFixed(1)}s），结果将换算回源坐标`, { mediaId });
+            }
+          } catch (e: any) {
+            AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
+              '[Step1] OP/ED 音频切片失败，回退整段转录', { mediaId, error: e.message });
+          }
+        }
         const whisperStrategy = new LocalWhisperStrategy();
         const whisperCfg = typeof config.whisper === 'object' ? config.whisper : { enabled: true, engine: 'auto' as const };
         const asrLang = whisperCfg.language || 'auto';
@@ -628,7 +738,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           onProgress(Math.max(lastProgress, mapped), msg || 'ASR 识别中');
         };
         whisperResult = await whisperStrategy.transcribe(
-          targetAudio, audioDir, mediaId, resolvedLang, asrEngine, signal, asrOnProgress,
+          asrSourcePath, audioDir, mediaId, resolvedLang, asrEngine, signal, asrOnProgress,
           // 🔧 去硬编码：faster-whisper 模型大小从配置读取（默认 large-v3），不写死
           (whisperCfg as any)?.modelSize || 'large-v3'
         );
@@ -676,12 +786,19 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             getFfmpegPath: () => PathManager.getBinPath('ffmpeg.exe'),
             getFfprobePath: () => PathManager.getBinPath('ffprobe.exe'),
           });
+          // 🎬 P1-3 OP/ED 源头裁剪：人脸专用抽帧同样只覆盖 body 窗口（OP/ED 不采人脸）
+          const faceTrim = resolveForMedia(context.projectId, mediaId);
+          const faceTrimWin = toMediaWindow(faceTrim);
+          const faceShouldTrim = faceTrim.trimStartMs > 0 || faceTrim.trimEndMs > 0;
           const faceFramesResult = await frameService.extractFrames(mediaPath, faceFramesDir, mediaId, {
             strategy: 'UNIFORM_FPS',
             fps: 1,
             // P0 · 人脸专用黄金长边 cap=1280（决策点②：源分辨率低于 1280 保持原始，不放大），JPEG 画质由系统托管 -q:v 2
             frameCap: FACE_FRAME_LONG_EDGE,
             abortSignal: signal,
+            // 🎬 P1-3 只采 body 窗口
+            inPoint: faceShouldTrim ? faceTrimWin.offsetSec : undefined,
+            outPoint: faceShouldTrim && faceTrimWin.durationSec !== undefined ? faceTrimWin.durationSec : undefined,
           });
           if (faceFramesResult.files.length > 0) {
             const MAX_FACE_FRAMES = 120;
@@ -902,15 +1019,24 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             };
           };
 
+          // P0-2 毫秒 → mm:ss（用于把 body 坐标换算回源坐标后的显示串）
+          const fmtMmss = (ms: number) => {
+            const s = Math.max(0, Math.floor(ms / 1000));
+            return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+          };
+
           asrLines = transcription.map((t: any) => {
             const text = (t.text || '').replace(/<\|.*?\|>/g, '').trim();
             const from = parseSrt(t.timestamps?.from || '00:00:00,000');
             const to = parseSrt(t.timestamps?.to || '00:00:00,000');
+            // P0-2 body 坐标 → 源坐标（未裁剪时偏移为 0，行为与旧版一致）
+            const startMs = from.ms + asrTrimOffsetMs;
+            const endMs = to.ms + asrTrimOffsetMs;
             return {
-              start: from.mmss,
-              startMs: from.ms,
-              end: to.mmss,
-              endMs: to.ms,
+              start: fmtMmss(startMs),
+              startMs,
+              end: fmtMmss(endMs),
+              endMs,
               text,
               originalText: text,
               editing: false,
@@ -934,7 +1060,11 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     // 1. skipXxx = true：增量执行时已有数据跳过
     // 2. runXxx = false：配置中禁用了该子步骤（重试单个子步骤时其他子步骤被禁用）
     const results: Record<string, any> = {
-      frames: { count: frameCount, paths: framePaths, _failed: framesFailed, _skipped: skipFrames || !runFrames },
+      frames: {
+        count: frameCount, paths: framePaths, _failed: framesFailed, _skipped: skipFrames || !runFrames,
+        // 🎬 P1-1 裁剪指纹：本次抽帧所用 trim 配置指纹，供 PipelineResultWriter 持久化到 media_assets
+        framesTrimSig: mediaTrimSig,
+      },
       audio: {
         separated: audioSeparated,
         audioPath,
@@ -943,6 +1073,8 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         vocalsIsFallback,
         _failed: audioFailed,
         _skipped: skipAudio || !runAudio,
+        // 🎬 P1-1 裁剪指纹：本次音频分离所用 trim 配置指纹，供 PipelineResultWriter 持久化
+        audioTrimSig: mediaTrimSig,
       },
       asr: {
         lines: asrLines,

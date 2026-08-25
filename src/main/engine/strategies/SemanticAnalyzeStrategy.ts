@@ -11,6 +11,12 @@ import { promisePool } from '../../utils/async';
 import { VisionExtractStrategy } from './VisionExtractStrategy';
 import * as path from 'path';
 import * as fs from 'fs';
+// 🎬 OP/ED 片头片尾裁剪策略（P0 手动裁剪 / P1 源头裁剪）
+import { resolveForMedia, applyToChunks, type ResolvedTrim } from '../utils/MediaTrimPolicy';
+import { TrimmedSourceResolver } from '../utils/TrimmedSourceResolver';
+import { PathManager } from '../../utils/pathManager';
+import { JobScheduler } from '../../core/JobScheduler'; // 🔧 R12（PR-3）：任务准入合并 —— 检测步骤1 是否在跑
+import { ComputeResourceManager } from '../../core/ComputeResourceManager'; // 🔧 R12（PR-3）：激活 canStartNewTask 全局资源准入信号
 
 /**
  * 镜头匹配策略：三维一体弹性时间轴对齐
@@ -21,6 +27,32 @@ import * as fs from 'fs';
  */
 export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
   readonly nodeType = 'semantic-analyze';
+
+  /**
+   * 🔧 R12（PR-3）：任务准入合并等待。
+   *  - 阶段一：等 JobScheduler 步骤1（素材提取）结束（上限 30 分钟，超时抛错）；
+   *  - 阶段二：等系统资源允许启动新任务（ComputeResourceManager.canStartNewTask，上限 2 分钟）。
+   */
+  private async waitForTaskAdmission(): Promise<void> {
+    const scheduler = JobScheduler.getInstance();
+    const crm = ComputeResourceManager.getInstance();
+
+    const step1Deadline = Date.now() + 30 * 60 * 1000;
+    while (scheduler.isStep1Running()) {
+      if (Date.now() > step1Deadline) {
+        throw new Error('等待步骤1（素材提取）完成超时，请稍后重试');
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    const crmDeadline = Date.now() + 2 * 60 * 1000;
+    while (!crm.canStartNewTask().allowed) {
+      if (Date.now() > crmDeadline) {
+        throw new Error('系统资源繁忙，无法启动镜头匹配，请稍后重试');
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
 
   protected async performTask(
     task: PipelineTask,
@@ -33,6 +65,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  必须脱水为物理路径再传给 daemon，否则 detect_scene_chunks 的 os.path.exists 失败 → 切片池为空 */
     const mediaPath = task.mediaPath ? dehydrateMagicPath(task.mediaPath) : undefined;
     if (!mediaPath) throw new Error('语义分析失败：未找到媒体文件路径');
+
+    /** 🔧 R12（PR-3）：任务准入合并 —— 步骤1（素材提取）在跑则排队等待其完成，
+     *  避免步骤5 镜头匹配与步骤1 同时吃满 CPU/IO；随后激活 ComputeResourceManager.canStartNewTask
+     *  （此前无消费方）做全局资源准入，资源过载则继续排队。 */
+    await this.waitForTaskAdmission();
 
     /** 🔧 P1 #7：管线一开始就异步预调 daemon（/health + waitForReady 自动点火），
      *   不阻塞参数准备 / 帧描述准备，让步骤2 detect_beats/detect_scene_chunks 到达时 daemon 已热。 */
@@ -95,20 +132,48 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     /** 步骤2：检测视频场景切片（DB 持久化缓存优先，命中秒级复用，未命中调 daemon 后写库）
      *  🎬 阶段 B 三层分离：Python 侧一次性产出 chunks（Layer1 镜头级）+ matchSegments（Layer2 匹配候选级）。
      *    - chunks        → 帧描述聚合目标 + 前端切片池展示 + 导出蒙太奇衔接判断依据
-     *    - matchSegments → KM 匹配候选池（每 3s 一段，含 parentChunkId，天然支持 SAME_SCENE 识别） */
+     *    - matchSegments → KM 匹配候选池（每 3s 一段，含 parentChunkId，天然支持 SAME_SCENE 识别）
+     *  🎬 P0 OP/ED 裁剪：先读 projects.extraction_config.mediaTrim 算出 trim（毫秒）；
+     *     缓存隔离 key = mediaPath + "#trim_sXX_eYY"，避免"同一视频不同 trim 值读到错缓存"；
+     *     若命中的是"未 trim 原始缓存"，直接 Node 侧 applyToChunks 平移过滤（秒级完成，不重切片 80s）。 */
     onProgress(20, '正在检测视频场景切片...');
+    // 2.1 先解析 OP/ED 裁剪配置（projects.extraction_config.mediaTrim）
+    const projectId: string = (task as any).projectId ?? String((task as any).project ?? '');
+    const mediaAssetId: string = (task as any).mediaId || (task as any).assetId || '';
+    const trim: ResolvedTrim = resolveForMedia(projectId, mediaAssetId);
+    const needTrim = trim.trimStartMs > 0 || trim.trimEndMs > 0;
+    const { chunks: _probeForFingerprint, trimFingerprint } = applyToChunks([], trim);
+    void _probeForFingerprint;
+    // 2.2 视频切片缓存 key：原始 key 与「带 trim 隔离 key」双版本，避免缓存错配
+    const videoRepo = new VideoChunkRepository();
+    const rawCacheKey = mediaPath;
+    const trimAwareCacheKey = needTrim ? `${mediaPath}#${trimFingerprint}` : rawCacheKey;
     let chunks: any[] = [];
     let matchSegments: any[] = [];
     try {
-      /** 🔧 先查 SQLite 切片缓存：同视频跨会话复用，避免每次 80 秒重切片 */
-      const cached = new VideoChunkRepository().getByMediaId(mediaPath);
+      /** 🔧 先查 SQLite 切片缓存：先命中「trimAware key」（精确值），再回落到 raw key 做 Node 侧平移裁剪 */
+      let cached = videoRepo.getByMediaId(trimAwareCacheKey) || (needTrim ? videoRepo.getByMediaId(rawCacheKey) : null);
       /** 🎨 P1 缓存契约校验：切片须含 colorHistogram（相邻切片色调连续性特征，P1 新增）。
        *  旧版缓存缺该字段，按"错就错"原则视为数据契约不满足，失效重切（不能静默跳过色调维度）。 */
       const cacheUsable = cached && cached.chunks.length > 0
         && cached.chunks.some((c: any) => Array.isArray(c.colorHistogram) && c.colorHistogram.length > 0);
-      if (cacheUsable) {
-        chunks = cached.chunks;
-        matchSegments = cached.matchSegments && cached.matchSegments.length > 0 ? cached.matchSegments : [];
+      if (cacheUsable && cached) {
+        let workingChunks = cached.chunks;
+        let workingSegs = cached.matchSegments && cached.matchSegments.length > 0 ? cached.matchSegments : [];
+        // 如果是 needTrim 且命中的是 raw key（没带 trim 指纹），就在 Node 侧实时平移过滤，不用重切 80s！
+        if (needTrim && (cached as any).trimFingerprint !== trimFingerprint) {
+          const trimmedChunks = applyToChunks(workingChunks, trim);
+          const trimmedSegs = applyToChunks(workingSegs, trim);
+          workingChunks = trimmedChunks.chunks;
+          workingSegs = trimmedSegs.chunks;
+          AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] OP/ED: 命中原始缓存(raw key)，Node 侧实时平移 chunks=${workingChunks.length} segs=${workingSegs.length} (${trimFingerprint})`);
+          // 写一份带 trim key 的缓存，下次直接命中不用再平移
+          if (workingChunks.length > 0) videoRepo.save(trimAwareCacheKey, workingChunks, workingSegs);
+        } else {
+          AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] OP/ED: 命中缓存 key=${trimAwareCacheKey.slice(-22)} chunks=${workingChunks.length} segs=${workingSegs.length}`);
+        }
+        chunks = workingChunks;
+        matchSegments = workingSegs;
         /** 阶段 B 兼容：v1 老缓存只有 chunks 数组（无 matchSegments）→ 用 Node 侧兜底生成候选段，
          *  避免老缓存全部失效强制重切片（ADR B-3 要求的降级分支）。 */
         if (matchSegments.length === 0) {
@@ -120,9 +185,30 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 旧版切片缓存缺色调特征（colorHistogram），按契约校验失效，重新切片以启用衔接优化`);
         }
         const chunksDir = path.join(cacheDir, 'video_chunks');
-        /** 场景切片是重型视频分析（切片 + 封面 + CLIP 特征 + 运动显著性），默认 60s 超时不够，放宽到 5 分钟 */
+        /** 🎬 P1-4 OP/ED 源头裁剪：needTrim 时先按 body 窗口切视频（TrimmedSourceResolver），
+         *  只切片正剧段，chunks/segments 天然 body 坐标（省 OP/ED 算力 + 免除 Node 侧平移）。
+         *  mediaId 用切片路径做缓存隔离，避免不同 trim 值/整段缓存错配；resolve 失败回退整段。 */
+        let sceneSource = mediaPath;
+        let sceneMediaId = mediaPath;
+        if (needTrim) {
+          try {
+            const sceneTrim = await TrimmedSourceResolver.resolve({
+              projectId, mediaId: mediaAssetId, mediaPath,
+              mode: 'body', ext: '.mp4',
+              getFfmpegPath: () => PathManager.getBinPath('ffmpeg.exe'),
+            });
+            if (sceneTrim.shouldTrim && sceneTrim.trimmedPath && sceneTrim.trimmedPath !== mediaPath) {
+              sceneSource = sceneTrim.trimmedPath;
+              sceneMediaId = sceneTrim.trimmedPath;
+              AppLogger.info(LOG_TAGS.AI_AGENT,
+                `[镜头匹配] OP/ED: 场景切片按 body 窗口裁剪源 ${sceneTrim.window.durationSec !== undefined ? sceneTrim.window.durationSec.toFixed(1) : '?'}s（偏移 ${sceneTrim.window.offsetSec.toFixed(1)}s）`);
+            }
+          } catch (e: any) {
+            AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] OP/ED 场景切片源裁剪失败，回退整段: ${e.message}`);
+          }
+        }
         const chunkResult = await AIDaemon.getInstance().post('/api/video/detect_scene_chunks', {
-          file_path: mediaPath,
+          file_path: sceneSource,
           output_dir: chunksDir,
           threshold: 0.3,
           min_chunk_duration_sec: 1.0,
@@ -130,8 +216,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
            *  target_seg_duration_sec=3 让 Python 侧按 3s 拆分生成 matchSegments 候选段。 */
           max_chunk_duration_sec: 3.0,
           target_seg_duration_sec: 3.0,
-          /** 用视频路径作为缓存 key：同视频重复匹配走 daemon 的 PROJECT_MATERIAL_POOL，秒级返回 */
-          mediaId: mediaPath,
+          /** body 窗口切片时用切片路径做缓存 key（天然 body 坐标），整段时用视频路径（源坐标） */
+          mediaId: sceneMediaId,
         }, { timeout: 300000 });
         const chunkData = chunkResult?.data || chunkResult;
         chunks = Array.isArray(chunkData)
@@ -140,9 +226,24 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         const segs = Array.isArray((chunkData as any)?.matchSegments) ? (chunkData as any).matchSegments : [];
         /** 阶段 B 兜底：daemon 为旧版本（仅返回数组、无 matchSegments）时原地生成候选段，避免候选池契约缺项 */
         matchSegments = segs.length > 0 ? segs : SemanticAnalyzeStrategy.buildMatchSegmentsFromChunks(chunks);
-        /** 切片成功后持久化到 SQLite，供后续任意会话复用（阶段 B 缓存契约升级为 {version:2,chunks,matchSegments}） */
+        /** 🎬 P0/P1-4 OP/ED：body 窗口切片产物已是 body 坐标，无需再平移（raw key 回落整段缓存的平移已在上方缓存分支处理） */
+        if (needTrim && chunks.length > 0) {
+          AppLogger.info(LOG_TAGS.AI_AGENT,
+            `[镜头匹配] OP/ED: 场景切片按 body 窗口切片完成 chunks=${chunks.length} segs=${matchSegments.length}（天然 body 坐标，无 Node 平移）`);
+        }
+        /** 切片成功后持久化到 SQLite：
+         *   - 无 trim 时写原始 key（供后续无 trim/任意 trim 回落使用）
+         *   - 有 trim 时额外写 trimAware key，下次命中秒级跳过平移 */
         if (chunks.length > 0) {
-          new VideoChunkRepository().save(mediaPath, chunks, matchSegments);
+          try {
+            // 无 trim（整段源坐标切片）永远先写 raw key，让后续不同 trim 值都能回落 Node 平移
+            if (!needTrim) { videoRepo.save(rawCacheKey, chunks, matchSegments); }
+            // 🎬 P1-4：needTrim 时切片源已是 body 窗口，产物为 body 坐标 → 只写 trimAware key；
+            //  不再写 raw key（raw key 语义=整段源坐标，body 坐标数据写入会导致无 trim/其他 trim 回落时坐标错配）
+            if (needTrim) { videoRepo.save(trimAwareCacheKey, chunks, matchSegments); }
+          } catch (e: any) {
+            AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] 写切片缓存失败: ${e.message}`);
+          }
         }
         AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 场景切片检测完成，镜头 ${chunks.length} 个，匹配候选段 ${matchSegments.length} 个`);
       }
@@ -154,8 +255,10 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  供 daemon 做"文案↔切片描述"文本语义匹配——复用步骤2 已花成本的画面理解，零额外 VLM 调用；
      *  无描述切片退化为纯图像语义。
      *  🎭 P0 意境维度：同步聚合帧情绪/景别为切片情绪标签（chunk.emotion/shotType），
-     *  供 daemon 做"文案情绪↔画面情绪"匹配（文案段落 emotion 来自步骤3 LLM 生成，帧 emotion 来自步骤2 VLM 结构化输出）。 */
-    const frameDescs: { timeMs: number; description: string; emotion?: string; shotType?: string; characters?: string[] }[] = (task.frameDescriptions || []).map((f: any) => {
+     *  供 daemon 做"文案情绪↔画面情绪"匹配（文案段落 emotion 来自步骤3 LLM 生成，帧 emotion 来自步骤2 VLM 结构化输出）。
+     *  🎬 P0 OP/ED：先平移 frameDescs.timeMs -= trimStartMs，再删除 OP/ED 区间外的帧描述，
+     *     保证帧时间轴与 chunks（已平移）完全对齐，避免双指针聚合空归。 */
+    const frameDescsRaw: { timeMs: number; description: string; emotion?: string; shotType?: string; characters?: string[] }[] = (task.frameDescriptions || []).map((f: any) => {
       /** 合并角色名：VLM downstream.characters（画面中实际看到的） ∪ 人脸识别帧级锚定 f.characters
        *  双重来源取并集去重，避免任何一方缺失导致角色维度漏数据。
        *  无效占位值（"无/路人/群众"等）在步骤2 normalizeDownstreamFields 中已转 undefined，
@@ -172,7 +275,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         }
       }
       return {
-        timeMs: f.timeMs,
+        /** 🎬 P0/P1 OP/ED 裁剪：P1-1 起抽帧已按 body 窗口输出（timeMs 即 body 坐标），
+         *  这里只做负值兜底、不再减 trimStartMs，防止双重换算（历史踩坑：坐标二次平移放大错位）。 */
+        timeMs: Math.max(0, Number(f.timeMs || 0)),
         description: f.description,
         emotion: f.emotion,
         /** 🔧 P0 修复：FrameDetail 顶层无 shotType 字段，真实值在 downstream.shotType 中
@@ -182,6 +287,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         characters: mergedRoles.size > 0 ? Array.from(mergedRoles) : undefined,
       };
     });
+    /** 🎬 P0 OP/ED 结尾裁剪：trimEndMs > 0 时，删除时间轴位于「正剧终点 + 1s」之后的帧描述（避免 ED 段脏描述污染聚合）
+     *  正剧终点 = (srcDurationMs - trimStartMs - trimEndMs)，不知道 srcDurationMs 时这里不做尾裁（尾段噪声帧影响远小于 OP 段）。 */
+    const frameDescs = frameDescsRaw;
     if (frameDescs.length > 0 && chunks.length > 0) {
       /**
        * 双指针聚合帧描述到切片：sortedDescs 与 videoChunks 都按时间有序，
@@ -336,6 +444,10 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      */
     const allQueries = SemanticAnalyzeStrategy.buildMatchQueries(scriptShots, ttsDurations);
 
+    /** 🔧 P2.0 碎片 seg 前置清洗（KM 与原声定位共用同一清洗后池）：合并 <500ms 碎片到相邻 seg，
+     *  从源头降低变速超限触发概率（碎片单段天然时长不足，是重选常客）。运行时清洗，不落库。 */
+    SemanticAnalyzeStrategy.mergeFragmentSegments(matchSegments);
+
     /** 🎙️ 原声段落预匹配：文本 ↔ ASR 时间轴 → 锁定原片切片（命中的段落不送 KM，未命中回退语义匹配）
      *  🔧 P1 #7：用 promisePool（并发 8）并行化原声定位。
      *  locateOriginalClip 内部是纯 JS（文本规范化 + ASR 线性扫描 + 切片二分定位），对 CPU 很友好，
@@ -399,6 +511,10 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       // 未配置 LLM 凭据，VLM 重排不可用（低置信段保持 CLIP 匹配结果）
     }
 
+    /** 🔧 R3 取消贯通（PR-1）：taskId 唯一标识本次 KM 请求；
+     *  abort/超时时 AIDaemon 会通知 daemon /cancel/{taskId}，KM 求解循环提前退出；
+     *  retries:0 —— KM 是幂等重算任务，超时重试只会让 1000×1000 矩阵再空烧数分钟，不再无条件重试。 */
+    const kmTaskId = `${_context.projectId}-km-${Date.now()}`;
     try {
       const kmResult = await AIDaemon.getInstance().post('/api/solver/kuhn_munkres_match', {
         queries: kmQueries,
@@ -408,14 +524,14 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         candidateIds: preselect.perQueryTopK,
         bgmBeats,
         bpm: bgmBpm,
-        weights: { sem: 0.55, emotion: 0.15, duration: 0.2, role: 0.1 },
+        weights: { sem: 0.62, emotion: 0.08, duration: 0.2, role: 0.1 },
         /** 🔍 VLM 二次裁决：低置信度匹配让云端多模态 LLM 直接看候选封面图选最优 */
         ...(vlmConfig ? {
           vlmApiKey: vlmConfig.apiKey,
           vlmApiBase: vlmConfig.baseURL,
           vlmApiModel: vlmConfig.model,
         } : {}),
-      }, { timeout: 180000 });
+      }, { timeout: 180000, retries: 0, taskId: kmTaskId });
 
       onProgress(80, '匹配完成，正在整理结果...');
 
@@ -498,6 +614,13 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         return fallbackById.get(q.shotId) || SemanticAnalyzeStrategy.buildMatchResult(q, null, false);
       });
       return { matches, segments: fallback.segments, videoChunks: chunks, matchSegments, bgmBeats, originalMatchedCount: originalMatches.size };
+    } finally {
+      // 🔧 R1 模型生命周期（PR-1）：步骤5 匹配阶段结束（成功/失败/finally 兜底）后释放 daemon 常驻模型，
+      //   clip/chinese_clip/face 不再跨项目常驻（Python 侧 KM finally 已释放，此处 Node 兜底）
+      try {
+        AIDaemon.getInstance().post('/release_models', {})
+          .catch(() => { /* 释放失败静默，不影响主流程 */ });
+      } catch { /* 静默 */ }
     }
   }
 
@@ -543,6 +666,57 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       }
     }
     return segs;
+  }
+
+  /** 🔧 P2.0 碎片 seg 前置清洗：在 KM 预选与原声定位之前，将 <500ms 的碎片 seg 合并至相邻 seg（优先并入前段）。
+   *   - 碎片是 matchSegments 在场景边界切分产生的（如 400ms/440ms 尾段），单段天然时长不足，是变速超限重选的常客；
+   *   - 运行时数组原地清洗（merge 到相邻段并剔除碎片），不落库、不改 chunks_json 缓存契约，
+   *     下游 locateOriginalClip / preselectTopK / KM 自然基于同一清洗后池；
+   *   - 仅合并同 parentChunk 且物理连续（≤100ms 容差，与导出层 enrichMatchRelations 口径一致）的相邻 seg，不跨镜头合并；
+   *   - 合并后父段 durationMs 累加，语义/封面继承父段，parentChunkId 语义不变。
+   */
+  static mergeFragmentSegments(segments: any[]): void {
+    if (!Array.isArray(segments) || segments.length === 0) return;
+    const FRAGMENT_MS = 500;
+    const TIME_TOLERANCE_MS = 100;
+    const byParent = new Map<string, any[]>();
+    for (const s of segments) {
+      const pid = s?.parentChunkId;
+      if (typeof pid === 'string' && pid) {
+        if (!byParent.has(pid)) byParent.set(pid, []);
+        byParent.get(pid)!.push(s);
+      }
+    }
+    const removed = new Set<any>();
+    for (const siblings of byParent.values()) {
+      siblings.sort((a, b) => (a?.segmentIndexInParent ?? 0) - (b?.segmentIndexInParent ?? 0));
+      for (let i = 0; i < siblings.length; i++) {
+        const s = siblings[i];
+        if (!s || removed.has(s)) continue;
+        const dur = Number(s.durationMs) || (Number(s.endMs) - Number(s.startMs));
+        if (!Number.isFinite(dur) || dur >= FRAGMENT_MS) continue;
+        const prev = i > 0 ? siblings[i - 1] : null;
+        const prevEnd = prev && !removed.has(prev) ? Number(prev.endMs) : NaN;
+        if (prev && Number.isFinite(prevEnd) && Math.abs(Number(s.startMs) - prevEnd) <= TIME_TOLERANCE_MS) {
+          prev.endMs = s.endMs;
+          prev.durationMs = Number(prev.endMs) - Number(prev.startMs);
+          removed.add(s);
+          continue;
+        }
+        const next = i + 1 < siblings.length ? siblings[i + 1] : null;
+        const nextStart = next && !removed.has(next) ? Number(next.startMs) : NaN;
+        if (next && Number.isFinite(nextStart) && Math.abs(nextStart - Number(s.endMs)) <= TIME_TOLERANCE_MS) {
+          next.startMs = s.startMs;
+          next.durationMs = Number(next.endMs) - Number(next.startMs);
+          removed.add(s);
+        }
+      }
+    }
+    if (removed.size === 0) return;
+    for (let i = segments.length - 1; i >= 0; i--) {
+      if (removed.has(segments[i])) segments.splice(i, 1);
+    }
+    AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] P2.0 碎片清洗：合并剔除 ${removed.size} 个 <${FRAGMENT_MS}ms 碎片 seg`);
   }
 
   /**
@@ -781,6 +955,36 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     });
   }
 
+  /** 函数级中文注释：统一归一化 scriptShot 的时间锚（startMs/durationMs），解决 8/19 项目「台词一句也对不上」的 Bug B。
+   * 数据来源有两套契约（老项目只有 start/end 秒值，新项目 Step3 会写入 startMs/durationMs 毫秒）：
+   *   1. 【真值不覆盖】若存在 startMs/durationMs（毫秒，明确字段）→ 直接四舍五入取整（不二次 ×1000）
+   *   2. 否则 fallback 到 start/end（秒字段，ASR 工具链输出）→ ×1000 转毫秒
+   *   3. 边界保护：durationMs 必须 ≥ 0；若缺失且缺 end 字段则 0 兜底 */
+  private static _resolveScriptShotTiming(shot: any): { startMs: number; durationMs: number } {
+    // 1) startMs 真值优先（毫秒）
+    let startMs: number = 0;
+    if (typeof shot?.startMs === 'number' && Number.isFinite(shot.startMs)) {
+      startMs = Math.round(shot.startMs);
+    } else if (typeof shot?.start === 'number' && Number.isFinite(shot.start)) {
+      // 2) 秒字段 → ×1000
+      startMs = Math.round(shot.start * 1000);
+    }
+
+    // 1) durationMs 真值优先（毫秒）
+    let durationMs: number = 0;
+    if (typeof shot?.durationMs === 'number' && Number.isFinite(shot.durationMs)) {
+      durationMs = Math.round(shot.durationMs);
+    } else if (typeof shot?.end === 'number' && typeof shot?.start === 'number'
+      && Number.isFinite(shot.end) && Number.isFinite(shot.start)) {
+      // 2) 有秒级起止 → 差 ×1000，且必须 ≥0
+      durationMs = Math.max(0, Math.round((shot.end - shot.start) * 1000));
+    } else if (typeof shot?.duration === 'number' && Number.isFinite(shot.duration)) {
+      // 3) 个别链路给的是 duration（秒）兜底
+      durationMs = Math.max(0, Math.round(shot.duration * 1000));
+    }
+    return { startMs, durationMs };
+  }
+
   /**
    * 构造镜头匹配的查询段落列表（纯函数，去重 AIService 与本策略的双份实现）。
    * 负责：
@@ -828,6 +1032,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       //   比例控制：text 仍占主要权重（不重复、不重写），visualIntent 作为补充 tag 追加。
       const textRaw = s.text || s.content || s.narration || '';
       const text = visualIntent.length > 0 ? `${textRaw} | ${visualIntent}` : textRaw;
+      // 🔧 修复 Bug B：之前只认 s.startMs / s.durationMs，老项目 / 只跑了 Step1 的项目只提供 start/end（秒），
+      //   导致 startMs 全部变 0，Step5 overlap 推算永远打在 0ms，匹配结果一句也对不上
+      const timing = SemanticAnalyzeStrategy._resolveScriptShotTiming(s);
       return {
         shotId,
         text,
@@ -835,8 +1042,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         emotion: s.emotion || '',
         characters: Array.isArray(s.characters) ? s.characters : [],
         visualIntent,
-        startMs: s.startMs || 0,
-        durationMs: s.durationMs || 0,
+        startMs: timing.startMs,
+        durationMs: timing.durationMs,
         keepOriginalAudio: s.keepOriginalAudio === true,
       };
     }).filter(q => (q.text.split('|')[0] || '').trim().length > 0);
@@ -889,19 +1096,86 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     const beta = opts?.beta ?? 0.45;
     const minDescCoverage = opts?.minDescCoverage ?? 0.3;
 
-    /** 保护规则①：description 覆盖率 <30%，纯时间锚信号太弱，直接跳预选 */
-    const withDesc = videoChunks.filter((c) => (c.description || '').trim().length > 0).length;
+    /* ==========================================================
+     * 🎯 修复-1 前处理：空描述 chunk 的相邻描述继承
+     *   避免 VLM 漏写描述的切片（如 chunk_004 3s 牌匾裂开）在 TF-IDF 被打成 sText=0，
+     *   直接从 top-K 预选淘汰。策略：优先找上一个有描述的邻居（画面连贯更可靠），
+     *   没有再找下一个；在临时副本上补"【继承自xxx】描述"标记，不污染上游原数据。
+     * ========================================================== */
+    const inheritedChunks = videoChunks.map((c) => ({ ...c, _inheritedDesc: false as boolean | string }));
+    for (let i = 0; i < inheritedChunks.length; i++) {
+      const cur = inheritedChunks[i];
+      if (!(cur.description || '').trim()) {
+        let donor: typeof inheritedChunks[number] | null = null;
+        for (let j = i - 1; j >= 0; j--) {
+          if ((inheritedChunks[j].description || '').trim()) { donor = inheritedChunks[j]; break; }
+        }
+        if (!donor) for (let j = i + 1; j < inheritedChunks.length; j++) {
+          if ((inheritedChunks[j].description || '').trim()) { donor = inheritedChunks[j]; break; }
+        }
+        if (donor) {
+          cur.description = `【继承自${donor.id || '相邻切片'}画面延续】${donor.description}`;
+          cur._inheritedDesc = donor.id || true;
+        }
+      }
+    }
+    const workingChunks: typeof videoChunks = inheritedChunks as any;
+
+    /* ==========================================================
+     * 🎯 修复-2 关键词精确匹配 boost 规则
+     *   对"牌匾/裂开/老字号/鼎庆楼/手指抚摸"这类强视觉实体+动作关键词，
+     *   在 Q.query 与 C.description 同时命中时给语义分加 bonus（并裁剪到 1.0），
+     *   解决 TF-IDF 因 IDF 太平均导致强信号词（如"牌匾"在整个库中出现 3 次）的
+     *   sText 只有 ~0.13，被"情绪 1.0 + 时长契合 0.95"等弱匹配抢占的问题。
+     *   单个最高 0.20×3=0.60，总和 clamp 到 0.60，避免压倒图像/CLIP 主信号。
+     * ========================================================== */
+    const KEYWORD_BOOST_PAIRS: Array<[RegExp, RegExp, number]> = [
+      // [query 侧命中, chunk 侧命中, bonus]
+      // —— 实体类（高权重：牌匾/招牌是强视觉锚点）
+      [/牌匾|招牌|匾额|老字号|鼎庆楼|门匾/, /牌匾|招牌|匾额|老字号|鼎庆楼|门匾|牌匾上|牌匾下|匾额上|匾额下/, 0.22],
+      // —— 动作类（高权重：裂开/劈开是场景核心动词）
+      [/裂|劈开|裂开|劈成|破碎|摔碎|碎裂|一劈为二|掰成|断开/, /裂|裂纹|劈开|破碎|断裂|折裂|掰开|炸|劈|裂痕|开裂/, 0.22],
+      // —— 实体+动作 组合命中（超高权重：query说"牌匾裂开"且chunk也含"牌匾+裂纹"同时出现，给double boost）
+      [/牌匾.*裂|裂.*牌匾|招牌.*裂|匾额.*裂/, /牌匾.*裂|裂.*牌匾|招牌.*裂|匾额.*裂|牌匾.*裂纹|裂纹.*牌匾/, 0.16],
+      // —— 氛围/意象类
+      [/光荣|荣耀|名声|声誉|鼎盛|辉煌|往昔|岁月/, /光荣|荣耀|辉煌|往昔|鼎盛|盛极|声誉|岁月|沧桑|旧事/, 0.10],
+      // —— 手部动作（抚摸裂纹是牌匾裂开的经典衔接镜头）
+      [/手指|抚摸|抚|触碰|摩挲|指尖|掌/, /手指|抚摸|抚|掌|手|触碰|摩挲|指尖|掌心|手背/, 0.14],
+      // —— 室内场景（饭桌/吃饭等，便于区分室内外）
+      [/饭桌|餐桌|吃饭|围坐|一桌|菜肴|碗筷|宴席|酒席/, /饭桌|餐桌|吃饭|菜肴|碗筷|围坐|一桌|茶桌|宴席|酒席|杯盏/, 0.10],
+      // —— 人物主体类
+      [/人物|老人|女子|男子|小孩|角色|身影|掌柜|伙计/, /人物|老人|女子|男子|小孩|身影|掌柜|伙计|佣人|书生/, 0.06],
+      // —— 景别类
+      [/特写|近景|中景|全景|远景|航拍/, /特写|近景|中景|全景|远景|航拍|大特写|极特写|大远景|推镜|拉镜/, 0.06],
+    ];
+    /** 关键词匹配加分：clamp 到 0.70（比原 0.60 抬高一点，让组合命中有叠加空间） */
+    const keywordMatchBoost = (qText: string, descText: string, cEmotion: string, cShotType: string, cCharacters: string[] | undefined, cKeywords: string[] | undefined): number => {
+      const q = qText || '';
+      const cAll = [descText || '', cEmotion || '', cShotType || '', Array.isArray(cCharacters) ? cCharacters.join(' ') : '', Array.isArray(cKeywords) ? cKeywords.join(' ') : ''].join(' ');
+      let bonus = 0;
+      for (const [qr, cr, b] of KEYWORD_BOOST_PAIRS) {
+        if (qr.test(q) && cr.test(cAll)) bonus += b;
+      }
+      return Math.min(bonus, 0.70);
+    };
+
+    /** 保护规则①：description 覆盖率 <30%，纯时间锚信号太弱，直接跳预选（注意这里用补完后的 workingChunks） */
+    const withDesc = workingChunks.filter((c) => (c.description || '').trim().length > 0).length;
     if (withDesc / Math.max(1, M) < minDescCoverage) {
       AppLogger.info(LOG_TAGS.AI_AGENT,
         `[preselectTopK] ${opts?.logProjectId || ''} 切片描述覆盖率=${(withDesc / M * 100).toFixed(1)}% < ${minDescCoverage * 100}%，跳过预选（保留全集 M=${M}）`);
+      // 跳过预选也返回原 videoChunks（不返回 workingChunks，避免下游感知"继承标记"）
       return fallback;
     }
 
     /** 动态 K：≥15 / ≥1.8N（KM 池子足够）/ ≥6%M，三者取最大后夹到 [15, M] */
     let K = Math.max(15, Math.ceil(N * 1.8), Math.ceil(M * 0.06));
     K = Math.min(K, M);
-    /** 小项目自动跳预选：K*1.5 ≥ M 说明没必要剪（防止剪不了几行还引入噪声） */
-    if (K * 1.5 >= M) {
+    /** 小项目自动跳预选（放松阈值 + 绝对保护）：
+     *  - K*1.2 ≥ M：比例上接近全集，剪了反而引入噪声（从1.5降到1.2，让更多中小项目跳预选）
+     *  - M ≤ 30：绝对小池，KM 算法 N³/M² 复杂度已很低，直接保留全集（防裁剪后只剩 24 个 seg 时硬被预选再砍）
+     *  两条任一触发 → 跳预选 */
+    if (K * 1.2 >= M || M <= 30) {
       return fallback;
     }
 
@@ -931,7 +1205,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       return tokens;
     };
 
-    /** TF-IDF 建 D：docs = queries + chunks；每个 doc 记录 tf Map<tok, freq> */
+    /** TF-IDF 建 D：docs = queries + workingChunks；每个 doc 记录 tf Map<tok, freq> */
     const docs: Array<{ id: string; isQuery: boolean; qIdx?: number; cIdx?: number; tf: Map<string, number>; norm?: number }> = [];
     const df = new Map<string, number>();
     const addDoc = (id: string, isQuery: boolean, text: string, qIdx?: number, cIdx?: number) => {
@@ -949,7 +1223,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       const joined = [q.text || '', q.visualIntent || '', q.emotion || ''].filter(Boolean).join(' ');
       addDoc(`q_${i}`, true, joined, i, undefined);
     });
-    videoChunks.forEach((c, i) => {
+    workingChunks.forEach((c, i) => {
       const joined = [c.description || '', c.emotion || '', c.shotType || '', Array.isArray(c.characters) ? (c.characters as string[]).join(' ') : ''].filter(Boolean).join(' ');
       addDoc(`c_${i}`, false, joined, undefined, i);
     });
@@ -984,8 +1258,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     };
 
     /* -------------------- 步骤2：视频时间线，补全 query.startMs（若前端没填 → 按 N 线性均分视频尾部） -------------------- */
-    const videoEndMs = Math.max(...videoChunks.map((c) => Number(c.endMs) || 0), 0);
-    const videoStartMs = Math.min(...videoChunks.map((c) => Number(c.startMs) || 0), 0);
+    const videoEndMs = Math.max(...workingChunks.map((c) => Number(c.endMs) || 0), 0);
+    const videoStartMs = Math.min(...workingChunks.map((c) => Number(c.startMs) || 0), 0);
     const videoSpanMs = Math.max(1, videoEndMs - videoStartMs);
     const queryStartMs = queries.map((q, i) => {
       if (q.startMs && q.startMs > 0) return q.startMs;
@@ -1013,17 +1287,29 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       const qEnd = qSt + qDur;
       const qNorm = qd.norm || 1;
       const qTf = qd.tf;
+      // 把 query 的文本（含 visualIntent/emotion）拼一次给关键词 boost 用，避免循环内重复拼
+      const qBoostText = [q.text || '', q.visualIntent || '', q.emotion || ''].filter(Boolean).join(' ');
 
       const scored: Array<{ cid: string; score: number; midMs: number }> = [];
       for (let ci = 0; ci < cDocs.length; ci++) {
         const cd = cDocs[ci];
-        const chunk = videoChunks[ci];
+        const chunk = workingChunks[ci];
         const cSt = Number(chunk.startMs) || 0;
         const cEnd = Number(chunk.endMs) || cSt;
         const cMid = (cSt + cEnd) / 2;
 
-        /** (A) 文本语义分 */
-        const sText = cosine(qTf, qNorm, cd.tf, cd.norm || 1);
+        /** (A) 文本语义分（TF-IDF cosine） */
+        let sText = cosine(qTf, qNorm, cd.tf, cd.norm || 1);
+        /** (A+) 关键词实体匹配 boost：叠加到 sText，裁剪到 1.0 */
+        const kwBonus = keywordMatchBoost(
+          qBoostText,
+          chunk.description || '',
+          chunk.emotion || '',
+          chunk.shotType || '',
+          (chunk as any).characters,
+          (chunk as any).keywords,
+        );
+        if (kwBonus > 0) sText = Math.min(1.0, sText + kwBonus);
 
         /** (B) 时间锚分：重叠越大 / 外扩 gap 越小，分数越高 */
         const overlap = Math.max(0, Math.min(qEnd, cEnd) - Math.max(qSt, cSt));
@@ -1078,7 +1364,16 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     }
 
     /* -------------------- 步骤5：按 chunk.id∈unionIds 构造 filteredChunks，顺序与原 videoChunks 一致（daemon 侧期望按 startMs 顺序） -------------------- */
-    const filteredChunks = videoChunks.filter((c) => unionIds.has(c.id));
+    // 注意：这里使用 workingChunks（带继承描述副本），目的是让后续 Python KM 的文本语义分支也能
+    //       直接用到继承后的描述。然后剥离临时的 _inheritedDesc 字段，避免下游序列化/打印噪音。
+    const filteredChunks = workingChunks
+      .filter((c: any) => unionIds.has(c.id))
+      .map((c: any) => {
+        if (!('_inheritedDesc' in c)) return c;
+        const { _inheritedDesc, ...rest } = c;
+        void _inheritedDesc;
+        return rest;
+      });
     const M1 = filteredChunks.length;
 
     AppLogger.info(LOG_TAGS.AI_AGENT,

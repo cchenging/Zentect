@@ -93,19 +93,6 @@ class ScaleByHeightFilter extends VideoFilter {
   toString(): string { return `scale=-1:${this.height}`; }
 }
 
-/**
- * 🎬 thumbnail 滤镜：自动选色彩最丰富的代表帧
- * FFmpeg 原生滤镜,分析前 N 帧的直方图,抛弃纯黑/纯白/高重复帧
- * 替代旧版"循环 N 次 captureFrameAt + sharp 算亮度"方案
- */
-class ThumbnailFilter extends VideoFilter {
-  constructor(private readonly frames: number) {
-    super();
-    if (frames <= 0) throw new Error(`[FFmpegBuilder] thumbnail frames 必须 > 0: ${frames}`);
-  }
-  toString(): string { return `thumbnail=${this.frames}`; }
-}
-
 /** 滤镜链：管理多个滤镜的有序组合 */
 class FilterChain {
   private readonly filters: VideoFilter[] = [];
@@ -267,52 +254,6 @@ export function buildCoverCommand(config: CoverConfig): string[] {
   builder.framesV(1);
 
   const chain = new FilterChain();
-  chain.add(new ScaleByHeightFilter(scaleHeight));
-  builder.videoFilter(chain);
-
-  builder.qualityJpeg(jpgQuality);
-  builder.output(outputPath);
-
-  return builder.build();
-}
-
-/**
- * 🎬 构建 thumbnail 滤镜封面生成命令
- *
- * 用 FFmpeg 原生 thumbnail 滤镜替代手撸循环截图:
- * - thumbnail 滤镜分析前 N 帧的色彩直方图,自动抛弃纯黑/纯白/高重复帧
- * - 选出色彩最丰富的代表帧,一次调用完成(0.5-2s)
- * - 旧版循环 N 次 captureFrameAt + sharp 算亮度:10分钟视频 240 帧 ≈ 48s
- *
- * @param videoPath 输入视频
- * @param outputPath 输出封面路径
- * @param frames     thumbnail 滤镜扫描帧数(默认 100,约 3-4 秒内容)
- * @param scaleHeight 缩放高度(默认 360)
- * @param jpgQuality  JPEG 质量(1-31,默认 2 高质量)
- */
-export function buildThumbnailCoverCommand(config: {
-  videoPath: string;
-  outputPath: string;
-  frames?: number;
-  scaleHeight?: number;
-  jpgQuality?: number;
-}): string[] {
-  const {
-    videoPath, outputPath,
-    frames = 100,
-    scaleHeight = 360,
-    jpgQuality = 2,
-  } = config;
-
-  const builder = FFmpegCommandBuilder.create();
-
-  builder.overwrite();
-  builder.input(videoPath);
-  builder.framesV(1);
-
-  // thumbnail 滤镜 + 缩放链:先选最佳帧再缩放,减少缩放开销
-  const chain = new FilterChain();
-  chain.add(new ThumbnailFilter(frames));
   chain.add(new ScaleByHeightFilter(scaleHeight));
   builder.videoFilter(chain);
 

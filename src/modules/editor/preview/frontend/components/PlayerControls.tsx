@@ -52,20 +52,50 @@ export const PlayerControls: React.FC = () => {
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(80);
 
+  /**
+   * 音量滑块变更：
+   *  ① 同步 volume 值（用户拖动滑块时的百分比）
+   *  ② 用户将滑块从 0 拖回非 0 → 自动取消静音
+   *  ③ 同步到真实 <video>/<audio> 元素（volume + muted 都正确设置，避免视频 muted=true 覆盖 volume）
+   */
   const handleVolumeChange = (value: number[]) => {
     if (!value || value.length === 0) return;
-    const v = value[0];
+    const v = Math.max(0, Math.min(100, Number(value[0]) || 0));
     setVolume(v);
-    setIsMuted(v === 0);
-    const videoEl = document.querySelector('video') as HTMLVideoElement | null;
-    if (videoEl) videoEl.volume = v / 100;
+    // 滑块从 0 → 非 0：自动解除静音
+    if (v > 0 && isMuted) setIsMuted(false);
+    // 滑块拖到 0：静音状态自动跟随
+    if (v === 0 && !isMuted) setIsMuted(true);
+    // 同步所有媒体元素（video + audio 都要，因为可能在播放音频）
+    const mediaEls = Array.from(
+      document.querySelectorAll<HTMLMediaElement>('video, audio')
+    );
+    for (const el of mediaEls) {
+      try {
+        el.volume = v / 100;
+        el.muted = v === 0;
+      } catch { /* ignore */ }
+    }
   };
 
+  /**
+   * 图标点击切换静音：记住原 volume 值，静音不改 volume，取消静音恢复原 volume（行业标准）
+   */
   const handleMuteToggle = () => {
-    const newMuted = !isMuted;
-    setIsMuted(newMuted);
-    const videoEl = document.querySelector('video') as HTMLVideoElement | null;
-    if (videoEl) videoEl.muted = newMuted;
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+    // 如果从 "静音 → 取消静音" 且 volume=0（用户之前把滑块拖到 0），给个保底默认 50%，保证用户点图标能出声
+    if (!nextMuted && volume === 0) setVolume(50);
+    const applyVol = (!nextMuted ? (volume === 0 ? 50 : volume) : volume) / 100;
+    const mediaEls = Array.from(
+      document.querySelectorAll<HTMLMediaElement>('video, audio')
+    );
+    for (const el of mediaEls) {
+      try {
+        el.volume = applyVol;
+        el.muted = nextMuted;
+      } catch { /* ignore */ }
+    }
   };
 
   useEffect(() => {
@@ -130,17 +160,18 @@ export const PlayerControls: React.FC = () => {
       </div>
 
       <div className="shrink-0 flex items-center justify-center gap-0.5">
-        {/* ⏪ 快退 3s */}
+        {/* ⏪ 快退 3s：与其他按钮统一尺寸 w-8 h-8，图标 size 14（与全屏/比例图标一致） */}
         <Button
           variant="ghost"
           size="icon"
           onClick={handleSkipBack}
-          className="w-7 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted transition-colors"
+          className="w-8 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted transition-colors"
           title="快退 3 秒"
         >
-          <SkipBack size={13} />
+          <SkipBack size={14} />
         </Button>
 
+        {/* ▶️ 主播放按钮：突出一级（图标 16px + 焦点环 + active 缩放），但容器仍与其他按钮同高 w-8 h-8 保持顶底对齐 */}
         <Button
           variant="ghost"
           size="icon"
@@ -150,15 +181,15 @@ export const PlayerControls: React.FC = () => {
           {isPlaying ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" className="ml-0.5" />}
         </Button>
 
-        {/* ⏩ 快进 3s */}
+        {/* ⏩ 快进 3s：与其他按钮统一尺寸 w-8 h-8，图标 size 14 */}
         <Button
           variant="ghost"
           size="icon"
           onClick={handleSkipForward}
-          className="w-7 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted transition-colors"
+          className="w-8 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted transition-colors"
           title="快进 3 秒"
         >
-          <SkipForward size={13} />
+          <SkipForward size={14} />
         </Button>
       </div>
 
@@ -172,7 +203,7 @@ export const PlayerControls: React.FC = () => {
       <Popover>
         <PopoverTrigger asChild>
           <Button variant="ghost" size="icon" className="w-8 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted data-[state=open]:bg-muted transition-colors" title={t.editor?.tooltip_zoom || '缩放'}>
-            <ZoomIn size={16} />
+            <ZoomIn size={14} />
           </Button>
         </PopoverTrigger>
         <PopoverContent align="end" sideOffset={8} className="w-[200px] p-4 z-50 flex flex-col gap-4 bg-[var(--bg-tertiary)] border-[var(--border-default)]">
@@ -208,9 +239,21 @@ export const PlayerControls: React.FC = () => {
 
       <div className="w-[1px] h-4 bg-[var(--border-default)] mx-1" />
 
+      {/*
+        🔊 音量区域（根本设计修正：不常驻占宽 → 初始化窄屏 100% 不遮挡）：
+          · 外层只占 32px 图标宽度 → 右侧工具栏总宽从 282px → 收缩到 158px（缩放 32 + 分隔 10 + 比例 32 + 分隔 10 + 音量 32 + 分隔 10 + 全屏 32 = 158px）
+          · 点击图标 → 弹出 Popover（滑块面板），不再误触发静音（拆分交互：触发 Popover vs 切静音是两个独立动作）
+          · Popover 面板内包含 3 件事：① 静音切换按钮（明确动作） ② 音量数值 ③ 拖动滑块
+      */}
       <Popover>
         <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon" onClick={handleMuteToggle} className="w-8 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted transition-colors">
+          {/* ⚠️ 这里故意不写 onClick={handleMuteToggle}！点图标 = 打开滑块面板，不会静音。彻底解决"点图标调大小被静音" */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="w-8 h-8 shrink-0 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted data-[state=open]:bg-muted transition-colors"
+            title={`音量: ${isMuted ? '已静音' : `${volume}%`}（点击调节）`}
+          >
             {isMuted || volume === 0 ? (
               <VolumeX size={16} className="text-[var(--text-secondary)]" />
             ) : volume <= 33 ? (
@@ -222,18 +265,37 @@ export const PlayerControls: React.FC = () => {
             )}
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="end" sideOffset={8} className="w-[140px] p-3 z-50 flex flex-col gap-2 bg-[var(--bg-tertiary)] border-[var(--border-default)]">
-          <div className="flex justify-between items-center">
-            <span className="text-[var(--foreground)] text-[12px] font-medium">音量</span>
-            <span className="font-mono text-[12px] text-[var(--muted-foreground)]">{isMuted ? '0' : volume}%</span>
+        <PopoverContent align="end" sideOffset={8} className="w-[200px] p-3 z-50 flex flex-col gap-3 bg-[var(--bg-tertiary)] border-[var(--border-default)]">
+          <div className="flex items-center justify-between gap-2">
+            {/* ✅ 静音切换放在 Popover 里面（用户明确点这个按钮才切静音，不会误触） */}
+            <Button
+              variant={isMuted ? "default" : "outline"}
+              size="sm"
+              onClick={handleMuteToggle}
+              className={`h-8 px-2.5 text-[12px] gap-1 flex items-center justify-center ${isMuted ? 'bg-primary text-primary-foreground' : 'bg-black/40 text-[var(--muted-foreground)] border-[var(--border-default)] hover:bg-muted hover:text-[var(--foreground)]'}`}
+            >
+              {isMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+              <span>{isMuted ? '已静音' : '静音'}</span>
+            </Button>
+            <span className="font-mono text-[12px] text-[var(--muted-foreground)] bg-black/40 border border-[var(--border-default)] px-1.5 py-0.5 rounded">
+              {isMuted ? '0' : volume}%
+            </span>
           </div>
-          <Slider value={[isMuted ? 0 : volume]} min={0} max={100} step={1} onValueChange={handleVolumeChange} className="w-full cursor-pointer" />
+          <Slider
+            value={[isMuted ? 0 : volume]}
+            min={0}
+            max={100}
+            step={1}
+            onValueChange={handleVolumeChange}
+            className="w-full cursor-pointer"
+          />
         </PopoverContent>
       </Popover>
 
       <div className="w-[1px] h-4 bg-[var(--border-default)] mx-1" />
 
-      <Button variant="ghost" size="icon" onClick={handleFullscreen} className="w-8 h-8 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted transition-colors" title={t.editor?.tooltip_fullscreen || '全屏'}>
+      {/* ⛶ 全屏按钮：shrink-0 保证再窄屏也不被 flex 挤掉（用户看不见以为"搞丢了"） */}
+      <Button variant="ghost" size="icon" onClick={handleFullscreen} className="w-8 h-8 shrink-0 rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] hover:bg-muted transition-colors" title={t.editor?.tooltip_fullscreen || '全屏'}>
         <Maximize size={14} />
       </Button>
     </div>

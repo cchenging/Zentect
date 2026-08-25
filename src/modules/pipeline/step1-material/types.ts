@@ -31,6 +31,17 @@ export interface Step1Config {
   audio: AudioConfig;
   whisper: WhisperConfig;
   faces: FacesConfig;
+  /**
+   * 🎬 P0 · OP/ED 片头片尾裁剪（电视剧/综艺节目场景，用户手动指定正片区间）
+   *  - 传 defaultTrimStartMs / defaultTrimEndMs = 项目全局默认 OP/ED 裁剪（毫秒）
+   *  - 传 perMedia[mediaId].trimStartMs = 单素材级精确覆盖（多素材项目每集可不同）
+   *  - 时间轴语义：正剧起点 = 原片时间 startMs / 正剧终点 = 原片时间 (总时长 - endMs)
+   */
+  mediaTrim?: {
+    defaultTrimStartMs?: number;
+    defaultTrimEndMs?: number;
+    perMedia?: Record<string, { trimStartMs?: number; trimEndMs?: number }>;
+  };
 }
 
 /** 抽帧配置（P0 契约收拢：mode 2 值 + 抽帧密度预设 frameDensityPreset）
@@ -71,8 +82,8 @@ export interface AudioConfig {
 /** ASR 引擎配置 */
 export interface WhisperConfig {
   enabled: boolean;
-  /** ASR 引擎：'sensevoice'(中文) | 'faster-whisper'(英文)，显式二选一，不再自动检测 */
-  engine: 'sensevoice' | 'faster-whisper';
+  /** ASR 引擎：'sensevoice'(中文) | 'faster-whisper'(英文) | 'paraformer'(高精度中文)，显式指定，不再自动检测 */
+  engine: 'sensevoice' | 'faster-whisper' | 'paraformer';
   language?: string;
   /** 🔧 去硬编码：faster-whisper 模型大小（tiny/base/small/medium/large-v3），默认 large-v3 精度最高 */
   modelSize?: string;
@@ -118,6 +129,8 @@ export interface StepMaterialAnalysisViewProps {
     framePaths?: string[];
   } | null;
   onUpdateAsrLine: (index: number, text: string) => void;
+  /** 🗑 删除指定下标台词行（纠错：移除误识别/杂音条目） */
+  onRemoveAsrLine: (index: number) => void;
   onSetAsrLines: (lines: AsrLine[]) => void;
   onSetCurrentTime: (time: number) => void;
   onSetActivePlaySource: (source: MediaItem | null) => void;

@@ -7,8 +7,12 @@ import { Badge, StatusIcon, StatHeader, EmptyState, CollapsibleCard } from "@ren
 import { FrameExtractConfig } from "./components/FrameExtractConfig";
 import { AudioSeparationConfig } from "./components/AudioSeparationConfig";
 import { ASRConfig } from "./components/ASRConfig";
+// 🎬 OP/ED 片头片尾裁剪（P1 音视频启发/P2 指纹/P3 VLM 4 级落地总成）
+import { OpEdTrimConfig } from "./components/OpEdTrimConfig";
+import { useStep1Store } from "@modules/pipeline/stores/useStep1Store";
 import { useI18n } from "@renderer/store/useI18n";
 import { usePlayerStore } from "@modules/editor/stores/usePlayerStore";
+import { useProjectStore } from "@modules/editor/stores/useProjectStore";
 import type { AsrLine } from "../../../../shared/types/entities/editor";
 import type { SubStepTiming } from "../../../../renderer/src/store/usePipelineStore";
 import type { StepMaterialAnalysisViewProps } from "../types";
@@ -163,13 +167,43 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
     asrLines, frameCount, vocalsIsFallback, mediaItems, roles,
     subStepStatuses, subStepProgresses, subStepTimings,
     onUpdateAsrLine, onSetAsrLines, onSetCurrentTime, onSetActivePlaySource,
-    onUpdateRole, onMergeRoles, onUnmergeRole, onDeleteRole, onRetrySubStep, onAbortSubStep,
+    onUpdateRole, onMergeRoles, onUnmergeRole, onDeleteRole, onRemoveAsrLine, onRetrySubStep, onAbortSubStep,
   } = props;
 
   const [expandedSubSteps, setExpandedSubSteps] = useState<Record<string, boolean>>({
-    frames: true, audio: false, whisper: false, faces: false,
+    frames: true, audio: false, whisper: false, faces: false, oped: true,
   });
   const toggleSubStep = (key: string) => setExpandedSubSteps((prev) => ({ ...prev, [key]: !prev[key] }));
+
+  /**
+   * 🎬 OP/ED 配置用：
+   *   ① projectId 取 useProjectStore（step1 专属 store 不存 projectId），兼容旧项目即使 store 字段名不同的情况
+   *   ② 视频素材：优先 m.type==='video'（最新 MediaItem），找不到则按扩展名兜底识别常见视频格式，最后退化取 mediaItems[0]（旧项目兼容）
+   */
+  const storeProjectId = useProjectStore((s) => s.projectId);
+  const step1ProjectIdFallback: string | undefined = useStep1Store((s) =>
+    (s as any).projectId || (s as any).project_id || (s as any).currentProjectId || (s as any).current_project_id
+  );
+  const opedProjectId: string | undefined = storeProjectId || step1ProjectIdFallback;
+  const videoItems = useMemo(() => {
+    const VIDEO_EXTS = new Set(['.mp4', '.mov', '.mkv', '.avi', '.m4v', '.flv', '.wmv', '.ts', '.webm', '.mpg', '.mpeg', '.3gp', '.mts', '.m2ts']);
+    const isVideoExt = (name?: string) => {
+      if (!name) return false;
+      const ext = name.split('.').pop()?.toLowerCase();
+      return !!ext && VIDEO_EXTS.has(`.${ext}`);
+    };
+    // 1) type 严格等于 video
+    const strict = mediaItems.filter((m) => (m.type as any) === 'video');
+    if (strict.length > 0) return strict;
+    // 2) 兼容：video_chunk 或 frame 但其实是父视频（只要扩展名是视频就视为可裁剪视频素材）
+    const byExt = mediaItems.filter((m) => isVideoExt(m.filePath) || isVideoExt(m.name) || isVideoExt((m as any).fileName));
+    if (byExt.length > 0) return byExt;
+    // 3) 退化：把所有非音频类型都算上，最后取第一项
+    const fallback = mediaItems.filter((m) => m.type !== 'audio');
+    return fallback;
+  }, [mediaItems]);
+  const firstVideo = videoItems[0] || mediaItems[0] || null;
+  const opedSetIsRunning = (subStepStatuses.frames || subStepStatuses.audio || subStepStatuses.whisper || subStepStatuses.faces) === "running";
 
   /** 🎬 自动联动：订阅播放器当前时间，用于高亮当前播放的台词并滚动到可见区域 */
   const playerCurrentTime = usePlayerStore((s) => s.currentTime);
@@ -235,20 +269,38 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
     onUpdateRole(role.id, { tier: next });
   };
 
-  const parseTime = (timeStr: string): number => {
-    if (!timeStr) return 0;
+  /** 🕐 解析时间：兼容 "mm:ss" / "hh:mm:ss" 字符串与纯秒数字（ASR 行 start 字段历史形态不统一，防御性兜底） */
+  const parseTime = (timeStr: string | number): number => {
+    if (timeStr === undefined || timeStr === null || timeStr === '') return 0;
+    if (typeof timeStr === 'number') return isFinite(timeStr) ? timeStr : 0;
     const parts = timeStr.split(":");
     return parts.length >= 2 ? parseInt(parts[0], 10) * 60 + parseFloat(parts[1]) : parseFloat(timeStr) || 0;
   };
 
+  /** 🎞 帧率：优先取视频素材真实 fps（ffprobe r_frame_rate，如 23.976/25/30/50/60），缺失或非法时回退固定 30fps */
+  const ASR_TC_FPS = (() => {
+    const fps = firstVideo?.fps;
+    return fps && Number.isFinite(fps) && fps > 0 ? fps : 30;
+  })();
+  /**
+   * 🕐 台词时间显示：毫秒 → **HH:MM:SS:FF（时:分:秒:帧）4 段式 SMPTE 时间码**
+   * 帧号按素材真实帧率计算（非整数帧率如 23.976 会向下取整到当前帧）：
+   *   0ms        → "00:00:00:00"
+   *   65_300ms   → "00:01:05:09"  （30fps 下 0.3s×30=第9帧；60fps 下 0.3s×60=第18帧）
+   *   85_000ms   → "00:01:25:00"
+   */
   const formatAsrTime = (line: AsrLine): string => {
-    if (line.startMs !== undefined) {
-      const totalSec = Math.floor(line.startMs / 1000);
-      const m = Math.floor(totalSec / 60);
-      const s = totalSec % 60;
-      return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    let ms = line.startMs;
+    if (ms === undefined) {
+      ms = Math.round(parseTime(line.start) * 1000) || 0;
     }
-    return line.start || "00:00";
+    if (!ms || ms <= 0) return '00:00:00:00';
+    const sec = ms / 1000;
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    const f = Math.floor((sec % 1) * ASR_TC_FPS);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}:${String(f).padStart(2, '0')}`;
   };
 
   const toggleEditing = (idx: number, editing: boolean) => {
@@ -272,6 +324,78 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
 
   return (
     <div className="flex flex-col gap-1">
+      {/* 0. OP/ED 片头片尾裁剪（P1 音视频启发/P2 指纹/P3 VLM 4 级落地总成） */}
+      <CollapsibleCard
+        expanded={expandedSubSteps.oped}
+        onExpandedChange={() => toggleSubStep("oped")}
+        title={
+          <div className="flex flex-col items-start gap-0.5">
+            <div className="flex items-center gap-2">
+              <GitMerge size={16} className="text-purple-600 shrink-0" />
+              <span className="font-medium">OP/ED 片头片尾裁剪</span>
+              <Badge variant="default" className="text-[11px] leading-[18px] px-1.5 py-0 normal-case rounded">
+                4 级落地：手动锁 {">"} 黑场静音 {"<"} 指纹对齐 {"<"} VLM 分类
+              </Badge>
+            </div>
+            <span className="text-[12px] text-muted-foreground leading-[18px]">
+              自动 / 手动去除片头曲(OP)与片尾曲(ED)，避免 Whisper 将片头曲幻听为台词并修正时间轴错位
+            </span>
+          </div>
+        }
+        extra={
+          <div className="flex items-center gap-1.5">
+            {opedSetIsRunning ? (
+              <div className="flex items-center gap-1">
+                <StatusIcon status="running" size={14} />
+                <span className="text-[12px] text-muted-foreground">子任务运行中，检测可后台进行</span>
+              </div>
+            ) : null}
+            {opedProjectId && firstVideo ? (
+              <div className="flex items-center gap-1">
+                <StatusIcon status="completed" size={14} />
+                <span className="text-[12px] text-muted-foreground">就绪</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1">
+                <StatusIcon status="warning" size={14} />
+                <span className="text-[12px] text-muted-foreground">
+                  {!opedProjectId ? '缺少项目' : !firstVideo ? '缺少视频素材' : '缺少项目或视频素材'}
+                </span>
+              </div>
+            )}
+          </div>
+        }
+      >
+        {(!opedProjectId || !firstVideo) ? (
+          <EmptyState
+            title="缺少可用上下文"
+            description={
+              !opedProjectId
+                ? "当前项目未初始化（projectId 为空），无法读取 OP/ED 裁剪配置。请先打开一个项目。"
+                : "当前项目没有可识别的视频类型素材。OP/ED 裁剪仅针对视频素材生效，请先导入视频。"
+            }
+          />
+        ) : (
+          <OpEdTrimConfig
+            projectId={opedProjectId}
+            mediaId={firstVideo.id}
+            mediaName={firstVideo.name || firstVideo.fileName || `素材 ${firstVideo.id.slice(0, 8)}`}
+            durationMs={firstVideo.duration ? Math.round(Number(firstVideo.duration) * 1000) : 0}
+            sourcePath={firstVideo.filePath || ""}
+            onJumpVideoMs={(ms) => {
+              try {
+                // 🔧 与 Container.seekTo 对齐：只写 currentTime 只更新进度条 state，
+                // 必须同时写 manualSeekTime 让 VideoCanvas 真正 seek 媒体到目标位置。
+                const t = Math.max(0, Number(ms) / 1000);
+                usePlayerStore.setState({ currentTime: t, manualSeekTime: t });
+              } catch (e) {
+                // ignore
+              }
+            }}
+          />
+        )}
+      </CollapsibleCard>
+
       {/* 1. 关键帧提取 */}
       <CollapsibleCard expanded={expandedSubSteps.frames} onExpandedChange={() => toggleSubStep("frames")}
         title={<><StatusIcon status={framesStatus === "idle" ? "pending" : framesStatus} /><span className={`text-[14px] font-semibold ${framesStatus === "completed" ? "text-accent-green" : framesStatus === "failed" ? "text-accent-rose" : ""}`}>{t["editor.step1.frames.title"]}</span></>}
@@ -349,7 +473,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
               return (
                 <div key={idx} ref={(el) => { asrRowRefs.current[idx] = el; }}
                   className={`flex items-center gap-2 px-3 py-2 border-b border-border/10 last:border-0 group ${isModified ? "bg-accent/5 border-l-2 border-l-accent-rose" : ""} ${isActive ? "bg-accent/15 border-l-2 border-l-accent" : ""}`}>
-                  <span className={`text-[13px] font-mono shrink-0 w-12 ${isActive ? "text-accent font-semibold" : "text-accent"}`}>{formatAsrTime(line)}</span>
+                  <span className={`text-[13px] font-mono shrink-0 w-24 ${isActive ? "text-accent font-semibold" : "text-accent"}`}>{formatAsrTime(line)}</span>
                   {line.editing ? (
                     <input value={line.text} onChange={(e) => onUpdateAsrLine(idx, e.target.value)} onBlur={() => toggleEditing(idx, false)} onKeyDown={(e) => { if (e.key === "Enter") toggleEditing(idx, false); }} className="flex-1 text-[13px] bg-bg-secondary px-2 py-1 rounded border border-accent/30 outline-none" autoFocus />
                   ) : (
@@ -360,6 +484,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
                     <button onClick={() => onSetCurrentTime(line.startMs !== undefined ? line.startMs / 1000 : parseTime(line.start))} className="text-muted-foreground hover:text-accent-green transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="跳转"><Play size={12} /></button>
                     {isModified && <button onClick={() => onUpdateAsrLine(idx, line.originalText || "")} className="text-muted-foreground hover:text-accent transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="还原"><UndoDot size={12} /></button>}
                     <button onClick={() => toggleEditing(idx, true)} className="text-muted-foreground hover:text-accent transition-colors cursor-pointer opacity-0 group-hover:opacity-100"><Edit3 size={12} /></button>
+                    <button onClick={() => onRemoveAsrLine(idx)} className="text-muted-foreground hover:text-accent-rose transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="删除该条台词"><Trash2 size={12} /></button>
                   </div>
                 </div>
               );

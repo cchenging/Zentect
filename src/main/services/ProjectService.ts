@@ -10,6 +10,7 @@ import { SQLiteConnection } from '../database/core/SQLiteConnection';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { assembleProjectPayload } from './ProjectPayloadAssembler';
+import { cleanupMediaCaches } from '../engine/utils/TrimmedSourceResolver';
 import * as fsSync from 'fs';
 
 export class ProjectService {
@@ -293,6 +294,16 @@ export class ProjectService {
   public async deleteProject(id: string): Promise<void> {
     // 先获取真实物理目录（可能在改名后不再是 {root}/{id}）
     const realDir = PathManager.getProjectDir(id);
+    // 🧹 级联清理 .trim_cache：仅清「源文件已不存在」的孤儿缓存，共享媒体缓存保留
+    try {
+      const assets = this.repo.getAllMediaAssets(id);
+      const toClean = assets
+        .map((a) => ({ id: a.id, filePath: this.resolveMediaRealPath(id, a.file_path) }))
+        .filter((a) => a.filePath);
+      if (toClean.length) await cleanupMediaCaches(toClean);
+    } catch (e) {
+      // 清理失败不影响项目删除主流程
+    }
     this.repo.delete(id);
     PathManager.clearProjectDirCache(id);
     try {
@@ -300,6 +311,17 @@ export class ProjectService {
     } catch (e) {
       // 目录不存在，跳过
     }
+  }
+
+  /** magic:// 或相对路径 → 项目目录下的真实绝对路径 */
+  private resolveMediaRealPath(projectId: string, filePath: string): string {
+    if (!filePath) return '';
+    const projectDir = PathManager.getProjectDir(projectId);
+    if (filePath.startsWith('magic://')) {
+      return path.join(projectDir, filePath.replace(/^magic:\/\/[^/]+\//, ''));
+    }
+    if (path.isAbsolute(filePath)) return filePath;
+    return path.join(projectDir, filePath);
   }
 
   // 💥 改名时：查重自动后缀 + 物理目录跟随改名 + DB path + 缓存全同步

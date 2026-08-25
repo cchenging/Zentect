@@ -117,7 +117,41 @@ export interface TaskProgressPayload {
  * 5. 其他原有类型保持兼容
  */
 export interface Project { id: string; name: string; createdAt: number; updatedAt: number; cover?: string; }
-export interface Shot { id: string; mediaId: string; imagePath: string; text: string; originalText?: string; visionText?: string; start: number; end: number; duration: number; linkedRoleId?: string; audioPath?: string; ttsText?: string; aiText?: string; audioDuration?: number; audioEmotion?: string; contextFrames?: string[]; roleId?: string; originalRoleId?: string; matchedStart?: number; coverPath?: string; reasoning?: string; characters?: any[]; camera?: string; alignStrategy?: string; type?: string; filePath?: string; pipelineStatus?: string; scriptPayload?: any; }
+export interface Shot {
+  id: string;
+  mediaId: string;
+  imagePath: string;
+  text: string;
+  originalText?: string;
+  visionText?: string;
+  /**
+   * 坐标系契约（模式 A）：start / end 一律为【源坐标】（源时间轴绝对位置，秒）。
+   * OP/ED 裁剪后 body 坐标（正剧段内 0 起）仅管线内部瞬时存在，落库/导出前必须经
+   * toSource 还原；读取消费方如需 body 坐标自行 toBody。禁止混存两种坐标系。
+   */
+  start: number;
+  end: number;
+  duration: number;
+  linkedRoleId?: string;
+  audioPath?: string;
+  ttsText?: string;
+  aiText?: string;
+  audioDuration?: number;
+  audioEmotion?: string;
+  contextFrames?: string[];
+  roleId?: string;
+  originalRoleId?: string;
+  matchedStart?: number;
+  coverPath?: string;
+  reasoning?: string;
+  characters?: any[];
+  camera?: string;
+  alignStrategy?: string;
+  type?: string;
+  filePath?: string;
+  pipelineStatus?: string;
+  scriptPayload?: any;
+}
 export interface Role { id: string; systemId?: string; name: string; avatar?: string; mergedRoles?: Role[]; pronoun?: string; description?: string; voiceId?: string; mediaId?: string; }
 
 export type UnifiedTaskStatus = typeof DICT.TASK_STATUS[keyof typeof DICT.TASK_STATUS];

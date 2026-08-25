@@ -82,7 +82,9 @@ export class AudioProcessor {
   public static async extractHQAudio(
     inputPath: string,
     outputPath: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    inPoint?: number,
+    outPoint?: number
   ): Promise<boolean | string> {
     const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
     if (!fs.existsSync(ffmpegExe) || !fs.existsSync(inputPath)) {
@@ -93,7 +95,12 @@ export class AudioProcessor {
     if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
     // 44.1kHz 立体声 PCM，匹配 Demucs/MDX-Net 模型期望
-    const args = ['-y', '-i', inputPath, '-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2', outputPath];
+    // 🎬 P1-2 OP/ED 源头裁剪：inPoint/outPoint 为【源坐标】秒，-ss/-to 放 -i 后（output seek），
+    //   只提取正剧段（body 窗口），分离/降采样全部在 body 段上进行，产物时间轴从 0 起（body 坐标）。
+    const args: string[] = ['-y', '-i', inputPath];
+    if (inPoint !== undefined) args.push('-ss', inPoint.toString());
+    if (outPoint !== undefined) args.push('-to', outPoint.toString());
+    args.push('-vn', '-acodec', 'pcm_s16le', '-ar', '44100', '-ac', '2', outputPath);
 
     return new Promise((resolve) => {
       const child = spawn(ffmpegExe, args, { windowsHide: true });
@@ -225,6 +232,9 @@ export class AudioProcessor {
       skipSeparation?: boolean;
       engine?: 'demucs' | 'mdx';
       onProgress?: (pct: number, msg: string) => void;
+      /** 🎬 P1-2 OP/ED 源头裁剪：源坐标秒，只分离/降采样正剧段（body 窗口） */
+      trimStartSec?: number;
+      trimEndSec?: number;
     }
   ): Promise<{
     asrAudioPath: string | undefined;
@@ -242,8 +252,12 @@ export class AudioProcessor {
     const onProgress = options?.onProgress;
 
     // 步骤1：提取 44.1kHz stereo（分离引擎输入，也是后续降采样的源头）
+    // 🎬 P1-2：有裁剪时只提取正剧段（body 窗口），分离/降采样只在 body 段上进行
     onProgress?.(5, '正在提取音频...');
-    const hqResult = await AudioProcessor.extractHQAudio(mediaPath, hqPath, signal);
+    const hqResult = await AudioProcessor.extractHQAudio(
+      mediaPath, hqPath, signal,
+      options?.trimStartSec, options?.trimEndSec
+    );
     if (!hqResult) {
       AppLogger.warn('AudioProcessor', `无有效音轨或 HQ 提取失败: ${mediaPath}`);
       return { asrAudioPath: undefined, vocalsPath: undefined, bgmPath: undefined, isFallback: false, hasAudio: false };

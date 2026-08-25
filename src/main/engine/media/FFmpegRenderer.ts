@@ -216,9 +216,11 @@ export class FFmpegRenderer {
           return;
         }
 
-        /** 刚性毫秒轴裁剪控制：利用 -ss 与 -to 精准定位原始长视频流的动态区间 */
-        const startSec = (chunk.startMs / 1000).toFixed(3);
-        const endSec = (chunk.endMs / 1000).toFixed(3);
+        /** 刚性毫秒轴裁剪控制：利用 -ss 与 -to 精准定位原始长视频流的动态区间。
+         *  源视频定位用【源坐标】（缺陷 D1 修复）：优先 AIService 回写的
+         *  videoTimelineStartMs/EndMs；回退 chunkData.startMs/endMs（无 OP/ED 裁剪时 body==source 等价安全）。 */
+        const startSec = ((match.videoTimelineStartMs ?? chunk?.startMs ?? 0) / 1000).toFixed(3);
+        const endSec = ((match.videoTimelineEndMs ?? chunk?.endMs ?? 0) / 1000).toFixed(3);
 
         /** 每个镜头作为独立输入流 */
         inputArgs.push('-ss', startSec, '-to', endSec, '-i', sourceVideoPath);
@@ -292,13 +294,12 @@ export class FFmpegRenderer {
       const speedFactor = shot.speedFactor || 1.0;
       const needsReencode = speedFactor !== 1.0;
 
-      /** 优先使用 chunkData 的毫秒级时间戳，否则回退到 startTime/endTime（秒） */
-      const startSec = shot.chunkData?.startMs != null
-        ? shot.chunkData.startMs / 1000
-        : shot.startTime;
-      const endSec = shot.chunkData?.endMs != null
-        ? shot.chunkData.endMs / 1000
-        : shot.endTime;
+      /** 源视频定位必须用【源坐标】（缺陷 D1 修复）：
+       *  - shot.startTime/endTime 由装配器统一为源视频坐标（秒），对 mediaPath 做 -ss/-t 定位唯一正确；
+       *  - shot.chunkData.startMs/endMs 是 body 切片内坐标（OP/ED 裁剪后与源坐标相差 offset），
+       *    只能配 chunkData.filePath 切片素材消费，禁止用于对源视频定位。 */
+      const startSec = shot.startTime;
+      const endSec = shot.endTime;
       const duration = endSec - startSec;
       if (duration <= 0) continue;
 
@@ -518,6 +519,7 @@ export class FFmpegRenderer {
       const safeArgs = args.filter(a => a !== undefined && a !== null).map(String);
       const child = spawn(this.ffmpegExe, safeArgs, { windowsHide: true });
       this.activeChild = child; // 记录引用，abort 时可 kill
+      ProcessManager.setBackground(child.pid ?? 0); // 🔧 R8（PR-3）：渲染 ffmpeg 设 below-normal 优先级 + 限核亲和，避免导出时界面卡顿
 
       let stderr = '';
       child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });

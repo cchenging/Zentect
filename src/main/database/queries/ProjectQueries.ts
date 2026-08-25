@@ -56,6 +56,9 @@ export const PROJECT_SQL = {
     )
   `,
   INSERT_SHOT_FULL: `
+    -- 坐标系契约（模式 A）：start_time / end_time 一律存【源坐标】（源时间轴绝对位置，秒），
+    -- 禁止落 body 坐标（正剧段内 0 起）。OP/ED 裁剪后的 body 坐标仅管线内部瞬时存在，
+    -- 落库前必须经 toSource 换算还原；读取消费方如需 body 坐标自行调用 toBody。
     INSERT INTO shots (
       id, project_id, episode_num, time_code, duration, ai_text, original_text,
       role_id, original_role_id, cover_path, reasoning, characters, camera,

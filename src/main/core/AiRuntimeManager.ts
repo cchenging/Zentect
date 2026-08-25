@@ -123,6 +123,7 @@ export class AiRuntimeManager {
       }
 
       this.runtimePid = proc.pid
+      ProcessManager.setBackground(proc.pid) // 🔧 R8（PR-3）：daemon 设 below-normal 优先级 + 限核亲和，避免抢占 UI
       ProcessManager.register(proc, 'AI_Daemon_Master')
       this.supervisor.supervise(proc, 'ai-daemon', 3, this.createRestartCallback())
 
@@ -316,6 +317,7 @@ export class AiRuntimeManager {
       }
 
       this.runtimePid = proc.pid
+      ProcessManager.setBackground(proc.pid) // 🔧 R8（PR-3）：重启后的 daemon 同样设后台优先级 + 限核亲和
       this.isOnline = false
 
       proc.stderr?.on('data', (data: Buffer) => {

@@ -14,7 +14,6 @@ import type { ExtractOptions } from '../../../modules/media/frames/backend/Servi
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import {
   buildCoverCommand,
-  buildThumbnailCoverCommand,
   buildProbeCommand,
 } from './FFmpegCommandBuilder';
 
@@ -172,27 +171,21 @@ export class VideoProcessor {
   }
 
   /**
-   * 🎬 生成视频封面图(FFmpeg thumbnail 滤镜版)
+   * 🎬 生成视频封面图(取第一个非黑帧版)
    *
-   * 旧版策略(已废弃):循环 N 次 captureFrameAt + sharp 算亮度
-   *   - 10分钟视频 240 帧 × ~200ms = 48s,太慢
-   *   - 只看平均亮度,选不出色彩最丰富的帧
-   *
-   * 新版策略:FFmpeg 原生 thumbnail 滤镜
-   *   - 一次调用分析前 N 帧的色彩直方图,自动抛弃纯黑/纯白/高重复帧
-   *   - 选出色彩最丰富的代表帧,0.5-2s 完成
-   *   - 不再依赖 sharp 算亮度
+   * 策略:从片头起按递增偏移快速 seek 取帧,逐帧判亮度,
+   *      跳过片头黑场/淡入过渡,取第一个非黑帧(单次调用约 50-100ms);
+   *      全片皆黑时回退中间帧兜底。
+   * 不做任何帧内容筛选(高重复帧/最丰富帧),只保证不黑屏。
    *
    * @param videoPath 视频文件绝对路径
    * @param outputDir 封面输出目录
    * @param mediaId   媒体 ID,用于命名
-   * @param frames    thumbnail 滤镜扫描帧数(默认 100,约 3-4 秒内容)
    */
   static async generateCover(
     videoPath: string,
     outputDir: string,
     mediaId: string,
-    frames: number = 100,
   ): Promise<string> {
     const safeMediaId = mediaId.replace(/[^\w\-\u4e00-\u9fff]/g, '_').replace(/^_+|_+$/g, '') || 'unknown';
     const coverFileName = `${safeMediaId}.jpg`;
@@ -215,46 +208,74 @@ export class VideoProcessor {
       return '';
     }
 
-    // 极端短视频(< 1s):thumbnail 滤镜无意义,直接取中间帧
-    if (duration <= 1) {
-      const midPoint = parseFloat((duration / 2).toFixed(2));
-      if (fs.existsSync(coverFullPath)) fs.unlinkSync(coverFullPath);
-      const ok = await this.captureFrameAt(ffmpegExe, videoPath, coverFullPath, midPoint);
-      if (!ok) return '';
-      AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 短视频封面 seek=${midPoint}s`);
-      return coverFileName;
-    }
-
-    // 常规视频:thumbnail 滤镜选最佳帧
+    // 封面取帧:跳过片头黑场/淡入,取第一个非黑帧;全黑则回退中间帧
     if (fs.existsSync(coverFullPath)) fs.unlinkSync(coverFullPath);
+    const ok = await this.captureFirstNonBlackFrame(ffmpegExe, videoPath, coverFullPath, duration);
+    if (!ok) return '';
 
-    const args = buildThumbnailCoverCommand({
-      videoPath,
-      outputPath: coverFullPath,
-      frames,
-      scaleHeight: 360,
-      jpgQuality: 2,
-    });
+    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] 封面生成成功(第一个非黑帧) seek=${this.lastCoverSeek ?? '-'}s`);
+    return coverFileName;
+  }
 
-    const ok = await new Promise<boolean>((resolve) => {
+  /** 最近一次封面取帧的 seek 时间(仅用于日志) */
+  private static lastCoverSeek: number | null = null;
+
+  /**
+   * 取视频第一个非黑帧(跳过片头黑场/淡入过渡)
+   *
+   * 从 0.5s 起按递增偏移快速 seek 取帧,用 signalstats 判平均亮度,
+   * 找到第一帧非黑帧即用;全部偏移皆黑则回退中间帧。
+   */
+  private static async captureFirstNonBlackFrame(
+    ffmpegExe: string,
+    videoPath: string,
+    outputPath: string,
+    durationSec: number,
+  ): Promise<boolean> {
+    // 递增偏移序列:前密后疏,覆盖片头黑场/淡入场景
+    const offsets = [0.5, 1.5, 3, 5, 8, 12, 20, 30, 45, 60];
+    for (const off of offsets) {
+      if (off >= durationSec * 0.95) break;
+      const ok = await this.captureFrameAt(ffmpegExe, videoPath, outputPath, off);
+      if (!ok) continue;
+      const luma = await this.readFrameLuma(ffmpegExe, outputPath);
+      // 纯黑帧 YAVG≈16(8bit 黑电平),有内容帧通常 >30;阈值取 20 宽松判黑
+      if (luma !== null && luma >= 20) {
+        VideoProcessor.lastCoverSeek = off;
+        return true;
+      }
+    }
+    // 兜底:全片皆黑(或极短视频)取中间帧
+    const midPoint = parseFloat((durationSec / 2).toFixed(2));
+    const ok = await this.captureFrameAt(ffmpegExe, videoPath, outputPath, midPoint);
+    if (ok) VideoProcessor.lastCoverSeek = midPoint;
+    return ok;
+  }
+
+  /**
+   * 读取单帧图片的平均亮度(signalstats YAVG)
+   * @returns 平均亮度(0-255),失败返回 null
+   */
+  private static readFrameLuma(
+    ffmpegExe: string,
+    imagePath: string,
+  ): Promise<number | null> {
+    return new Promise((resolve) => {
+      const args = ['-i', imagePath, '-vf', 'signalstats,metadata=print', '-frames:v', '1', '-f', 'null', '-'];
       const child = spawn(ffmpegExe, args);
       let stderr = '';
       child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
       child.on('close', (code) => {
-        if (code === 0 && fs.existsSync(coverFullPath)) resolve(true);
-        else {
-          if (stderr) AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] thumbnail 滤镜失败 (code=${code}): ${stderr.slice(0, 500)}`);
-          resolve(false);
+        if (code !== 0) {
+          resolve(null);
+          return;
         }
+        const m = stderr.match(/lavfi\.signalstats\.YAVG=([\d.]+)/);
+        resolve(m ? parseFloat(m[1]) : null);
       });
-      child.on('error', () => resolve(false));
-      ProcessManager.register(child, 'FFmpeg-thumbnail封面');
+      child.on('error', () => resolve(null));
+      ProcessManager.register(child, 'FFmpeg-封面亮度判定');
     });
-
-    if (!ok) return '';
-
-    AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VideoProcessor] thumbnail 封面生成成功 frames=${frames}`);
-    return coverFileName;
   }
 
   /**

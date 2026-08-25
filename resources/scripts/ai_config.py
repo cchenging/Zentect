@@ -5,6 +5,143 @@ ai_config.py — 全局配置与 AI 模型单例共享模块
 import os
 import sys
 import threading
+from collections import OrderedDict
+
+
+# ============================================================
+# 🔧 R2 素材池上限化（PR-1）：PROJECT_MATERIAL_POOL 有界 LRU
+#   条目数 + 字节数双上限，淘汰最久未使用项；写入时剥离 512 维 embedding
+# ============================================================
+POOL_MAX_ENTRIES = 3          # 最多同时驻留约 3 个项目
+POOL_MAX_BYTES = 1 * 1024 * 1024 * 1024  # 约 1GB 字节预算
+# 缓存写入时剥离的 512 维 embedding 键（已落库，按需读回，禁止常驻内存）
+_EMBEDDING_KEYS = ('clipZhEmbedding', 'visionEmbedding')
+
+
+def _approx_bytes(obj, _depth: int = 0):
+    """递归估算对象驻留字节数（dict/list 按子项累加，标量用 sys.getsizeof）。
+    深度限制避免病态深结构拖慢写入路径。"""
+    if _depth > 6:
+        return 0
+    try:
+        if isinstance(obj, dict):
+            return sys.getsizeof(obj) + sum(
+                _approx_bytes(k, _depth + 1) + _approx_bytes(v, _depth + 1)
+                for k, v in obj.items())
+        if isinstance(obj, (list, tuple, set)):
+            return sys.getsizeof(obj) + sum(_approx_bytes(x, _depth + 1) for x in obj)
+        return sys.getsizeof(obj)
+    except Exception:
+        return 0
+
+
+def _strip_embeddings(obj, _depth: int = 0):
+    """递归删除 dict 中的 512 维 embedding 键（clipZhEmbedding / visionEmbedding）。
+    返回清理后的对象（list/tuple 原地重建，dict 原地删除）。"""
+    if _depth > 6:
+        return obj
+    try:
+        if isinstance(obj, dict):
+            for k in list(obj.keys()):
+                if k in _EMBEDDING_KEYS:
+                    del obj[k]
+                else:
+                    _strip_embeddings(obj[k], _depth + 1)
+            return obj
+        if isinstance(obj, list):
+            for x in obj:
+                _strip_embeddings(x, _depth + 1)
+        elif isinstance(obj, tuple):
+            return tuple(_strip_embeddings(x, _depth + 1) for x in obj)
+    except Exception:
+        pass
+    return obj
+
+
+class _BoundedMaterialPool(OrderedDict):
+    """🔧 R2 有界 LRU 素材池：保留 dict 全接口（get/[]/in 等均兼容旧代码），
+    仅在写入路径增加：embedding 剥离 + 条目/字节双上限 LRU 淘汰。
+    dict 的 .setdefault/.update 等内部写操作同样会经过 __setitem__。"""
+
+    def __setitem__(self, key, value):
+        # 落库后从缓存剥离 512 维 embedding（按需读回，不常驻内存）
+        _strip_embeddings(value)
+        super().__setitem__(key, value)
+        self.move_to_end(key, last=True)  # 置为最近使用
+        # 双上限淘汰：超条目数或超字节预算，逐出最久未使用项
+        while len(self) > POOL_MAX_ENTRIES:
+            self.popitem(last=False)
+        total = _approx_bytes(self, 0)
+        while total > POOL_MAX_BYTES and len(self) > 1:
+            self.popitem(last=False)
+            total = _approx_bytes(self, 0)
+
+
+# ============================================================
+# 🔧 R3 取消贯通（PR-1）：daemon 侧取消标记（task_id -> bool）
+#   Node abort 时通过 /cancel/{task_id} 置位；KM 求解循环定期查询提前返回
+# ============================================================
+_CANCEL_FLAGS = {}
+_CANCEL_LOCK = threading.Lock()
+
+
+def set_task_cancel(task_id: str):
+    """置位取消标记（幂等）"""
+    if not task_id:
+        return
+    with _CANCEL_LOCK:
+        _CANCEL_FLAGS[task_id] = True
+
+
+def is_task_cancelled(task_id: str) -> bool:
+    """查询取消标记；无标记视为未取消。带自动清理：命中取消后清除，避免标记泄漏。"""
+    if not task_id:
+        return False
+    with _CANCEL_LOCK:
+        if _CANCEL_FLAGS.get(task_id):
+            _CANCEL_FLAGS.pop(task_id, None)
+            return True
+        return False
+
+
+def clear_task_cancel(task_id: str):
+    """清除取消标记（请求结束兜底清理）"""
+    if not task_id:
+        return
+    with _CANCEL_LOCK:
+        _CANCEL_FLAGS.pop(task_id, None)
+
+
+# ============================================================
+# 🔧 R13 公共缩图工具（PR-1）：封面/抽帧后立即缩放 224px，禁止原尺寸 PIL 驻留
+#   所有按文件路径读取图像的模块（timeline_solver / video_analyzer）统一复用本函数
+# ============================================================
+def _load_and_resize_thumb(path: str, size=(224, 224)):
+    """打开图像 → EXIF 转正 → RGB → 立即 resize 到 224×224。
+    返回小尺寸 PIL.Image；原尺寸像素不驻留。失败返回 224×224 灰底占位图。
+    供 R13 图像流式解码复用（禁止各模块重复实现）。"""
+    from PIL import Image
+    fallback = Image.new('RGB', size, color=(128, 128, 128))
+    try:
+        with Image.open(path) as img:
+            img = img.convert('RGB')
+            # 按 EXIF 方向转正，避免封面旋转后入批
+            try:
+                exif = img.getexif()
+                orientation = exif.get(0x0112)
+                if orientation == 3:
+                    img = img.rotate(180, expand=True)
+                elif orientation == 6:
+                    img = img.rotate(270, expand=True)
+                elif orientation == 8:
+                    img = img.rotate(90, expand=True)
+            except Exception:
+                pass
+            # 统一缩到目标尺寸（LANCZOS 高质；PIL 兼容旧/新版 Resampling 枚举）
+            resample = getattr(Image, 'Resampling', Image).LANCZOS
+            return img.resize(size, resample)
+    except Exception:
+        return fallback
 
 
 def _init_paths():
@@ -13,7 +150,7 @@ def _init_paths():
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     MODELS_DIR = os.path.abspath(os.environ.get('MAGIC_MODELS_DIR', os.path.join(BASE_DIR, '..', 'models')))
     FFMPEG_PATH = os.environ.get('FFMPEG_PATH', 'ffmpeg')
-    PROJECT_MATERIAL_POOL = {}
+    PROJECT_MATERIAL_POOL = _BoundedMaterialPool()
 
 
 _init_paths()
@@ -88,6 +225,21 @@ def _time_monotonic_sec() -> float:
     return _time.monotonic()
 
 
+# ============================================================
+# 🔧 R4 线程预算（PR-2）：CPU 推理线程数的单一配置来源
+#   BLAS（OMP/MKL/OPENBLAS/NUMEXPR）、faster_whisper cpu_threads、
+#   torch.set_num_threads 一律取此值，避免 os.cpu_count() 全核拉满
+#   在多模型叠加下引发上下文切换开销。
+# ============================================================
+def get_thread_budget() -> int:
+    """R4 线程预算：环境变量 ZENTECT_CPU_THREADS 显式覆盖（>=1 才生效）；
+    默认 max(2, cpu//2)。与 ai_daemon.py 顶部的 BLAS 环境变量设置同源同语义。"""
+    _env = os.environ.get('ZENTECT_CPU_THREADS', '').strip()
+    if _env.isdigit() and int(_env) >= 1:
+        return int(_env)
+    return max(2, (os.cpu_count() or 4) // 2)
+
+
 class AIModels:
     """全局 AI 模型管理器（类级别单例）
 
@@ -106,6 +258,7 @@ class AIModels:
     chinese_clip_processor = None
     _funasr_model = None
     _faster_whisper_model = None
+    _paraformer_model = None  # Paraformer-Large 中文 ASR（懒加载）
 
     @classmethod
     def set_cli_device(cls, device_str: str):
@@ -118,6 +271,9 @@ class AIModels:
         if cls.device == 'cpu':
             try:
                 import torch
+                # 🔧 R4 线程预算（PR-2）：显式限制 torch 推理线程数，
+                #   与 OMP/MKL/faster_whisper 同源（get_thread_budget），避免多模型叠加拉满全核
+                torch.set_num_threads(get_thread_budget())
                 cls.device = cls._cli_device if torch.cuda.is_available() else 'cpu'
             except ImportError:
                 cls.device = 'cpu'
@@ -174,6 +330,14 @@ class AIModels:
             cls._gc_collect()
 
     @classmethod
+    def release_paraformer(cls):
+        """释放 Paraformer-Large 模型内存"""
+        if cls._paraformer_model is not None:
+            del cls._paraformer_model
+            cls._paraformer_model = None
+            cls._gc_collect()
+
+    @classmethod
     def release_all_models(cls):
         """释放所有已加载模型，回收内存"""
         cls.release_face_app()
@@ -181,6 +345,7 @@ class AIModels:
         cls.release_chinese_clip()
         cls.release_funasr_sensevoice()
         cls.release_faster_whisper()
+        cls.release_paraformer()
         print('[AI Daemon] 🧹 所有模型已释放，内存已回收', file=sys.stderr)
 
     @staticmethod
@@ -332,6 +497,38 @@ class AIModels:
         return cls._funasr_model
 
     @classmethod
+    def get_paraformer(cls):
+        """函数级中文注释：获取 Paraformer-Large ASR 模型（懒加载+带锁保护）。
+        仅走 funasr AutoModel 本地目录加载，零新增依赖（Paraformer 为标准 funasr 模型，
+        无需 trust_remote_code）。模型缺失/加载失败直接抛错，由上层 ASR 入口处理。"""
+        if cls._paraformer_model is None:
+            with INFERENCE_LOCK:
+                if cls._paraformer_model is None:
+                    _mark_loading_start("paraformer")
+                    try:
+                        from funasr import AutoModel
+                        pf_dir = os.path.join(MODELS_DIR, 'paraformer_large')
+                        vad_dir = os.path.join(MODELS_DIR, 'fsmn_vad')
+                        print('[AI Daemon] 🧠 Paraformer-Large + fsmn-vad 启动…',
+                              file=sys.stderr)
+                        print(f'[AI Daemon]    Paraformer-Large: {pf_dir}',
+                              file=sys.stderr)
+                        print(f'[AI Daemon]    FSMN-VAD:        {vad_dir}',
+                              file=sys.stderr)
+
+                        cls._paraformer_model = AutoModel(
+                            model=pf_dir,
+                            vad_model=vad_dir,
+                            vad_kwargs={'max_single_segment_time': 30000},
+                            device=cls._ensure_device(),
+                            disable_update=True,
+                            hub='ms',  # 明确指定 ModelScope hub，避免自动探测触发联网
+                        )
+                    finally:
+                        _mark_loading_done()
+        return cls._paraformer_model
+
+    @classmethod
     def get_faster_whisper(cls, model_size='large-v3'):
         """函数级中文注释：获取 faster-whisper 模型（懒加载，英文/欧洲语言 ASR），带锁保护。
         首次加载（CTranslate2 模型实例化）耗时较长，设置 loading 状态让健康检查不误杀。
@@ -355,11 +552,12 @@ class AIModels:
                             model_path = model_size
                             print(f'[AI Daemon]    从 HuggingFace 自动下载: {model_size}', file=sys.stderr)
 
-                        # 💥 CPU 满核线程：faster-whisper(CTranslate2) 有独立的 cpu_threads 参数，
-                        #   不显式传入时 CTranslate2 只按自身默认初始化线程池，可能用不满全部物理核。
-                        #   这里显式锁定为物理核数量，最大化 CPU 推理吞吐（int8 + 满核）。
-                        #   仅在 device='cpu' 时生效；cuda 设备忽略该参数（传给 GPU 也无副作用，但为清晰起见仅在 CPU 时传）。
-                        _cpu_threads = os.cpu_count() or 4
+                        # 🔧 R4 线程预算（PR-2）：faster-whisper(CTranslate2) 有独立的 cpu_threads 参数，
+                        #   不显式传入时 CTranslate2 只按自身默认初始化线程池。
+                        #   此处从全局线程预算取数（默认 max(2, cpu//2)，ZENTECT_CPU_THREADS 可覆盖），
+                        #   与 OMP/MKL/torch 同源，避免多模型叠加拉满全核导致上下文切换开销。
+                        #   仅在 device='cpu' 时生效；cuda 设备忽略该参数。
+                        _cpu_threads = get_thread_budget()
                         whisper_kwargs = dict(
                             device=device,
                             compute_type=compute_type,

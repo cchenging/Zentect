@@ -3,17 +3,17 @@
 // 🔧 去硬编码：faster-whisper 模型大小不再固定 large-v3，改为前端可配置透传
 
 import React from 'react';
-import { Zap, Cpu } from 'lucide-react';
+import { Zap, Cpu, Target } from 'lucide-react';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 // 从 store 的 ExtractionConfig 派生 whisper 配置类型（含 modelSize）
-// 🔧 去掉 auto：ASR 引擎二选一，要么中文(SenseVoice)要么英文(Faster-Whisper)
-type WhisperConfig = { enabled: boolean; engine: 'sensevoice' | 'faster-whisper'; language?: string; modelSize?: string };
+// 🔧 去 auto：ASR 引擎三选一 —— 中文(SenseVoice) / 英文(Faster-Whisper) / 高精度中文(Paraformer)
+type WhisperConfig = { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'paraformer'; language?: string; modelSize?: string };
 
 interface ASRConfigProps {
   isRunning?: boolean;
 }
 
-/** ASR 引擎选项：2 选 1 单控件（中文 / 英文） */
+/** ASR 引擎选项：3 选 1 单控件（中文 / 英文 / 高精度中文） */
 const ENGINE_OPTIONS = [
   {
     value: 'sensevoice' as const,
@@ -28,6 +28,13 @@ const ENGINE_OPTIONS = [
     desc: 'Faster-Whisper',
     Icon: Cpu,
     hint: '基于 CTranslate2，英文识别率高（WER 约 5%）。模型大小可在下方选择。',
+  },
+  {
+    value: 'paraformer' as const,
+    label: '高精度',
+    desc: 'Paraformer',
+    Icon: Target,
+    hint: '基于 FunASR + fsmn-vad，880MB 高精度中文引擎，支持热词纠错专名错别字。CPU 较慢但更准。',
   },
 ] as const;
 
@@ -47,8 +54,12 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
   const updateExtractionConfig = useStep1Store((s) => s.updateExtractionConfig);
 
   const whisper: WhisperConfig = extractionConfig?.whisper || { enabled: true, engine: 'sensevoice' };
-  // 默认选中中文：仅当显式为 faster-whisper 才选中英文，其余（含旧数据 auto/undefined）一律回退中文
-  const currentEngine = whisper.engine === 'faster-whisper' ? 'faster-whisper' : 'sensevoice';
+  // 默认选中中文：仅当显式为 faster-whisper / paraformer 才选中对应项，其余（含旧数据 auto/undefined）一律回退中文
+  const currentEngine: EngineValue = whisper.engine === 'faster-whisper'
+    ? 'faster-whisper'
+    : whisper.engine === 'paraformer'
+      ? 'paraformer'
+      : 'sensevoice';
   const currentModelSize = whisper.modelSize || 'large-v3';
 
   /** 切换引擎：同时联动语言（中文→SenseVoice + zh，英文→Faster-Whisper + en） */
@@ -97,7 +108,7 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
       </div>
 
       {/* faster-whisper 模型大小选择（引擎为英文 Faster-Whisper 时显示） */}
-      {currentEngine !== 'sensevoice' && (
+      {currentEngine === 'faster-whisper' && (
         <div className="flex flex-col gap-1">
           <div className="flex flex-row items-center justify-between gap-2">
             <span className="text-[12px] text-muted-foreground">Faster-Whisper 模型大小</span>

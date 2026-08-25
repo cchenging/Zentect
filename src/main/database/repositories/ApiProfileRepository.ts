@@ -50,7 +50,7 @@ function rowToProfile(row: RawRow): ApiProfile {
 export class ApiProfileRepository {
   static getAll(): ApiProfile[] {
     const db = SQLiteConnection.getInstance().getDB();
-    const rows = db.prepare('SELECT * FROM api_profiles ORDER BY sort_order, created_at').all() as RawRow[];
+    const rows = db.prepare('SELECT * FROM api_profiles ORDER BY sort_order, created_at DESC, id DESC').all() as RawRow[];
     return rows.map(rowToProfile);
   }
 

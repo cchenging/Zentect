@@ -382,8 +382,11 @@ class TranscribeReq(BaseModel):
     output_json_path: str
     language: str = "auto"
     # ASR 引擎选择：'sensevoice'(默认,中日韩) | 'faster-whisper'(英文/欧洲语言)
+    #              | 'paraformer'(小体积高精度中文,funasr 原生,支持热词)
     # 不传或 'auto' 时根据 language 自动选择：CJK → sensevoice，其他 → faster-whisper
     engine: str = "auto"
+    # 热词列表（可选，仅 paraformer 引擎生效）：用于纠剧集专名错别字，逐项注入 hotword 重打分
+    hotwords: list[str] = []
     # 🔧 去硬编码：faster-whisper 模型大小（tiny/base/small/medium/large-v3），
     #   由前端配置透传，不再固定 large-v3。默认 large-v3（识别精度最高）。
     #   可选值参考 faster-whisper 官方模型：git@hf.co openai/whisper-{size} 的 CTranslate2 版本。
@@ -667,6 +670,123 @@ def _asr_postprocess_segments(segments):
     merged = _levenshtein_dedup(merged)
 
     return merged
+
+
+def _filter_hallucination_segments(segments):
+    """过滤 SenseVoice 非语音幻觉段（哭声/BGM/纯语气词/孤立噪声被误识别为台词）
+
+    背景：SenseVoice 在低信噪比音频（哭声、笑声、BGM、呼吸声）下会把非语音
+    输出为无实义语气词文本（如"嗯嗯""啊啊""嘿嘿"）或孤立短 token（如 The/W/Yeah），
+    且常被当作台词打上时间戳。此处基于文本内容 + 时间上下文过滤：
+      1) 去除标点/空白后为空 → 过滤
+      2) 全部由语气词/拟声字组成且总长 <= 8 字 → 过滤（哭声/笑声/叹气常见形态）
+      3) 英文纯拟声（mm/ah/oh/uh/um/huh/ha 等）→ 过滤
+      4) 含日文假名/韩文音节的杂讯：剥离外语字符后若无实质中文 → 过滤
+         （SenseVoice 对哭声/BGM 常混合输出 う/は/The/Yes 等外语碎片；
+          但若句子含实质中文如"哎よ吓死我了"，保留原句防误删）
+      5) 极短孤立噪声：时长 < 0.4s 且文本 <= 4 字符，且与前后最近句子的
+         间隔均 > 1.0s → 过滤（背景乐/口哨等孤立碎片；真实台词的碎块
+         因紧邻实义句不会被误删，交由 _merge_fragments 合并）
+    """
+    import re
+    # 无实义语气词/拟声字集合（哭声、笑声、叹气、呼吸声的常见幻觉输出）
+    FILLER_CHARS = set("嗯啊哦诶哎唉呵哈嘿咦哟呦咿呀唔呃呢咯呗嘛哇哪喔噢嘶吁哼")
+    # 日文假名（平/片假名）与韩文音节：中文视频台词中不应出现，出现即视为杂讯特征
+    KANA_HANGUL_RE = re.compile(r"[\u3040-\u30FF\uAC00-\uD7AF]")
+    # 中文语气词/功能单字：剥离外语后若仅剩这些，说明句子无实质内容
+    FILLER_CN = set("嗯啊哦诶哎唉呵哈嘿咦哟呦咿呀唔呃呢咯呗嘛哇哪喔噢嘶吁哼喂哦是的了")
+
+    def _strip(text):
+        return re.sub(r"[\s\W_]+", "", text or "", flags=re.UNICODE)
+
+    def _is_foreign_noise(text):
+        """含日文假名/韩文音节的杂讯：剥离外语字符后若无实质中文 → 过滤。
+        例（删）：うん / おパ The / き Yes / 是 は / 喂 じあ / 嗯ん / う
+        例（留）：哎よ吓死我了 / え 抠搜的Ha / 有人余生う啊 / 偏要这我曾が
+        """
+        if not KANA_HANGUL_RE.search(text):
+            return False
+        stripped = re.sub(r"[^\u4e00-\u9fff]+", "", KANA_HANGUL_RE.sub("", text))
+        if not stripped:
+            return True
+        if len(stripped) <= 6 and all(c in FILLER_CN for c in stripped):
+            return True
+        return False
+
+    n = len(segments)
+    out = []
+    for idx, seg in enumerate(segments):
+        text = (seg.get("text") or "").strip()
+        t = _strip(text)
+        if not t:
+            continue
+        # 全语气词且较短 → 过滤（哭声/笑声幻觉）
+        if len(t) <= 8 and all(c in FILLER_CHARS for c in t):
+            continue
+        # 英文纯拟声 → 过滤
+        if re.match(r"^(h?mm+|ah+|oh+|uh+|um+|huh+|ha+|hmm+)$", t, re.IGNORECASE):
+            continue
+        # 含日文假名/韩文音节的杂讯（无实质中文）→ 过滤
+        if _is_foreign_noise(text):
+            continue
+        # 极短孤立噪声 → 过滤
+        dur = seg.get("end", 0) - seg.get("start", 0)
+        if dur < 0.4 and len(t) <= 4:
+            gap_prev = seg["start"] - segments[idx - 1]["end"] if idx > 0 else float("inf")
+            gap_next = segments[idx + 1]["start"] - seg["end"] if idx + 1 < n else float("inf")
+            if min(gap_prev, gap_next) > 1.0:
+                continue
+        out.append(seg)
+    return out
+
+
+def _merge_fragments(segments, max_dur=1.0, max_gap=1.0):
+    """合并过碎短句：真实台词被字级时间戳断句器按停顿/字数切碎时，
+    将"短句"并入时间上更接近的相邻句（前句或后句），拼回完整台词。
+
+    （仅合并不删除；真正的噪声碎片已由 _filter_hallucination_segments 剔除）
+    例：
+      裂纹(0.3s) + 横亘在鼎青楼三个字中间(2.1s) → 裂纹横亘在鼎青楼三个字中间
+      他...藏起(2.7s) + 也(0.06s) + 藏着一份沉默的等待 → 他...藏起 | 也藏着一份沉默的等待
+    """
+    import re
+    if not segments:
+        return segments
+
+    def _has_cjk(s):
+        return bool(re.search(r"[\u4e00-\u9fff]", s))
+
+    def _join(a, b):
+        a, b = a.strip(), b.strip()
+        return (a + b) if (_has_cjk(a) and _has_cjk(b)) else (a + " " + b)
+
+    out = []
+    segs = [dict(s) for s in segments]
+    i = 0
+    while i < len(segs):
+        cur = segs[i]
+        cur_dur = cur["end"] - cur["start"]
+        prev = out[-1] if out else None
+        nxt = segs[i + 1] if i + 1 < len(segs) else None
+        if cur_dur < max_dur and (prev is not None or nxt is not None):
+            gap_prev = cur["start"] - prev["end"] if prev is not None else float("inf")
+            gap_next = nxt["start"] - cur["end"] if nxt is not None else float("inf")
+            # 并入更近的邻居（优先并入后句，避免左并导致顺序错乱）
+            if gap_next <= gap_prev and gap_next < max_gap:
+                nxt["start"] = min(nxt["start"], cur["start"])
+                nxt["end"] = max(nxt["end"], cur["end"])
+                nxt["text"] = _join(cur["text"], nxt["text"])
+                i += 1
+                continue
+            if gap_prev < max_gap:
+                prev["start"] = min(prev["start"], cur["start"])
+                prev["end"] = max(prev["end"], cur["end"])
+                prev["text"] = _join(prev["text"], cur["text"])
+                i += 1
+                continue
+        out.append(cur)
+        i += 1
+    return out
 
 
 def _split_segment_by_words(words, detected_lang="en"):
@@ -1191,6 +1311,11 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
         if selected_engine == 'faster-whisper':
             return _transcribe_via_faster_whisper(req, task_id)
 
+        # ── 分支 1.5：paraformer（中文，funasr 原生，支持热词，逻辑全收拢在 paraformer_engine.py） ──
+        if selected_engine == 'paraformer':
+            from paraformer_engine import transcribe_paraformer
+            return transcribe_paraformer(req, task_id)
+
         # ── 分支 2：funasr AutoModel（内置 fsmn-vad） ──
         try:
             from funasr import AutoModel
@@ -1217,7 +1342,7 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
                 batch_size_s=15,
                 vad_model="fsmn-vad",
                 vad_kwargs={"max_single_segment_time": 30000},
-                word_timestamp=True,         # 必须开启：向模型索要底层每个 Token 的毫秒级坐标
+                output_timestamp=True,       # 🔧 修复时间戳全错：funasr 1.3.29 认 output_timestamp 而非 word_timestamp
                 return_spk_res=False
             )
 
@@ -1276,6 +1401,10 @@ def _transcribe_sync(req: TranscribeReq, task_id: str = ""):
 
             # ✅ 后处理：相邻去重 + 重叠合并（彻底消除"台词重复"）
             all_segments = _asr_postprocess_segments(all_segments)
+            # 🔧 幻觉过滤：哭声/BGM/纯语气词/孤立噪声被误识别为台词时剔除
+            all_segments = _filter_hallucination_segments(all_segments)
+            # 🔧 碎句合并：真实台词被字级时间戳断句器切碎时拼回完整句子
+            all_segments = _merge_fragments(all_segments)
 
             if task_id:
                 _set_progress(task_id, pct=80, msg=f"推理完成，{len(all_segments)} 段，正在格式化...")
@@ -1725,6 +1854,12 @@ def _detect_beats_sync(req: BeatDetectReq) -> dict:
 
             CHUNK_SAMPLES = 22050 * 30
             sr = 22050
+            # 🛑 卡死修复 BGM-1/2：librosa.stft 默认 n_fft=2048，输入信号长度 < n_fft 会抛
+            #   ParameterError: "Input signal must be provided to compute a spectrogram" → 500。
+            #   定义全局最小可处理长度：音频至少 93ms（=n_fft/sr=2048/22050）才有意义算节拍。
+            N_FFT_MIN = 2048
+            MIN_DURATION_SEC = 0.1  # 100ms 以下的 BGM 视为无节拍，直接返回空（success=True，不报错）
+
             all_onset_env = []
             frame_positions = []
 
@@ -1732,19 +1867,87 @@ def _detect_beats_sync(req: BeatDetectReq) -> dict:
             total_frames = info.frames
             original_sr = info.samplerate
 
+            # 🛑 卡死修复 BGM-1/2（前置拦路）：总时长极短 / 总帧数 < n_fft，
+            #   即使送进 while 循环最终也因样本不足崩溃，直接安全返回空节拍。
+            total_duration = (info.duration if hasattr(info, 'duration') and info.duration
+                              else (total_frames / original_sr if original_sr and original_sr > 0 else 0))
+            if (total_frames < N_FFT_MIN
+                or total_duration < MIN_DURATION_SEC
+                or (original_sr and original_sr > 0 and total_frames / original_sr < MIN_DURATION_SEC)):
+                _d_ms = round(total_duration * 1000, 1) if total_duration else 0
+                return {
+                    "success": True,
+                    "data": {
+                        "onsetMs": [], "beatGridMs": [], "tempo": 120.0,
+                        "totalDurationMs": _d_ms,
+                        "skippedReason": f"AUDIO_TOO_SHORT (frames={total_frames}, durMs={_d_ms})",
+                    }
+                }
+
             with sf.SoundFile(req.file_path) as f:
                 current_frame = 0
                 while current_frame < total_frames:
                     chunk = f.read(CHUNK_SAMPLES, dtype='float32')
+                    # 🛑 根因修复：文件存在但读不出有效采样（空/损坏/被独占锁定/仅含文件头）时，
+                    #   chunk 为空数组直接喂 librosa.stft 会抛
+                    #   "Input signal must be provided to compute a spectrogram" → 500。
+                    #   读到空块立即终止循环，由下方 all_onset_env 空判断兜底返回空节拍。
+                    if chunk.size == 0:
+                        break
                     if len(chunk.shape) > 1:
                         chunk = chunk.mean(axis=1)
 
                     if original_sr != sr:
                         chunk = librosa.resample(chunk, orig_sr=original_sr, target_sr=sr)
+                        if chunk.size == 0:
+                            break
 
+                    # 🛑 卡死修复 BGM-1/2（循环内拦路）：循环末尾最后一块可能 < CHUNK_SAMPLES 且 < N_FFT_MIN，
+                    #   直接 librosa.stft 会崩溃。这种"尾部碎片块"对整体 onset 贡献可忽略，安全跳过。
+                    if chunk.size < N_FFT_MIN:
+                        break
+
+                    # 🛑 卡死修复 BGM-2/2：librosa 路径分三层兜底，任何一层失败都不整段抛 500。
+                    #   原代码仅用 onset_envelope=low_freq_energy 调 onset_strength，
+                    #   但部分 librosa 版本在 onset_strength_multi 内部会尝试用 y=None 调 melspectrogram
+                    #   二次抛出 "Input signal must be provided to compute a spectrogram"。
+                    #   这里按"收益高→收益低"顺序三层尝试，最后一层保证零崩溃返回空 onset。
                     stft = np.abs(librosa.stft(chunk))
                     low_freq_energy = np.sum(stft[0:15, :], axis=0)
-                    chunk_onset = librosa.onset.onset_strength(onset_envelope=low_freq_energy, sr=sr)
+                    chunk_onset = None
+                    # Layer 1：原设计——用低频 0~15 bin 能量做 onset（贴合 BGM 重音鼓点追踪初衷）
+                    try:
+                        chunk_onset = librosa.onset.onset_strength(
+                            onset_envelope=low_freq_energy.astype(np.float32), sr=sr
+                        )
+                        if chunk_onset is None or chunk_onset.size == 0:
+                            chunk_onset = None
+                    except Exception:
+                        chunk_onset = None
+                    # Layer 2：回退标准 onset_strength(y=chunk) 路径—— librosa 原生最稳接口
+                    #   放弃低频重音限定，但至少能正确返回 onset，兼容任意 librosa 版本
+                    if chunk_onset is None:
+                        try:
+                            chunk_onset = librosa.onset.onset_strength(y=chunk, sr=sr)
+                            if chunk_onset is None or chunk_onset.size == 0:
+                                chunk_onset = None
+                        except Exception:
+                            chunk_onset = None
+                    # Layer 3：双层失败兜底——用 low_freq_energy 的一阶差分 + 半波整流模拟 onset。
+                    #   精确性下降，但保证"永远有东西"，不让 all_onset_env 因一块异常而空掉。
+                    if chunk_onset is None:
+                        try:
+                            energy = np.asarray(low_freq_energy, dtype=np.float32)
+                            if energy.size >= 3:
+                                diff = np.diff(energy, n=1)
+                                sim_onset = np.maximum(diff, 0.0)
+                                if sim_onset.size > 0:
+                                    chunk_onset = sim_onset
+                        except Exception:
+                            chunk_onset = None
+                    # 极端兜底：三层全部失败 → 造一个零数组，保证 len=0 也能 append，走后续 all_onset_env 空判断
+                    if chunk_onset is None:
+                        chunk_onset = np.zeros(max(1, low_freq_energy.size - 1), dtype=np.float32)
 
                     frame_positions.append(len(all_onset_env))
                     all_onset_env.append(chunk_onset)
@@ -1788,6 +1991,9 @@ def _detect_beats_sync(req: BeatDetectReq) -> dict:
         try:
             with INFERENCE_LOCK:
                 y, sr = librosa.load(req.file_path, sr=22050)
+                # 🛑 与主路径一致的空信号防御：加载结果为空的音频直接返回空节拍，不喂 stft
+                if len(y) == 0:
+                    return {"success": True, "data": {"onsetMs": [], "beatGridMs": [], "tempo": 120.0, "totalDurationMs": 0}}
                 stft = np.abs(librosa.stft(y))
                 low_freq_energy = np.sum(stft[0:15, :], axis=0)
                 onset_env = librosa.onset.onset_strength(onset_envelope=low_freq_energy, sr=sr)

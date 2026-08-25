@@ -34,7 +34,10 @@ export const LOG_TAGS = {
   EXPORT: 'Export',
   MEDIA: 'Media',
   // 🔧 修复 TS2339：补充 PROJECT 标签（ProjectService 调用但原定义缺失）
-  PROJECT: 'Project'
+  PROJECT: 'Project',
+  // 🎬 OP/ED 片头片尾裁剪编排
+  OPED_TRIM: 'OpEd_Trim',
+  OPED_DETECT_AUTO: 'OpEd_Detect_Auto',
 } as const;
 
 export interface LogPayload {

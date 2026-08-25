@@ -48,7 +48,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
     }
 
     // 自动路由 engine（engine='auto' 时根据 language 选择；明确指定引擎则保持不变）
-    let effectiveEngine: 'sensevoice' | 'faster-whisper' | 'auto' = engine;
+    let effectiveEngine: 'sensevoice' | 'faster-whisper' | 'paraformer' | 'auto' = engine;
     if (engine === 'auto') {
       const normalizedLang = LocalWhisperStrategy.normalizeLangCode(language);
       effectiveEngine = LocalWhisperStrategy.resolveEngineByLang(normalizedLang);

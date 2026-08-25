@@ -76,7 +76,13 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
         if (nodeResult.framePaths && Array.isArray(nodeResult.framePaths)) {
           mappers.setExtractedData({ framePaths: nodeResult.framePaths, frameCount: nodeResult.framePaths.length });
         } else if (nodeResult.frames && Array.isArray(nodeResult.frames)) {
-          mappers.setExtractedData({ framePaths: nodeResult.frames, frameCount: nodeResult.frames.length });
+          // 🛑 根因修复：nodeResult.frames 可能是对象数组（[{url,path,...}]，如 VisionExtractStrategy 的 frames: frameDetails），
+          // 若整包对象数组直接塞入 framePaths，数组项为 object，渲染时 getSafeMediaUrl().trim() 崩溃。
+          // 在此提取 url/path/filePath/thumbnail 归一为 string[]。
+          const frameUrls = nodeResult.frames
+            .map((f: any) => (typeof f === 'string' ? f : (f?.url || f?.path || f?.filePath || f?.thumbnail || '')))
+            .filter(Boolean);
+          mappers.setExtractedData({ framePaths: frameUrls, frameCount: frameUrls.length });
         }
         break;
 

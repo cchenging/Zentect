@@ -34,6 +34,7 @@ export const StepMaterialAnalysis: React.FC = () => {
   }, [step1SubStepProgresses, pipelineSubStepProgresses]);
   const setAsrLines = useStep1Store((s) => s.setAsrLines);
   const updateAsrLine = useStep1Store((s) => s.updateAsrLine);
+  const removeAsrLine = useStep1Store((s) => s.removeAsrLine);
   const setSubStepStatus = usePipelineStore((s) => s.setSubStepStatus);
   const setSubStepProgress = useStep1Store((s) => s.setSubStepProgress);
   const updateExtractionConfig = useStep1Store((s) => s.updateExtractionConfig);
@@ -150,6 +151,7 @@ export const StepMaterialAnalysis: React.FC = () => {
       extractionConfig={extractionConfig as Step1Config | null}
       extractedData={extractedData}
       onUpdateAsrLine={updateAsrLine}
+      onRemoveAsrLine={removeAsrLine}
       onSetAsrLines={setAsrLines}
       onSetCurrentTime={seekTo}
       onSetActivePlaySource={setActivePlaySource}

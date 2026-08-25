@@ -48,11 +48,17 @@ export default function Editor() {
 
   const { handleStart, handleNextStep, handleVideoImport, handleReplaceVideo } = useStepRunner(id);
 
-  /** 可拖拽分隔条 */
+  /** 可拖拽分隔条（左35 : 右65 — 用户要求"左边再减小一点"）
+   *   · 预览栏最小 480px：防止过窄 → 播放器控件被遮挡
+   *   · 预览栏最大 60%（硬上限，拖拽也超不过）：保证配置栏 ≥ 40% 最低宽度，配置表单滑块/输入框不挤
+   *   · 想进一步放大配置栏：用户可直接拖分隔条到左 20% / 右 80%（最大极限）
+   */
   const { leftWidth, isDragging, leftPanelRef, handleDividerMouseDown } = useResizablePanel({
-    minLeftWidth: 280,
-    maxLeftWidth: 800,
-    defaultLeftPercent: 30,
+    minLeftWidth: 480,
+    maxLeftWidth: 5000,
+    defaultLeftPercent: 35, // ✅ 40 → 35：用户要求"左边再减小一点"，右栏 65% 配置空间更充足
+    minLeftPercent: 20,
+    maxLeftPercent: 60,
   });
 
   /** 播放器状态 */
@@ -146,8 +152,21 @@ export default function Editor() {
     return mediaItems.filter((m: any) => m.type === 'video_chunk');
   }, [videoChunks, mediaItems]);
   const chunkCount = chunkItems.length;
-  /** 关键帧数量 */
-  const frameCount = useMemo(() => (extractedData?.framePaths?.length || mediaItems.filter((m: any) => m.type === 'frame').length), [mediaItems, extractedData]);
+  /** 关键帧数量（三层兜底，杜绝显示为 0）：
+   *   ① useProjectStore.extractedData.framePaths（最优先，hydrate/merge 更新）
+   *   ② mediaItems 中 type===video 的项自带 frames 数组（mergePartialUpdate 兜底派生）
+   *   ③ mediaItems 中 type===frame 的独立项（历史兼容模式，最低优先级） */
+  const frameCount = useMemo(() => {
+    if (extractedData?.framePaths?.length) return extractedData.framePaths.length;
+    let n = 0;
+    for (const m of mediaItems) {
+      if ((m as any)?.type === 'video' && Array.isArray((m as any).frames) && (m as any).frames.length > 0) {
+        n += (m as any).frames.length;
+      }
+    }
+    if (n > 0) return n;
+    return mediaItems.filter((m: any) => m.type === 'frame').length;
+  }, [mediaItems, extractedData]);
 
   const activeCount = useMemo(() => {
     if (activeMediaTab === 'video') return videoCount;
@@ -162,9 +181,35 @@ export default function Editor() {
     if (activeMediaTab === 'audio') return mediaItems.filter((m: any) => m.type === 'audio');
     if (activeMediaTab === 'chunks') return chunkItems;
     if (activeMediaTab === 'frames') {
+      // ① 优先：extractedData.framePaths（主流程，hydrateProjectData / setExtractedData 写回）
       if (extractedData?.framePaths?.length) {
-        return extractedData.framePaths.map((fp: string, i: number) => ({ id: `frame_${i}`, type: 'frame', filePath: fp, name: `关键帧 ${i + 1}` }));
+        const validFrames = extractedData.framePaths
+          .map((fp: any) => (typeof fp === 'string' ? fp.trim() : ''))
+          .filter((fp: string) => fp.length > 0);
+        return validFrames.map((fp: string, i: number) => ({ id: `frame_${i}`, type: 'frame', filePath: fp, name: `关键帧 ${i + 1}` }));
       }
+      // 💥 兜底 ②：extractedData 丢了但 mediaItems[video].frames 还在（IPCBridge 旧版只传 mediaItems 时）
+      //   直接从 media_assets.frames 列数据派生渲染，不依赖 store.extractedData.framePaths
+      const fallback: any[] = [];
+      for (const m of mediaItems) {
+        const mm = m as any;
+        if (mm?.type === 'video' && Array.isArray(mm.frames) && mm.frames.length > 0) {
+          for (let i = 0; i < mm.frames.length; i++) {
+            const f = mm.frames[i];
+            const fp = typeof f === 'string' ? f : (f?.path ?? f?.filePath ?? f?.url ?? f?.thumbnail ?? '');
+            if (typeof fp === 'string' && fp.trim().length > 0) {
+              fallback.push({
+                id: `${mm.id || 'video'}_frame_${fallback.length}`,
+                type: 'frame',
+                filePath: fp.trim(),
+                name: `关键帧 ${fallback.length + 1}`,
+              });
+            }
+          }
+        }
+      }
+      if (fallback.length > 0) return fallback;
+      // 兜底 ③：历史老数据，独立 frame 类型 mediaItems
       return mediaItems.filter((m: any) => m.type === 'frame');
     }
     return [];

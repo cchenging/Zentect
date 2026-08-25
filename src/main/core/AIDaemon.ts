@@ -87,8 +87,28 @@ export class AIDaemon {
   /** 停止 — 同时停止 RuntimeManager */
   public stop() {
     this.stopHealthCheck();
+    // 🔧 R1 模型生命周期（PR-1）：daemon 退出前主动释放全部模型，回收内存
+    this.releaseAllModels();
     this.runtimeManager.stop();
     this.isReady = false;
+  }
+
+  /** 🔧 R1：fire-and-forget 调用 /release_models，让 Python 侧释放全部常驻模型再退出。
+   *   daemon 即将被 killTree，请求失败静默，不阻塞退出流程。 */
+  private releaseAllModels(): void {
+    try {
+      const status = this.runtimeManager?.getStatus?.();
+      if (status && !status.online) return;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      fetch(`http://127.0.0.1:${this.port}/release_models`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+        signal: controller.signal,
+      }).catch(() => { /* daemon 即将退出，失败静默 */ })
+        .finally(() => clearTimeout(timer));
+    } catch { /* 静默 */ }
   }
 
   /** 等待就绪 — 查询 AiRuntimeManager 状态；若离线则自动点火 */
@@ -224,8 +244,10 @@ export class AIDaemon {
     return this.warmPromise;
   }
 
-  /** 向 Python 运行时发 POST 请求 */
-  public async post(endpoint: string, payload: any, options?: { timeout?: number; retries?: number; signal?: AbortSignal }): Promise<any> {
+  /** 向 Python 运行时发 POST 请求
+   *  🔧 R3 取消贯通（PR-1）：options.taskId 用于请求头 X-Task-Id（daemon 侧查询取消标记）与
+   *    abort/超时时自动 POST /cancel/{taskId} 通知 daemon 提前终止 */
+  public async post(endpoint: string, payload: any, options?: { timeout?: number; retries?: number; signal?: AbortSignal; taskId?: string }): Promise<any> {
     await this.waitForReady();
 
     const status = this.runtimeManager.getStatus();
@@ -267,15 +289,29 @@ export class AIDaemon {
           }
 
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+          /** 🔧 R3 取消贯通：abort（外部 signal 或内部超时）时通知 daemon 取消长任务，
+           *   让 KM 等求解循环提前退出，CPU 不再空烧。fire-and-forget，失败静默。 */
+          const notifyCancel = () => {
+            const tid = options?.taskId;
+            if (!tid) return;
+            fetch(`http://127.0.0.1:${this.port}/cancel/${encodeURIComponent(tid)}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: '{}',
+            }).catch(() => { /* fire-and-forget */ });
+          };
+          const timeoutId = setTimeout(() => { notifyCancel(); controller.abort(); }, timeoutMs);
 
           // Fix 10: 外部取消信号触发时同步中止 fetch
-          onExternalAbort = () => controller.abort();
+          onExternalAbort = () => { notifyCancel(); controller.abort(); };
           options?.signal?.addEventListener('abort', onExternalAbort);
 
           const res = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              ...(options?.taskId ? { 'X-Task-Id': options.taskId } : {}),
+            },
             body: JSON.stringify(payload),
             signal: controller.signal,
           });

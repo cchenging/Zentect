@@ -60,6 +60,26 @@ export class ProcessManager {
   }
 
   /**
+   * 🔧 R8（PR-3）：将子进程设为后台运行 —— BelowNormal 优先级 + 限核亲和。
+   * 仅 Windows 生效（PowerShell 设置 PriorityClass / ProcessorAffinity）。
+   *  - 优先级 below-normal：重进程（AI daemon / ffmpeg 渲染）不再抢占 UI 交互调度；
+   *  - 限核亲和：只用一半逻辑核（低位核），防止吃满全部核导致系统整体卡顿。
+   * 设置失败静默忽略，不阻断主流程。
+   */
+  static setBackground(pid: number) {
+    if (!pid || os.platform() !== 'win32') return;
+    try {
+      exec(
+        `powershell -NoProfile -NonInteractive -Command "$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { $p.PriorityClass = 'BelowNormal'; $n = [Environment]::ProcessorCount; $half = [Math]::Max(1, [int][Math]::Ceiling($n / 2)); $p.ProcessorAffinity = [int]([Math]::Pow(2, $half) - 1) }"`,
+        { windowsHide: true, timeout: 5000 },
+        () => {}
+      );
+    } catch {
+      // 静默：设置失败不影响主流程
+    }
+  }
+
+  /**
    * 💥 核心：安全执行原生二进制应用，并实时萃取进度
    */
   public static async spawnSafe(options: ProcessOptions): Promise<string> {

@@ -44,6 +44,9 @@ export interface PipelineStep1Result {
   separationEngine: string;
   shots: Array<{ id: string; originalText: string; start: number; end: number }>;
   roles: any[];
+  /** 🎬 P1-1 裁剪指纹：本次抽帧/分离所用 trim 配置指纹，落库供增量执行校验 */
+  framesTrimSig?: string | null;
+  audioTrimSig?: string | null;
 }
 
 export interface WriteStep1Params {
@@ -93,6 +96,8 @@ export class PipelineResultWriter {
         }
         return framePath;
       });
+      // 🎬 P1-1 裁剪指纹：记录本次抽帧所用 trim 配置，供增量执行校验
+      updatedMedia.framesTrimSig = result.framesTrimSig || null;
     }
 
     // --- 写入 audio ---
@@ -115,6 +120,8 @@ export class PipelineResultWriter {
       updatedMedia.separationMode = result.separationMode;
       updatedMedia.separationEngine = result.separationEngine;
       updatedMedia.vocalsIsFallback = result.vocalsIsFallback;
+      // 🎬 P1-1 裁剪指纹：记录本次音频分离所用 trim 配置，供增量执行校验
+      updatedMedia.audioTrimSig = result.audioTrimSig || null;
     }
 
     // --- 写入 ASR 台词 ---

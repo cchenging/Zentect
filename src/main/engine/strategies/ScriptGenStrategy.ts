@@ -242,6 +242,32 @@ function ensureVisualIntentFilled(
 export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, GeneratedShot[]> {
   readonly nodeType = 'script-gen';
 
+  /** 函数级中文注释：把单条 ASR 行的时间戳统一归一化成「毫秒」，供三处时间判定复用（L387 chunk 时长 / L451 chunk 台词过滤 / L509 子段台词中点判定）。
+   * 目的：修复「ASR 的 start/end（秒）→ 直接当毫秒写入 startMs」的单位错位 bug（8 月 19 日项目一句台词都对不上的根因）。
+   * 规则：
+   *   1. 【真值不覆盖】优先使用 asrLine.startMs / endMs（明确是毫秒），直接四舍五入取整；
+   *   2. 否则看 asrLine.start / end（ASR 工具链输出的是秒，number 类型时 ×1000）；
+   *   3. 全缺失则用给定 defaultStartMs / defaultEndMs 兜底（由调用方决定默认值）。 */
+  private static _asrLineToMs(
+    line: any,
+    defaultStartMs: number,
+    defaultEndMs?: number,
+  ): { startMs: number; endMs: number } {
+    const startMs: number =
+      typeof line?.startMs === 'number'
+        ? Math.round(line.startMs)
+        : typeof line?.start === 'number'
+          ? Math.round(line.start * 1000)
+          : Math.round(defaultStartMs);
+    const endMs: number =
+      typeof line?.endMs === 'number'
+        ? Math.round(line.endMs)
+        : typeof line?.end === 'number'
+          ? Math.round(line.end * 1000)
+          : (defaultEndMs != null ? Math.round(defaultEndMs) : startMs + 4000);
+    return { startMs, endMs };
+  }
+
   protected async validate(_input: ScriptGenInput): Promise<void> {
   }
 
@@ -384,8 +410,12 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
         const linesPerChunk = Math.max(1, Math.floor(asrLines.length / totalShots));
         const startLine = asrLines[Math.min(i * linesPerChunk, asrLines.length - 1)];
         const endLine = asrLines[Math.min((i + 1) * linesPerChunk - 1, asrLines.length - 1)];
-        const startMs = startLine?.startMs ?? (typeof startLine?.start === 'number' ? startLine.start : 0);
-        const endMs = endLine?.endMs ?? (endLine?.end !== undefined ? (typeof endLine.end === 'number' ? endLine.end : startMs + 4000) : startMs + 4000);
+        // 🔧 修复 Bug A1：ASR 的 start/end 字段是「秒」，之前直接赋给毫秒变量，导致时间戳被压缩 1000 倍（8/19 项目一句都对不上）
+        const startParsed = ScriptGenStrategy._asrLineToMs(startLine, 0);
+        const DEFAULT_START_MS = startParsed.startMs;
+        const endParsed = ScriptGenStrategy._asrLineToMs(endLine, DEFAULT_START_MS, DEFAULT_START_MS + 4000);
+        const startMs = startParsed.startMs;
+        const endMs = endParsed.endMs;
         chunkStartMs = startMs;
         chunkDurationMs = Math.max(1000, endMs - startMs); // 至少 1 秒
       }
@@ -448,8 +478,9 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       // ASR 上下文：找到时间轴范围内的台词
       const chunkAsrLines = hasAsrTimestamps
         ? asrLines.filter(l => {
-            const lStart = l.startMs ?? (typeof l.start === 'number' ? l.start : 0);
-            return lStart >= chunkStartMs && lStart < chunkStartMs + chunkDurationMs;
+            // 🔧 修复 Bug A2：ASR 的 l.start 是「秒」，之前直接跟毫秒变量 chunkStartMs 比，漏掉 ×1000（台词永远对不上）
+            const lineStartMs = ScriptGenStrategy._asrLineToMs(l, 0).startMs;
+            return lineStartMs >= chunkStartMs && lineStartMs < chunkStartMs + chunkDurationMs;
           })
         : asrLines.slice(i * Math.max(1, Math.floor(asrLines.length / totalShots)), (i + 1) * Math.max(1, Math.floor(asrLines.length / totalShots)));
       const asrContext = chunkAsrLines.map(l => l.text || l.content || '').filter(Boolean).join(' ') || '';
@@ -506,9 +537,9 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
         // 重新筛选该时间段的 ASR 台词：按台词时间中点归属，避免跨越分割点的台词被硬裁剪
         const subAsrLines = hasAsrTimestamps
           ? asrLines.filter(l => {
-              const lStart = l.startMs ?? (typeof l.start === 'number' ? l.start : 0);
-              const lEnd = l.endMs ?? (typeof l.end === 'number' ? l.end : lStart);
-              const midPoint = (lStart + lEnd) / 2;
+              // 🔧 修复 Bug A3：ASR 的 l.start / l.end 是「秒」，之前直接当毫秒算中点，中点永远 < subStartMs，子段拿不到台词
+              const line = ScriptGenStrategy._asrLineToMs(l, 0);
+              const midPoint = (line.startMs + line.endMs) / 2;
               return midPoint >= subStartMs && midPoint < subEndMs;
             })
           : [];

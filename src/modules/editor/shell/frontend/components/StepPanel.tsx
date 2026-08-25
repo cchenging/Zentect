@@ -38,15 +38,21 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
   const handleStepClick = (targetStep: number) => {
     if (targetStep < 1 || targetStep > STEPS.length) return;
     if (targetStep === currentStep) return;
+    // 向后跳转（目标 ≤ 当前）：无条件允许，已完成步骤可自由回看
     if (targetStep <= currentStep) {
       setCurrentStep(targetStep);
       return;
     }
+    // 向前跳一步：仅当前步骤已完成时允许"下一步"
     if (targetStep === currentStep + 1 && stepStatuses[currentStep - 1] === 'completed') {
       setCurrentStep(targetStep);
       return;
     }
-    const lastCompletedStep = stepStatuses.findIndex((s) => s !== 'completed') + 1;
+    // 💥 修复全完成边界：findIndex 找不到非 completed 返回 -1，
+    //    旧代码 lastCompletedStep = -1 + 1 = 0，导致 5/5 完成时任何向前跳转被拒。
+    //    正确语义：-1 表示全部步骤均已完成，lastCompletedStep = STEPS.length。
+    const firstIncompleteIdx = stepStatuses.findIndex((s) => s !== 'completed');
+    const lastCompletedStep = firstIncompleteIdx === -1 ? STEPS.length : firstIncompleteIdx + 1;
     if (targetStep <= lastCompletedStep) {
       setCurrentStep(targetStep);
       return;

@@ -27,6 +27,7 @@ vi.mock('lucide-react', () => ({
   Trash2: (props: any) => React.createElement('span', { 'data-testid': 'icon-trash2', ...props }),
   Sparkles: (props: any) => React.createElement('span', { 'data-testid': 'icon-sparkles', ...props }),
   Loader2: (props: any) => React.createElement('span', { 'data-testid': 'icon-loader2', ...props }),
+  Copy: (props: any) => React.createElement('span', { 'data-testid': 'icon-copy', ...props }),
 }));
 
 vi.mock('@renderer/api', () => ({

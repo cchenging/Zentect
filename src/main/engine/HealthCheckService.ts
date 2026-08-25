@@ -79,6 +79,17 @@ export class HealthCheckService {
       hint: fs.existsSync(sensevoicePath) ? '' : 'ASR 模型缺失，语音识别不可用'
     });
 
+    // ASR（Paraformer）— 高精度中文引擎（可选，需联网下载到 models/paraformer_large）
+    const paraformerPath = path.join(PathManager.getModelsPath(), 'paraformer_large');
+    results.push({
+      name: '语音识别 (Paraformer)',
+      available: fs.existsSync(paraformerPath) && fs.existsSync(path.join(paraformerPath, 'model.pt')),
+      type: 'local',
+      hint: fs.existsSync(path.join(paraformerPath, 'model.pt'))
+        ? ''
+        : 'Paraformer 模型未下载，选择"高精度"引擎时需先联网下载（约 880MB）'
+    });
+
     // TTS — 检查当前配置的 TTS 引擎
     const ttsProvider = ProviderManager.getTTSConfig().provider;
     if (ttsProvider === 'edge') {
@@ -194,9 +205,11 @@ export class HealthCheckService {
     if (type === 'openai_like') {
       const provider = data.provider || 'unknown';
       const apiKey = data.apiKey || data.key;
+      const model = data.model || (Array.isArray(data.models) ? data.models[0] : '') || '';
       let baseURL = data.baseURL || data.url;
       
       if (!apiKey) throw new Error('API Key 不能为空');
+      if (!model) throw new Error('未选择模型，无法执行真实推理测试');
       
       if (!baseURL) {
         try { baseURL = ProviderManager.getLLMConfig('chat', provider).baseURL; } catch(e) {
@@ -206,17 +219,29 @@ export class HealthCheckService {
       
       const cleanUrl = (baseURL || 'https://api.openai.com/v1').replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-      const res = await fetch(`${cleanUrl}/models`, {
-        headers: { 'Authorization': `Bearer ${apiKey}` },
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const res = await fetch(`${cleanUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'ping' }],
+          max_tokens: 5,
+        }),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
       
-      if (res.ok) return 'LLM_AUTH_SUCCESS';
-      if (res.status === 404 || res.status === 400) return 'LLM_AUTH_SUCCESS_PROXY_MODE';
+      if (res.ok) {
+        const json = await res.json();
+        const content = json?.choices?.[0]?.message?.content;
+        if (typeof content === 'string' && content.length > 0) return 'LLM_AUTH_SUCCESS';
+        throw new Error('模型调用成功但返回内容为空');
+      }
       
-      throw new Error(`鉴权失败，状态码：${res.status}`);
+      let errDetail = '';
+      try { const j = await res.json(); errDetail = j?.error?.message || j?.message || ''; } catch {}
+      throw new Error(`模型推理失败，状态码：${res.status}${errDetail ? `：${errDetail}` : ''}`);
     }
     return 'TEST_FINISHED';
   }

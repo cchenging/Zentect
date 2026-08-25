@@ -207,6 +207,12 @@ export const IPC_CHANNELS = {
   FEEDBACK_GET: 'feedback:get',
   FEEDBACK_CLEAR: 'feedback:clear',
 
+  // --- OP/ED 片头片尾自动识别总成（P1 启发/P2 指纹 两级编排，低置信结果转手动选择）---
+  OPED_GET_STATE: 'oped:getState',           // 获取当前素材 trim 配置/手动锁/历史
+  OPED_RUN_DETECT: 'oped:runDetect',         // 前端按钮「自动识别」→ 跑完整 P1→P2 编排并写 DB
+  OPED_TOGGLE_LOCK: 'oped:toggleLock',       // 切换手动锁定（锁定后自动不再覆盖）
+  OPED_ACCEPT_SUGGESTION: 'oped:acceptSuggestion',  // 点「接受建议」→ 某条历史建议以 USER_MANUAL 身份生效并锁定
+
   // --- 用户体系域 ---
   USER_REGISTER: 'user:register',
   USER_LOGIN: 'user:login',

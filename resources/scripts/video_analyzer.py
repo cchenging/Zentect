@@ -177,7 +177,15 @@ async def _detect_scenes_ffmpeg_concurrent(file_path: str, blocks: list, thresho
         except Exception:
             return []
 
-    tasks = [_detect_block(s, e, idx) for s, e, idx in blocks]
+    # 🔧 R9（PR-3）：FFmpeg 场景检测并发封顶 —— 最多 4 个并行 FFmpeg 进程，
+    #   不再随块数线性上涨（12 段 → 12 进程），避免并发 FFmpeg 占满 CPU/IO 拖垮 UI。
+    sem = asyncio.Semaphore(4)
+
+    async def _run_block(start_ms: int, end_ms: int, block_idx: int) -> list:
+        async with sem:
+            return await _detect_block(start_ms, end_ms, block_idx)
+
+    tasks = [_run_block(s, e, idx) for s, e, idx in blocks]
     results = await asyncio.gather(*tasks)
 
     all_changes = []
@@ -420,16 +428,28 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
         try:
             with INFERENCE_LOCK:
                 cap = cv2.VideoCapture(file_path)
+                frame_idx = 0
                 for kind, idx, mid_sec in cover_times:
                     try:
-                        cap.set(cv2.CAP_PROP_POS_MSEC, mid_sec * 1000)
+                        # 🔧 R10（PR-3）：封面抽帧流式化 —— cover_times 已按时间升序排序，
+                        #   单遍顺序读：仅向前 grab（不解码）到目标帧后 read 一次，
+                        #   不再逐封面 POS_MSEC seek（每次 seek 触发解码器重初始化 + IO 重读关键帧）。
+                        target_frame = int(mid_sec * fps)
+                        while frame_idx < target_frame:
+                            if not cap.grab():
+                                break
+                            frame_idx += 1
                         ret, frame = cap.read()
+                        frame_idx += 1
                         if ret:
                             cover_name = f"{'chunk' if kind == 'chunk' else 'seg'}_{idx:03d}_cover.jpg"
                             cpath = os.path.join(output_dir, cover_name)
                             cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tofile(cpath)
                             cover_paths[(kind, idx)] = cpath
-                            cover_frames_for_clip.append(((kind, idx), frame[:, :, ::-1]))
+                            # 🔧 R10（PR-3）：帧编码即释放——CLIP 特征提取只需 224px 缩略图，
+                            #   立即降采样后入列，不再持有全尺寸 RGB 副本（2160×1080×3）常驻内存。
+                            thumb = cv2.resize(frame, (224, 224))
+                            cover_frames_for_clip.append(((kind, idx), thumb[:, :, ::-1]))
                             # 🎨 P1 衔接维度：封面帧 HSV 色相直方图（16 桶归一化），
                             #   供镜头匹配的"相邻切片色调连续性"检查（字段已预留 colorHistogram）
                             try:
@@ -440,6 +460,8 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
                                 color_histograms[(kind, idx)] = (hist / total).tolist()
                             except Exception:
                                 pass
+                            # 🔧 R10（PR-3）：帧编码 + 直方图均完成后释放帧引用（流式化不持全量副本）
+                            del frame
                     except Exception:
                         pass
                 cap.release()
@@ -485,7 +507,9 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
 
                     for idx, ckey in enumerate(clip_keys):
                         if idx < len(image_features):
-                            vision_embeddings[ckey] = image_features[idx].tolist()
+                            # 🔧 R6 embedding 瘦身（PR-2）：CLIP 视觉特征缓存降 float16 半精度，
+                            #   驻留与落库 JSON 体积减半；下游读回按 float32 计算精度无损
+                            vision_embeddings[ckey] = image_features[idx].astype(np.float16).tolist()
 
                     del pil_images, all_features, image_features
                     print(f"[CLIP] 预提取 {len(vision_embeddings)} 个切片的 512维视觉特征完成", file=sys.stderr)

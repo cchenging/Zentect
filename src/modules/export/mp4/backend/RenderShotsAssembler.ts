@@ -69,13 +69,10 @@ export function assembleRenderShots(project: ExportProject): RenderShot[] {
     const first = members[0];
     const last = members[members.length - 1];
 
-    // ExportShot.chunkData 是 Record<string, unknown>，先局部收窄为可读结构
-    const firstChunk = first.chunkData as { filePath?: string; startMs?: number; endMs?: number; durationMs?: number } | undefined;
-    const lastChunk = last.chunkData as { startMs?: number; endMs?: number } | undefined;
-
-    // 源区间：组首源起点 ~ 组尾源终点（毫秒）；无 chunkData 时回退秒级 start/end
-    const srcStartMs = firstChunk?.startMs != null ? firstChunk.startMs : first.start * 1000;
-    const srcEndMs = lastChunk?.endMs != null ? lastChunk.endMs : last.end * 1000;
+    // ExportShot.start/end 已由装配器统一为【源视频坐标】（秒），源区间取组首~组尾源坐标（毫秒）。
+    // 不读 chunkData.startMs/endMs：那是 body 切片内坐标，与源视频变速因子计算不同系（缺陷 D1 同源）。
+    const srcStartMs = first.start * 1000;
+    const srcEndMs = last.end * 1000;
 
     // 目标时长 = 组内成员 target 时长之和（时间线上连续，= last.end - first.start）
     const targetDurSec = last.end - first.start;
@@ -96,7 +93,8 @@ export function assembleRenderShots(project: ExportProject): RenderShot[] {
       chunkData: first.chunkData
         ? {
             ...(first.chunkData as Record<string, unknown>),
-            filePath: firstChunk?.filePath ?? '',
+            // 合并后切片素材沿用组首切片（body 切片 + body 坐标）；startMs/endMs 记录源区间（源坐标）
+            filePath: (first.chunkData as { filePath?: string } | undefined)?.filePath ?? '',
             startMs: srcStartMs,
             endMs: srcEndMs,
             durationMs: srcEndMs - srcStartMs,

@@ -11,6 +11,31 @@ import { isFeatureEnabled } from '../../../shared/config/feature-flags';
  *   底色保持 react-hot-toast 以避免破坏现有 UI 交互
  */
 export class AppNotifier {
+  /** 防重去抖窗口（毫秒）：同级别+同内容在窗口内第二次及以后被静默丢弃 */
+  private static readonly DEDUP_WINDOW_MS = 500;
+
+  /** 最近一次已发出的提示缓存：key = `${level}:${message}`，value = 触发时间戳 */
+  private static readonly _lastFireMap = new Map<string, number>();
+
+  /**
+   * 💥 防重判定：短时间内完全相同的提示只放行一次，避免重复弹 Toast
+   * @returns true=允许放行，false=判定为重复已拦截
+   */
+  private static checkDedupPass(level: string, message: string): boolean {
+    const key = `${level}:${message}`;
+    const now = Date.now();
+    const last = this._lastFireMap.get(key) || 0;
+    if (now - last < this.DEDUP_WINDOW_MS) {
+      // 落入防重窗口 → 判定为重复，拦截
+      console.warn(`[AppNotifier] 防重拦截：窗口内重复提示已忽略 (${key})`);
+      return false;
+    }
+    this._lastFireMap.set(key, now);
+    // 💥 轻量兜底：控制 Map 不至于无限膨胀（>200 项时清空）
+    if (this._lastFireMap.size > 200) this._lastFireMap.clear();
+    return true;
+  }
+
   /**
    * 获取翻译后的消息文本
    */
@@ -53,6 +78,8 @@ export class AppNotifier {
   static success(codeOrMsg: string, duration?: number) {
     if (!codeOrMsg) return;
     const msg = this.getTranslatedMessage(codeOrMsg);
+    // 💥 防重防线2：同内容短时间内重复调用直接拦截，不再弹 Toast / 入通知中心
+    if (!this.checkDedupPass('success', msg)) return;
     toast.success(msg, {
       duration: duration || UI_CONSTANTS.DURATION.TOAST_NORMAL,
       style: this.getBaseStyle(),
@@ -70,6 +97,11 @@ export class AppNotifier {
   static error(codeOrMsg: string, errorObj?: any) {
     if (!codeOrMsg) return;
     const msg = this.getTranslatedMessage(codeOrMsg);
+    if (!this.checkDedupPass('error', msg)) {
+      // 即使是防重拦截，错误溯源日志也保留一份以便排查
+      if (errorObj) console.error(`[AppNotifier Error 溯源·重复调用已合并]: ${codeOrMsg}`, errorObj);
+      return;
+    }
     toast.error(msg, {
       duration: UI_CONSTANTS.DURATION.TOAST_LONG,
       style: this.getBaseStyle(),
@@ -90,6 +122,7 @@ export class AppNotifier {
   static info(codeOrMsg: string) {
     if (!codeOrMsg) return;
     const msg = this.getTranslatedMessage(codeOrMsg);
+    if (!this.checkDedupPass('info', msg)) return;
     toast(msg, {
       duration: UI_CONSTANTS.DURATION.TOAST_SHORT,
       style: this.getBaseStyle(),
@@ -104,6 +137,7 @@ export class AppNotifier {
   static warning(codeOrMsg: string) {
     if (!codeOrMsg) return;
     const msg = this.getTranslatedMessage(codeOrMsg);
+    if (!this.checkDedupPass('warn', msg)) return;
     toast(msg, {
       duration: UI_CONSTANTS.DURATION.TOAST_NORMAL,
       icon: '⚠️',

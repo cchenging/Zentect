@@ -47,6 +47,16 @@ function setupInMemoryDB(): Database.Database {
       created_at INTEGER,
       updated_at INTEGER
     );
+    CREATE TABLE IF NOT EXISTS video_chunk_parts (
+      media_id     TEXT NOT NULL,
+      part_index   INTEGER NOT NULL,
+      kind         TEXT NOT NULL,
+      items_json   TEXT NOT NULL,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY (media_id, part_index)
+    );
+    CREATE INDEX IF NOT EXISTS idx_video_chunk_parts_media ON video_chunk_parts(media_id);
   `);
   return db;
 }
@@ -116,6 +126,29 @@ describe('VideoChunkRepository 阶段 B 缓存契约', () => {
     const got = repo.getByMediaId('C:/v3.mp4');
     expect(got!.version).toBe(2);
     expect(got!.matchSegments).toEqual([]);
+  });
+
+  it('R7 分片写: >200 条按 ≤200 片落库, 读端合并完整往返, 旧表不留整行', () => {
+    const repo = new VideoChunkRepository();
+    const chunks = Array.from({ length: 450 }, (_, i) => ({ id: `chunk_${String(i).padStart(3, '0')}`, parentChunkId: `scene_${i}`, startMs: i * 1000, endMs: i * 1000 + 999, description: `镜头${i}` }));
+    const segs = Array.from({ length: 250 }, (_, i) => ({ id: `scene_${i}_seg0`, parentChunkId: `scene_${i}`, startMs: i * 1000, endMs: i * 1000 + 999 }));
+    repo.save('C:/big.mp4', chunks, segs);
+
+    // 分片落库: 450→3 片 chunks + 250→2 片 segs = 5 片; 旧表无整行
+    const partCount = memDB.prepare('SELECT COUNT(*) AS c FROM video_chunk_parts WHERE media_id = ?').get('C:/big.mp4') as any;
+    expect(partCount.c).toBe(5);
+    const legacyCount = memDB.prepare('SELECT COUNT(*) AS c FROM video_chunks WHERE media_id = ?').get('C:/big.mp4') as any;
+    expect(legacyCount.c).toBe(0);
+
+    // 读端合并完整往返且顺序保持
+    const got = repo.getByMediaId('C:/big.mp4');
+    expect(got).not.toBeNull();
+    expect(got!.version).toBe(2);
+    expect(got!.chunks).toHaveLength(450);
+    expect(got!.matchSegments).toHaveLength(250);
+    expect(got!.chunks[0].id).toBe('chunk_000');
+    expect(got!.chunks[449].id).toBe('chunk_449');
+    expect(got!.matchSegments[249].id).toBe('scene_249_seg0');
   });
 });
 

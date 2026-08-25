@@ -16,6 +16,8 @@ export class JobScheduler {
   private static instance: JobScheduler;
   private repo = new JobRepository();
   private isRunning = false;
+  /** 🔧 R12（PR-3）：是否正在执行步骤1（素材提取管线），供步骤5 入口做全局准入排队 */
+  private step1Running = false;
   private processNextTimer: NodeJS.Timeout | null = null;
   private projectService = new ProjectService(); // — 实例化 ProjectService
   private memoryBlacklist: Set<string> = new Set();
@@ -92,6 +94,15 @@ export class JobScheduler {
     await this.processNext();
   }
 
+  /**
+   * 🔧 R12（PR-3）：步骤1（素材提取）是否正在运行。
+   * 供 SemanticAnalyzeStrategy 入口做全局准入排队 —— 步骤5 镜头匹配与步骤1 素材提取
+   * 都是吃满 CPU/IO 的重活，必须互斥排队，避免全局并发不可预期。
+   */
+  public isStep1Running(): boolean {
+    return this.step1Running;
+  }
+
   /** 停止调度引擎，清理所有定时器 */
   public stop() {
     this.isRunning = false;
@@ -125,6 +136,8 @@ export class JobScheduler {
 
     try {
       if (job.taskType === 'extract') {
+        this.step1Running = true; // 🔧 R12（PR-3）：标记步骤1 正在执行，供步骤5 准入排队
+        try {
         AppLogger.info(LOG_TAGS.SCHEDULER, `⚙️ 开始执行提取管线 [JobId: ${job.id}]`);
 
         const mediaRepo = new MediaRepository();
@@ -188,6 +201,9 @@ export class JobScheduler {
           vocalsPath: step1Data.audio?.vocalsPath || null,
           bgmPath: step1Data.audio?.bgmPath || null,
           vocalsIsFallback: !!step1Data.audio?.vocalsIsFallback,
+          // 🎬 P1-1 裁剪指纹：随产物透传给 PipelineResultWriter 持久化到 media_assets
+          framesTrimSig: step1Data.frames?.framesTrimSig || null,
+          audioTrimSig: step1Data.audio?.audioTrimSig || null,
           separationMode: payload.config?.audio?.separationMode || 'quality',
           separationEngine: payload.config?.audio?.engine || 'mdx',
           shots: (step1Data.asr?.lines || []).map((line: any, idx: number) => {
@@ -253,6 +269,9 @@ export class JobScheduler {
           this.repo.failJob(job.id, dbErr.message || 'DB_WRITE_FAILED');
           MainNotifier.notifyTaskProgress(job.targetId, job.projectId, 'DB_WRITE_FAILED', 0, DICT.TASK_STATUS.FAILED);
         }
+        } finally {
+          this.step1Running = false; // 🔧 R12（PR-3）：成功/失败/崩溃任何路径退出 extract 都复位准入标志
+        }
       }
     } catch (err: any) {
       try {
@@ -283,6 +302,7 @@ export class JobScheduler {
    */
   public async executeLinearQuickPipeline(projectId: string, videoPath: string, window: Electron.BrowserWindow) {
     try {
+      this.step1Running = true; // 🔧 R12（PR-3）：极速向导同样跑步骤1，参与全局准入互斥
       AppLogger.info(LOG_TAGS.SCHEDULER, `[线性向导中枢] 开始激活极速提取分析流. 项目: ${projectId}`);
 
       // 定位本项目主视频媒体（作为 mediaId，供 Strategy 增量跳过与写库使用）
@@ -343,6 +363,9 @@ export class JobScheduler {
         vocalsPath: step1Data.audio?.vocalsPath || null,
         bgmPath: step1Data.audio?.bgmPath || null,
         vocalsIsFallback: !!step1Data.audio?.vocalsIsFallback,
+        // 🎬 P1-1 裁剪指纹：随产物透传给 PipelineResultWriter 持久化到 media_assets
+        framesTrimSig: step1Data.frames?.framesTrimSig || null,
+        audioTrimSig: step1Data.audio?.audioTrimSig || null,
         separationMode: 'quality',
         separationEngine: 'mdx',
         shots: (step1Data.asr?.lines || []).map((line: any, idx: number) => {
@@ -398,8 +421,10 @@ export class JobScheduler {
       });
 
       AppLogger.info(LOG_TAGS.SCHEDULER, `[线性向导中枢] 全业务数据链全线胜利通车！ mediaId=${mediaId}`);
+      this.step1Running = false; // 🔧 R12（PR-3）：成功路径复位准入标志
     } catch (err: any) {
       AppLogger.error(LOG_TAGS.SCHEDULER, `[线性向导中枢致命崩溃]: ${err.message}`);
+      this.step1Running = false; // 🔧 R12（PR-3）：异常路径同样复位准入标志
       if (!window.isDestroyed()) {
         window.webContents.send(IPC_CHANNELS.ENGINE_PIPELINE_PROGRESS, {
           progress: 0,

@@ -86,6 +86,7 @@ export const ApiProfileManager: React.FC<ApiProfileManagerProps> = ({
         provider: profile.provider,
         apiKey: profile.apiKey,
         baseURL: profile.baseUrl || defaultBaseUrl,
+        model: Array.isArray(profile.models) && profile.models.length > 0 ? profile.models[0] : '',
       });
       setTestStatus((prev) => ({ ...prev, [profile.id!]: "success" }));
     } catch {

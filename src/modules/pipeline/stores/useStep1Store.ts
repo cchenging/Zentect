@@ -60,7 +60,7 @@ export interface ExtractionConfig {
     density?: SharedFrameDensityPreset | string;
   };
   audio: AudioConfig;
-  whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper'; language?: string; modelSize?: string };
+  whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'paraformer'; language?: string; modelSize?: string };
   faces: {
     enabled: boolean;
     engine: 'insightface' | 'mediapipe';
@@ -68,6 +68,16 @@ export interface ExtractionConfig {
      * HDBSCAN 聚类后用于合并过拆簇 + 分配噪声点
      * 经验值：0.65 宽松 / 0.70 平衡 / 0.75 严格 / 0.82 极严格 */
     cosineThreshold?: number;
+  };
+  /**
+   * 🎬 P0 · OP/ED 片头片尾裁剪（电视剧/综艺场景，手动指定正片区间；毫秒级）
+   *   - defaultTrimStartMs / defaultTrimEndMs = 全局默认裁剪
+   *   - perMedia[mediaId] = 单素材精确覆盖（多素材项目每集 OP 不同时使用）
+   */
+  mediaTrim?: {
+    defaultTrimStartMs?: number;
+    defaultTrimEndMs?: number;
+    perMedia?: Record<string, { trimStartMs?: number; trimEndMs?: number }>;
   };
 }
 
@@ -145,6 +155,8 @@ export interface Step1Store {
   // ASR 操作
   setAsrLines: (lines: AsrLine[]) => void;
   updateAsrLine: (index: number, text: string) => void;
+  /** 删除指定下标的台词行（用户纠错：移除误识别/杂音条目），随 persistProjectSnapshot 落盘 */
+  removeAsrLine: (index: number) => void;
   setFrameCount: (count: number) => void;
   setAudioSeparated: (separated: boolean) => void;
   setVocalsIsFallback: (fallback: boolean) => void;
@@ -211,6 +223,12 @@ export const useStep1Store = create<Step1Store>()(
         set((s) => {
           const lines = [...s.asrLines];
           if (lines[index]) lines[index] = { ...lines[index], text };
+          return { asrLines: lines };
+        }),
+      removeAsrLine: (index) =>
+        set((s) => {
+          const lines = [...s.asrLines];
+          if (index >= 0 && index < lines.length) lines.splice(index, 1);
           return { asrLines: lines };
         }),
       setFrameCount: (count) => set({ frameCount: count }),

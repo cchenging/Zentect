@@ -19,8 +19,12 @@ export interface ExportShot {
   duration: number;
   /** 该段配音音频路径（TTS，已脱水） */
   audioPath?: string;
-  /** 视频切片数据（含毫秒级 startMs/endMs/filePath） */
+  /** 视频切片数据（含毫秒级 startMs/endMs/filePath；body 切片内坐标，配 filePath 切片素材消费） */
   chunkData?: Record<string, unknown>;
+  /** 源视频坐标起始（毫秒，OP/ED 裁剪体系 P1-4 回写；对源视频 mediaPath 定位唯一正确） */
+  videoTimelineStartMs?: number;
+  /** 源视频坐标结束（毫秒） */
+  videoTimelineEndMs?: number;
   /** 变速因子（1.0=正常） */
   appliedSpeedFactor?: number;
   /** 是否保留原片原声（true=原声段，不配 TTS 配音，剪映导出时视频段音量开足） */

@@ -50,6 +50,13 @@ export class ProjectRepository {
     return this.findQuickProjectById(id);
   }
 
+  /**
+   * 获取项目全部媒体资产（含 file_path），用于级联清理 .trim_cache 等派生产物
+   */
+  public getAllMediaAssets(projectId: string): Array<{ id: string; file_path: string }> {
+    return this.db.prepare(PROJECT_SQL.GET_ALL_MEDIA).all({ projectId }) as Array<{ id: string; file_path: string }>;
+  }
+
   public create(id: string, name: string) {
     this.db.prepare(PROJECT_SQL.CREATE).run({ id, name });
   }

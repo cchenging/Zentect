@@ -10,8 +10,87 @@ import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { ProjectService } from '../services/ProjectService';
 import { MediaItem, Shot, Role, PipelineExtractionResult } from '../../shared/types';
 import { DICT, ENGINE_STATUS } from '../../modules/infra/i18n/dictionary';
+// 🎬 OP/ED 片头片尾裁剪策略（P0 手动裁剪）
+import { resolveForMedia, applyToShots } from './utils/MediaTrimPolicy';
 
 export class MediaEngine {
+
+  // ============================================================
+  // 🧹 ASR 文本清洗归一化（解决 8/19 项目台词带 🎼😊 嗯 啊 哦 等噪声的问题）
+  //   区分「originalText（显示给用户看 / 审计）」和「aiText（给匹配/LLM 用的干净文本）」
+  // ============================================================
+  /** 函数级中文注释：把 Whisper/Funasr 产出的 ASR 原始文本做"噪声剥离 + 冗余语气词清理"。
+   * 核心原则：
+   *   - 返回值 { original, cleaned, isPureNoise }
+   *   - original：轻度清洗（仅去掉控制字符/不可见 emoji，保留用户能识别的语气词/嗯啊），用于 UI 展示的 originalText 字段，用户看不到"被偷偷改掉的原文"
+   *   - cleaned：重度清洗（剥离音乐符号 🎼♪、emoji、重复嗯啊哦语气词），给 Step3 ScriptGen / Step5 Match / TTS 使用，避免产生垃圾关键词
+   *   - isPureNoise：整句清洗后空了，意味着"这段就是纯语气词/音乐"，调用方可直接跳过不落库或标为环境音
+   * @param raw ASR 引擎输出的 item.text（可能带时间前后缀/音乐标记/语气词重复/emoji）
+   */
+  public static cleanAsrText(raw: string): { original: string; cleaned: string; isPureNoise: boolean; chineseCharCount: number } {
+    const source = typeof raw === 'string' ? raw : '';
+
+    // ============= 第一步：original（轻度清洗 + 统一空白）=============
+    // 去掉 C0/C1 控制字符（0x00-0x1F 和 0x7F-0x9F），但保留换行/回车/tab（后续转空格）
+    let original = source.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+    // 统一所有空白字符为单个空格（避免渲染成多行或缩进不齐）
+    original = original.replace(/\s+/g, ' ').trim();
+
+    // ============= 第二步：cleaned（重度清洗）=============
+    let cleaned = original;
+
+    // 2.1 剥离所有 Emoji 与特殊音乐符号（🎼♪♫♩♬♭♯😊😅😄🤔👍）
+    //   - 覆盖 Unicode 15.1 Emoji 主范围：U+1F300 ~ U+1FAFF + U+2600 ~ U+27BF
+    //   - 额外单独处理常见 1-char 音乐符/符号
+    cleaned = cleaned.replace(/[\u{1F300}-\u{1FAFF}]/gu, ' ');
+    cleaned = cleaned.replace(/[\u{2600}-\u{27BF}]/gu, ' ');
+    cleaned = cleaned.replace(/[\u{1F000}-\u{1F2FF}]/gu, ' ');
+    // 单独音乐标记：♪ ♫ ♩ ♬ ♭ ♯ 🎵 🎶 🎼 🎹 🎷 🎺 🎸 🎻 🎤 🎧 （补充遗漏在 emoji 范围外的单字节符号）
+    cleaned = cleaned.replace(/[♪♫♩♬♭♯🎵🎶🎼🎹🎷🎺🎸🎻🎤🎧]/g, ' ');
+    // 非汉字非 ASCII 符号的特殊装饰字符（F0 私人区 / 私用区字符）— 必须带 u flag，否则 \u{E000} 会被拆成 2 个 BMP 字符导致 Range out of order 报错
+    cleaned = cleaned.replace(/[\u{E000}-\u{F8FF}]/gu, ' ');
+
+    // 2.2 剥离语气词的"重复出现 + 边界孤立"，但不影响正常词内组合（如"好啊/我的妈呀/哦哦不对"里的正常字保留）
+    //   ⚠️ 注意："呵/嘿/哈/嘻"这类和叠字强绑定的字不在集合中（避免误伤"呵呵对呵呵/哈哈哈哈哈哈哈哈"成正常句）
+    const FILLER_CHARS = new Set(['嗯', '啊', '哦', '唉', '哎', '哟', '呀', '呢', '吧', '嘛', '啦', '呃', '呗', '哇', '哼', '欸', '啧', '唔', '喂']);
+    const FILLER_REGEXP_SOURCE = Array.from(FILLER_CHARS).join('');
+    // a) 先把重复语气词（嗯嗯嗯嗯、啊啊啊）归一化为单字（保留单字以便后续判定是否独立噪声）
+    cleaned = cleaned.replace(new RegExp(`([${FILLER_REGEXP_SOURCE}])\\1{1,}`, 'g'), '$1');
+    // b) 再把"独立出现 + 被空格包围"的语气词去掉，但词内组合（好啊/对啊/我的啊）保留
+    //    做法反复迭代三次，避免"A 嗯 B 嗯 C"里第二个嗯因为前面是空格（B 被删后出现新边界）没清掉
+    const RE_START_FILLERS = new RegExp(`^(?:[${FILLER_REGEXP_SOURCE}])+\\s+`);
+    const RE_END_FILLERS = new RegExp(`\\s+(?:[${FILLER_REGEXP_SOURCE}])+$`);
+    const RE_MID_FILLERS = new RegExp(`\\s+(?:[${FILLER_REGEXP_SOURCE}])+\\s+`, 'g');
+    for (let iter = 0; iter < 3; iter++) {
+      const before = cleaned;
+      cleaned = cleaned
+        .replace(RE_START_FILLERS, '')
+        .replace(RE_END_FILLERS, '')
+        .replace(RE_MID_FILLERS, ' ');
+      if (cleaned === before) break;
+    }
+    // c) 最后单独的单个孤立语气词（如果整句只剩"嗯"）→ 空
+
+    // 2.3 归一化中文标点：多余的？？？、，，，，缩成单个
+    cleaned = cleaned.replace(/([，。？！,.?!:：;；])\1{1,}/g, '$1');
+    // 2.4 去掉句首句尾孤立标点（避免"，裂纹横亘在鼎青楼"）
+    cleaned = cleaned.replace(/^[\s，。？！,.?!:：;；、]+/, '').replace(/[\s，。？！,.?!:：;；、]+$/, '');
+
+    // 2.5 统一空白（清洗 emoji/语气词后留下多空格）
+    cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+    // ============= 第三步：isPureNoise 判断 =============
+    // 统计清洗后文本里的汉字数（当前项目场景是中文电视剧，非中文内容一律视为噪声/幻觉）
+    const chineseMatch = cleaned.match(/[\u4e00-\u9fa5]/g);
+    const chineseCharCount = chineseMatch ? chineseMatch.length : 0;
+    // isPureNoise 判定（当前项目 = 中文短剧/电视剧）：
+    //   - 汉字 = 0 → 整段英文/数字/符号 → 纯噪声（ASR 幻觉或 BGM 噪声）
+    //   - 汉字 = 1 → 单个字（嗯/啊/哦/哎）→ 纯语气词噪声
+    //   - 汉字 ≥ 2 → 认为是有效台词（哪怕是语气词叠字"嗯啊哈哈"，留给下游 TTS/Step3 过滤）
+    const isPureNoise = chineseCharCount <= 1;
+
+    return { original, cleaned, isPureNoise, chineseCharCount };
+  }
 
   static async extractMetadata(filePath: string) { return await VideoProcessor.extractMetadata(filePath); }
 
@@ -182,7 +261,7 @@ export class MediaEngine {
       });
       const whisperPrefix = join(PathManager.getProjectExtractionsDir(projectId, 'whisper'), `whisper_${mediaId}`);
       
-      const dto = await MediaEngine.assemblePipelineData(whisperPrefix, framesAbsDir, mediaId, inPoint, roles);
+      const dto = await MediaEngine.assemblePipelineData(whisperPrefix, framesAbsDir, projectId, mediaId, inPoint, roles);
       let shots = dto.shots;
 
       const projectService = new ProjectService();
@@ -200,7 +279,18 @@ export class MediaEngine {
     } catch (error) { throw error; }
   }
 
-  public static async assemblePipelineData(whisperPrefix: string, framesAbsDir: string, mediaId: string, inPoint?: number, roles: Role[] = [] ): Promise<{ rawText: string, shots: Shot[], roles: Role[] }> {
+  /** 函数级中文注释：组装 Step1 素材分析的结果 DTO（帧路径 + ASR 台词）。
+   *   🎬 P0 OP/ED 裁剪接入点：组装完 shots 后调用 MediaTrimPolicy.applyToShots，
+   *      将台词时间轴平移 (start -= trimStartSec) 并删除掉 OP/ED 区间内的无意义段，
+   *      保证 Step3 生成的解说词第一句直接对到真实正剧时间 0s。
+   * @param whisperPrefix Whisper JSON 前缀（不含 .json/.srt）
+   * @param framesAbsDir 抽帧绝对路径目录
+   * @param projectId 项目 ID（用于读 projects.extraction_config.mediaTrim）
+   * @param mediaId 素材 ID（用于 perMedia 精确裁剪）
+   * @param inPoint 用户手动入点（秒；OP/ED 裁剪在其之后二次裁剪）
+   * @param roles 角色数组（原样返回）
+   */
+  public static async assemblePipelineData(whisperPrefix: string, framesAbsDir: string, projectId: string, mediaId: string, inPoint?: number, roles: Role[] = [] ): Promise<{ rawText: string, shots: Shot[], roles: Role[] }> {
     const result: { rawText: string, shots: Shot[], roles: Role[] } = { rawText: '', shots: [], roles: roles };
     const timeOffset = inPoint || 0;
     let availableFrames: { time: number, path: string }[] = [];
@@ -231,21 +321,32 @@ export class MediaEngine {
         return result;
     }
 
-    let lastEndTime = 0; let lastText = ''; let hallucinationCount = 0;
+    let lastEndTime = 0; let lastCleanedText = ''; let hallucinationCount = 0;
 
     whisperData.transcription.forEach((item: any, index: number) => {
-      const tStart = this.timeStrToSeconds(item.timestamps.from) + timeOffset;
-      const tEnd = this.timeStrToSeconds(item.timestamps.to) + timeOffset;
-      const text = item.text.trim();
+      // 兼容两种 whisper 输出结构：
+      //   - 新版: { timestamps: { from: "00:00", to: "00:09" } } (Python daemon 结构)
+      //   - 老版: { start: "00:00", startMs: 0, end: "00:09", endMs: 9000 } (8/19 项目 DB 存储的 extracted_text 结构，带毫秒)
+      const tsFromRaw = item.timestamps?.from ?? item.start;
+      const tsToRaw = item.timestamps?.to ?? item.end;
+      const tStart = this.timeStrToSeconds(tsFromRaw) + timeOffset;
+      const tEnd = this.timeStrToSeconds(tsToRaw) + timeOffset;
 
-      if (text === lastText && text !== '') {
+      // 🧹 调用统一的 ASR 清洗器：区分 original（给用户看）/ cleaned（给匹配/TTS 用）/ isPureNoise（纯语气词噪声段）
+      const cleaned = MediaEngine.cleanAsrText(item.text ?? item.originalText ?? '');
+      const { original: textOriginal, cleaned: textCleaned, isPureNoise } = cleaned;
+
+      // 💥 幻觉重复检测改用 cleaned 文本（避免"嗯🎼😊😊" vs "嗯😊🎼🎼"这种字符不同但实际同内容被放过）
+      if (textCleaned === lastCleanedText && textCleaned !== '') {
           hallucinationCount++;
           if (hallucinationCount >= 2) return;
       } else hallucinationCount = 0;
-      lastText = text;
+      lastCleanedText = textCleaned;
 
-      result.rawText += `[${item.timestamps.from}] ${text}\n`;
+      // rawText 用于审计/调试，直接写原文轻度清洗结果
+      result.rawText += `[${tsFromRaw}] ${textOriginal}\n`;
 
+      // 空镜头间隙（和上一段台词距离 ≥3s）→ 生成一个环境音占位镜头
       if (tStart - lastEndTime >= 3) {
          const gapFrames = availableFrames.filter(f => f.time >= lastEndTime && f.time < tStart).map(f => f.path);
          if (gapFrames.length > 0) {
@@ -257,7 +358,23 @@ export class MediaEngine {
       const matchEnd = tEnd + 0.5;
       const matchedFrames = availableFrames.filter(f => f.time >= matchStart && f.time <= matchEnd).map(f => f.path);
 
-      result.shots.push({ id: `shot_text_${Date.now()}_${index}`, mediaId, start: tStart, end: tEnd, originalText: text, aiText: text, contextFrames: matchedFrames, coverPath: matchedFrames.length > 0 ? matchedFrames[0] : (availableFrames[0]?.path || ''), roleId: '', visionText: '', audioEmotion: '' } as any);
+      // 🎯 噪声段（isPureNoise）处理：
+      //   - originalText 仍写入原文（用户UI看到"嗯/🎼😊"不会懵）
+      //   - aiText 设空字符串（下游 Step3/Step5/Step4 TTS 会自动跳过空文本段，避免产生垃圾关键词/垃圾音轨）
+      //   - audioEmotion 标记为 PURE_ENVIRONMENT_SOUND（纯环境音）
+      result.shots.push({
+        id: `shot_text_${Date.now()}_${index}`,
+        mediaId,
+        start: tStart,
+        end: tEnd,
+        originalText: textOriginal,
+        aiText: isPureNoise ? '' : textCleaned,
+        contextFrames: matchedFrames,
+        coverPath: matchedFrames.length > 0 ? matchedFrames[0] : (availableFrames[0]?.path || ''),
+        roleId: '',
+        visionText: '',
+        audioEmotion: isPureNoise ? ENGINE_STATUS.PURE_ENVIRONMENT_SOUND : ''
+      } as any);
       lastEndTime = tEnd;
     });
 
@@ -285,6 +402,20 @@ export class MediaEngine {
           shotIndex++;
         }
       }
+    }
+
+    // 🎬 P0 OP/ED 裁剪：从 projects.extraction_config 拿 mediaTrim，统一平移 + 过滤 + 截断 shots 时间轴
+    // 🆕 P0-1: resolveForMedia 附带 srcDurationMs（media_assets.duration），ED 尾部过滤/截断同步生效；
+    //          查不到时长时退化为仅 OP 平移（向后兼容）。
+    try {
+      const trim = resolveForMedia(projectId, mediaId);
+      if (trim.trimStartMs || trim.trimEndMs) {
+        const beforeCount = result.shots.length;
+        result.shots = applyToShots(result.shots, { ...trim, expectSource: true });
+        AppLogger.info(LOG_TAGS.MEDIA, `[MediaEngine] OP/ED 裁剪: 素材 ${mediaId.slice(-8)} shots=${beforeCount} → ${result.shots.length} (OP=${trim.trimStartMs}ms / ED=${trim.trimEndMs}ms)`);
+      }
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.MEDIA, `[MediaEngine] OP/ED 裁剪失败(安全保留原时间轴不裁剪): ${e.message}`);
     }
 
     return result;

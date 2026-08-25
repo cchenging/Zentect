@@ -1,11 +1,12 @@
 // AI 服务配置 Tab - V3 设计系统风格
 // Provider 卡片（扁平式，不可展开）+ 管线映射 + TTS 配置
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Eye, EyeOff, Server, Play, ExternalLink, Zap, Plus } from 'lucide-react';
+import { Eye, EyeOff, Server, Play, ExternalLink, Zap, Plus, Trash2 } from 'lucide-react';
 import { Input } from '@renderer/components/ui/input';
 import { Button } from '@renderer/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select';
 import { FormField } from '@renderer/components/ui/form-field';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@renderer/components/ui/dialog';
 import { PROVIDER_CONFIGS } from '../../ai-config/backend/AiConfigService';
 import { API } from '@renderer/api';
 
@@ -394,7 +395,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   const [fetchHint, setFetchHint] = useState('');
 
   /**
-   * 测试连接：调用 /models 接口验证鉴权
+   * 测试连接：POST /chat/completions 真实最小推理验证所选模型可用性
    *
    * 🔧 修复根因：IpcRouter 会把 handler 返回值包装成 { success, data }
    * 旧代码 typeof result === 'string' 永远不成立，导致恒报"后端返回为空"
@@ -416,6 +417,16 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
       setTestFailReason('接口地址不能为空');
       return;
     }
+    // 取当前表单选中的第一个模型作为真实推理测试目标
+    const currentModels = isCustom
+      ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
+      : formModels;
+    const testModel = currentModels[0] || '';
+    if (!testModel) {
+      setTestStatus('fail');
+      setTestFailReason('请先选择至少一个模型，再测试连接');
+      return;
+    }
     setTestStatus('testing');
     setTestFailReason('');
     try {
@@ -423,6 +434,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         provider: selectedProvider,
         apiKey: formApiKey.trim(),
         baseURL: formBaseUrl.trim(),
+        model: testModel,
       });
       // 🔧 修复：IpcRouter 包装层为 { success, data }，需解构
       if (result?.success === false) {
@@ -849,21 +861,30 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         </div>
       )}
 
-      {/* ===== 删除确认 Modal ===== */}
+      {/* ===== 删除确认 Modal（复用 ui/dialog 组件） ===== */}
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[14px] w-[360px] p-[26px]">
-            <div className="text-[15px] font-semibold text-foreground mb-3">确认删除</div>
-            <div className="text-[13px] text-muted-foreground mb-4 leading-relaxed">
-              确定删除「<strong className="text-foreground">{deleteTarget.alias || deleteTarget.name || deleteTarget.provider}</strong>」的配置？<br />
-              删除后不可恢复，正在使用此供应商的管线节点将退回到未绑定状态。
-            </div>
-            <div className="flex justify-end gap-2">
+        <Dialog open={!!deleteTarget} onOpenChange={(o) => { if (!o) setDeleteTarget(null); }}>
+          <DialogContent className="bg-[var(--bg-secondary)] border-[var(--border)] sm:max-w-[380px] p-6 gap-5 rounded-[14px] shadow-[0_10px_40px_-10px_rgba(244,63,94,0.15)]">
+            <DialogHeader className="gap-2.5">
+              <div className="flex items-center gap-2.5 text-[var(--accent-rose)]">
+                <div className="w-9 h-9 rounded-full bg-[var(--accent-rose)]/10 flex items-center justify-center shrink-0">
+                  <Trash2 size={16} className="text-[var(--accent-rose)]" />
+                </div>
+                <DialogTitle className="text-[15px] font-semibold text-foreground">确认删除</DialogTitle>
+              </div>
+              <DialogDescription className="text-[13px] text-muted-foreground leading-relaxed pl-[46px]">
+                确定删除「<strong className="text-foreground">{deleteTarget.alias || deleteTarget.name || deleteTarget.provider}</strong>」的配置？<br />
+                删除后不可恢复，正在使用此供应商的管线节点将退回到未绑定状态。
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="gap-2.5 mt-1">
               <button onClick={() => setDeleteTarget(null)} className="px-4 py-1.5 rounded-md border border-[var(--border)] bg-transparent text-muted-foreground text-[13px] cursor-pointer hover:border-[var(--bg-elevated)] hover:text-foreground transition-colors outline-none">取消</button>
-              <button onClick={handleDelete} className="px-4 py-1.5 rounded-md border-none bg-[var(--accent-rose)] text-white text-[13px] font-medium cursor-pointer hover:opacity-90 transition-opacity outline-none">确认删除</button>
-            </div>
-          </div>
-        </div>
+              <button onClick={handleDelete} className="flex items-center gap-1.5 px-4 py-1.5 rounded-md border-none bg-[var(--accent-rose)] text-white text-[13px] font-medium cursor-pointer hover:opacity-90 transition-opacity outline-none">
+                <Trash2 size={13} /> 确认删除
+              </button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

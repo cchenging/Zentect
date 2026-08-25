@@ -108,8 +108,13 @@ export function assembleExportProjectSync(
   // 4. 逐镜头装配 ExportShot[]：主数据源为 matchResults（镜头匹配结果）
   const shots: ExportShot[] = matchResults.flatMap((m: any) => {
     const chunk = m?.chunkData || null;
-    const startMs = chunk?.startMs ?? m?.videoTimelineStartMs ?? 0;
-    const endMs = chunk?.endMs ?? m?.videoTimelineEndMs ?? startMs + (m?.audioDurationMs ?? 3000);
+    // 坐标系统一为【源视频坐标】（OP/ED 裁剪体系 P1-4 约定）：
+    //  - videoTimelineStartMs/EndMs 是 AIService 回写换算后的源坐标真值（有裁剪时唯一正确）；
+    //  - chunkData.startMs/endMs 是 body 切片内坐标（配 chunkData.filePath 切片素材才同系），
+    //    无裁剪时 body==source，作为回退值等价安全。
+    //  导出器对源视频 mediaPath 定位必须用源坐标；chunkData 原样保留供"素材=body 切片"消费方。
+    const startMs = m?.videoTimelineStartMs ?? chunk?.startMs ?? 0;
+    const endMs = m?.videoTimelineEndMs ?? chunk?.endMs ?? startMs + (m?.audioDurationMs ?? 3000);
     // 未匹配镜头：无切片、无媒体、时间窗为 0（KM 求解未命中该段文案）。
     // 这类空镜头没有可导出的画面，直接跳过并由日志告警，不因单个未匹配镜头中断整次导出。
     const isUnmatched = !m?.mediaId && !chunk && startMs === 0 && endMs === 0;
@@ -141,6 +146,8 @@ export function assembleExportProjectSync(
       duration: (endMs - startMs) / 1000,
       audioPath,
       chunkData: chunk,
+      videoTimelineStartMs: startMs,
+      videoTimelineEndMs: endMs,
       appliedSpeedFactor: m?.appliedSpeedFactor,
       keepOriginalAudio: m?.keepOriginalAudio === true,
     };

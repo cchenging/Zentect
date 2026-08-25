@@ -36,12 +36,18 @@ os.environ['PYTHONIOENCODING'] = 'utf-8'
 os.environ['PYTHONUTF8'] = '1'
 
 # ============================================================
-# CPU 推理线程数：最大化多核利用
-#   i5-14600KF (14C/20T) 等 CPU 上，torch 若不显式设置线程数，
-#   SenseVoice/Demucs 等 CPU 推理可能只用到部分核心 → 45min 音频识别超时。
-#   这里在 torch/funasr 首次 import 前设置环境变量，确保线程池按满核初始化。
+# 🔧 R4 线程预算（PR-2）：全核 → 可配置线程预算（默认 max(2, cpu//2)）
+#   原实现 os.cpu_count() 全核拉满，多模型叠加反而引发上下文切换开销。
+#   这里在 torch/funasr 首次 import 前设置环境变量，确保 BLAS 线程池按预算初始化。
+#   注意：此处不 import ai_config（避免提前触发其模块级 _init_paths() 固定 MODELS_DIR，
+#   破坏 --models_dir 的 env 注入时序）；预算语义与 ai_config.get_thread_budget() 同源：
+#   均优先读取环境变量 ZENTECT_CPU_THREADS（>=1 才生效），缺省 max(2, cpu//2)。
 # ============================================================
-_cpu_threads = os.cpu_count() or 4
+_cpu_env_threads = os.environ.get('ZENTECT_CPU_THREADS', '').strip()
+if _cpu_env_threads.isdigit() and int(_cpu_env_threads) >= 1:
+    _cpu_threads = int(_cpu_env_threads)
+else:
+    _cpu_threads = max(2, (os.cpu_count() or 4) // 2)
 for _nk in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS',
             'OPENBLAS_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
     os.environ.setdefault(_nk, str(_cpu_threads))
@@ -72,7 +78,7 @@ device = args.device or 'cpu'
 # 导入 ai_config，初始化全局配置
 # ============================================================
 from ai_config import (MODELS_DIR, FFMPEG_PATH, PROJECT_MATERIAL_POOL, INFERENCE_LOCK, AIModels,
-                       get_model_loading_state, _time_monotonic_sec)
+                       get_model_loading_state, _time_monotonic_sec, set_task_cancel)
 
 if args.models_dir:
     os.environ['MAGIC_MODELS_DIR'] = args.models_dir
@@ -96,6 +102,7 @@ import semantic_engine
 import timeline_solver
 import video_analyzer
 import tts_kokoro
+import media_op_ed  # 🎬 OP/ED 自动识别三级流水线（P1 音视频启发 + P2 跨集指纹 + P3 VLM realm）
 
 app.include_router(audio_pipeline.router)
 app.include_router(face_analysis.router)
@@ -103,6 +110,7 @@ app.include_router(semantic_engine.router)
 app.include_router(timeline_solver.router)
 app.include_router(video_analyzer.router)
 app.include_router(tts_kokoro.router)
+app.include_router(media_op_ed.router)
 
 print(f"[AI Daemon] ✅ 所有业务路由注册成功！共 {len(app.routes)} 条路由", file=sys.stderr)
 
@@ -172,6 +180,8 @@ async def preload_models(models: str = 'clip,chinese_clip,face'):
         tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_funasr_sensevoice))
     if 'faster_whisper' in model_names:
         tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_faster_whisper))
+    if 'paraformer' in model_names:
+        tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_paraformer))
 
     preload_start = _time_monotonic_sec()
     await _asyncio.gather(*tasks)
@@ -259,6 +269,17 @@ async def release_models():
     try:
         AIModels.release_all_models()
         return {'status': 'ok', 'message': '所有模型已释放'}
+    except Exception as e:
+        return {'status': 'error', 'message': str(e)}
+
+
+@app.post('/cancel/{task_id}')
+async def cancel_task(task_id: str):
+    """🔧 R3 取消贯通（PR-1）：Node 侧 abort 时调用，置位取消标记。
+    长任务（如 KM 求解）求解循环定期查询该标记，命中后提前返回，CPU 不再空烧。"""
+    try:
+        set_task_cancel(task_id)
+        return {'status': 'ok', 'message': f'task {task_id} cancel flag set'}
     except Exception as e:
         return {'status': 'error', 'message': str(e)}
 

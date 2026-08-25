@@ -27,6 +27,9 @@ import { AppLogger } from './core/AppLogger'
 import { FeedbackBus } from './core/FeedbackBus'
 import { MainNotifier } from './core/MainNotifier'
 import { LOG_TAGS } from '../modules/infra/logger/LogConstants'
+// 🎬 OP/ED 自动识别编排器（P1 音视频启发/P2 跨集指纹 两级流水线）
+import * as OpEdOrchestrator from './engine/opEdOrchestrator'
+import { dehydrateMagicPath } from './engine/utils/pathUtils'
 
 // — 引入所有规范化控制器
 import { ProjectController } from './controllers/ProjectController'
@@ -164,11 +167,12 @@ class AppBootstrap {
             AppLogger.error(LOG_TAGS.BOOTSTRAP, 'IPC 路由注册失败', e as Error);
           }
         })(),
-        // 5. 反馈总线
+        // 5. 反馈总线 + OP/ED 自动识别编排 IPC（P1 启发/P2 指纹）
         (async () => {
           try {
             this.initFeedbackBus();
-            AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 5/10 反馈总线就绪 (${mark('FeedbackBus')}ms)`);
+            this.initOpEdIpc();
+            AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 5/10 反馈总线 + OP/ED 编排 IPC 就绪 (${mark('FeedbackBus')}ms)`);
           } catch (e) {
             AppLogger.warn(LOG_TAGS.BOOTSTRAP, '反馈总线初始化失败（非致命）', e as Error);
           }
@@ -441,6 +445,67 @@ class AppBootstrap {
     ipcMain.handle(IPC_CHANNELS.FEEDBACK_CLEAR, () => {
       feedbackBus.clearHistory();
       return true;
+    });
+  }
+
+  /**
+   * 🎬 OP/ED 片头片尾自动识别编排 IPC 注册（P1 音视频启发 / P2 跨集指纹 两级流水线）
+   * 前端调用 channel 契约（见 IPC_CHANNELS）：
+   *   - OPED_GET_STATE         (projectId, mediaId) → { locked, trim, history, config }  初始读
+   *   - OPED_RUN_DETECT        (projectId, mediaId, mediaPath) → runFullDetectPipeline 结果   按钮「自动识别」
+   *   - OPED_TOGGLE_LOCK       (projectId, mediaId, locked, by?) → toggleManualLock 结果   切换手动锁
+   *   - OPED_ACCEPT_SUGGESTION (projectId, mediaId, historyIndex, by?) → acceptSuggestion 结果   接受某条建议并锁定
+   */
+  private static initOpEdIpc(): void {
+    // 1) 初始读：获取当前素材的 OP/ED 状态
+    ipcMain.handle(IPC_CHANNELS.OPED_GET_STATE, (_e, projectId: string, mediaId: string) => {
+      try {
+        if (!projectId || !mediaId) return { ok: false, error: 'projectId/mediaId required' };
+        return { ok: true, data: OpEdOrchestrator.getMediaTrimState(projectId, mediaId) };
+      } catch (err: any) {
+        return { ok: false, error: err.message };
+      }
+    });
+
+    // 2) 自动识别按钮：跑两级流水线（P1→P2）+ 写 DB
+    ipcMain.handle(IPC_CHANNELS.OPED_RUN_DETECT, async (_e, projectId: string, mediaId: string, mediaPathMaybeMagic: string) => {
+      try {
+        if (!projectId || !mediaId || !mediaPathMaybeMagic) return { ok: false, error: 'projectId/mediaId/mediaPath required' };
+        // mediaPath 可能是 magic:// 协议 → 必须脱水到物理路径，daemon os.path.exists 才能过
+        const realPath = dehydrateMagicPath(mediaPathMaybeMagic);
+        const res = await OpEdOrchestrator.runFullDetectPipeline(projectId, mediaId, realPath);
+        return { ok: true, data: res };
+      } catch (err: any) {
+        return { ok: false, error: `${err.name || 'Error'}: ${err.message}` };
+      }
+    });
+
+    // 3) 切换手动锁定：锁定后自动检测结果不再覆盖；解锁后再次检测自动回填
+    ipcMain.handle(IPC_CHANNELS.OPED_TOGGLE_LOCK, async (_e, projectId: string, mediaId: string, locked: boolean, by?: string) => {
+      try {
+        if (!projectId || !mediaId) return { ok: false, error: 'projectId/mediaId required' };
+        const res = await OpEdOrchestrator.toggleManualLock(projectId, mediaId, locked, { by });
+        return { ...res };
+      } catch (err: any) {
+        return { ok: false, error: `${err.name || 'Error'}: ${err.message}` };
+      }
+    });
+
+    // 4) 接受某条历史建议：以 USER_MANUAL 身份再 apply 一次（必然 adopted=true 并开手动锁）
+    //    historyIndex 兼容两种：0-based number（历史索引） 或 { trimStartMs, trimEndMs, confidence?, note? }（前端直接保存手动值）
+    ipcMain.handle(IPC_CHANNELS.OPED_ACCEPT_SUGGESTION, async (_e, projectId: string, mediaId: string, historyIndex: any, by?: string) => {
+      try {
+        const isNumber = typeof historyIndex === 'number';
+        const isObject =
+          historyIndex &&
+          typeof historyIndex === 'object' &&
+          (typeof historyIndex.trimStartMs === 'number' || typeof historyIndex.trimEndMs === 'number');
+        if (!projectId || !mediaId || (!isNumber && !isObject)) return { ok: false, error: 'projectId/mediaId/historyIndex(number|payload) required' };
+        const res = await OpEdOrchestrator.acceptSuggestion(projectId, mediaId, historyIndex, { by });
+        return { ...res };
+      } catch (err: any) {
+        return { ok: false, error: `${err.name || 'Error'}: ${err.message}` };
+      }
     });
   }
 }

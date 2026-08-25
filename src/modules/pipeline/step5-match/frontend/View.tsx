@@ -2,7 +2,7 @@
 // 纯 Props 组件：镜头匹配卡片列表 + 拖拽排序 + 替换弹窗 + 成品预览弹窗（视频+配音+台词）
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import { Check, RefreshCw, Film, X, Play, Pause, Volume2, VolumeX, Music, Music2, Upload, Trash2, Sparkles, Loader2 } from "lucide-react";
+import { Check, RefreshCw, Film, X, Play, Pause, Volume2, VolumeX, Music, Music2, Upload, Trash2, Sparkles, Loader2, Copy } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatHeader, EmptyState } from "@renderer/components/shared";
 import { DragReorderList } from "@renderer/components/shared/drag-reorder-list";
@@ -49,6 +49,8 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  /** 复制文案成功反馈：记录当前已复制的 shotId（1.5s 后复位） */
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const chunkPool = useMemo(() => {
     return videoChunks.length > 0 ? videoChunks : mediaItems.filter((m) => m.type === "video_chunk" || m.type === "frame");
@@ -149,6 +151,28 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
     onReplace(shotId, chunk);
     setReplacingShotId(null);
   };
+
+  /** 复制文案到剪贴板（navigator.clipboard 优先，不可用时回退 textarea 选择复制），带 1.5s 成功反馈 */
+  const handleCopyText = useCallback(async (text: string | undefined, id: string) => {
+    if (!text) return;
+    const done = () => {
+      setCopiedId(id);
+      setTimeout(() => setCopiedId((cur) => (cur === id ? null : cur)), 1500);
+    };
+    try {
+      await navigator.clipboard.writeText(text);
+      done();
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); done(); } catch { /* 忽略 */ }
+      document.body.removeChild(ta);
+    }
+  }, []);
 
   /** 曲目唯一 key：libraryId 优先，退化为 name+artist */
   const trackKey = (t: BgmTrack) => `${t.libraryId || ''}|${t.name}|${t.artist}`;
@@ -443,9 +467,11 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
       {matchResults.length > 0 ? (
         <>
           <DragReorderList items={matchResults} getItemId={(m) => m.shotId} onReorder={onReorder}
-            renderItem={(m, _index, isDragging) => (
-              <div className={`glass-card-sm p-3 flex flex-col gap-2 transition-all border-l-4 ${isDragging ? "opacity-50" : ""} ${m.confirmed ? "border-l-accent-green" : m.score >= 0.85 ? "border-l-accent-green" : m.score >= 0.6 ? "border-l-warning" : "border-l-accent-rose"}`}>
+            renderItem={(m, index, isDragging) => (
+              <div className={`w-full glass-card-sm p-3 flex flex-col gap-2 transition-all border-l-4 ${isDragging ? "opacity-50" : ""} ${m.confirmed ? "border-l-accent-green" : m.score >= 0.85 ? "border-l-accent-green" : m.score >= 0.6 ? "border-l-warning" : "border-l-accent-rose"}`}>
                 <div className="flex gap-3">
+                  {/* 排列序号：取自 DragReorderList 实时 index（拖拽重排即更新），独立列不随内容伸缩 */}
+                  <div className="w-7 h-[90px] flex items-center justify-center shrink-0 text-muted-foreground/70 font-mono text-sm select-none">{index + 1}</div>
                   <div className="w-[140px] h-[90px] rounded-md bg-bg-secondary overflow-hidden shrink-0 relative">
                     {m.thumbnail ? <img src={getSafeMediaUrl(m.thumbnail)} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center"><Film size={24} className="text-muted-foreground/20" /></div>}
                     {m.chunkData && <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/70 text-[11px] text-white font-mono">{formatIntSeconds((m.chunkData as any).endMs - (m.chunkData as any).startMs)}</div>}
@@ -454,11 +480,20 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                   <div className="flex-1 flex flex-col gap-1.5 min-w-0">
                     {/* 台词（替代技术化 shotId），无台词时回退显示 shotId；原声段落加"原声"标记 */}
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[13px] font-medium truncate flex items-center gap-1.5" title={m.text || m.shotId}>
+                      <span className="text-[13px] font-medium break-words min-w-0 flex items-start gap-1.5" title={m.text || m.shotId}>
                         {m.text || m.shotId}
                         {m.keepOriginalAudio && <Badge variant="warning" className="text-[11px] shrink-0">原声</Badge>}
                       </span>
-                      <Badge variant={m.score > 0.8 ? "success" : m.score > 0.5 ? "warning" : "danger"} className="text-[11px] shrink-0">{Math.round(m.score * 100)}%</Badge>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {m.text && (
+                          <button onClick={() => handleCopyText(m.text, m.shotId)}
+                            className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-accent rounded transition-all cursor-pointer" title="复制文案">
+                            {copiedId === m.shotId ? <Check size={11} /> : <Copy size={11} />}
+                            {copiedId === m.shotId ? "已复制" : "复制"}
+                          </button>
+                        )}
+                        <Badge variant={m.score > 0.8 ? "success" : m.score > 0.5 ? "warning" : "danger"} className="text-[11px] shrink-0">{Math.round(m.score * 100)}%</Badge>
+                      </div>
                     </div>
                     <div className="text-[12px] text-muted-foreground flex items-center gap-2">
                       {m.keepOriginalAudio ? (
@@ -574,9 +609,18 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
               <div className="rounded-lg bg-bg-secondary/50 border border-border p-3">
                 <div className="text-[12px] text-muted-foreground mb-1.5 flex items-center justify-between">
                   <span>{isOriginalAudio ? "原声台词（保留原片原声）" : "解说台词"}</span>
-                  {previewMatch.appliedSpeedFactor && previewMatch.appliedSpeedFactor !== 1 && !isOriginalAudio && (
-                    <span className="text-accent-rose">变速 {previewMatch.appliedSpeedFactor.toFixed(2)}x</span>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {previewMatch.appliedSpeedFactor && previewMatch.appliedSpeedFactor !== 1 && !isOriginalAudio && (
+                      <span className="text-accent-rose">变速 {previewMatch.appliedSpeedFactor.toFixed(2)}x</span>
+                    )}
+                    {previewMatch.text && (
+                      <button onClick={() => handleCopyText(previewMatch.text, previewMatch.shotId)}
+                        className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-accent rounded transition-all cursor-pointer" title="复制文案">
+                        {copiedId === previewMatch.shotId ? <Check size={11} /> : <Copy size={11} />}
+                        {copiedId === previewMatch.shotId ? "已复制" : "复制"}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <p className="text-[13px] leading-relaxed text-foreground whitespace-pre-wrap">{previewMatch.text || "（无台词内容）"}</p>
               </div>

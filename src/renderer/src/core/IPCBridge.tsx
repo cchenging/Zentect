@@ -92,15 +92,40 @@ export const IPCBridge: React.FC = () => {
         window.api.ipc.invoke(IPC_CHANNELS.PROJECT_LOAD_DATA, storeState.projectId)
           .then((freshData) => {
             if (freshData) {
-              // 🛑 原则 2：partial 增量走 mergePartialUpdate,不进 hydrate
+              // 兼容 IPC 返回结构：裸 payload 或 {code, data} 包装
+              const f = (freshData.data && typeof freshData.data === 'object' && freshData.data.mediaItems) ? freshData.data : freshData;
+
+              // 🛑 原则 2：partial 增量走 mergePartialUpdate, 不进 hydrate
+              // 💥 关键修复：之前只传了 shots/aiShots/roles/audioSeparated/mediaItems 5 个字段，
+              //   缺失 framePaths / frameCount / asrLines / vlmFrames / scriptParagraphs 等所有步骤数据！
+              //   导致管线完成后前端刷新不显示最新关键帧、ASR、VLM 描述等。
               storeState.mergePartialUpdate({
-                shots: freshData.shots || [],
-                aiShots: freshData.aiShots || [],
-                roles: freshData.roles || [],
-                audioSeparated: true,
-                mediaItems: freshData.mediaItems || storeState.mediaItems
+                // 轨道层
+                shots: f.shots || [],
+                aiShots: f.aiShots || [],
+                roles: f.roles || [],
+                mediaItems: f.mediaItems || storeState.mediaItems,
+                // extractedData 层（含抽帧路径）
+                audioSeparated: f.audioSeparated !== undefined ? !!f.audioSeparated : true,
+                asrLines: f.asrLines || undefined,
+                framePaths: f.framePaths || undefined,
+                frameCount: (f.framePaths && Array.isArray(f.framePaths)) ? f.framePaths.length : (f.frameCount || undefined),
+                videoPath: f.videoPath || undefined,
+                vocalPath: f.vocalPath || undefined,
+                backgroundPath: f.backgroundPath || undefined,
+                // 各步骤数据层
+                vlmFrames: f.vlmFrames || undefined,
+                scriptParagraphs: f.scriptParagraphs || undefined,
+                ttsResults: f.ttsResults || undefined,
+                videoChunks: f.videoChunks || undefined,
+                // 步骤5 匹配层
+                matchResults: f.matchResults || undefined,
+                activeBgm: f.activeBgm || undefined,
+                beatTimestamps: f.beatTimestamps || undefined,
+                // 画布
+                canvasData: f.canvasData !== undefined ? f.canvasData : undefined,
               });
-              AppNotifier.success('🎵 音频流与视频轨道数据已实时同步！');
+              AppNotifier.success('🎵 数据已同步到前端（含关键帧/ASR/步骤结果）');
             }
           }).catch((err) => console.error('[IPCBridge] 水合崩溃:', err));
       }

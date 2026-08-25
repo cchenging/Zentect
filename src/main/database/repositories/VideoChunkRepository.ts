@@ -7,6 +7,9 @@ import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 
 export class VideoChunkRepository {
+  /** 🔧 R7 分片大小（PR-2）：每片 ≤200 条，独立事务 commit，避免单次大事务锁库 */
+  private static readonly CHUNK_PART_SIZE = 200;
+
   private get db() { return SQLiteConnection.getInstance().getDB(); }
 
   /**
@@ -22,6 +25,29 @@ export class VideoChunkRepository {
   public getByMediaId(mediaId: string): { version: number; chunks: any[]; matchSegments: any[] } | null {
     if (!mediaId) return null;
     try {
+      // 🔧 R7 优先读分片表（PR-2）：parts 有数据说明是本版本写入的 v2 分片缓存
+      const partRows = this.db.prepare(
+        'SELECT kind, items_json FROM video_chunk_parts WHERE media_id = ? ORDER BY part_index',
+      ).all(mediaId) as { kind: string; items_json: string }[];
+      if (partRows.length > 0) {
+        const chunks: any[] = [];
+        const matchSegments: any[] = [];
+        for (const r of partRows) {
+          try {
+            const items = JSON.parse(r.items_json);
+            if (!Array.isArray(items)) continue;
+            const objs = items.filter((c: any) => c && typeof c === 'object');
+            if (r.kind === 'segs') matchSegments.push(...objs);
+            else chunks.push(...objs);
+          } catch {
+            // 单片解析失败跳过，保留其余片（容错不阻断读缓存）
+          }
+        }
+        if (chunks.length === 0) return null;
+        return { version: 2, chunks, matchSegments };
+      }
+
+      // 兼容 v1/v2 旧整行缓存（历史数据回退）
       const row = this.db.prepare(
         'SELECT chunks_json FROM video_chunks WHERE media_id = ?',
       ).get(mediaId) as { chunks_json: string } | undefined;
@@ -59,17 +85,25 @@ export class VideoChunkRepository {
     if (!mediaId || !Array.isArray(chunks) || chunks.length === 0) return;
     const now = Date.now();
     const segs = Array.isArray(matchSegments) ? matchSegments : [];
-    const payload = { version: 2, chunks, matchSegments: segs };
     try {
-      this.db.prepare(`
-        INSERT INTO video_chunks (media_id, chunks_json, chunk_count, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(media_id) DO UPDATE SET
-          chunks_json = excluded.chunks_json,
-          chunk_count = excluded.chunk_count,
-          updated_at = excluded.updated_at
-      `).run(mediaId, JSON.stringify(payload), chunks.length, now, now);
-      AppLogger.info(LOG_TAGS.DATABASE, `[VideoChunkRepository] 切片缓存已写入(v2): 镜头 ${chunks.length} 个, 匹配候选段 ${segs.length} 个`);
+      // 🔧 R7 分片写（PR-2）：先清同 media 旧数据（旧整行 + 旧分片），保持覆盖语义；
+      //   better-sqlite3 语句级 autocommit = 每片独立事务 commit，避免单次大事务锁库；
+      //   表结构 video_chunk_parts 由迁移 031 创建，WAL 由 SQLiteConnection 全局开启。
+      this.db.prepare('DELETE FROM video_chunk_parts WHERE media_id = ?').run(mediaId);
+      this.db.prepare('DELETE FROM video_chunks WHERE media_id = ?').run(mediaId);
+      // part_index 跨 kind 连续编号（chunks 0..n-1, segs n..），保证复合主键唯一
+      const partStmt = this.db.prepare(`
+        INSERT INTO video_chunk_parts (media_id, part_index, kind, items_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      let partIndex = 0;
+      for (let i = 0; i < chunks.length; i += VideoChunkRepository.CHUNK_PART_SIZE) {
+        partStmt.run(mediaId, partIndex++, 'chunks', JSON.stringify(chunks.slice(i, i + VideoChunkRepository.CHUNK_PART_SIZE)), now, now);
+      }
+      for (let i = 0; i < segs.length; i += VideoChunkRepository.CHUNK_PART_SIZE) {
+        partStmt.run(mediaId, partIndex++, 'segs', JSON.stringify(segs.slice(i, i + VideoChunkRepository.CHUNK_PART_SIZE)), now, now);
+      }
+      AppLogger.info(LOG_TAGS.DATABASE, `[VideoChunkRepository] 切片缓存分片写入(v2/R7): 镜头 ${chunks.length} 个, 匹配候选段 ${segs.length} 个, 共 ${partIndex} 片`);
     } catch (e: any) {
       AppLogger.warn(LOG_TAGS.DATABASE, `[VideoChunkRepository] 写入切片缓存失败: ${e.message}`);
     }

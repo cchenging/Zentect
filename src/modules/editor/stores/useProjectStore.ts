@@ -20,6 +20,29 @@ import { useStep4Store } from '../../pipeline/stores/useStep4Store';
 import { useStep5Store } from '../../pipeline/stores/useStep5Store';
 import { useEditorNavStore } from './useEditorNavStore';
 
+/**
+ * 🛑 根因级修复：framePaths 契约守门员
+ * 历史多个写入点（管线结果映射、usePipelineExecutor、DB hydrate 持久化）可能混入
+ * 非字符串项（object 项 / null / undefined），导致渲染时 getSafeMediaUrl().trim() 崩溃。
+ * 所有写入口统一经此归一，保证 store 内 framePaths 恒为合法 string[]：
+ *  - 字符串项：trim 去首尾空白
+ *  - 对象项：提取 path/filePath/url/thumbnail（兼容旧版把 frames 对象数组误塞入 framePaths）
+ *  - 其它（null/undefined/数字/布尔）：丢弃
+ */
+const normalizeFramePaths = (list: unknown): string[] => {
+  if (!Array.isArray(list)) return [];
+  return (list as any[])
+    .map((fp) => {
+      if (typeof fp === 'string') return fp.trim();
+      if (fp && typeof fp === 'object') {
+        const raw = fp.path ?? fp.filePath ?? fp.url ?? fp.thumbnail ?? '';
+        return typeof raw === 'string' ? raw.trim() : '';
+      }
+      return '';
+    })
+    .filter((fp) => fp.length > 0);
+};
+
 /** 💥 工业级减法：防抖影子保存器，防止主进程磁盘 I/O 被高频更新锁死 */
 let shadowSaveTimer: any = null;
 const debouncedShadowSave = (projectId: string, getShots: () => any, getAiShots: () => any) => {
@@ -549,7 +572,8 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
 
   setExtractedData: (data) =>
     set((s) => {
-      const nextFramePaths = data.framePaths || s.extractedData.framePaths || [];
+      // 🛑 根因修复：统一经 normalizeFramePaths 归一，杜绝非字符串项进入 store
+      const nextFramePaths = normalizeFramePaths(data.framePaths ?? s.extractedData.framePaths);
       return {
         extractedData: { ...s.extractedData, ...data, framePaths: nextFramePaths },
         // framePaths 变化时自动更新 frameCount（与 useStep1Store 中的 frameCount 独立）
@@ -628,7 +652,9 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     // 修复:hydrate 只负责全量设置;partial 增量走 mergePartialUpdate 独立方法
     const mediaItems = Array.isArray(d.mediaItems) ? d.mediaItems : [];
     const asrLines = Array.isArray(d.asrLines) ? d.asrLines : [];
-    const framePaths = Array.isArray(d.framePaths) ? d.framePaths : [];
+    // 🛑 根因修复：DB 历史脏数据（对象项/非字符串）经 hydrate 进 store 前统一归一，
+    //   否则重进项目时旧数据直接污染渲染
+    const framePaths = normalizeFramePaths(d.framePaths);
     // 🛑 统一数据源：framePaths 为真相源，frameCount 优先由其长度派生，避免 DB 中
     //   frameCount 与 framePaths 不一致（如旧版 TEST_FRAME_LIMIT 残留 frameCount=10 而 framePaths=84）
     //   导致步骤1 与成果素材显示不同的帧数。d.frameCount 仅作旧数据兼容回退。
@@ -810,18 +836,44 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       set(updates);
     }
 
+    // 💥 防御性兜底：调用方传了 mediaItems 但未传 framePaths 时，从 mediaItems[].frames 派生。
+    //   修复 IPCBridge 旧版（仅传 mediaItems）导致"关键帧显示不出来/不刷新"的问题。
+    let derivedFramePaths: string[] | undefined = undefined;
+    if (d.framePaths === undefined && Array.isArray(d.mediaItems)) {
+      const collected: string[] = [];
+      d.mediaItems.forEach((m: any) => {
+        if (m?.type === 'video' && Array.isArray(m.frames) && m.frames.length > 0) {
+          m.frames.forEach((f: any) => {
+            const raw = typeof f === 'string' ? f : (f?.path ?? f?.filePath ?? f?.url ?? f?.thumbnail ?? '');
+            if (typeof raw === 'string' && raw.trim().length > 0) collected.push(raw.trim());
+          });
+        }
+      });
+      if (collected.length > 0) derivedFramePaths = collected;
+    }
+
     // extractedData 增量合并
-    if (d.asrLines !== undefined || d.framePaths !== undefined || d.frameCount !== undefined
-        || d.videoPath !== undefined || d.vocalPath !== undefined || d.backgroundPath !== undefined) {
+    const hasExplicitExtracted = (
+      d.asrLines !== undefined || d.framePaths !== undefined || d.frameCount !== undefined
+      || d.videoPath !== undefined || d.vocalPath !== undefined || d.backgroundPath !== undefined
+    );
+    if (hasExplicitExtracted || derivedFramePaths !== undefined) {
       const cur = state.extractedData;
+      // framePaths 优先级：显式传入 d.framePaths → 派生 derivedFramePaths → 当前 cur.framePaths
+      const finalFramePaths = d.framePaths !== undefined
+        ? normalizeFramePaths(d.framePaths)
+        : (derivedFramePaths !== undefined ? normalizeFramePaths(derivedFramePaths) : cur.framePaths);
+      const finalFrameCount = d.frameCount !== undefined
+        ? d.frameCount
+        : (d.framePaths !== undefined || derivedFramePaths !== undefined ? finalFramePaths.length : cur.frameCount);
       set({
         extractedData: {
           videoPath: d.videoPath !== undefined ? d.videoPath : cur.videoPath,
           vocalPath: d.vocalPath !== undefined ? d.vocalPath : cur.vocalPath,
           backgroundPath: d.backgroundPath !== undefined ? d.backgroundPath : cur.backgroundPath,
           asrLines: d.asrLines !== undefined ? d.asrLines : cur.asrLines,
-          framePaths: d.framePaths !== undefined ? d.framePaths : cur.framePaths,
-          frameCount: d.frameCount !== undefined ? d.frameCount : cur.frameCount,
+          framePaths: finalFramePaths,
+          frameCount: finalFrameCount,
         }
       });
     }
