@@ -11,7 +11,6 @@ import { breakLongParagraphs } from '@modules/pipeline/step3-script/frontend/bre
 
 export interface ScriptGenInput {
   modelName?: string;
-  theme?: string;
   customPrompt?: string;
   /** 用户选择的文案风格 */
   scriptStyle?: string;
@@ -268,6 +267,38 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     return { startMs, endMs };
   }
 
+  /**
+   * 🔧 P1-5 prompt 瘦身：把 contextChunks 精简为 LLM 必需字段，降低输入 token（大项目 300+ chunk 时收益显著）。
+   *   - 去除冗余：startMs/durationMs（timeRange 已表达）、visualContext.characters（anchoredCharacters 已含）、
+   *     keywords（LLM 不消费，防止长尾噪声词稀释注意力）
+   *   - 保留：chunkId（阶段A keyTurns 须引用）、timeRange、durationSec（驱动每段字数）、
+   *     角色锚定、原声台词、视觉上下文（keyAction/情绪/氛围/运镜/冲突/主体/交互/场景分类）
+   * 纯数据变换，不改变语义信息完整性；阶段A/B 共用，防两处 prompt 漂移。
+   */
+  private static slimContextChunks(chunks: any[]): any[] {
+    return (chunks || []).map((c: any) => {
+      const v = c?.visualContext || {};
+      return {
+        chunkId: c.chunkId,
+        timeRange: c.timeRange,
+        durationSec: c.durationSec,
+        anchoredCharacters: Array.isArray(c.anchoredCharacters) && c.anchoredCharacters.length > 0 ? c.anchoredCharacters : undefined,
+        asrContext: c.asrContext || undefined,
+        visual: {
+          keyAction: v.keyAction || undefined,
+          emotion: v.emotion || undefined,
+          atmosphere: v.atmosphere || undefined,
+          cameraMovement: v.cameraMovement || undefined,
+          dramaticConflict: v.dramaticConflict || undefined,
+          primarySubject: v.primarySubject || undefined,
+          secondarySubjects: Array.isArray(v.secondarySubjects) && v.secondarySubjects.length > 0 ? v.secondarySubjects : undefined,
+          interaction: v.interaction || undefined,
+          shotStyle: v.shotStyle || undefined,
+        },
+      };
+    });
+  }
+
   protected async validate(_input: ScriptGenInput): Promise<void> {
   }
 
@@ -285,56 +316,26 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     // 融合方案参数：枚举按钮组 + 连续值协同（替代旧版 R/S/T/P 滑块）
     const DEFAULT_PARAMS: import('../../../shared/types/entities/editor').PipelineParams = {
       narrativePerspective: 'third',
-      informationLevel: 'deep',
-      narrationDensity: 'standard',
-      originalAudioStrategy: 'keep_key',
+      narrationRatio: 0.7, // 解说占比 0~1：0.7=解说为主、留 30% 给原声
       rhythmMode: 'mixed',
       emotionTone: 'neutral',
       hookIntensity: 0.7,
-      audioVisualWeight: 0.6,
       targetNarrationDurationSec: 0,
     };
     const params = input.pipelineParams || context.pipelineParams || DEFAULT_PARAMS;
     const hookIntensity = params.hookIntensity ?? 0.7;
 
     /**
-     * SSOT：audioVisualWeight 由 originalAudioStrategy 唯一映射（与 Service.ts / View.tsx 保持一致）
-     * - cover: 0.8（解说全量覆盖，更多依赖视觉画面描写）
-     * - keep_key: 0.5（均衡）
-     * - original_main: 0.2（解说辅助过渡，更多提炼 ASR 对白）
+     * SSOT：densityFillRate / allowOriginalMark 均由 narrationRatio（解说占比 n，0~1）
+     * 唯一派生（与 Service.ts / View.tsx 保持一致），解说与原声互斥一体，不再分两个参数相乘：
+     * - 字数填充系数 = n：n=1(全解说) → 1.0 铺满全片 / n=0.3(原声为主) → 0.3 仅关键节点解说
+     * - 允许标记原声段落 = n < 1：留了原声空间才允许 LLM 标记原声段落
      */
-    const AUDIO_STRATEGY_TO_WEIGHT_MAP: Record<string, number> = {
-      cover: 0.8,
-      keep_key: 0.5,
-      original_main: 0.2,
-    };
-    const audioVisualWeight = AUDIO_STRATEGY_TO_WEIGHT_MAP[params.originalAudioStrategy] ?? 0.5;
-
-    // 解说密度 → 基础字数填充系数（0-1）：满配1.0 / 标准0.85 / 留白0.6
-    // 提示词给 LLM 的"单段字数"以此为准（见 perChunkFillRate），保证每段能写出通顺连贯的句子，
-    // 而不是被原声/节奏折扣连环压缩成 7~12 字的碎片。
-    const baseDensityFillRate = params.narrationDensity === 'full' ? 1.0
-                              : params.narrationDensity === 'sparse' ? 0.6
-                              : 0.85;
-
-    /**
-     * 原声策略折扣：对 densityFillRate 再打一层折，避免时间轴物理溢出
-     * - cover(全量覆盖解说): 1.0（原声时间轴无占用，无需打折）
-     * - keep_key(关键台词保留): 0.85（约 15% 时间留给关键原声）
-     * - original_main(原声为主): 0.45（约 60%~80% 时间留给高光对白，解说仅辅助串场）
-     */
-    const AUDIO_STRATEGY_DISCOUNT: Record<string, number> = {
-      cover: 1.0,
-      keep_key: 0.85,
-      original_main: 0.45,
-    };
-    const audioStrategyDiscount = AUDIO_STRATEGY_DISCOUNT[params.originalAudioStrategy] ?? 1.0;
-    // 原声策略折扣只应控制"全片解说总时长/总量"，避免原声时间轴物理溢出；
-    // 不应压缩"单个已选中解说段的字数"——否则 keep_key 下每段只剩 7~12 字，无法成句。
-    // perChunkFillRate = 单段字数填充系数（解耦原声折扣）；densityFillRate = 全片总量预算系数。
-    let perChunkFillRate = baseDensityFillRate;
+    const narrationRatio = Math.max(0, Math.min(1, params.narrationRatio ?? 0.7));
+    // 字数预算系数 = 解说占比：单段与总量共用同一填充率，LLM 逐段写满即等于总量预算，
+    // 从源头消除"单段 85% 写满、总量只有 72%"导致的字数失控。
     // 可变：若用户设置了"目标解说时长"，会在 totalDurationSec 计算后用目标时长覆盖（todo）
-    let densityFillRate = baseDensityFillRate * audioStrategyDiscount;
+    let densityFillRate = narrationRatio;
 
     /**
      * TTS 标点停顿折损系数：按 rhythmMode 差异化取值（之前全局固定 0.85 导致双向失真）
@@ -401,12 +402,35 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     // 若无 ASR 时间戳，fallback 到每镜 4 秒硬编码
     const hasAsrTimestamps = asrLines.length > 0 && asrLines.some(l => l.startMs !== undefined || l.start !== undefined);
 
+    // 🎬 阶段4 真实时间轴检测：downstreamContext.shots 是否携带步骤1 落库的帧真实时间戳（源坐标，原视频绝对时间）。
+    // 全部帧都有合法 timeMs 才启用真实时间轴（chunk 直接按帧时间聚合），否则回退 ASR 行数均分估算并 WARN 时间轴不精确。
+    const hasRealFrameTimes = visualShots.length > 0
+      && visualShots.every((s: any) => s && Number.isFinite(Number(s.timeMs)));
+    if (!hasRealFrameTimes && visualShots.length > 0) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT, '[文案生成] ⚠️ 帧真实时间戳缺失，chunk 时间轴回退 ASR 行数均分估算，时间点可能不精确');
+    }
+
     for (let i = 0; i < totalShots; i++) {
       const shot = visualShots[i] || {};
-      // 时间轴：用 ASR 行的时间戳估算每个 chunk 的时长
+      // 时间轴（阶段4 真实时间轴重构）：优先使用每帧真实 timeMs（源坐标，原视频绝对时间）。
+      // 每帧即为一个 chunk：startMs = 该帧真实时间，durationMs = 到下一帧的间隔。
+      // 替代旧的"按 ASR 行数均分"逻辑——其与画面真实时间错位，导致 chunk 时间轴与 ASR/视频切片对不上。
       let chunkStartMs = 0;
       let chunkDurationMs = 4000; // 默认 4 秒
-      if (hasAsrTimestamps && asrLines.length > 0) {
+      if (hasRealFrameTimes) {
+        chunkStartMs = Math.round(Number(shot.timeMs));
+        // 本帧时长 = 下一帧真实时间 - 本帧时间（末帧无下一帧时用 ASR 末尾时间，避免截断片尾）
+        if (i + 1 < visualShots.length) {
+          chunkDurationMs = Math.max(1000, Math.round(Number(visualShots[i + 1].timeMs)) - chunkStartMs);
+        } else if (asrLines.length > 0) {
+          const lastAsrEndMs = asrLines.reduce((max: number, l: any) => {
+            const endMs = ScriptGenStrategy._asrLineToMs(l, 0).endMs;
+            return Number.isFinite(endMs) && endMs > max ? endMs : max;
+          }, 0);
+          chunkDurationMs = Math.max(1000, lastAsrEndMs - chunkStartMs);
+        }
+      } else if (hasAsrTimestamps && asrLines.length > 0) {
+        // 回退路径（帧无真实时间戳，如旧缓存/旧流程数据）：按 ASR 行数均分估算
         const linesPerChunk = Math.max(1, Math.floor(asrLines.length / totalShots));
         const startLine = asrLines[Math.min(i * linesPerChunk, asrLines.length - 1)];
         const endLine = asrLines[Math.min((i + 1) * linesPerChunk - 1, asrLines.length - 1)];
@@ -414,10 +438,8 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
         const startParsed = ScriptGenStrategy._asrLineToMs(startLine, 0);
         const DEFAULT_START_MS = startParsed.startMs;
         const endParsed = ScriptGenStrategy._asrLineToMs(endLine, DEFAULT_START_MS, DEFAULT_START_MS + 4000);
-        const startMs = startParsed.startMs;
-        const endMs = endParsed.endMs;
-        chunkStartMs = startMs;
-        chunkDurationMs = Math.max(1000, endMs - startMs); // 至少 1 秒
+        chunkStartMs = startParsed.startMs;
+        chunkDurationMs = Math.max(1000, endParsed.endMs - startParsed.startMs); // 至少 1 秒
       }
 
       // 🎯 角色名对齐：步骤1人脸识别产出权威角色名（input.roles[].name），
@@ -475,15 +497,19 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       anchoredCharacters.length = 0;
       anchoredCharacters.push(...uniqueRoles);
 
-      // ASR 上下文：找到时间轴范围内的台词
-      const chunkAsrLines = hasAsrTimestamps
-        ? asrLines.filter(l => {
-            // 🔧 修复 Bug A2：ASR 的 l.start 是「秒」，之前直接跟毫秒变量 chunkStartMs 比，漏掉 ×1000（台词永远对不上）
-            const lineStartMs = ScriptGenStrategy._asrLineToMs(l, 0).startMs;
-            return lineStartMs >= chunkStartMs && lineStartMs < chunkStartMs + chunkDurationMs;
-          })
-        : asrLines.slice(i * Math.max(1, Math.floor(asrLines.length / totalShots)), (i + 1) * Math.max(1, Math.floor(asrLines.length / totalShots)));
-      const asrContext = chunkAsrLines.map(l => l.text || l.content || '').filter(Boolean).join(' ') || '';
+      // ASR 上下文：优先使用步骤2 已按真实时间匹配好的帧台词（downstreamContext.shots.asrText），
+      // 避免 step3 重复按时间戳匹配引入二次错位；缺失时才回退按 chunk 时间轴筛选 ASR 台词
+      const shotAsrText = typeof shot?.asrText === 'string' ? shot.asrText.trim() : '';
+      const chunkAsrLines = shotAsrText
+        ? []
+        : (hasAsrTimestamps
+            ? asrLines.filter(l => {
+                // 🔧 修复 Bug A2：ASR 的 l.start 是「秒」，之前直接跟毫秒变量 chunkStartMs 比，漏掉 ×1000（台词永远对不上）
+                const lineStartMs = ScriptGenStrategy._asrLineToMs(l, 0).startMs;
+                return lineStartMs >= chunkStartMs && lineStartMs < chunkStartMs + chunkDurationMs;
+              })
+            : asrLines.slice(i * Math.max(1, Math.floor(asrLines.length / totalShots)), (i + 1) * Math.max(1, Math.floor(asrLines.length / totalShots))));
+      const asrContext = shotAsrText || chunkAsrLines.map(l => l.text || l.content || '').filter(Boolean).join(' ') || '';
 
       // 🎬 视觉噪点过滤与 Key-Action 提纯：剔除"背景是一面墙"等静态水文
       // 仅保留戏剧动作（带【特写】镜头前缀）+ 微表情 + 噑点过滤后的 keywords
@@ -516,10 +542,13 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       });
     }
 
-    // ========== 阶段1.5：微 chunk 切分 — 单 chunk 时间上限 5 秒 ==========
+    // ========== 阶段1.5：微 chunk 切分 — 单 chunk 时间上限 12 秒 ==========
     // step2 输出的 shot 粒度可能很粗(45~72秒)，导致 LLM 生成 100+ 字长段落
     // step3 自己按时间上限切分，每个子 chunk 继承父 visualContext，但 ASR 按各自时间段重新筛选
-    const MAX_CHUNK_SEC = 5;
+    // 🔧 P1-5 粒度修正：上限从 5s 提到 12s。此前 5s 上限会把正常镜头（如 8~12s/帧）硬切成 4~5s 碎片，
+    //   恰好跳过阶段1.6 的合并门槛（MIN_CHUNK_SEC=4s），产出大量孤立短句解说（用户反馈"文案不顺"）。
+    //   12s 上限让常规镜头保持完整叙事单元（每段可写 ~50 字连贯长句，由断句器按字幕安全框切回）。
+    const MAX_CHUNK_SEC = 12;
     const microChunks: any[] = [];
     for (const chunk of contextChunks) {
       if (chunk.durationSec <= MAX_CHUNK_SEC) {
@@ -560,12 +589,14 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     contextChunks.length = 0;
     contextChunks.push(...microChunks);
 
-    // ========== 阶段1.6：短 chunk 合并 — 消除 1~3 秒碎片，保证每段有足够字数写连贯叙事 ==========
+    // ========== 阶段1.6：短 chunk 合并 — 消除碎片，保证每段有足够字数写连贯叙事 ==========
     // 用户反馈：step2 的 shot 时长可能只有 1.2~3 秒，按"每 chunk 一段解说 + 字数硬上限"生成时，
     // 每段只能写 4~15 字，被迫凑成 9~10 字孤立短句，段落间无衔接、无剧情纵深。
-    // 方案：把时长 < MIN_CHUNK_SEC(4s) 的连续 chunk 向前合并成更大的叙事单元，
+    // 方案：把时长 < MIN_CHUNK_SEC(10s) 的连续 chunk 向前合并成更大的叙事单元，
     // 让每段能容纳完整长句/多分句，真正写出"通顺连贯"的解说，再交给断句器按字幕安全框切回。
-    const MIN_CHUNK_SEC = 4;
+    // 🔧 P1-5 合并门槛修正：4s → 10s。4s 门槛对微切分产物（4~5s）几乎不生效（恰好 ≥4s 跳过合并），
+    //   导致 322 段碎片。10s 门槛把 4~9s 的连续片段并入前段，形成 10s+ 的连贯叙事单元。
+    const MIN_CHUNK_SEC = 10;
     if (contextChunks.length > 1) {
       const mergedChunks: any[] = [];
       let unit: any = null; // 当前正在累积的叙事单元
@@ -589,7 +620,7 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
           mergedChunks.push(unit);
         }
       }
-      // 末尾若残留 < 4s 的孤立单元，并入前一段，避免尾部碎片段
+      // 末尾若残留 < MIN_CHUNK_SEC 的孤立单元，并入前一段，避免尾部碎片段
       const tail = mergedChunks[mergedChunks.length - 1];
       if (mergedChunks.length > 1 && tail.durationSec < MIN_CHUNK_SEC) {
         mergedChunks.pop();
@@ -609,17 +640,21 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     // 计算总时长（秒）用于字数预算（阶段4：真实时间轴替代 sceneLineCount*4 硬编码）
     const totalDurationSec = contextChunks.reduce((sum, c) => sum + c.durationSec, 0) || (totalShots * 4);
 
-    // 目标解说时长覆盖：用户显式指定解说总时长时，用它反推等效填充率，覆盖 narrationDensity 三档
-    // 需放在 totalDurationSec 之后（要用视频总时长做除法）。目标时长相对视频总时长 clamp 到 [0,1]，
-    // 避免解说超出视频物理溢出。0 / undefined 表示未设置，保持 density 自动逻辑。
+    // 🔧 P1-5 算法修正（用户澄清语义）：解说占比与目标时长是**两个独立维度，互不覆盖**。
+    //   - narrationRatio（解说占比）= 每段解说词的丰满度：每段按 ratio 比例写满（0.85 = 每段写 85% 容量），文案丰富连贯
+    //   - targetNarrationDurationSec（目标时长）= 文案总量预算：整个文案总共写多少分钟/多少字
+    //   旧实现用 targetSec/视频总时长 覆盖 densityFillRate，导致设 400s 时每段填充率被压到 ~16%
+    //   → 每段只能写 5~15 字孤立短句，文案机械（"一个都不顺"的根因）。
+    //   现在：densityFillRate 恒等于 narrationRatio（每段保持丰满），targetSec 只作总量软约束：
+    //   ① 注入 prompt（优先关键剧情段写满、过渡段留白控制总量）② 生成后总量校验提示。
     const targetSec = typeof params.targetNarrationDurationSec === 'number' && params.targetNarrationDurationSec > 0
       ? params.targetNarrationDurationSec
       : null;
-    if (targetSec !== null && totalDurationSec > 0) {
-      densityFillRate = Math.min(1, targetSec / totalDurationSec);
-      // 单段字数系数同步跟随，避免"总时长受限但单段仍按 0.85"导致总量超预算
-      perChunkFillRate = Math.min(1, Math.max(0.5, densityFillRate * 1.3));
-    }
+    // 目标总量预算（字数）：目标时长 × 语速 × 节奏折损（供 prompt 注入与生成后校验）
+    const discountByRhythmForTarget: Record<string, number> = { short_fast: 0.85, mixed: 0.90, slow_soothing: 0.93 };
+    const targetBudgetChars = targetSec !== null
+      ? Math.floor(targetSec * speechRate * (discountByRhythmForTarget[params.rhythmMode] ?? 0.90))
+      : null;
 
     // 使用 LLMFactory.createAdapter 自动读取用户配置的模型和 API Key
     const { adapter, modelName, temperature } = LLMFactory.createAdapter('script');
@@ -647,7 +682,7 @@ ${storyLine ? `\n【全片剧情故事线】（步骤2视觉分析按时间顺�
 ${storyLine}` : ''}
 
 【视频片段流（含时间轴 / 画面描述 / 原声台词）】：
-${JSON.stringify(contextChunks, null, 2)}
+${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}
 
 请严格输出 JSON（不要 Markdown 包裹，不要解释）：
 {
@@ -663,6 +698,7 @@ ${JSON.stringify(contextChunks, null, 2)}
         ],
         modelName,
         0.3, // 大纲生成用低温，保证剧情归纳稳定
+        { max_tokens: 1500 }, // 🔧 P1-5 剧情大纲输出量小（logline/arc/motives/keyTurns），设上限防拖尾空转
       );
       const parsedOutline = NetworkPipeline.strictParseJson(outlineResponse.text || '');
       if (parsedOutline && typeof parsedOutline === 'object' && !Array.isArray(parsedOutline) && parsedOutline.logline) {
@@ -685,26 +721,16 @@ ${JSON.stringify(contextChunks, null, 2)}
       'first': '第一人称沉浸视角："我推开门，看见了..." — 代入主角内心，主观体验',
       'second': '第二人称吐槽视角："换作是你，看到桌上这三十万，你敢接吗？" — 与观众建立交互问答',
     };
-    // 信息层次 → prompt 指令
-    const infoLevelMap: Record<string, string> = {
-      'plot': '剧情复述：讲发生了什么（"张三拿起了刀"），平铺直叙',
-      'deep': '深度解读：分析为什么（"张三拿起刀，因为他已经别无选择"），剖析动机与因果',
-      'roast': '吐槽点评：主观评价（"张三拿起刀，这波操作我给满分"），带有个人立场',
-    };
-    // 解说密度 → prompt 指令（含字数填充率：展示单段填充率，让 LLM 知道每段可写的字数）
-    const densityMap: Record<string, string> = {
-      'full': `满配（单段填充率${(perChunkFillRate * 100).toFixed(0)}%）：每秒都有解说，信息密度最大，适合硬核科幻、高智商犯罪剧情`,
-      'standard': `标准（单段填充率${(perChunkFillRate * 100).toFixed(0)}%）：关键画面有解说，过渡段静音让画面说话`,
-      'sparse': `留白（单段填充率${(perChunkFillRate * 100).toFixed(0)}%）：大量留白，只在关键节点点睛，适合纪录片/文艺向，让位给BGM和画面纯享`,
-    };
-    // 原声策略 → prompt 指令
-    const audioStrategyMap: Record<string, string> = {
-      'cover': '全量覆盖：忽略ASR原声，LLM全力重新编排旁白',
-      'keep_key': '关键台词保留：识别ASR中高压/冲突台词区间，在该时间段暂停解说留出原声出场',
-      'original_main': '原声为主：原声保留，解说仅辅助过渡',
-    };
-    // 原声策略 → 是否允许标记原声段落（cover 模式禁止标记）
-    const allowOriginalMark = params.originalAudioStrategy !== 'cover';
+    // 解说占比 → prompt 指令（按解说占比 n 分档描述解说铺陈与留白语义，字数预算统一由"字数预算与参数指引"注入）
+    const narrationRatioText = narrationRatio >= 0.95
+      ? '全量解说：解说铺满全片，忽略原声，全力重新编排旁白'
+      : narrationRatio >= 0.6
+      ? `解说为主（解说占比 ${Math.round(narrationRatio * 100)}%）：关键画面持续解说，过渡段留白给原声/静音让位`
+      : narrationRatio >= 0.3
+      ? `各占一半（解说占比 ${Math.round(narrationRatio * 100)}%）：识别ASR中高压/冲突台词区间，在该时间段暂停解说留出原声出场`
+      : `原声为主（解说占比 ${Math.round(narrationRatio * 100)}%）：原声保留，解说仅辅助过渡`;
+    // 是否允许标记原声段落：解说占比 < 100% 即留了原声空间，才允许 LLM 标记原声段落
+    const allowOriginalMark = narrationRatio < 1;
     // 节奏模式 → prompt 指令（含TTS标记规范）
     const rhythmMap: Record<string, string> = {
       'short_fast': '短句快切：严格使用微型短句。每句末尾强制使用逗号或感叹号。适合极速快切。密集注入 [pause: 200ms]',
@@ -750,6 +776,9 @@ ${style}：${styleInstruction}
 
 ${hookInstruction}
 
+${targetSec !== null ? `## 📏 目标解说总时长（总量约束，与"解说占比"独立）
+本片目标解说总时长约 ${targetSec} 秒（约 ${targetBudgetChars} 字）。片段流中存在过渡/次要段落时：优先为关键剧情/冲突/转折段落撰写**丰满**解说（每段按字数上限写满，保留解读）；过渡/次要段落应${allowOriginalMark ? '标记 "keepOriginalAudio": true 留白给原声' : '精简字数'}，使全部解说总量贴近目标时长。` : ''}
+
 ## ⚡ 爆款短句与卡点硬性规则 (Core Short-Sentence Rules)
 1. **单句字数硬限制**：每个单句（两个标点之间的文字）绝对不能超过 ${maxSentenceChars} 字！多用动词、感叹句与极速短句（如："死死盯住！"、"眼神杀气顿显！"）。
 2. **镜头级连贯叙事**：每个分镜的解说词应写成通顺完整的句子或短句群，字数尽量贴近单段字数上限（不要刻意压短成碎片）；相邻分镜之间善用衔接词（接着／没想到／于是／然而／下一秒）承上启下，形成连贯的剧情流，避免每段都是孤立无关联的短句。长句交给断句器按字幕安全框自动拆分。
@@ -765,19 +794,16 @@ ${CONSTRAINTS.JSON_ONLY}
 
 ## 字数预算与参数指引
 【严格字数约束】：每个解说段应写成通顺连贯的完整句子或短句群，确保剧情表达完整，不要为了凑字数而碎成几个字。
-- 单段字数上限 = ⌊ 时长(秒) × ${speechRate} × ${(perChunkFillRate * 100).toFixed(0)}% × ${discountFactor} ⌋
-- 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * speechRate * perChunkFillRate * discountFactor)} 字
-- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * speechRate * perChunkFillRate * discountFactor)} 字
+- 单段字数上限 = ⌊ 时长(秒) × ${speechRate} × ${(densityFillRate * 100).toFixed(0)}% × ${discountFactor} ⌋
+- 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * speechRate * densityFillRate * discountFactor)} 字
+- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * speechRate * densityFillRate * discountFactor)} 字
 - 视频总时长约 ${totalDurationSec.toFixed(1)} 秒，解说词总量绝对严禁超过 ${Math.floor(totalDurationSec * speechRate * densityFillRate * discountFactor)} 字
 
 【专业解说参数指引】：
 - 叙事视角：${perspectiveMap[params.narrativePerspective] || perspectiveMap.third}
-- 信息层次：${infoLevelMap[params.informationLevel] || infoLevelMap.deep}
-- 解说密度：${densityMap[params.narrationDensity] || densityMap.standard}
-- 原声策略：${audioStrategyMap[params.originalAudioStrategy] || audioStrategyMap.keep_key}
+- 解说占比：${narrationRatioText}
 - 节奏模式：${rhythmMap[params.rhythmMode] || rhythmMap.mixed}
 - 情绪基调：${emotionToneMap[params.emotionTone] || emotionToneMap.neutral}
-- 声画权重：${(audioVisualWeight * 100).toFixed(0)}%（${audioVisualWeight > 0.5 ? '偏向视觉，主要依据画面描述描绘微表情和动作细节' : '偏向原声，解说词主要起提炼对白核心逻辑的作用'}）
 
 ${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
 原声策略要求保留部分原片原声。当某段分镜的核心是"原片台词/标志性对白/冲突声"（观众需要亲耳听到原声），请将该分镜标记为原声段落：
@@ -804,7 +830,7 @@ ${allowOriginalMark ? '- keepOriginalAudio 为可选布尔字段，默认 false 
     // ========== 组装用户 Prompt：ContextChunk JSON + 角色ID映射 ==========
     // 阶段1：用 ContextChunk JSON 替代旧的松散文本拼接，让 LLM 看到结构化的时序数据
     let userPrompt = `【多模态上下文片段流（ContextChunk）】：
-${JSON.stringify(contextChunks, null, 2)}`;
+${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}`;
 
     // 阶段2：角色实体消歧 — 显式 ID→名称映射，禁止 LLM 凭空创造人名
     if (input.roles && input.roles.length > 0) {
@@ -877,21 +903,17 @@ ${roleMapLines.join('\n')}
     // 画面真实时长优先：LLM 自报的 duration 不受画面约束，常出现超长段落无法匹配画面。
     // 用微切分得到的画面真实时长 contextChunks[idx].durationSec 覆盖 raw.duration，
     // 保证解说时长与画面对齐；contextChunks 按 chunk 下标与 rawShots 一一对应。
-    // 节奏模式影响分镜时长 — 短句快切缩短，长句舒缓加长，长短交替不变。
-    const paceFactor = params.rhythmMode === 'short_fast'
-      ? 0.8   // 短句快切：duration 缩短 20%
-      : params.rhythmMode === 'slow_soothing'
-      ? 1.3   // 长句舒缓：duration 加长 30%
-      : 1.0;  // 长短交替：不变
+    // 注意：不再按 rhythmMode 缩放分镜时长（paceFactor 已移除）——节奏由单句字数上限/句子风格/字数折扣控制，
+    // 分镜时长必须等于画面真实时长，否则步骤5 匹配时解说段与画面错位。
 
     // 先构造带 __order 的中间分镜（__order = chunk 下标，供断句后按原始顺序合并、回查 contextChunks）
     const parsed = rawShotsWithVI.map((raw, idx) => {
       const baseDuration = contextChunks[idx]?.durationSec ?? (raw.duration || 3);
       return {
         __order: idx,
-        id: raw.shotId || `shot_${Math.random().toString(36).slice(2, 8)}`,
+        id: raw.shotId || `shot_${Math.random().toString(36).slice(8)}`,
         text: raw.text || '',
-        duration: baseDuration * paceFactor,
+        duration: baseDuration,
         /** 原声段落标记：切分时保护，不拆分（原声定位依赖整段文本锁时间轴，拆分会破坏） */
         keepOriginalAudio: raw.keepOriginalAudio === true,
         /** 🎭 P1 角色组合匹配：本段解说词对应的 chunk 锚定角色（按下标一一对应，子句断句后原样继承） */
@@ -952,6 +974,31 @@ ${roleMapLines.join('\n')}
     const replacedCount = parsedShots.filter(s => s.replaced).length;
     if (flaggedCount > 0) {
       AppLogger.info('ScriptGenStrategy', `敏感词扫描完成: ${flaggedCount} 条标记, ${replacedCount} 条已替换`);
+    }
+
+    // ========== 任务B：生成后总量字数强校验 ==========
+    // 🔧 P1-5 预算基准：用户设置目标解说时长时用目标预算（targetSec × 语速 × 折损）；
+    //   未设置时用「视频总时长 × 语速 × 解说占比 × 折损」——占比只决定每段密度，不再被目标时长覆盖。
+    // 超限时不静默截断文案（会破坏句子结构/节奏），而是 WARN 明确暴露 预算/实际/超限比例，
+    // 让用户据此调整后重新生成（符合"错就错，不降级"原则）。
+    const totalBudgetChars = targetBudgetChars !== null
+      ? targetBudgetChars
+      : Math.floor(totalDurationSec * speechRate * densityFillRate * discountFactor);
+    const actualTotalChars = parsedShots.reduce((sum, s) => sum + (s.text || '').length, 0);
+    if (actualTotalChars > totalBudgetChars) {
+      const overPct = Math.round(((actualTotalChars - totalBudgetChars) / totalBudgetChars) * 100);
+      AppLogger.warn(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成] 总量字数超预算：实际 ${actualTotalChars} 字 > 预算 ${totalBudgetChars} 字（超 ${overPct}%）。` +
+        (targetBudgetChars !== null
+          ? `当前按目标解说时长 ${targetSec}s 核算。若想解说更饱满，请调大目标时长；若想控制总量，请降低解说占比。`
+          : `建议降低解说占比后重新生成。`),
+      );
+    } else {
+      AppLogger.info(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成] 总量字数校验通过：${actualTotalChars} 字 ≤ 预算 ${totalBudgetChars} 字`,
+      );
     }
 
     onProgress(100, `剧本重铸成功，共计 ${parsedShots.length} 幕分镜！`);

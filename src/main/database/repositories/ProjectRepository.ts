@@ -245,7 +245,9 @@ export class ProjectRepository {
       frames: m.frames ? JSON.parse(m.frames) : undefined, extractedAudio: m.extracted_audio || undefined,
       extractedVocals: m.extracted_vocals || undefined, extractedBgm: m.extracted_bgm || undefined,
       extractedText: m.extracted_text || undefined, extractDuration: m.extract_duration ? parseFloat(m.extract_duration) : undefined,
-      narrationScript: m.narration_script ? JSON.parse(m.narration_script) : undefined
+      narrationScript: m.narration_script ? JSON.parse(m.narration_script) : undefined,
+      // 🎬 帧真实时间戳（源坐标，与 frames 顺序对齐）：step2 优先读取真实时间轴，避免 estimatedInterval 估算错位
+      framesTimeMs: m.frames_time_ms ? JSON.parse(m.frames_time_ms) : undefined
     }));
     console.log(`[DEBUG][Repo] mapped mediaItems count=${mediaItems.length}`);
 
@@ -646,15 +648,17 @@ export class ProjectRepository {
   }
 
   /**
-   * 裁剪匹配结果中的大字段（visionEmbedding/colorHistogram 为 CLIP 计算中间产物，可达 512 维），
+   * 裁剪匹配结果中的大字段（visionEmbedding/colorHistogram/clipZhEmbedding 为 CLIP 计算中间产物，可达 512 维），
    * 避免写入 metadata 后 JSON 体积臃肿。前端仅消费 id/startMs/endMs/coverPath/filePath 等轻量字段。
+   * 🔧 P1-5 修正：补裁 clipZhEmbedding（KM 图像特征缓存回写后随 chunkData 透传，漏裁会导致
+   *   match_results JSON 被 512 维浮点数组塞满，单条可达数十 KB）。
    * @param results 原始匹配结果数组
    * @returns 裁剪 chunkData 后的匹配结果数组（不修改原数组）
    */
   static sanitizeMatchResultsForPersist(results: any[]): any[] {
     return results.map((m: any) => {
       if (!m || !m.chunkData || typeof m.chunkData !== 'object') return m;
-      const { visionEmbedding, colorHistogram, ...lightChunkData } = m.chunkData;
+      const { visionEmbedding, colorHistogram, clipZhEmbedding, ...lightChunkData } = m.chunkData;
       return { ...m, chunkData: lightChunkData };
     });
   }

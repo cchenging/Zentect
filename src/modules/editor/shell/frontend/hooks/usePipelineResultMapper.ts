@@ -74,7 +74,12 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
         if (nodeResult.framePaths) mappers.setFrameCount(nodeResult.framePaths.length);
         /** 将帧路径数组持久化到 store，修复"抽得到图片但前端看不见" */
         if (nodeResult.framePaths && Array.isArray(nodeResult.framePaths)) {
-          mappers.setExtractedData({ framePaths: nodeResult.framePaths, frameCount: nodeResult.framePaths.length });
+          mappers.setExtractedData({
+            framePaths: nodeResult.framePaths,
+            frameCount: nodeResult.framePaths.length,
+            // 🎬 帧真实时间戳（源坐标，与 framePaths 顺序对齐）：随帧路径一并写入 extractedData
+            frameTimeMs: nodeResult.frameTimeMs || [],
+          });
         } else if (nodeResult.frames && Array.isArray(nodeResult.frames)) {
           // 🛑 根因修复：nodeResult.frames 可能是对象数组（[{url,path,...}]，如 VisionExtractStrategy 的 frames: frameDetails），
           // 若整包对象数组直接塞入 framePaths，数组项为 object，渲染时 getSafeMediaUrl().trim() 崩溃。
@@ -82,7 +87,14 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
           const frameUrls = nodeResult.frames
             .map((f: any) => (typeof f === 'string' ? f : (f?.url || f?.path || f?.filePath || f?.thumbnail || '')))
             .filter(Boolean);
-          mappers.setExtractedData({ framePaths: frameUrls, frameCount: frameUrls.length });
+          mappers.setExtractedData({
+            framePaths: frameUrls,
+            frameCount: frameUrls.length,
+            // 🎬 帧真实时间戳：frames 对象数组自带 timeMs 时优先派生，否则空数组
+            frameTimeMs: Array.isArray(nodeResult.frameTimeMs) && nodeResult.frameTimeMs.length > 0
+              ? nodeResult.frameTimeMs
+              : nodeResult.frames.map((f: any) => (typeof f === 'number' ? f : (f?.timeMs ? Math.round(Number(f.timeMs)) : 0))),
+          });
         }
         break;
 
@@ -134,6 +146,13 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
             duration: p.duration,
             emotion: p.emotion || '',
             characters: Array.isArray(p.characters) ? p.characters : (Array.isArray(p.anchoredCharacters) ? p.anchoredCharacters : undefined),
+            /** 🎯 P1-5 链路修复：透传 ScriptGenStrategy 产出的时间锚 / 画面意图 / 原声标记。
+             *  此前漏透传导致 scriptParagraphs 无 startMs/visualIntent 落库，
+             *  步骤5 KM 时间锚（ANCHOR_BONUS）与画面意图语义匹配全部失效 → 匹配时间乱跳/短句错配。 */
+            startMs: typeof p.startMs === 'number' ? p.startMs : undefined,
+            durationMs: typeof p.durationMs === 'number' ? p.durationMs : undefined,
+            visualIntent: typeof p.visualIntent === 'string' ? p.visualIntent : undefined,
+            keepOriginalAudio: p.keepOriginalAudio === true,
             editing: false
           };
         }));

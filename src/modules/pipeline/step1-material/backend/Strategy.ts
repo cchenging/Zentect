@@ -483,6 +483,8 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     if (!fs.existsSync(facesDir)) fs.mkdirSync(facesDir, { recursive: true });
 
     let validFrames: string[] = skipFrames ? [...existingFrames] : (forceRetryStep && forceRetryStep !== 'frames' ? [...existingFrames] : []);
+    /** 🎬 帧真实时间戳（源坐标，原视频绝对时间），与 validFrames 顺序对齐；postProcess 产物 frameDetails 派生 */
+    let frameTimeMsForFrames: number[] = [];
     let audioPath: string | undefined = existingAudioPath;
     let vocalsPath: string | undefined = existingVocalsPath;
     let bgmPath: string | undefined = existingBgmPath;
@@ -537,6 +539,10 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           const trimForFrames = resolveForMedia(context.projectId, mediaId);
           const trimForFramesWin = toMediaWindow(trimForFrames);
           const frameShouldTrim = trimForFrames.trimStartMs > 0 || trimForFrames.trimEndMs > 0;
+          // 🎬 源坐标偏移：OP 裁剪后 FFmpeg -ss 前置 seek 使 PTS 归零（body 坐标），
+          //   透传 offsetSec×1000 给 SFPP，帧 timeMs 统一换算回源坐标（原视频绝对时间），
+          //   与 ASR（源坐标）/ 视频切片定位一致。非裁剪时为 0，行为不变。
+          const sourceOffsetMsForFrames = frameShouldTrim ? Math.round(trimForFramesWin.offsetSec * 1000) : 0;
           const framesConfig = typeof config.frames === 'object' ? config.frames : {};
           const strategy = framesConfig.mode || config.frameStrategy || 'VLM_OPTIMIZED';
           const frameService = new FrameExtractionService({
@@ -554,6 +560,8 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             // 🎬 P1-1 抽帧只覆盖 body 窗口（OP/ED 不抽帧）
             inPoint: frameShouldTrim ? trimForFramesWin.offsetSec : undefined,
             outPoint: frameShouldTrim && trimForFramesWin.durationSec !== undefined ? trimForFramesWin.durationSec : undefined,
+            // 🎬 帧时间戳换算回源坐标（原视频绝对时间），与 ASR 基准一致
+            sourceOffsetMs: sourceOffsetMsForFrames,
             // 🎭 追加式后处理：清晰度/黑屏过滤 + 静态去重 + timeMs 元数据
             postProcess: true,
           });
@@ -572,11 +580,18 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               // 🎬 P1-1 降级抽帧同样只覆盖 body 窗口
               inPoint: frameShouldTrim ? trimForFramesWin.offsetSec : undefined,
               outPoint: frameShouldTrim && trimForFramesWin.durationSec !== undefined ? trimForFramesWin.durationSec : undefined,
+              // 🎬 帧时间戳换算回源坐标
+              sourceOffsetMs: sourceOffsetMsForFrames,
               postProcess: true,
             });
           }
 
           validFrames = telemetryResult.files;
+          // 🎬 帧真实时间戳（源坐标，与 framePaths 顺序对齐），从 SFPP 后处理 frameDetails 派生；
+          //   未启用 postProcess 或产物缺失时保持空数组（下游将回退估算）
+          frameTimeMsForFrames = Array.isArray((telemetryResult as any).frameDetails)
+            ? (telemetryResult as any).frameDetails.map((d: any) => Math.round(Number(d?.timeMs) || 0))
+            : [];
           lastProgress = Math.max(lastProgress, 20);
           onProgress(lastProgress, `关键帧提取完成 (${validFrames.length}帧)`);
           return telemetryResult;
@@ -1064,6 +1079,8 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         count: frameCount, paths: framePaths, _failed: framesFailed, _skipped: skipFrames || !runFrames,
         // 🎬 P1-1 裁剪指纹：本次抽帧所用 trim 配置指纹，供 PipelineResultWriter 持久化到 media_assets
         framesTrimSig: mediaTrimSig,
+        // 🎬 帧真实时间戳（源坐标，与 paths 顺序对齐），供持久化后步骤2 直接使用真实时间戳
+        frameTimeMs: frameTimeMsForFrames,
       },
       audio: {
         separated: audioSeparated,

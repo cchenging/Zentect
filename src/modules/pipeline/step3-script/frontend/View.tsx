@@ -1,7 +1,7 @@
 // Module: pipeline/step3-script - View
 // Version: v5 - Modernized Professional Script Studio UI
 
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import {
   RefreshCw,
   Tag,
@@ -15,7 +15,6 @@ import {
   Volume2,
   Tv2,
   Smile,
-  Zap,
   BookOpen,
   AlignLeft,
   Clock,
@@ -47,61 +46,48 @@ const SPEECH_RATE_OPTIONS = [
 ];
 
 /** 叙事视角选项 */
-const PERSPECTIVE_OPTIONS: { value: PipelineParams['narrativePerspective']; label: string }[] = [
-  { value: 'third', label: "上帝视角 (第三人称)" },
-  { value: 'first', label: "主角视角 (第一人称)" },
-  { value: 'second', label: "沉浸互动 (第二人称)" },
+const PERSPECTIVE_OPTIONS: { value: PipelineParams['narrativePerspective']; label: string; hint: string }[] = [
+  { value: 'third', label: "上帝视角", hint: "全知叙事" },
+  { value: 'first', label: "主角视角", hint: "沉浸代入" },
+  { value: 'second', label: "沉浸互动", hint: "直接对话" },
 ];
 
-/** 信息层次选项 */
-const INFO_LEVEL_OPTIONS: { value: PipelineParams['informationLevel']; label: string; icon: any }[] = [
-  { value: 'plot', label: "剧情复述", icon: BookOpen },
-  { value: 'deep', label: "深度解读", icon: Sparkles },
-  { value: 'roast', label: "吐槽点评", icon: Zap },
-];
+/** 解说占比滑杆配置（0%~100%：解说与原声互斥一体，保留原声 = 100% - 解说占比） */
+const NARRATION_RATIO_MIN_PCT = 0;
+const NARRATION_RATIO_MAX_PCT = 100;
+const NARRATION_RATIO_STEP_PCT = 5;
 
-/** 解说密度选项 */
-const DENSITY_OPTIONS: { value: PipelineParams['narrationDensity']; label: string; fill: string }[] = [
-  { value: 'full', label: "满配 (100%)", fill: "w-full" },
-  { value: 'standard', label: "标准 (65%)", fill: "w-2/3" },
-  { value: 'sparse', label: "留白 (50%)", fill: "w-1/3" },
-];
-
-/** 原声策略选项 */
-const AUDIO_STRATEGY_OPTIONS: { value: PipelineParams['originalAudioStrategy']; label: string }[] = [
-  { value: 'cover', label: "全量覆盖" },
-  { value: 'keep_key', label: "关键保留" },
-  { value: 'original_main', label: "原声为主" },
-];
-
-/** 节奏模式选项 */
-const RHYTHM_OPTIONS: { value: PipelineParams['rhythmMode']; label: string }[] = [
-  { value: 'short_fast', label: "短句快切" },
-  { value: 'mixed', label: "长短交替" },
-  { value: 'slow_soothing', label: "长句舒缓" },
+/** 节奏模式选项（hint 携带单句字数上限：与后端 maxSentenceChars SSOT 对齐 12 / 20 / 30 字） */
+const RHYTHM_OPTIONS: { value: PipelineParams['rhythmMode']; label: string; hint: string }[] = [
+  { value: 'short_fast', label: "短句快切", hint: "≤12字/句" },
+  { value: 'mixed', label: "长短交替", hint: "≤20字/句" },
+  { value: 'slow_soothing', label: "长句舒缓", hint: "≤30字/句" },
 ];
 
 /** 情绪基调选项 */
-const EMOTION_TONE_OPTIONS: { value: PipelineParams['emotionTone']; label: string; emoji: string }[] = [
-  { value: 'neutral', label: "客观", emoji: "⚖️" },
-  { value: 'emotional', label: "情感", emoji: "💔" },
-  { value: 'suspense', label: "悬疑", emoji: "🔍" },
-  { value: 'epic', label: "高燃", emoji: "🔥" },
-  { value: 'comedy', label: "搞笑", emoji: "🤡" },
+const EMOTION_TONE_OPTIONS: { value: PipelineParams['emotionTone']; label: string; emoji: string; hint: string }[] = [
+  { value: 'neutral', label: "客观", emoji: "⚖️", hint: "中立陈述" },
+  { value: 'emotional', label: "情感", emoji: "💔", hint: "渲染情绪" },
+  { value: 'suspense', label: "悬疑", emoji: "🔍", hint: "制造悬念" },
+  { value: 'epic', label: "高燃", emoji: "🔥", hint: "堆叠热血" },
+  { value: 'comedy', label: "搞笑", emoji: "🤡", hint: "网感吐槽" },
 ];
 
 /** 段落级情绪标签 */
 const EMOTIONS = ["激昂", "温馨", "幽默", "平静", "紧张", "感慨", "震撼", "庄重"];
 
-/** Tooltips 说明词 */
+/** Tooltips 说明词（具体量化，不模糊） */
 const TOOLTIPS: Record<string, string> = {
-  style: "决定 AI 语言风格与文案框架",
-  infoLevel: "复述=讲事实 | 解读=分析隐喻 | 吐槽=主观热梗",
-  narrationDensity: "控制解说占视频总长比例，低密度给 BGM 与画面留白",
-  originalAudioStrategy: "原声为主时，解说词将自动降级为辅助串场",
-  hookIntensity: "强化开场前 3 秒吸引力，越强越具有爆款冲突",
-  audioVisualWeight: "偏向画面描写还是提炼 ASR 文本冲突",
+  style: "决定 AI 语言风格与文案框架；选择后自动填充情绪基调，可再手动微调",
+  narrationRatio: "解说与原声互斥一体，一个滑杆统一控制配比：解说占比越高=解说词越多越密、原声保留越少；越低=原声越完整、解说只在关键节点点睛。保留原声 = 100% - 解说占比",
+  rhythmMode: "句式节奏=单句字数上限：短句快切≤12字 / 长短交替≤20字 / 长句舒缓≤30字",
+  hookIntensity: "强化开场前 3 秒吸引力(0%~100%)，越强越具爆款冲突；≥80% 时自动禁用长句舒缓与 3.5 低语速",
 };
+
+/** 冲突自动修正的兜底优先级（按"最不易冲突"排序，取第一个未被禁用的值） */
+const TONE_FALLBACK_ORDER: PipelineParams['emotionTone'][] = ['neutral', 'emotional', 'suspense', 'epic', 'comedy'];
+const RHYTHM_FALLBACK_ORDER: PipelineParams['rhythmMode'][] = ['mixed', 'short_fast', 'slow_soothing'];
+const SPEECH_RATE_FALLBACK_ORDER = [4.5, 5.0, 4.0, 5.5, 3.5];
 
 /**
  * 质感 Hover Tooltip
@@ -120,6 +106,8 @@ const HelpTip: React.FC<{ text: string }> = ({ text }) => (
 
 /**
  * Pro 级 Segmented Control 胶囊切片选择器
+ * - hint：选项下方的量化说明（如 "≤12字/句" / "画面主导 80%"）
+ * - disabledValues：因与其它参数冲突而需禁用的选项值（置灰不可点，替代红字告警）
  */
 function SegmentedControl<T extends string>({
   options,
@@ -127,42 +115,57 @@ function SegmentedControl<T extends string>({
   onChange,
   disabled,
   lockedValue,
+  disabledValues,
 }: {
-  options: { value: T; label: string; icon?: any; emoji?: string; fill?: string }[];
+  options: { value: T; label: string; icon?: any; emoji?: string; fill?: string; hint?: string }[];
   value: T;
   onChange: (v: T) => void;
   disabled?: boolean;
   lockedValue?: T;
+  disabledValues?: T[];
 }) {
+  const disabledSet = new Set(disabledValues || []);
   return (
     <div className="flex p-1 rounded-xl bg-bg-tertiary/60 border border-border/30 gap-1 w-full overflow-x-auto no-scrollbar">
       {options.map((opt) => {
         const isLocked = lockedValue !== undefined && lockedValue === opt.value;
+        const isConflictDisabled = disabledSet.has(opt.value);
         const isSelected = value === opt.value && !isLocked;
+        const isOptionDisabled = disabled || isLocked || isConflictDisabled;
         const Icon = opt.icon;
 
         return (
           <button
             key={opt.value}
-            onClick={() => !disabled && !isLocked && onChange(opt.value)}
-            disabled={disabled || isLocked}
+            onClick={() => !isOptionDisabled && onChange(opt.value)}
+            disabled={isOptionDisabled}
+            title={isConflictDisabled ? "与当前配置冲突，已禁用" : undefined}
             className={`flex-1 min-w-[70px] py-1.5 px-2 rounded-lg text-[13px] font-medium transition-all duration-200
-              flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap select-none
+              flex flex-col items-center justify-center gap-0.5 cursor-pointer whitespace-nowrap select-none
               ${isSelected
                 ? "bg-accent/15 text-accent border border-accent/30 shadow-sm font-semibold"
                 : "text-muted-foreground hover:text-foreground hover:bg-bg-secondary/50 border border-transparent"
               }
               ${isLocked ? "bg-amber-500/10 text-amber-500/70 border-amber-500/20 cursor-not-allowed" : ""}
-              ${disabled && !isLocked ? "opacity-40 cursor-not-allowed" : ""}`}
+              ${isConflictDisabled ? "bg-border/10 text-muted-foreground/30 border-border/20 cursor-not-allowed line-through decoration-muted-foreground/30" : ""}
+              ${disabled && !isLocked && !isConflictDisabled ? "opacity-40 cursor-not-allowed" : ""}`}
           >
-            {isLocked && <Lock size={11} className="shrink-0 text-amber-500" />}
-            {Icon && <Icon size={12} className={isSelected ? "text-accent" : "text-muted-foreground"} />}
-            {opt.emoji && <span className="text-[12px]">{opt.emoji}</span>}
-            <span>{opt.label}</span>
-            {opt.fill && (
-              <div className="w-8 h-1 bg-border/40 rounded-full overflow-hidden ml-1 hidden sm:block">
-                <div className={`h-full bg-accent ${opt.fill}`} />
-              </div>
+            <span className="flex items-center justify-center gap-1.5">
+              {isLocked && <Lock size={11} className="shrink-0 text-amber-500" />}
+              {isConflictDisabled && <Lock size={11} className="shrink-0 text-muted-foreground/40" />}
+              {Icon && <Icon size={12} className={isSelected ? "text-accent" : "text-muted-foreground"} />}
+              {opt.emoji && <span className="text-[12px]">{opt.emoji}</span>}
+              <span>{opt.label}</span>
+              {opt.fill && (
+                <div className="w-8 h-1 bg-border/40 rounded-full overflow-hidden ml-1 hidden sm:block">
+                  <div className={`h-full bg-accent ${opt.fill}`} />
+                </div>
+              )}
+            </span>
+            {opt.hint && (
+              <span className={`text-[10px] leading-none font-normal ${isConflictDisabled ? "text-muted-foreground/25" : isSelected ? "text-accent/70" : "text-muted-foreground/50"}`}>
+                {opt.hint}
+              </span>
             )}
           </button>
         );
@@ -311,44 +314,47 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
   );
   const totalDurationMin = Math.ceil(totalDurationSec / 60) || Math.ceil(estimatedDuration / 60);
 
-  /**
-   * 冲突防呆：原声为主时解说密度强制锁定为留白(sparse, 50%)
-   * 为原片高光对白预留 60%~80% 时间窗口，避免声画物理重叠
-   */
-  const isDensityLocked = pipelineParams.originalAudioStrategy === 'original_main';
-  const effectiveDensity = isDensityLocked ? 'sparse' : pipelineParams.narrationDensity;
+  /** 解说占比（每段解说词的丰满度，0~1，与目标时长独立互不覆盖） */
+  const narrationRatioEff = Math.max(0, Math.min(1, pipelineParams.narrationRatio ?? 0.7));
+  /** 目标解说时长（秒）：>0 时作为文案总量预算（秒→字数），不影响每段占比 */
+  const targetSecEff = pipelineParams.targetNarrationDurationSec && pipelineParams.targetNarrationDurationSec > 0
+    ? pipelineParams.targetNarrationDurationSec
+    : 0;
 
   /**
-   * 声画权重到原声策略的内部映射（SSOT 唯一真源：originalAudioStrategy → audioVisualWeight）
-   * - cover(全量覆盖解说): 0.8（解说词更依赖视觉画面描写）
-   * - keep_key(关键台词保留): 0.5（均衡）
-   * - original_main(原声为主): 0.2（解说词主要提炼 ASR 对白核心逻辑）
+   * 总字数预算（SSOT 与后端 ScriptGenStrategy 对齐）：
+   * - 设置了目标解说时长 → 预算 = 目标时长 × 语速 × 节奏折损（总量控制）
+   * - 未设置 → 预算 = 视频总时长 × 语速 × 解说占比 × 节奏折损（按占比每段写满）
+   * 🔧 P1-5 语义修正：解说占比与目标时长是两个独立维度，占比不再被目标时长覆盖（旧实现把每段填充率
+   *   压到 targetSec/总时长 ≈ 16%，导致文案碎片机械）。占比只管每段密度，目标时长只管总量。
    */
-  const AUDIO_STRATEGY_TO_WEIGHT_MAP: Record<PipelineParams['originalAudioStrategy'], number> = {
-    cover: 0.8,
-    keep_key: 0.5,
-    original_main: 0.2,
-  };
+  const totalBudgetChars = useMemo(() => {
+    const discountByRhythm: Record<string, number> = { short_fast: 0.85, mixed: 0.90, slow_soothing: 0.93 };
+    const discountFactor = discountByRhythm[pipelineParams.rhythmMode] ?? 0.88;
+    if (targetSecEff > 0) return Math.floor(targetSecEff * speechRate * discountFactor);
+    return Math.floor(totalDurationSec * speechRate * narrationRatioEff * discountFactor);
+  }, [totalDurationSec, speechRate, narrationRatioEff, targetSecEff, pipelineParams.rhythmMode]);
+  /** 超限百分比（实际字数超出预算的比例，未超限返回 null） */
+  const overBudgetPct = useMemo(
+    () => totalBudgetChars > 0 && totalChars > totalBudgetChars
+      ? Math.round(((totalChars - totalBudgetChars) / totalBudgetChars) * 100)
+      : null,
+    [totalChars, totalBudgetChars],
+  );
 
   const updateParam = <K extends keyof PipelineParams>(key: K, value: PipelineParams[K]) => {
     onSetPipelineParams({ ...pipelineParams, [key]: value });
   };
 
-  const handleAudioStrategyChange = (v: PipelineParams['originalAudioStrategy']) => {
-    const next = { ...pipelineParams, originalAudioStrategy: v };
-    // 切换原声策略时，同步更新内部的 audioVisualWeight，保证 SSOT（唯一真源为 originalAudioStrategy）
-    next.audioVisualWeight = AUDIO_STRATEGY_TO_WEIGHT_MAP[v];
-    if (v === 'original_main') {
-      // 原声为主：密度强制锁定为留白(sparse, 50%)，无论之前选的是 full 还是 standard
-      next.narrationDensity = 'sparse';
-    }
-    onSetPipelineParams(next);
+  /** 解说占比滑杆变更（v 为 0~1）：解说与原声互斥一体，原声段落标记由后端 SSOT（narrationRatio → 1-n）唯一派生，前端不再维护 */
+  const handleNarrationRatioChange = (v: number) => {
+    updateParam('narrationRatio', v);
   };
 
   /**
    * 创作风格预设切换：从 STYLE_PRESET_MAP（pipelineConstants.ts，唯一真源）
-   * 读取推荐的 informationLevel + emotionTone，自动填充到 pipelineParams 中
-   * 用户仍可手动微调（微调可能产生语义冲突，UI 会显式告警但不静默修正）
+   * 读取推荐的 emotionTone，自动填充到 pipelineParams 中
+   * 用户仍可手动微调（微调后若产生冲突，冲突选项会被自动禁用并就近修正，不弹告警）
    */
   const handleScriptStyleChange = (v: string) => {
     onSetScriptStyle(v);
@@ -356,71 +362,56 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
     if (preset) {
       onSetPipelineParams({
         ...pipelineParams,
-        informationLevel: preset.informationLevel,
         emotionTone: preset.emotionTone,
       });
     }
   };
 
   /**
-   * 语义冲突检测：检测 scriptStyle 预设 vs 用户手动微调后的 informationLevel/emotionTone
-   * 是否存在明显矛盾。遵循"错就错不降级"原则：只提示冲突，不静默修正。
+   * 冲突约束计算：返回各维度被禁用的选项值集合。
+   * 有冲突的选项直接禁用置灰（替代原红字告警），规则与后端/原语义冲突一致：
+   * - 风格 × 情绪基调、风格/钩子强度 × 节奏、钩子强度 × 语速
    */
-  const semanticConflict = useMemo(() => {
+  const conflictSets = useMemo(() => {
+    const toneDisabled = new Set<PipelineParams['emotionTone']>();
+    const rhythmDisabled = new Set<PipelineParams['rhythmMode']>();
+    const speedDisabled = new Set<number>();
     const style = scriptStyle;
-    const info = pipelineParams.informationLevel;
-    const tone = pipelineParams.emotionTone;
-    const conflicts: string[] = [];
+    const hook = pipelineParams.hookIntensity ?? 0;
 
-    // 1. 深度解说 + 搞笑吐槽冲突（严肃分析 vs 娱乐化表达）
-    if (style === '深度解说' && tone === 'comedy') {
-      conflicts.push('深度解说风格要求严谨分析，与搞笑基调存在冲突');
-    }
-    if (style === '硬核科普' && tone === 'comedy') {
-      conflicts.push('硬核科普风格要求事实准确，与搞笑基调存在冲突');
-    }
-    // 2. 悬疑推理 + 搞笑吐槽冲突（悬疑铺垫 vs 娱乐消解）
-    if (style === '悬疑推理' && tone === 'comedy') {
-      conflicts.push('悬疑推理风格依赖悬念营造，与搞笑基调存在冲突');
-    }
-    if (style === '悬疑推理' && tone === 'epic') {
-      conflicts.push('悬疑推理风格依赖张弛有度，与高燃热血基调存在冲突');
-    }
-    // 3. 情感叙事 + 客观中立冲突（感性渲染 vs 平铺直叙）
-    if (style === '情感叙事' && tone === 'neutral') {
-      conflicts.push('情感叙事风格依赖感性笔触，与客观中立基调存在冲突');
-    }
-    // 4. 信息层次=深度解读 + 情绪基调=搞笑=主观吐槽的交叉冲突
-    if (info === 'deep' && tone === 'comedy') {
-      conflicts.push('深度解读的信息层次与搞笑吐槽基调存在语义矛盾');
-    }
-    if (info === 'roast' && tone === 'neutral') {
-      conflicts.push('吐槽点评的信息层次与客观中立基调存在语义矛盾');
-    }
-    // 5. 爆款短视频 + 长句舒缓冲突（快节奏 vs 慢节奏）
-    if (style === '爆款短视频' && pipelineParams.rhythmMode === 'slow_soothing') {
-      conflicts.push('爆款短视频风格依赖短句快切节奏，与长句舒缓模式存在冲突');
-    }
+    // 风格 → 情绪基调：严肃分析禁止搞笑；悬疑禁止搞笑/高燃；情感叙事禁止客观
+    if (style === '深度解说' || style === '硬核科普') toneDisabled.add('comedy');
+    if (style === '悬疑推理') { toneDisabled.add('comedy'); toneDisabled.add('epic'); }
+    if (style === '情感叙事') toneDisabled.add('neutral');
+    // 风格/钩子强度 → 节奏：快剪与强钩子都禁止长句舒缓
+    if (style === '爆款短视频') rhythmDisabled.add('slow_soothing');
+    if (hook >= 0.8) rhythmDisabled.add('slow_soothing');
+    // 钩子强度 → 语速：强钩子禁止 3.5 低缓纪录
+    if (hook >= 0.8) speedDisabled.add(3.5);
 
-    // 6. 强钩子 + 慢节奏/低语速冲突（钩子强度要求开篇密集紧张，慢节奏/低语速与之相反）
-    if ((pipelineParams.hookIntensity ?? 0) >= 0.8 && pipelineParams.rhythmMode === 'slow_soothing') {
-      conflicts.push('黄金 3 秒钩子强度拉满需短句快切开篇，与长句舒缓节奏存在冲突');
-    }
-    if ((pipelineParams.hookIntensity ?? 0) >= 0.8 && speechRate <= 3.5) {
-      conflicts.push('黄金 3 秒钩子强度拉满需密集紧张语速，与低缓语速(3.5)存在冲突');
-    }
-    // 7. 吐槽点评 + 悬疑/高燃冲突（吐槽是娱乐消解，悬疑需铺垫张力、高燃需情绪堆叠）
-    if (pipelineParams.informationLevel === 'roast' && (pipelineParams.emotionTone === 'suspense' || pipelineParams.emotionTone === 'epic')) {
-      conflicts.push('吐槽点评的信息层次与悬疑/高燃基调存在语义矛盾');
-    }
-    // 8. 目标解说时长超过视频总时长（物理溢出：目标时长 > 视频总时长时解说将铺满整片无留白）
-    const targetSec = pipelineParams.targetNarrationDurationSec ?? 0;
-    if (targetSec > 0 && totalDurationSec > 0 && targetSec > totalDurationSec) {
-      conflicts.push(`目标解说时长(${targetSec}s)超过视频总时长(${totalDurationSec}s)，将导致解说铺满整片无留白`);
-    }
+    return { toneDisabled, rhythmDisabled, speedDisabled };
+  }, [scriptStyle, pipelineParams.hookIntensity]);
 
-    return conflicts;
-  }, [scriptStyle, pipelineParams, totalDurationSec, speechRate]);
+  /**
+   * 冲突自动修正（防呆）：当前值落入禁用集时，自动切换到最近的合法值。
+   * 确保 UI 永不出现冲突组合，无需红字告警。
+   */
+  useEffect(() => {
+    const { toneDisabled, rhythmDisabled, speedDisabled } = conflictSets;
+    const next: Partial<PipelineParams> = {};
+    if (toneDisabled.has(pipelineParams.emotionTone)) {
+      next.emotionTone = TONE_FALLBACK_ORDER.find(t => !toneDisabled.has(t)) ?? 'neutral';
+    }
+    if (rhythmDisabled.has(pipelineParams.rhythmMode)) {
+      next.rhythmMode = RHYTHM_FALLBACK_ORDER.find(r => !rhythmDisabled.has(r)) ?? 'mixed';
+    }
+    if (speedDisabled.has(speechRate)) {
+      onSetSpeechRate(SPEECH_RATE_FALLBACK_ORDER.find(s => !speedDisabled.has(s)) ?? 4.5);
+    }
+    if (Object.keys(next).length > 0) {
+      onSetPipelineParams({ ...pipelineParams, ...next });
+    }
+  }, [conflictSets, pipelineParams, speechRate, onSetPipelineParams, onSetSpeechRate]);
 
   return (
     <div className="flex flex-col gap-4 pb-6">
@@ -433,7 +424,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             </div>
             <div>
               <h3 className="text-[14px] font-semibold text-foreground tracking-wide">AI 脚本控制台</h3>
-              <p className="text-[12px] text-muted-foreground/80">精细化调控解说语气、声画比率与网感节奏</p>
+              <p className="text-[12px] text-muted-foreground/80">风格 / 语速 / 密度 / 声画 / 节奏 / 情绪全参数精调，冲突选项自动禁用</p>
             </div>
           </div>
           {scriptParagraphs.length > 0 && (
@@ -453,7 +444,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
               <label className="text-[13px] font-medium text-muted-foreground flex items-center">
                 <Tv2 size={12} className="mr-1.5 text-accent" />
                 创作风格预设
-                <HelpTip text={TOOLTIPS.style + '（选择后会自动填充信息层次与情绪基调，可手动微调）'} />
+                <HelpTip text={TOOLTIPS.style + '（选择后会自动填充情绪基调，可手动微调）'} />
               </label>
               <CustomSelect
                 value={scriptStyle}
@@ -476,19 +467,31 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
                 </Badge>
               </div>
               <div className="grid grid-cols-5 gap-1 p-1 bg-bg-tertiary/60 rounded-xl border border-border/30">
-                {SPEECH_RATE_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.value}
-                    onClick={() => onSetSpeechRate(opt.value)}
-                    disabled={isGenerating}
-                    className={`py-1 text-[12px] font-mono rounded-lg transition-all cursor-pointer text-center
-                      ${speechRate === opt.value
-                        ? "bg-accent/20 text-accent font-bold border border-accent/30 shadow-xs"
-                        : "text-muted-foreground hover:text-foreground"}`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
+                {SPEECH_RATE_OPTIONS.map((opt) => {
+                  const isSpeedConflict = conflictSets.speedDisabled.has(opt.value);
+                  const isSpeedSelected = speechRate === opt.value && !isSpeedConflict;
+                  return (
+                    <button
+                      key={opt.value}
+                      onClick={() => !isSpeedConflict && onSetSpeechRate(opt.value)}
+                      disabled={isGenerating || isSpeedConflict}
+                      title={isSpeedConflict ? "与强钩子强度冲突，已禁用" : undefined}
+                      className={`py-1 px-1 text-[12px] font-mono rounded-lg transition-all cursor-pointer text-center
+                        flex flex-col items-center leading-tight
+                        ${isSpeedSelected
+                          ? "bg-accent/20 text-accent font-bold border border-accent/30 shadow-xs"
+                          : "text-muted-foreground hover:text-foreground"}
+                        ${isSpeedConflict
+                          ? "bg-border/10 text-muted-foreground/30 border border-border/20 cursor-not-allowed line-through decoration-muted-foreground/30"
+                          : "border border-transparent"}`}
+                    >
+                      <span>{opt.label}</span>
+                      <span className={`text-[9px] font-normal ${isSpeedSelected ? "text-accent/70" : isSpeedConflict ? "text-muted-foreground/25" : "text-muted-foreground/50"}`}>
+                        {opt.desc}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -511,55 +514,45 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
               />
             </div>
 
-            {/* 信息层次 */}
-            <div className="flex flex-col gap-1.5">
-              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
-                信息层次
-                <HelpTip text={TOOLTIPS.infoLevel} />
-              </span>
-              <SegmentedControl
-                options={INFO_LEVEL_OPTIONS}
-                value={pipelineParams.informationLevel}
-                onChange={(v) => updateParam('informationLevel', v)}
+            {/* 解说占比（滑杆，0%~100%：解说与原声互斥一体，合并原"解说密度+保留原声"两个参数） */}
+            <div className="md:col-span-2 flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
+                  <Volume2 size={12} className="mr-1 text-accent/80" />
+                  解说占比
+                  <HelpTip text={TOOLTIPS.narrationRatio} />
+                </span>
+                <Badge variant="accent" className="text-[12px] font-mono py-0 px-1.5">
+                  解说 {Math.round(narrationRatioEff * 100)}% · 原声 {Math.round((1 - narrationRatioEff) * 100)}%
+                </Badge>
+              </div>
+              <CustomSlider
+                value={Math.round(narrationRatioEff * 100)}
+                onChange={(v) => handleNarrationRatioChange(v / 100)}
+                min={NARRATION_RATIO_MIN_PCT}
+                max={NARRATION_RATIO_MAX_PCT}
+                step={NARRATION_RATIO_STEP_PCT}
                 disabled={isGenerating}
               />
+              {/* 档位参考刻度：0=全原声 / 30=原声为主 / 60=解说为主 / 100=全解说 */}
+              <div className="flex justify-between text-[10px] text-muted-foreground/60 px-0.5">
+                <span>0% 全原声</span>
+                <span>30% 原声为主</span>
+                <span>60% 解说为主</span>
+                <span>100% 全解说</span>
+              </div>
+              {/* 常驻说明：占比 = 每段解说词的丰满度，与"目标解说时长"（总量）互不覆盖 */}
+              <p className="text-[11px] leading-relaxed text-muted-foreground/70 px-0.5">
+                解说占比 = 每段解说词的丰满度：越高每段写得越充实连贯（85%=每段写满）；越低越精简（30%=只在关键节点点睛）。与「目标解说时长」独立——那里控制整个文案的总量。
+              </p>
             </div>
 
-            {/* 解说密度 */}
-            <div className="flex flex-col gap-1.5">
-              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
-                解说密度 (时长填充)
-                <HelpTip text={TOOLTIPS.narrationDensity} />
-              </span>
-              <SegmentedControl
-                options={DENSITY_OPTIONS}
-                value={effectiveDensity}
-                onChange={(v) => updateParam('narrationDensity', v)}
-                disabled={isGenerating || isDensityLocked}
-              />
-            </div>
-
-            {/* 原声策略 */}
-            <div className="flex flex-col gap-1.5">
-              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
-                <Volume2 size={12} className="mr-1 text-accent/80" />
-                原声保留策略
-                <HelpTip text={TOOLTIPS.originalAudioStrategy} />
-              </span>
-              <SegmentedControl
-                options={AUDIO_STRATEGY_OPTIONS}
-                value={pipelineParams.originalAudioStrategy}
-                onChange={handleAudioStrategyChange}
-                disabled={isGenerating}
-              />
-            </div>
-
-            {/* 目标解说时长（>0 覆盖解说密度；跨两列独占一行） */}
+            {/* 目标解说时长（>0 覆盖解说占比；跨两列独占一行） */}
             <div className="md:col-span-2 flex flex-col gap-1.5">
               <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
                 <Clock size={12} className="mr-1 text-accent/80" />
                 目标解说时长
-                <HelpTip text="直接设定解说总时长(秒)，>0 时覆盖上方解说密度三档；0 表示自动按密度计算" />
+                <HelpTip text="设定整个文案的解说总时长（总量预算，秒）。0 = 不限制，按解说占比自动计算。与解说占比独立：占比管每段解说词的丰满度，这里管整个文案写多少" />
               </span>
               <div className="flex items-center gap-2">
                 <input
@@ -579,29 +572,6 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             </div>
           </div>
 
-          {/* 物理冲突提示（密度锁定） */}
-          {isDensityLocked && (
-            <div className="inline-flex items-center gap-2 text-[12px] text-amber-500/90 px-3 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/20 animate-fade-in">
-              <AlertTriangle size={13} className="shrink-0" />
-              <span>原声为主策略生效中：解说密度已锁定为留白模式(50%)，为高光对白预留时间窗口。</span>
-            </div>
-          )}
-
-          {/* 语义冲突提示（错就错，不降级：只显式告警不静默修正） */}
-          {semanticConflict.length > 0 && (
-            <div className="flex flex-col gap-1.5 text-[12px] text-red-500/90 px-3 py-2 rounded-xl bg-red-500/10 border border-red-500/20 animate-fade-in">
-              <div className="flex items-center gap-2">
-                <AlertTriangle size={13} className="shrink-0" />
-                <span className="font-semibold">参数存在 {semanticConflict.length} 组语义冲突（已标注但不修正，生成结果可验证配置合理性）：</span>
-              </div>
-              <ul className="list-disc pl-5 space-y-0.5">
-                {semanticConflict.map((c, i) => (
-                  <li key={i}>{c}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
           <div className="border-t border-border/20" />
 
           {/* 3. 节奏模式与情绪基调 */}
@@ -613,6 +583,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
                 value={pipelineParams.rhythmMode}
                 onChange={(v) => updateParam('rhythmMode', v)}
                 disabled={isGenerating}
+                disabledValues={Array.from(conflictSets.rhythmDisabled)}
               />
             </div>
 
@@ -626,11 +597,12 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
                 value={pipelineParams.emotionTone}
                 onChange={(v) => updateParam('emotionTone', v)}
                 disabled={isGenerating}
+                disabledValues={Array.from(conflictSets.toneDisabled)}
               />
             </div>
           </div>
 
-          {/* 4. 微调滑块（声画权重已隐藏，由原声策略自动内部映射） */}
+          {/* 4. 微调滑块（原声分配由解说占比 SSOT 派生） */}
           <div className="pt-1">
             <div className="flex flex-col gap-1">
               <div className="flex justify-between items-center text-[12px] text-muted-foreground">
@@ -661,6 +633,12 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             <div className="flex items-center gap-2">
               <span className="text-[12px] text-muted-foreground">
                 共计 <span className="font-mono text-accent font-semibold">{totalChars}</span> 字
+                {totalBudgetChars > 0 && (
+                  <span className={`ml-1.5 font-mono ${totalChars > totalBudgetChars ? 'text-red-500' : 'text-green-500'}`}>
+                    / 预算 {totalBudgetChars} 字
+                    {overBudgetPct !== null && ` (超 ${overBudgetPct}%)`}
+                  </span>
+                )}
               </span>
               {/* 文案总览折叠按钮 */}
               <button
@@ -695,6 +673,17 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             <div className="text-[13px] text-foreground leading-relaxed whitespace-pre-wrap max-h-[38vh] overflow-y-auto pr-1">
               {overviewText}
             </div>
+          </div>
+        )}
+
+        {/* 总量超限提示条：仅超预算时显示，引导用户调低密度/目标时长后重新生成（与后端 WARN 一致，不静默截断） */}
+        {overBudgetPct !== null && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 text-[12px]">
+            <AlertTriangle size={14} className="shrink-0" />
+            <span>
+              文案总量 {totalChars} 字超过预算 {totalBudgetChars} 字（超 {overBudgetPct}%）。
+              {targetSecEff > 0 ? '可调大目标解说时长（总量预算）或降低解说占比（每段更精简）后重新生成。' : '建议降低解说占比（每段更精简）后重新生成。'}
+            </span>
           </div>
         )}
 

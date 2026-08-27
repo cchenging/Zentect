@@ -64,6 +64,8 @@ export class MediaRepository {
         narrationScript: row.narrationScript
           ? JSON.parse(row.narrationScript)
           : undefined,
+        // 🎬 帧真实时间戳（源坐标，与 frames 顺序对齐）；NULL/非法 JSON 时保持 undefined
+        framesTimeMs: row.framesTimeMs ? JSON.parse(row.framesTimeMs) : undefined,
       };
     }
     return null;
@@ -102,6 +104,10 @@ export class MediaRepository {
       // 🎬 P1-1 裁剪指纹：抽帧/音频分离所用的 trim 配置指纹（undefined→null→COALESCE 保留原值）
       framesTrimSig: media.framesTrimSig ?? null,
       audioTrimSig: media.audioTrimSig ?? null,
+      // 🎬 帧真实时间戳（源坐标，JSON 数组字符串；undefined→null→COALESCE 保留原值）
+      framesTimeMs: media.framesTimeMs !== undefined && media.framesTimeMs !== null
+        ? (typeof media.framesTimeMs === 'string' ? media.framesTimeMs : JSON.stringify(media.framesTimeMs))
+        : null,
     });
   }
 
@@ -177,6 +183,8 @@ export class MediaRepository {
         separationMode: row.separationMode || 'quality',
         separationEngine: row.separationEngine || 'mdx',
         vocalsIsFallback: !!row.vocalsIsFallback,
+        // 🎬 帧真实时间戳（源坐标，与 frames 顺序对齐）；NULL/非法 JSON 时保持 undefined
+        framesTimeMs: row.framesTimeMs ? JSON.parse(row.framesTimeMs) : undefined,
       }));
     } catch (e: any) {
       AppLogger.error(LOG_TAGS.DATABASE, `获取项目媒体列表崩溃：${e.message}`);

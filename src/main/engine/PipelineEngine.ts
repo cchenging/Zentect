@@ -62,13 +62,10 @@ export class PipelineEngine {
   private loadPipelineParams(): import('../../shared/types/entities/editor').PipelineParams {
     return {
       narrativePerspective: 'third',
-      informationLevel: 'deep',
-      narrationDensity: 'standard',
-      originalAudioStrategy: 'keep_key',
+      narrationRatio: 0.7,
       rhythmMode: 'mixed',
       emotionTone: 'neutral',
       hookIntensity: 0.7,
-      audioVisualWeight: 0.6,
       targetNarrationDurationSec: 0,
     };
   }

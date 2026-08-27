@@ -114,13 +114,10 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
       speechRate: 4.5,
       pipelineParams: {
         narrativePerspective: 'third' as const,
-        informationLevel: 'deep' as const,
-        narrationDensity: 'standard' as const,
-        originalAudioStrategy: 'keep_key' as const,
+        narrationRatio: 0.7,
         rhythmMode: 'mixed' as const,
         emotionTone: 'neutral' as const,
         hookIntensity: 0.7,
-        audioVisualWeight: 0.6,
       },
       visionResult: {
         sceneDescriptions: '第1镜: 男子走入室内\n第2镜: 男子拿起杯子',
@@ -327,13 +324,10 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
       speechRate: 4.5,
       pipelineParams: {
         narrativePerspective: 'third' as const,
-        informationLevel: 'deep' as const,
-        narrationDensity: 'standard' as const,
-        originalAudioStrategy: 'keep_key' as const,
+        narrationRatio: 0.7,
         rhythmMode: 'mixed' as const,
         emotionTone: 'neutral' as const,
         hookIntensity: 0.7,
-        audioVisualWeight: 0.6,
       },
       visionResult: {
         sceneDescriptions: '第1镜: 男子走入室内\n第2镜: 男子拿起杯子',

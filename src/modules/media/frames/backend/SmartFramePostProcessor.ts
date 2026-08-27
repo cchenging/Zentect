@@ -75,6 +75,14 @@ export interface SmartFramePostProcessOptions {
    *  由 FFmpeg showinfo 捕获；提供时优先使用，否则按策略推断 */
   ptsMs?: number[];
 
+  /**
+   * 🎬 源坐标偏移（毫秒）：OP/ED 裁剪后 FFmpeg -ss 前置 seek 使输出 PTS 归零（body 坐标）。
+   * 传入 offsetSec×1000 后，所有帧 timeMs 统一换算为源坐标（原视频绝对时间），
+   * 与 ASR / chunks 等已落库的源坐标数据基准一致（MediaTrimPolicy 模式 A）。
+   * 未传或 0 = 不裁剪，行为与旧版一致。
+   */
+  sourceOffsetMs?: number;
+
   // ── P0 · BudgetClipper 预算封顶参数 ──────────────────────────────
   /** 抽帧密度预设；与 videoDurationMinutes 同时提供时启用预算封顶 */
   densityPreset?: DensityPreset;
@@ -291,9 +299,13 @@ export class SmartFramePostProcessor {
 
       // ④ 时序元数据（优先用 showinfo 捕获的精确 PTS，否则按策略推断）
       const exactMs = ptsMs && ptsMs[i] !== undefined ? ptsMs[i] : undefined;
-      const { timeMs, estimatedTime } = exactMs !== undefined
+      const sourceOffsetMs = options.sourceOffsetMs ?? 0;
+      const base = exactMs !== undefined
         ? { timeMs: exactMs, estimatedTime: false }
         : this.inferTimeMs(strategy, i, fps, timePoint);
+      // 🎬 body 坐标 → 源坐标（叠加 OP 裁剪偏移）。相对量（帧间差/占比）不受影响，
+      //   AsrAnchorMatcher（源坐标 ASR）与 GapFrameRefiller（源视频 seek）因此同步修正。
+      const timeMs = base.timeMs + sourceOffsetMs;
       sceneIndex += 1;
       kept.push({
         framePath: filePath,
@@ -302,7 +314,7 @@ export class SmartFramePostProcessor {
         clarityScore,
         lumaScore,
         sceneIndex,
-        estimatedTime,
+        estimatedTime: base.estimatedTime,
       });
     }
 

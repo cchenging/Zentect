@@ -206,6 +206,8 @@ export class JobScheduler {
           audioTrimSig: step1Data.audio?.audioTrimSig || null,
           separationMode: payload.config?.audio?.separationMode || 'quality',
           separationEngine: payload.config?.audio?.engine || 'mdx',
+          // 🎬 帧真实时间戳（源坐标，与 frames 顺序对齐）：随产物透传给 PipelineResultWriter 落库
+          frameTimeMs: step1Data.frames?.frameTimeMs || [],
           shots: (step1Data.asr?.lines || []).map((line: any, idx: number) => {
             // 🔧 修复：为每个 shot 生成全局唯一 id，避免 ProjectRepository 跳过无 id 的 shot
             const shotId = `shot_${Date.now()}_${idx}`;
@@ -377,6 +379,8 @@ export class JobScheduler {
           return { id: shotId, originalText: line.text || line.originalText || '', start: parse(line.start), end: parse(line.end) };
         }),
         roles: step1Data.faces?.roles || [],
+        // 🎬 帧真实时间戳（源坐标，与 frames 顺序对齐）：随产物透传给 PipelineResultWriter 落库
+        frameTimeMs: step1Data.frames?.frameTimeMs || [],
       };
 
       // 统一经 PipelineResultWriter 写库（media_assets + roles + subStepStatuses）

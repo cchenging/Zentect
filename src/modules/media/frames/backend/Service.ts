@@ -90,6 +90,10 @@ export interface ExtractOptions {
   /** 追加式后处理：清晰度/黑屏过滤 + 静态去重 + 时序元数据 + 预算封顶（默认关闭，非破坏） */
   postProcess?: boolean;
 
+  /** 🎬 源坐标偏移（毫秒）：OP/ED 裁剪的 offsetSec×1000。postProcess 时透传给
+   *  SmartFramePostProcessor，把 -ss 归零的 body 坐标 PTS 换算回源坐标（原视频绝对时间）。 */
+  sourceOffsetMs?: number;
+
   // ── P0 · 密度预设 + BudgetClipper 参数 ──────────────────────────────────────
   /** 抽帧密度预设（与 videoDuration 配合启用预算封顶）；前端选择档位时传递 */
   densityPreset?: DensityPreset;
@@ -208,6 +212,7 @@ export class FrameExtractionService {
       outPoint,
       abortSignal,
       postProcess = false,
+      sourceOffsetMs,
       densityPreset,
       maxFrames,
       budgetToleranceRatio,
@@ -402,6 +407,8 @@ export class FrameExtractionService {
               fps,
               timePoint,
               ptsMs: exactPtsMs,
+              // 🎬 body → 源坐标：叠加 OP/ED 裁剪偏移
+              sourceOffsetMs,
               // P0 BudgetClipper 参数：densityPreset + 时长分钟数 / maxFrames / tolerance
               densityPreset,
               videoDurationMinutes,

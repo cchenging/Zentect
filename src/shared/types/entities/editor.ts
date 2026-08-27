@@ -30,6 +30,8 @@ export interface VlmFrame {
   timeMs?: number;
   /** 该帧绝对时间的可读格式，如 "00:12.15" */
   timeStr?: string;
+  /** 💬 该帧时间区间内匹配到的 ASR 台词（顶层冗余，来自 VisionExtractStrategy，供 step2 UI 直接展示） */
+  asrText?: string;
   /** 🎭 P0 意境维度：该帧的情绪标签（如：紧张/平静/温馨），来自 FrameDetail.emotion（VLM 结构化输出 emotionalState），供步骤5 做"文案↔画面"情绪匹配 */
   emotion?: string;
   /** 🎬 该帧的镜头景别（如：特写/中景/全景），来自 FrameDetail.downstream.shotType，供步骤5 意境/衔接匹配 */
@@ -96,23 +98,23 @@ export interface ScriptParagraph {
 export interface PipelineParams {
   /** 叙事视角：third=第三人称上帝视角 / first=第一人称沉浸 / second=第二人称吐槽互动 */
   narrativePerspective: 'third' | 'first' | 'second';
-  /** 信息层次：plot=剧情复述 / deep=深度解读 / roast=吐槽点评 */
-  informationLevel: 'plot' | 'deep' | 'roast';
-  /** 解说密度：full=满配(95%+填充) / standard=标准(65%填充) / sparse=留白(50%填充) */
-  narrationDensity: 'full' | 'standard' | 'sparse';
-  /** 原声策略：cover=全量覆盖 / keep_key=关键台词保留 / original_main=原声为主 */
-  originalAudioStrategy: 'cover' | 'keep_key' | 'original_main';
+  /**
+   * 解说占比 0~1（0=无解说全原声 / 1=全解说不留原声，可自由取值）
+   * 与保留原声互斥一体：保留原声比例 = 1 - narrationRatio，二者合并为一个滑杆，不再分两个参数相乘。
+   * 派生规则（SSOT，与 ScriptGenStrategy/Service/前端一致）：
+   * - 字数填充系数 densityFillRate = narrationRatio（解说占时间轴的比例，即"解说密度"）
+   * - 允许标记原声段落 allowOriginalMark = narrationRatio < 1（留了原声空间才允许标记）
+   */
+  narrationRatio: number;
   /** 节奏模式：short_fast=短句快切 / mixed=长短交替 / slow_soothing=长句舒缓 */
   rhythmMode: 'short_fast' | 'mixed' | 'slow_soothing';
   /** 情绪基调：neutral=客观中立 / emotional=情感渲染 / suspense=悬疑营造 / epic=高燃热血 / comedy=搞笑吐槽 */
   emotionTone: 'neutral' | 'emotional' | 'suspense' | 'epic' | 'comedy';
   /** 钩子强度 0-1：控制前3秒开头悬念强度，0.2=平铺直叙(纪录片) / 0.9=极速冲突(短视频) */
   hookIntensity: number;
-  /** 声画权重 0-1：0.2=偏向原声(依赖ASR) / 0.8=偏向视觉(依赖画面描述) */
-  audioVisualWeight: number;
   /**
-   * 目标解说时长（秒）：>0 时生效，覆盖 narrationDensity 三档的填充率（等效填充率 = 目标时长 / 视频总时长）
-   * 0 / undefined = 不限制，按 narrationDensity 自动计算。用于直接控制解说总时长。
+   * 目标解说时长（秒）：>0 时生效，覆盖 narrationRatio 的填充率（等效填充率 = 目标时长 / 视频总时长）
+   * 0 / undefined = 不限制，按 narrationRatio 自动计算。用于直接控制解说总时长。
    */
   targetNarrationDurationSec?: number;
 }

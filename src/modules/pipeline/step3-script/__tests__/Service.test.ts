@@ -19,13 +19,10 @@ function makeInput(overrides: Partial<Step3Input> = {}): Step3Input {
     speechRate: 4.5,
     pipelineParams: {
       narrativePerspective: 'third',
-      informationLevel: 'deep',
-      narrationDensity: 'standard',
-      originalAudioStrategy: 'keep_key',
+      narrationRatio: 0.7,
       rhythmMode: 'mixed',
       emotionTone: 'neutral',
       hookIntensity: 0.7,
-      audioVisualWeight: 0.6,
     },
     ...overrides,
   };
@@ -133,27 +130,23 @@ describe('ScriptGenerator', () => {
       expect(prompt).toContain('硬核科普');
     });
 
-    it('应包含融合方案参数百分比（hookIntensity/audioVisualWeight/densityFillRate）', () => {
+    it('应包含融合方案参数百分比（hookIntensity/densityFillRate）', () => {
       const prompt = generator.buildSystemPrompt(
         makeInput({
           pipelineParams: {
             narrativePerspective: 'third',
-            informationLevel: 'deep',
-            narrationDensity: 'full',
-            originalAudioStrategy: 'original_main',
+            narrationRatio: 0.45,
             rhythmMode: 'short_fast',
             emotionTone: 'epic',
             hookIntensity: 0.8,
-            audioVisualWeight: 0.3,
           },
         }),
       );
 
       // hookIntensity=0.8 → 80%
       expect(prompt).toContain('80%');
-      // audioVisualWeight 由 originalAudioStrategy 经 SSOT 映射：original_main → 0.2 → 20%
-      expect(prompt).toContain('20%');
-      // narrationDensity=full(1.0) × original_main 折扣(0.45) → densityFillRate=0.45 → 45%
+            expect(prompt).toContain('45%');
+      // densityFillRate = narrationRatio=0.45 → 45%
       expect(prompt).toContain('45%');
     });
 
@@ -206,17 +199,14 @@ describe('ScriptGenerator', () => {
       }
     });
 
-    it('应包含专业解说参数指引（8维参数映射）', () => {
+    it('应包含专业解说参数指引（参数维度映射）', () => {
       const prompt = generator.buildSystemPrompt(makeInput());
 
-      // 验证所有参数维度都映射到 prompt
+      // 验证所有参数维度都映射到 prompt（解说密度与保留原声已合并为单一"解说占比"）
       expect(prompt).toContain('叙事视角');
-      expect(prompt).toContain('信息层次');
-      expect(prompt).toContain('解说密度');
-      expect(prompt).toContain('原声策略');
+      expect(prompt).toContain('解说占比');
       expect(prompt).toContain('节奏模式');
       expect(prompt).toContain('情绪基调');
-      expect(prompt).toContain('声画权重');
     });
 
     it('应包含反看图说话与 TTS 口语化准则', () => {

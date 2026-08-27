@@ -9,16 +9,13 @@ import type { ScriptParagraph, PipelineParams } from '../../../shared/types/enti
 
 export type { PipelineParams } from '../../../shared/types/entities/editor';
 
-/** 默认参数：爆款短视频导向（高钩子/标准密度/关键台词保留/长短交替/客观基调） */
+/** 默认参数：爆款短视频导向（高钩子/解说占比70%/长短交替/客观基调） */
 export const DEFAULT_PIPELINE_PARAMS: PipelineParams = {
   narrativePerspective: 'third',
-  informationLevel: 'deep',
-  narrationDensity: 'standard',
-  originalAudioStrategy: 'keep_key',
+  narrationRatio: 0.7,
   rhythmMode: 'mixed',
   emotionTone: 'neutral',
   hookIntensity: 0.7,
-  audioVisualWeight: 0.6,
   targetNarrationDurationSec: 0,
 };
 

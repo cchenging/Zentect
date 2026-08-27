@@ -22,6 +22,46 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
     return val;
   };
 
+  /**
+   * 迁移旧版保留原声字段为统一数值（0~0.8）。
+   * 旧版枚举 cover/keep_key/original_main → 0 / 0.15 / 0.55；缺失字段补默认 0.15；数字直接 clamp 到 [0, 0.8]。
+   * 无法识别的非法值抛错暴露（不静默降级），符合"错就错"原则。
+   */
+  const normalizeRetainRatio = (v: unknown): number => {
+    if (typeof v === 'number') return Math.max(0, Math.min(0.8, v));
+    if (v === undefined || v === null) return 0.15;
+    if (v === 'cover') return 0;
+    if (v === 'keep_key') return 0.15;
+    if (v === 'original_main') return 0.55;
+    throw new Error(`[ProjectPayloadAssembler] pipelineParams.originalAudioStrategy 非法值: ${JSON.stringify(v)}`);
+  };
+
+  /**
+   * 迁移旧版双参数（narrationDensity 枚举 + originalAudioStrategy 枚举/数值）→ 新版单一 narrationRatio（解说占比 0~1）。
+   * 旧版实际填充率 = 密度基础系数(满1.0/标准0.85/留白0.6) × 原声折扣(1 - 保留原声比例)，合并后即解说占比。
+   * - narrationRatio 已存在（新版）→ 直接 clamp 到 [0, 1]
+   * - 缺失字段按旧默认值推导（密度 standard 0.85 / 原声保留 0.15）
+   */
+  const normalizeNarrationRatio = (raw: any): number => {
+    if (typeof raw?.narrationRatio === 'number') return Math.max(0, Math.min(1, raw.narrationRatio));
+    const baseFill = raw?.narrationDensity === 'full' ? 1.0
+                   : raw?.narrationDensity === 'sparse' ? 0.6
+                   : 0.85; // standard 或缺失
+    const retainRatio = normalizeRetainRatio(raw?.originalAudioStrategy);
+    return Math.max(0, Math.min(1, baseFill * (1 - retainRatio)));
+  };
+
+  /** 归一化项目级 pipelineParams：旧版双参数迁移为单一 narrationRatio，防止前端计算 NaN 与概念冲突 */
+  const normalizePipelineParams = (raw: any): any => {
+    if (!raw || typeof raw !== 'object') return raw;
+    const next: any = { ...raw };
+    next.narrationRatio = normalizeNarrationRatio(raw);
+    // 移除旧版字段（已被 narrationRatio 取代，避免残留污染前端）
+    delete next.narrationDensity;
+    delete next.originalAudioStrategy;
+    return next;
+  };
+
   const subStepStatuses: Record<string, string> = parseJson(rawData.subStepStatuses) || {};
   const subStepProgresses: Record<string, number> = parseJson(rawData.subStepProgresses) || {};
   // 读取子步骤耗时记录（重进项目后仍可展示上次执行耗时）
@@ -77,6 +117,8 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
   // 6. 从 mediaItems 提取 framePaths + 生成音频 mediaItems
   let mediaItems = Array.isArray(rawData.mediaItems) ? rawData.mediaItems : [];
   let framePaths: string[] = [];
+  // 🎬 帧真实时间戳（源坐标，与 framePaths 顺序对齐）：DB media_assets.frames_time_ms 落库读取
+  let frameTimeMs: number[] = [];
   const videoItems = mediaItems.filter((m: any) => m.type === 'video');
 
   /**
@@ -98,6 +140,10 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
         .filter(Boolean)
         .map(toMagicFrameUrl);
       framePaths = [...framePaths, ...frames];
+      // 🎬 帧真实时间戳（源坐标）：与 frames 顺序对齐，首个视频素材的时间戳作为全片时间轴
+      if (Array.isArray(media.framesTimeMs) && media.framesTimeMs.length > 0) {
+        frameTimeMs = media.framesTimeMs.map((t: any) => Math.round(Number(t) || 0));
+      }
     }
   });
 
@@ -165,6 +211,7 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
     backgroundPath,
     asrLines,
     framePaths,
+    frameTimeMs,
     frameCount,
     audioSeparated: !!rawData.audioSeparated,
     // 管线状态（已解析、已归一化、已推导）
@@ -175,7 +222,7 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
     stepCompleted,
     currentStep,
     // 各步骤数据
-    pipelineParams: rawData.pipelineParams,
+    pipelineParams: normalizePipelineParams(rawData.pipelineParams),
     extractionConfig: rawData.extractionConfig,
     vlmFrames: Array.isArray(rawData.vlmFrames) ? rawData.vlmFrames : [],
     scriptParagraphs: Array.isArray(rawData.scriptParagraphs) ? rawData.scriptParagraphs : [],

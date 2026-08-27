@@ -73,6 +73,8 @@ export interface ExtractedData {
   asrLines: any[];
   frameCount: number;
   framePaths: string[];
+  /** 🎬 帧真实时间戳（源坐标，原视频绝对时间，与 framePaths 顺序对齐）；step2 用它匹配 ASR 台词 */
+  frameTimeMs: number[];
 }
 
 export interface HistorySnapshot {
@@ -183,6 +185,7 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     asrLines: [],
     frameCount: 0,
     framePaths: [],
+    frameTimeMs: [],
   },
 
   saveSnapshot: () => {
@@ -574,8 +577,12 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     set((s) => {
       // 🛑 根因修复：统一经 normalizeFramePaths 归一，杜绝非字符串项进入 store
       const nextFramePaths = normalizeFramePaths(data.framePaths ?? s.extractedData.framePaths);
+      // 🎬 帧真实时间戳：显式传入时归一为 number[]，否则保留原值
+      const nextFrameTimeMs = Array.isArray(data.frameTimeMs)
+        ? data.frameTimeMs.map((t: any) => Math.round(Number(t) || 0))
+        : s.extractedData.frameTimeMs;
       return {
-        extractedData: { ...s.extractedData, ...data, framePaths: nextFramePaths },
+        extractedData: { ...s.extractedData, ...data, framePaths: nextFramePaths, frameTimeMs: nextFrameTimeMs },
         // framePaths 变化时自动更新 frameCount（与 useStep1Store 中的 frameCount 独立）
       };
     }),
@@ -637,7 +644,7 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       mediaItems: [], roles: [], shots: [], characterRelations: [],
       storyboardMode: 'original', aiShots: [],
       canvasData: null, pastSnapshots: [], futureSnapshots: [],
-      extractedData: { videoPath: '', vocalPath: '', backgroundPath: '', asrLines: [], frameCount: 0, framePaths: [] },
+      extractedData: { videoPath: '', vocalPath: '', backgroundPath: '', asrLines: [], frameCount: 0, framePaths: [], frameTimeMs: [] },
     }));
   },
 
@@ -811,6 +818,8 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
         asrLines,
         framePaths,
         frameCount,
+        // 🎬 帧真实时间戳（源坐标，与 framePaths 顺序对齐）：重进项目时从 DB 落库数据恢复
+        frameTimeMs: Array.isArray(d.frameTimeMs) ? d.frameTimeMs.map((t: any) => Math.round(Number(t) || 0)) : [],
       }
     }));
   },
@@ -874,6 +883,10 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
           asrLines: d.asrLines !== undefined ? d.asrLines : cur.asrLines,
           framePaths: finalFramePaths,
           frameCount: finalFrameCount,
+          // 🎬 帧真实时间戳：显式传入时归一为 number[]，否则保留当前值
+          frameTimeMs: Array.isArray(d.frameTimeMs)
+            ? d.frameTimeMs.map((t: any) => Math.round(Number(t) || 0))
+            : cur.frameTimeMs,
         }
       });
     }

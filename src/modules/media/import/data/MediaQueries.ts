@@ -26,7 +26,8 @@ export const MEDIA_SQL = {
       extract_duration as extractDuration, narration_script as narrationScript,
       separation_mode as separationMode, separation_engine as separationEngine,
       vocals_is_fallback as vocalsIsFallback,
-      frames_trim_sig as framesTrimSig, audio_trim_sig as audioTrimSig
+      frames_trim_sig as framesTrimSig, audio_trim_sig as audioTrimSig,
+      frames_time_ms as framesTimeMs
     FROM media_assets WHERE id = @id AND is_deleted = 0
   `,
 
@@ -46,6 +47,7 @@ export const MEDIA_SQL = {
       vocals_is_fallback = COALESCE(@vocalsIsFallback, vocals_is_fallback),
       frames_trim_sig = COALESCE(@framesTrimSig, frames_trim_sig),
       audio_trim_sig = COALESCE(@audioTrimSig, audio_trim_sig),
+      frames_time_ms = COALESCE(@framesTimeMs, frames_time_ms),
       update_time = datetime('now', 'localtime')
     WHERE id = @id AND is_deleted = 0
   `,
@@ -80,7 +82,8 @@ export const MEDIA_SQL = {
       extract_duration as extractDuration, narration_script as narrationScript,
       separation_mode as separationMode, separation_engine as separationEngine,
       vocals_is_fallback as vocalsIsFallback,
-      frames_trim_sig as framesTrimSig, audio_trim_sig as audioTrimSig
+      frames_trim_sig as framesTrimSig, audio_trim_sig as audioTrimSig,
+      frames_time_ms as framesTimeMs
     FROM media_assets WHERE project_id = @projectId AND is_deleted = 0
     ORDER BY create_time DESC
   `,

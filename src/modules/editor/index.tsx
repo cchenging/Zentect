@@ -71,13 +71,22 @@ export default function Editor() {
   const extractionConfig = useStep1Store((s) => s.extractionConfig);
   const fps = extractionConfig?.frames?.fps || 2;
 
-  /** 格式化帧时间：根据帧序号和 fps 计算时间码 */
+  /** 格式化帧时间：优先使用步骤1 落库的真实时间戳（源坐标，原视频绝对时间），缺失时回退到按 fps 估算并加 * 标记 */
   const formatFrameTime = (frameIndex: number): string => {
+    const realTimeMs = extractedData?.frameTimeMs?.[frameIndex];
+    if (typeof realTimeMs === 'number' && Number.isFinite(realTimeMs)) {
+      const totalSeconds = realTimeMs / 1000;
+      const mm = Math.floor(totalSeconds / 60);
+      const ss = Math.floor(totalSeconds % 60);
+      const mmm = Math.round((totalSeconds % 1) * 1000);
+      return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(mmm).padStart(3, '0')}`;
+    }
+    // 回退：按帧序号 × 帧间隔估算（非真实时间戳，加 * 提示）
     const totalSeconds = frameIndex / fps;
     const mm = Math.floor(totalSeconds / 60);
     const ss = Math.floor(totalSeconds % 60);
     const ff = Math.round((totalSeconds % 1) * fps);
-    return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(ff).padStart(2, '0')}`;
+    return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(ff).padStart(2, '0')}*`;
   };
 
   /** 拖拽导入视频 */

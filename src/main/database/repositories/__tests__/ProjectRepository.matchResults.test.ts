@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { ProjectRepository } from '../ProjectRepository';
 
 describe('ProjectRepository.sanitizeMatchResultsForPersist', () => {
-  it('应裁剪 chunkData 中的 visionEmbedding/colorHistogram 大字段', () => {
+  it('应裁剪 chunkData 中的 visionEmbedding/colorHistogram/clipZhEmbedding 大字段', () => {
     const results = [{
       shotId: 's1',
       score: 0.95,
@@ -18,11 +18,13 @@ describe('ProjectRepository.sanitizeMatchResultsForPersist', () => {
         filePath: 'C:/video.mp4',
         visionEmbedding: new Array(512).fill(0.1),
         colorHistogram: [1, 2, 3],
+        clipZhEmbedding: new Array(512).fill(0.05), // KM 图像特征缓存回写，512 维
       },
     }];
     const cleaned = ProjectRepository.sanitizeMatchResultsForPersist(results);
     expect(cleaned[0].chunkData).not.toHaveProperty('visionEmbedding');
     expect(cleaned[0].chunkData).not.toHaveProperty('colorHistogram');
+    expect(cleaned[0].chunkData).not.toHaveProperty('clipZhEmbedding');
     // 前端消费的轻量字段必须保留
     expect(cleaned[0].chunkData.id).toBe('chunk_001');
     expect(cleaned[0].chunkData.startMs).toBe(0);

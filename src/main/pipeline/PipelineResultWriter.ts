@@ -47,6 +47,8 @@ export interface PipelineStep1Result {
   /** 🎬 P1-1 裁剪指纹：本次抽帧/分离所用 trim 配置指纹，落库供增量执行校验 */
   framesTrimSig?: string | null;
   audioTrimSig?: string | null;
+  /** 🎬 帧真实时间戳（源坐标，原视频绝对时间，与 frames 顺序对齐）；供步骤2 直接使用真实时间轴 */
+  frameTimeMs?: number[];
 }
 
 export interface WriteStep1Params {
@@ -98,6 +100,8 @@ export class PipelineResultWriter {
       });
       // 🎬 P1-1 裁剪指纹：记录本次抽帧所用 trim 配置，供增量执行校验
       updatedMedia.framesTrimSig = result.framesTrimSig || null;
+      // 🎬 帧真实时间戳（源坐标，JSON 数组，与 frames 顺序对齐）；skipFrames 复用旧帧时不覆盖（COALESCE 保留原值）
+      updatedMedia.framesTimeMs = JSON.stringify(result.frameTimeMs || []);
     }
 
     // --- 写入 audio ---

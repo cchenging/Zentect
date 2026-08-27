@@ -26,6 +26,13 @@ export interface VisionExtractInput {
   framesValue?: number;
   /** 预抽取的帧路径列表（来自步骤1 素材分析），提供时跳过抽帧步骤 */
   framePaths?: string[];
+  /**
+   * 🎬 帧真实时间戳（源坐标，原视频绝对时间，单位毫秒，与 framePaths 顺序对齐）。
+   * 来自步骤1 SmartFramePostProcessor 的 sourceOffsetMs 换算结果并落库 media_assets.frames_time_ms。
+   * 提供时 step2 用真实时间轴匹配 ASR 台词，替代旧版 estimatedInterval 估算（fi × 平均间隔），
+   * 修复 vlmFrames.asrText 系统性错位。缺失/长度不匹配时回退估算并 WARN 提示数据不精确。
+   */
+  frameTimeMs?: number[];
   /** 项目 ID，用于 context.bus 读取 ASR 数据 */
   projectId?: string;
   /** 前端注入的 ASR 台词（step2 单独执行时 context.bus 无 asr-result，需从 input 读取） */
@@ -261,27 +268,33 @@ export function buildFrameRolesAnchoringPrompt(
  *
  * 时间对齐原理：
  * - step1 人脸检测专用抽帧使用 1fps（1 帧/秒），face.frame_index 表示该人脸在第 N 秒被检测到
- * - step2 VLM 分析的帧间隔为 estimatedInterval（秒），VLM 第 i 帧对应时间点 i * estimatedInterval
- * - 映射规则：face 在第 faceIdx 秒出现 → 落在 VLM 第 floor(faceIdx / estimatedInterval) 帧的时间区间内
+ * - 真实时间戳模式（frameTimesMs 与 totalFrameCount 匹配）：face 在第 faceIdx 秒出现 →
+ *   落在时间轴 ≤ faceIdx 秒的最近 VLM 帧上（帧时间真实、非均匀，如 OP/ED 裁剪后）
+ * - 估算模式（无真实时间戳）：VLM 帧间隔为 estimatedInterval（秒），VLM 第 i 帧对应 i * estimatedInterval，
+ *   映射为 floor(faceIdx / estimatedInterval)
  *
  * 边界处理：
  * - estimatedInterval <= 0 或非有限数 → 返回 null（不推导）
  * - face.frame_index 缺失或非数字 → 跳过该 face
  * - 同一 VLM 帧上多个人物 → 去重合并为数组
  * - VLM 帧索引超过 totalFrameCount - 1 → 截断到最后一帧
+ * - face 早于第一帧（真实时间戳模式）→ 锚定到第 0 帧
  *
  * @param roles step1 识别出的人物角色列表（每个 role 含 faces 数组，face 含 frame_index）
  * @param totalFrameCount VLM 分析的总帧数
- * @param estimatedInterval VLM 帧之间的时间间隔（秒）
+ * @param estimatedInterval VLM 帧之间的估算时间间隔（秒），仅在无真实时间戳时使用
+ * @param frameTimesMs 帧真实时间戳（源坐标，毫秒，与 VLM 帧顺序对齐）；可选
  * @returns frameIdx → 人物名称列表的映射；无有效 face.frame_index 时返回 null
  */
 export function deriveFrameRolesFromFaces(
   roles: Array<{ id: string; name: string; faces?: any[] }>,
   totalFrameCount: number,
   estimatedInterval: number,
+  frameTimesMs?: number[],
 ): Record<number, string[]> | null {
   if (!roles || roles.length === 0 || totalFrameCount <= 0) return null;
-  if (!Number.isFinite(estimatedInterval) || estimatedInterval <= 0) return null;
+  const useRealTimes = Array.isArray(frameTimesMs) && frameTimesMs.length === totalFrameCount;
+  if (!useRealTimes && (!Number.isFinite(estimatedInterval) || estimatedInterval <= 0)) return null;
 
   const result: Record<number, string[]> = {};
   let hasAnyValidFace = false;
@@ -294,11 +307,24 @@ export function deriveFrameRolesFromFaces(
       if (faceIdx === undefined || !Number.isFinite(faceIdx) || faceIdx < 0) continue;
       hasAnyValidFace = true;
 
-      // face 帧（1fps）对应时间点 faceIdx 秒，映射到 VLM 帧索引
-      const vlmFrameIdx = Math.min(
-        Math.floor(faceIdx / estimatedInterval),
-        totalFrameCount - 1,
-      );
+      let vlmFrameIdx: number;
+      if (useRealTimes) {
+        // 🎬 真实时间戳模式：face 在第 faceIdx 秒出现（@1fps）→ 落在时间轴 ≤ faceIdx 秒的最近帧
+        const faceTimeMs = faceIdx * 1000;
+        vlmFrameIdx = -1;
+        for (let i = 0; i < frameTimesMs!.length; i++) {
+          if (frameTimesMs![i] <= faceTimeMs) {
+            vlmFrameIdx = i;
+          } else {
+            break; // frameTimesMs 单调递增，后续帧时间更大
+          }
+        }
+        if (vlmFrameIdx < 0) vlmFrameIdx = 0; // face 早于第一帧，锚定到第 0 帧
+      } else {
+        // 估算模式：face 帧（1fps）对应时间点 faceIdx 秒，映射到 VLM 帧索引
+        vlmFrameIdx = Math.floor(faceIdx / estimatedInterval);
+      }
+      vlmFrameIdx = Math.min(vlmFrameIdx, totalFrameCount - 1);
       if (vlmFrameIdx < 0) continue;
 
       if (!result[vlmFrameIdx]) result[vlmFrameIdx] = [];
@@ -806,6 +832,35 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       ? (asrLines[asrLines.length - 1].endTime || 7200) / totalFrameCount
       : 4;
 
+    // 🎬 帧真实时间戳（源坐标，毫秒，与 allFrames 顺序对齐）：
+    // 优先使用 input.frameTimeMs（步骤1 落库的真实时间轴，长度必须与帧数一致），
+    // 缺失/长度不匹配时回退 estimatedInterval 估算并 WARN 提示数据不精确（不掩盖、不兜底）。
+    const realFrameTimes = Array.isArray(input.frameTimeMs) ? input.frameTimeMs : undefined;
+    const useRealFrameTimes = !!realFrameTimes
+      && realFrameTimes.length === totalFrameCount
+      && realFrameTimes.every((t: any) => Number.isFinite(Number(t)));
+    const frameTimesMs: number[] = useRealFrameTimes && realFrameTimes
+      ? realFrameTimes.map((t: any) => Math.round(Number(t)))
+      : new Array(totalFrameCount).fill(0).map((_, i) => Math.round(i * estimatedInterval * 1000));
+    if (useRealFrameTimes) {
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[画面描述] 🎬 使用帧真实时间戳（源坐标）：${totalFrameCount} 帧，首帧 ${(frameTimesMs[0] / 1000).toFixed(1)}s，末帧 ${(frameTimesMs[totalFrameCount - 1] / 1000).toFixed(1)}s`);
+    } else if (Array.isArray(input.frameTimeMs) && input.frameTimeMs.length !== totalFrameCount) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT,
+        `[画面描述] ⚠️ 帧真实时间戳长度(${input.frameTimeMs.length})与帧数(${totalFrameCount})不一致，回退估算时间轴，asrText 匹配可能不精确`);
+    }
+
+    /** 🎬 帧平均时间间隔（秒）：真实时间戳模式按首末帧差值，估算模式用 estimatedInterval */
+    const avgIntervalSec = useRealFrameTimes && totalFrameCount > 1
+      ? (frameTimesMs[totalFrameCount - 1] - frameTimesMs[0]) / (totalFrameCount - 1) / 1000
+      : estimatedInterval;
+
+    /** 🎬 帧 i 的时间区间结束点（秒）：真实时间戳模式下取下一帧时间（非均匀），末帧补平均间隔 */
+    const frameEndSecAt = (i: number): number => {
+      if (useRealFrameTimes && i < totalFrameCount - 1) return frameTimesMs[i + 1] / 1000;
+      return frameTimesMs[i] / 1000 + avgIntervalSec;
+    };
+
     AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 帧数: ${totalFrameCount}, ASR台词: ${asrLines.length}, 估算间隔: ${estimatedInterval.toFixed(1)}s, 并发: ${CONCURRENT_VLM}`);
 
     // ========== 🎭 P0.5 自动推导 frameRoles ==========
@@ -814,12 +869,13 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     // 的时间对齐，自动构建 frameIdx → 人物名称列表 的映射
     let effectiveFrameRoles = input.frameRoles;
     if (!effectiveFrameRoles && input.roles && input.roles.length > 0 && totalFrameCount > 0) {
-      const derived = deriveFrameRolesFromFaces(input.roles, totalFrameCount, estimatedInterval);
+      // 🎬 真实时间戳模式下按帧真实时间锚定人物，否则按估算间隔
+      const derived = deriveFrameRolesFromFaces(input.roles, totalFrameCount, estimatedInterval, frameTimesMs);
       if (derived) {
         effectiveFrameRoles = derived;
         const anchoredCount = Object.values(derived).filter(arr => arr.length > 0).length;
         AppLogger.info(LOG_TAGS.AI_AGENT,
-          `[画面描述] 🎭 P0.5 自动推导 frameRoles 成功：${anchoredCount}/${totalFrameCount} 帧锚定人物（基于 roles.faces.frame_index @1fps → VLM 帧 × estimatedInterval）`);
+          `[画面描述] 🎭 P0.5 自动推导 frameRoles 成功：${anchoredCount}/${totalFrameCount} 帧锚定人物（基于 roles.faces.frame_index @1fps → ${useRealFrameTimes ? '帧真实时间戳' : 'VLM 帧 × estimatedInterval'}）`);
       }
     }
 
@@ -915,8 +971,8 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       const details: FrameDetail[] = [];
       for (let fi = 0; fi < totalFrameCount; fi++) {
         if (!frameDescriptions[fi]) continue;
-        const frameTimeSec = fi * estimatedInterval;
-        const frameEndSec = frameTimeSec + estimatedInterval;
+        const frameTimeSec = frameTimesMs[fi] / 1000;
+        const frameEndSec = frameEndSecAt(fi);
         const matchedAsr = asrLines.filter(line =>
           line.startTime <= frameEndSec && line.endTime >= frameTimeSec
         );
@@ -1029,8 +1085,8 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       /** 获取该批次所有帧的时间区间和对应 ASR 台词 */
       const startIdx = batchFrames[0].idx;
       const endIdx = batchFrames[batchFrames.length - 1].idx;
-      const batchStartSec = startIdx * estimatedInterval;
-      const batchEndSec = (endIdx + 1) * estimatedInterval;
+      const batchStartSec = frameTimesMs[startIdx] / 1000;
+      const batchEndSec = frameEndSecAt(endIdx);
       const matchedAsr = asrLines.filter(line =>
         line.startTime <= batchEndSec && line.endTime >= batchStartSec
       );
@@ -1042,7 +1098,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
 
       /** 构建帧清单文本：让 VLM 知道每张图的序号和时间 */
       const frameListText = batchFrames.map((f, i) =>
-        `第${i + 1}张（视频第${f.idx + 1}帧，时间约${formatTimeStr(f.idx * estimatedInterval)}）`
+        `第${i + 1}张（视频第${f.idx + 1}帧，时间约${formatTimeStr(frameTimesMs[f.idx] / 1000)}）`
       ).join('\n');
 
       // P3: 构建全局上下文注入段（有全局摘要时要求增量描述，减少 Output Token）
@@ -1288,7 +1344,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     const rawMatrixMode = input.matrixMode || 'auto';
     const effectiveLayout: MatrixLayout =
       rawMatrixMode === 'auto'
-        ? ContactSheetBuilder.autoSelectLayout(estimatedInterval)
+        ? ContactSheetBuilder.autoSelectLayout(avgIntervalSec)
         : rawMatrixMode;
     const cellCount = ContactSheetBuilder.getCellCount(effectiveLayout);
     /** 拼图模式下每批 cellCount 帧；1x1 模式下每批 MAX_BATCH_IMAGES 帧 */
@@ -1391,8 +1447,8 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
 
     /** 构建每帧完整信息 */
     const frameDetails: FrameDetail[] = allFrames.map((fp: string, i: number) => {
-      const frameTimeSec = i * estimatedInterval;
-      const frameEndSec = frameTimeSec + estimatedInterval;
+      const frameTimeSec = frameTimesMs[i] / 1000;
+      const frameEndSec = frameEndSecAt(i);
       const matchedAsr = asrLines.filter(line =>
         line.startTime <= frameEndSec && line.endTime >= frameTimeSec
       );
@@ -1450,7 +1506,13 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
 
     /** P0-3：构建下游瘦身上下文，供 step3 直接消费，减少 step3 Input Token */
     const downstreamContext = {
-      shots: frameDetails.map(f => f.downstream || { action: '', emotion: '', keywords: [] }),
+      shots: frameDetails.map(f => ({
+        ...(f.downstream || { action: '', emotion: '', keywords: [] }),
+        // 🎬 帧真实时间戳（源坐标，原视频绝对时间）透传：step3 据此构建真实时间轴 chunk，不再按 ASR 行数均分
+        timeMs: f.timeMs,
+        // 💬 ASR 台词冗余透传：step3 直接消费，无需再按时间戳匹配
+        asrText: f.asrText,
+      })),
     };
 
     /** 🎬 全片剧情故事线：各帧 action 按时序串联，供 step3 感知"开场-发展-冲突-转折"连贯剧情 */

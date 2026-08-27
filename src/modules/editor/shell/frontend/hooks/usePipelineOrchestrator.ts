@@ -136,6 +136,9 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
           // 🎭 注入 roles：让 step2 VLM 描述时使用人物名称（来自 step1 人脸识别结果）
           ...(step === 2 ? {
             framePaths: projectState.extractedData?.framePaths || [],
+            // 🎬 帧真实时间戳（源坐标，与 framePaths 顺序对齐）：step2 用真实时间轴匹配 ASR 台词，
+            //   替代旧版 estimatedInterval 估算（fi × 平均间隔），修复 vlmFrames.asrText 系统性错位
+            frameTimeMs: projectState.extractedData?.frameTimeMs || [],
             projectId: projectState.projectId,
             matrixMode: useStep1Store.getState().extractionConfig?.frames?.matrixMode || 'auto',
             audioResult: {

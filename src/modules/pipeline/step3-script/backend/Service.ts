@@ -21,13 +21,10 @@ const DEFAULT_SPEECH_RATE = 4.5;
 /** 默认参数（融合方案，与前端 DEFAULT_PIPELINE_PARAMS 对齐） */
 const DEFAULT_PARAMS: import('../../../../shared/types/entities/editor').PipelineParams = {
   narrativePerspective: 'third',
-  informationLevel: 'deep',
-  narrationDensity: 'standard',
-  originalAudioStrategy: 'keep_key',
+  narrationRatio: 0.7, // 解说占比 0~1：0.7=解说为主、留 30% 给原声
   rhythmMode: 'mixed',
   emotionTone: 'neutral',
   hookIntensity: 0.7,
-  audioVisualWeight: 0.6,
   targetNarrationDurationSec: 0,
 };
 
@@ -107,36 +104,14 @@ export class ScriptGenerator {
     const hookIntensity = params.hookIntensity ?? 0.7;
 
     /**
-     * SSOT：audioVisualWeight 由 originalAudioStrategy 唯一映射（与 View.tsx 保持一致）
-     * - cover: 0.8（解说全量覆盖，更多依赖视觉画面描写）
-     * - keep_key: 0.5（均衡）
-     * - original_main: 0.2（解说辅助过渡，更多提炼 ASR 对白）
+     * SSOT：densityFillRate / allowOriginalMark 均由 narrationRatio（解说占比 n，0~1）
+     * 唯一派生（与 ScriptGenStrategy.ts / View.tsx 保持一致），解说与原声互斥一体，不再分两个参数相乘：
+     * - 字数填充系数 = n：n=1(全解说) → 1.0 铺满全片 / n=0.3(原声为主) → 0.3 仅关键节点解说
+     * - 允许标记原声段落 = n < 1：留了原声空间才允许 LLM 标记原声段落
      */
-    const AUDIO_STRATEGY_TO_WEIGHT_MAP: Record<string, number> = {
-      cover: 0.8,
-      keep_key: 0.5,
-      original_main: 0.2,
-    };
-    const audioVisualWeight = AUDIO_STRATEGY_TO_WEIGHT_MAP[params.originalAudioStrategy] ?? 0.5;
-
-    // 解说密度 → 基础字数填充系数
-    const baseDensityFillRate = params.narrationDensity === 'full' ? 1.0
-                              : params.narrationDensity === 'sparse' ? 0.5
-                              : 0.65;
-
-    /**
-     * 原声策略折扣：对 densityFillRate 再打一层折，避免时间轴物理溢出
-     * - cover(全量覆盖解说): 1.0（原声时间轴无占用，无需打折）
-     * - keep_key(关键台词保留): 0.85（约 15% 时间留给关键原声）
-     * - original_main(原声为主): 0.45（约 60%~80% 时间留给高光对白，解说仅辅助串场）
-     */
-    const AUDIO_STRATEGY_DISCOUNT: Record<string, number> = {
-      cover: 1.0,
-      keep_key: 0.85,
-      original_main: 0.45,
-    };
-    const audioStrategyDiscount = AUDIO_STRATEGY_DISCOUNT[params.originalAudioStrategy] ?? 1.0;
-    const densityFillRate = baseDensityFillRate * audioStrategyDiscount;
+    const narrationRatio = Math.max(0, Math.min(1, params.narrationRatio ?? 0.7));
+    // 字数预算系数 = 解说占比：单段与总量共用同一填充率（与 ScriptGenStrategy.ts 保持一致）
+    const densityFillRate = narrationRatio;
 
     /**
      * TTS 标点停顿折损系数：按 rhythmMode 差异化取值（之前全局固定 0.85 导致双向失真）
@@ -156,8 +131,16 @@ export class ScriptGenerator {
                            : params.rhythmMode === 'slow_soothing' ? 30
                            : 20;
 
-    // 原声策略 → 是否允许标记原声段落（cover 模式禁止标记）
-    const allowOriginalMark = params.originalAudioStrategy !== 'cover';
+    // 是否允许标记原声段落：解说占比 < 100% 即留了原声空间，才允许 LLM 标记原声段落
+    const allowOriginalMark = narrationRatio < 1;
+    // 解说占比 → prompt 文本（按解说占比 n 分档描述解说铺陈与留白语义）
+    const narrationRatioText = narrationRatio >= 0.95
+      ? '全量解说'
+      : narrationRatio >= 0.6
+      ? `解说为主（解说占比 ${Math.round(narrationRatio * 100)}%）`
+      : narrationRatio >= 0.3
+      ? `各占一半（解说占比 ${Math.round(narrationRatio * 100)}%）`
+      : `原声为主（解说占比 ${Math.round(narrationRatio * 100)}%）`;
 
     return `你是顶级影视解说创作者（爆款UP主），擅长将画面素材转化为高留存率的解说旁白。你的任务是根据上游5维视觉语义（动作/情绪/光影/色彩）、人物角色库、原片台词记录，生成符合目标平台调性的解说文案。你必须杜绝"看图说话"的流水账，专注于剖析人物动机、情绪压抑与剧情转折，让文案"画外有音，言下之意"。
 
@@ -183,19 +166,16 @@ ${style}：${styleInstruction}
 【角色别名轮换准则】：严格基于人物库指代角色，严禁"男子/女子"等模糊代称，但可在真名与身份代词间智能轮换。
 
 ## 字数预算与参数指引
-【严格字数约束】：考虑 TTS 标点停顿，字数预算需乘以 0.85 折损系数。
-- 单段字数上限 = ⌊ 时长(秒) × ${speechRate} × ${(densityFillRate * 100).toFixed(0)}% × 0.85 ⌋
+【严格字数约束】：考虑 TTS 标点停顿，字数预算需乘以折损系数。
+- 单段字数上限 = ⌊ 时长(秒) × ${speechRate} × ${(densityFillRate * 100).toFixed(0)}% × ${discountFactor} ⌋
 - 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * speechRate * densityFillRate * discountFactor)} 字
 - 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * speechRate * densityFillRate * discountFactor)} 字
 
 【专业解说参数指引】：
 - 叙事视角：${params.narrativePerspective === 'third' ? '第三人称上帝视角' : params.narrativePerspective === 'first' ? '第一人称沉浸' : '第二人称吐槽'}
-- 信息层次：${params.informationLevel === 'plot' ? '剧情复述' : params.informationLevel === 'deep' ? '深度解读' : '吐槽点评'}
-- 解说密度：${params.narrationDensity === 'full' ? '满配' : params.narrationDensity === 'sparse' ? '留白' : '标准'}（填充率${(densityFillRate * 100).toFixed(0)}%）
-- 原声策略：${params.originalAudioStrategy === 'cover' ? '全量覆盖' : params.originalAudioStrategy === 'keep_key' ? '关键台词保留' : '原声为主'}
+- 解说占比：${narrationRatioText}
 - 节奏模式：${params.rhythmMode === 'short_fast' ? '短句快切' : params.rhythmMode === 'slow_soothing' ? '长句舒缓' : '长短交替'}
 - 情绪基调：${params.emotionTone === 'neutral' ? '客观中立' : params.emotionTone === 'emotional' ? '情感渲染' : params.emotionTone === 'suspense' ? '悬疑营造' : params.emotionTone === 'epic' ? '高燃热血' : '搞笑吐槽'}
-- 声画权重：${(audioVisualWeight * 100).toFixed(0)}%（${audioVisualWeight > 0.5 ? '偏向视觉' : '偏向原声'}）
 
 ${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
 原声策略要求保留部分原片原声。当某段分镜的核心是"原片台词/标志性对白/冲突声"（观众需要亲耳听到原声），请将该分镜标记为原声段落：

@@ -24,7 +24,7 @@ describe('Step3 Types', () => {
         ],
         scriptStyle: '硬核科普',
         speechRate: 4.5,
-        pipelineParams: { narrativePerspective:'third', informationLevel:'deep', narrationDensity:'standard', originalAudioStrategy:'keep_key', rhythmMode:'mixed', emotionTone:'neutral', hookIntensity:0.7, audioVisualWeight:0.6 },
+        pipelineParams: { narrativePerspective:'third', narrationRatio:0.7, rhythmMode:'mixed', emotionTone:'neutral', hookIntensity:0.7 },
       };
 
       expect(input.vlmFrames).toHaveLength(2);
@@ -38,7 +38,7 @@ describe('Step3 Types', () => {
         vlmFrames: [],
         scriptStyle: '情感叙事',
         speechRate: 3.5,
-        pipelineParams: { narrativePerspective:'first', informationLevel:'plot', narrationDensity:'sparse', originalAudioStrategy:'original_main', rhythmMode:'slow_soothing', emotionTone:'emotional', hookIntensity:0.3, audioVisualWeight:0.4 },
+        pipelineParams: { narrativePerspective:'first', narrationRatio:0.3, rhythmMode:'slow_soothing', emotionTone:'emotional', hookIntensity:0.3 },
       };
 
       expect(input.vlmFrames).toHaveLength(0);
@@ -49,18 +49,18 @@ describe('Step3 Types', () => {
         vlmFrames: [{ url: '/f.png', description: 'test', editing: false, confirmed: false }],
         scriptStyle: '悬疑推理',
         speechRate: 0,
-        pipelineParams: { narrativePerspective:'third', informationLevel:'deep', narrationDensity:'standard', originalAudioStrategy:'keep_key', rhythmMode:'mixed', emotionTone:'neutral', hookIntensity:0.7, audioVisualWeight:0.6 },
+        pipelineParams: { narrativePerspective:'third', narrationRatio:0.7, rhythmMode:'mixed', emotionTone:'neutral', hookIntensity:0.7 },
       };
 
       expect(input.speechRate).toBe(0);
     });
 
-    it('pipelineParams 应接受钩子强度和声画权重的边界值 0 和 1', () => {
+    it('pipelineParams 应接受钩子强度的边界值 0 和 1', () => {
       const minInput: Step3Input = {
         vlmFrames: [],
         scriptStyle: '爆款短视频',
         speechRate: 4.5,
-        pipelineParams: { narrativePerspective:'second', informationLevel:'roast', narrationDensity:'full', originalAudioStrategy:'cover', rhythmMode:'short_fast', emotionTone:'comedy', hookIntensity:0, audioVisualWeight:0 },
+        pipelineParams: { narrativePerspective:'second', narrationRatio:1, rhythmMode:'short_fast', emotionTone:'comedy', hookIntensity:0 },
       };
       expect(minInput.pipelineParams.hookIntensity).toBe(0);
 
@@ -68,9 +68,9 @@ describe('Step3 Types', () => {
         vlmFrames: [],
         scriptStyle: '深度解说',
         speechRate: 4.5,
-        pipelineParams: { narrativePerspective:'third', informationLevel:'deep', narrationDensity:'standard', originalAudioStrategy:'keep_key', rhythmMode:'mixed', emotionTone:'epic', hookIntensity:1, audioVisualWeight:1 },
+        pipelineParams: { narrativePerspective:'third', narrationRatio:0.7, rhythmMode:'mixed', emotionTone:'epic', hookIntensity:1 },
       };
-      expect(maxInput.pipelineParams.audioVisualWeight).toBe(1);
+      expect(maxInput.pipelineParams.hookIntensity).toBe(1);
     });
   });
 
@@ -165,19 +165,14 @@ describe('Step3 Types', () => {
     it('枚举字段应接受合法值', () => {
       const params: PipelineParams = {
         narrativePerspective: 'first',
-        informationLevel: 'roast',
-        narrationDensity: 'sparse',
-        originalAudioStrategy: 'original_main',
+        narrationRatio: 0.3,
         rhythmMode: 'short_fast',
         emotionTone: 'epic',
         hookIntensity: 0.9,
-        audioVisualWeight: 0.2,
       };
 
       expect(params.narrativePerspective).toBe('first');
-      expect(params.informationLevel).toBe('roast');
-      expect(params.narrationDensity).toBe('sparse');
-      expect(params.originalAudioStrategy).toBe('original_main');
+      expect(params.narrationRatio).toBe(0.3);
       expect(params.rhythmMode).toBe('short_fast');
       expect(params.emotionTone).toBe('epic');
     });
@@ -185,19 +180,14 @@ describe('Step3 Types', () => {
     it('连续值字段应接受 0-1 浮点数', () => {
       const params: PipelineParams = {
         narrativePerspective: 'third',
-        informationLevel: 'deep',
-        narrationDensity: 'standard',
-        originalAudioStrategy: 'keep_key',
+        narrationRatio: 0.7,
         rhythmMode: 'mixed',
         emotionTone: 'neutral',
         hookIntensity: 0.65,
-        audioVisualWeight: 0.85,
       };
 
       expect(params.hookIntensity).toBeGreaterThanOrEqual(0);
       expect(params.hookIntensity).toBeLessThanOrEqual(1);
-      expect(params.audioVisualWeight).toBeGreaterThanOrEqual(0);
-      expect(params.audioVisualWeight).toBeLessThanOrEqual(1);
     });
   });
 
@@ -240,13 +230,10 @@ describe('Step3 Types', () => {
         speechRate: 4.5,
         pipelineParams: {
           narrativePerspective: 'third',
-          informationLevel: 'deep',
-          narrationDensity: 'standard',
-          originalAudioStrategy: 'keep_key',
+          narrationRatio: 0.7,
           rhythmMode: 'mixed',
           emotionTone: 'neutral',
           hookIntensity: 0.7,
-          audioVisualWeight: 0.6,
         },
         vlmFrames: [],
         isGenerating: false,
@@ -277,13 +264,10 @@ describe('Step3 Types', () => {
         speechRate: 3.0,
         pipelineParams: {
           narrativePerspective: 'first',
-          informationLevel: 'roast',
-          narrationDensity: 'sparse',
-          originalAudioStrategy: 'original_main',
+          narrationRatio: 0.3,
           rhythmMode: 'slow_soothing',
           emotionTone: 'emotional',
           hookIntensity: 0.3,
-          audioVisualWeight: 0.4,
         },
         vlmFrames: [{ url: '/a.jpg', description: 'test', editing: false, confirmed: true }],
         isGenerating: true,

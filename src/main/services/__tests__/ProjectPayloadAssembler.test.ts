@@ -340,7 +340,8 @@ describe('assembleProjectPayload', () => {
     expect(result.backgroundPath).toBe('/v/bgm.wav');
     expect(result.asrLines).toEqual([{ text: 'line1' }]);
     expect(result.audioSeparated).toBe(true);
-    expect(result.pipelineParams).toEqual({ engine: 'local' });
+    expect(result.pipelineParams.engine).toBe('local');
+    expect(result.pipelineParams.narrationRatio).toBeCloseTo(0.7225);
     expect(result.extractionConfig).toEqual({ mode: 'fast' });
     expect(result.vlmFrames).toEqual([{ id: 'vf1' }]);
     expect(result.scriptParagraphs).toEqual([{ id: 'sp1' }]);
@@ -365,5 +366,61 @@ describe('assembleProjectPayload', () => {
   it('video_path 降级到 videoPath', () => {
     const result = assembleProjectPayload({ video_path: '/fallback.mp4' }, 'p1');
     expect(result.videoPath).toBe('/fallback.mp4');
+  });
+
+  // ══════════════════════════════════════════
+  // 旧版双参数（narrationDensity / originalAudioStrategy）→ 单一 narrationRatio 迁移
+  // ══════════════════════════════════════════
+
+  it('迁移旧版枚举 originalAudioStrategy：cover/keep_key/original_main → 0/0.15/0.55', () => {
+    // 默认密度 standard(0.85)：narrationRatio = 0.85 × (1 - 保留原声)
+    expect(assembleProjectPayload({ pipelineParams: { originalAudioStrategy: 'cover' } }, 'p1').pipelineParams.narrationRatio).toBeCloseTo(0.85);
+    expect(assembleProjectPayload({ pipelineParams: { originalAudioStrategy: 'keep_key' } }, 'p1').pipelineParams.narrationRatio).toBeCloseTo(0.7225);
+    expect(assembleProjectPayload({ pipelineParams: { originalAudioStrategy: 'original_main' } }, 'p1').pipelineParams.narrationRatio).toBeCloseTo(0.3825);
+  });
+
+  it('迁移旧版数字 originalAudioStrategy：clamp 到 0~0.8 后参与折算', () => {
+    expect(assembleProjectPayload({ pipelineParams: { originalAudioStrategy: 0.3 } }, 'p1').pipelineParams.narrationRatio).toBeCloseTo(0.595);
+    expect(assembleProjectPayload({ pipelineParams: { originalAudioStrategy: 0.95 } }, 'p1').pipelineParams.narrationRatio).toBeCloseTo(0.17);
+    expect(assembleProjectPayload({ pipelineParams: { originalAudioStrategy: -0.1 } }, 'p1').pipelineParams.narrationRatio).toBeCloseTo(0.85);
+  });
+
+  it('迁移旧版枚举 narrationDensity：full=1.0 / standard=0.85 / sparse=0.6', () => {
+    // 默认保留原声 0.15：narrationRatio = 密度基础系数 × (1 - 0.15)
+    expect(assembleProjectPayload({ pipelineParams: { narrationDensity: 'full' } }, 'p1').pipelineParams.narrationRatio).toBeCloseTo(0.85);
+    expect(assembleProjectPayload({ pipelineParams: { narrationDensity: 'standard' } }, 'p1').pipelineParams.narrationRatio).toBeCloseTo(0.7225);
+    expect(assembleProjectPayload({ pipelineParams: { narrationDensity: 'sparse' } }, 'p1').pipelineParams.narrationRatio).toBeCloseTo(0.51);
+  });
+
+  it('旧版双参数迁移后残留字段被删除，仅保留 narrationRatio', () => {
+    const result = assembleProjectPayload({ pipelineParams: { narrationDensity: 'full', originalAudioStrategy: 0.55 } }, 'p1');
+    // 仅保留单一 narrationRatio（full 1.0 × (1-0.55) = 0.45），旧字段被彻底移除
+    expect(result.pipelineParams.narrationRatio).toBeCloseTo(0.45);
+    expect(result.pipelineParams).not.toHaveProperty('narrationDensity');
+    expect(result.pipelineParams).not.toHaveProperty('originalAudioStrategy');
+    expect(Object.keys(result.pipelineParams)).toEqual(['narrationRatio']);
+  });
+
+  it('新版数字 narrationRatio 原样保留并 clamp 到 0~1', () => {
+    expect(assembleProjectPayload({ pipelineParams: { narrationRatio: 0.7 } }, 'p1').pipelineParams.narrationRatio).toBe(0.7);
+    expect(assembleProjectPayload({ pipelineParams: { narrationRatio: 1.5 } }, 'p1').pipelineParams.narrationRatio).toBe(1);
+    expect(assembleProjectPayload({ pipelineParams: { narrationRatio: -0.5 } }, 'p1').pipelineParams.narrationRatio).toBe(0);
+  });
+
+  it('缺失保留原声字段时按默认 0.15 折算，其余字段保留', () => {
+    const result = assembleProjectPayload({ pipelineParams: { hookIntensity: 0.7 } }, 'p1');
+    expect(result.pipelineParams.narrationRatio).toBeCloseTo(0.7225);
+    expect(result.pipelineParams.hookIntensity).toBe(0.7);
+  });
+
+  it('pipelineParams 整体缺失时透传 undefined（前端回退 store 默认值）', () => {
+    const result = assembleProjectPayload({}, 'p1');
+    expect(result.pipelineParams).toBeUndefined();
+  });
+
+  it('非法 originalAudioStrategy 值抛错暴露（不静默降级）', () => {
+    expect(() =>
+      assembleProjectPayload({ pipelineParams: { originalAudioStrategy: 'unknown_strategy' } }, 'p1'),
+    ).toThrow(/非法值/);
   });
 });

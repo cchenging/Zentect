@@ -275,8 +275,12 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         }
       }
       return {
-        /** 🎬 P0/P1 OP/ED 裁剪：P1-1 起抽帧已按 body 窗口输出（timeMs 即 body 坐标），
-         *  这里只做负值兜底、不再减 trimStartMs，防止双重换算（历史踩坑：坐标二次平移放大错位）。 */
+        /** 🎬 坐标系契约（P1-5 修正）：帧时间戳的坐标系由上游是否落库决定，聚合前自适应统一为 body：
+         *   - 步骤1 落库 frames_time_ms = 【源坐标】（原视频绝对时间，body + sourceOffsetMs，首帧 ≥ trimStartMs）
+         *   - 步骤1 未落库（frames_time_ms 空）时，步骤2 回退 estimatedInterval 估算时间轴 = 【body 坐标】（首帧 0 起）
+         *   chunk/matchSegments 在 OP/ED 裁剪下恒为【body 坐标】。
+         *   因此不能无条件 -trimStartMs（会对估算/body 坐标二次平移放大错位）：
+         *   仅在帧时间明显是源坐标（首帧 ≥ OP 结束点）时转 body；否则保持原样。 */
         timeMs: Math.max(0, Number(f.timeMs || 0)),
         description: f.description,
         emotion: f.emotion,
@@ -287,9 +291,12 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         characters: mergedRoles.size > 0 ? Array.from(mergedRoles) : undefined,
       };
     });
-    /** 🎬 P0 OP/ED 结尾裁剪：trimEndMs > 0 时，删除时间轴位于「正剧终点 + 1s」之后的帧描述（避免 ED 段脏描述污染聚合）
-     *  正剧终点 = (srcDurationMs - trimStartMs - trimEndMs)，不知道 srcDurationMs 时这里不做尾裁（尾段噪声帧影响远小于 OP 段）。 */
-    const frameDescs = frameDescsRaw;
+    /** 🎬 帧时间坐标自适应转换（P1-5 修正）：源坐标帧时间戳 → body（-trimStartMs），
+     *  估算/body 坐标帧时间戳保持原样。判据：首帧时间 ≥ OP 结束点（trimStartMs）即视为源坐标。
+     *  无裁剪时源=body（偏移 0），转换恒等、无副作用。 */
+    const frameDescs = (needTrim && frameDescsRaw.length > 0 && frameDescsRaw[0].timeMs >= trim.trimStartMs)
+      ? frameDescsRaw.map((f) => ({ ...f, timeMs: Math.max(0, f.timeMs - trim.trimStartMs) }))
+      : frameDescsRaw;
     if (frameDescs.length > 0 && chunks.length > 0) {
       /**
        * 双指针聚合帧描述到切片：sortedDescs 与 videoChunks 都按时间有序，
@@ -442,7 +449,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      * 构造带音频时长 + 多维字段（情绪/角色/画面意图/时间锚/原声标记）的 query 列表，
      * 复用共享纯函数 buildMatchQueries（避免 AIService 与本策略的 query 构造漂移）。
      */
-    const allQueries = SemanticAnalyzeStrategy.buildMatchQueries(scriptShots, ttsDurations);
+    const allQueries = SemanticAnalyzeStrategy.buildMatchQueries(scriptShots, ttsDurations, needTrim ? trim.trimStartMs : 0);
 
     /** 🔧 P2.0 碎片 seg 前置清洗（KM 与原声定位共用同一清洗后池）：合并 <500ms 碎片到相邻 seg，
      *  从源头降低变速超限触发概率（碎片单段天然时长不足，是重选常客）。运行时清洗，不落库。 */
@@ -451,7 +458,21 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     /** 🎙️ 原声段落预匹配：文本 ↔ ASR 时间轴 → 锁定原片切片（命中的段落不送 KM，未命中回退语义匹配）
      *  🔧 P1 #7：用 promisePool（并发 8）并行化原声定位。
      *  locateOriginalClip 内部是纯 JS（文本规范化 + ASR 线性扫描 + 切片二分定位），对 CPU 很友好，
-     *  并发能把大段 ASR（>200 行 + >50 原声段落）的定位时间缩短 ~60%。 */
+     *  并发能把大段 ASR（>200 行 + >50 原声段落）的定位时间缩短 ~60%。
+     *  🎬 坐标系契约（P1-5 修正）：ASR 时间轴为【源坐标】（步骤1 全链路源坐标），而 matchSegments
+     *  在 OP/ED 裁剪下为【body 坐标】。定位前把 ASR 时间统一转 body，否则 trimStartMs>0 时
+     *  二分覆盖查找（findCoveringChunk 按 chunk.startMs）永远定位不到切片。 */
+    const asrLinesBody = needTrim
+      ? asrLines.map((l: any) => {
+          const s = l?.startMs;
+          const e = l?.endMs;
+          return {
+            ...l,
+            startMs: typeof s === 'number' ? Math.max(0, s - trim.trimStartMs) : s,
+            endMs: typeof e === 'number' ? Math.max(0, e - trim.trimStartMs) : e,
+          };
+        })
+      : asrLines;
     const originalMatches = new Map<string, any>();
     const originalQueries = allQueries.filter((q) => q.keepOriginalAudio);
     if (originalQueries.length > 0) {
@@ -459,7 +480,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         originalQueries.map((q) => () => Promise.resolve().then(() => ({
           shotId: q.shotId,
           query: q,
-          loc: SemanticAnalyzeStrategy.locateOriginalClip(q.text, asrLines, matchSegments),
+          loc: SemanticAnalyzeStrategy.locateOriginalClip(q.text, asrLinesBody, matchSegments),
         }))),
         8,
       );
@@ -513,7 +534,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
     /** 🔧 R3 取消贯通（PR-1）：taskId 唯一标识本次 KM 请求；
      *  abort/超时时 AIDaemon 会通知 daemon /cancel/{taskId}，KM 求解循环提前退出；
-     *  retries:0 —— KM 是幂等重算任务，超时重试只会让 1000×1000 矩阵再空烧数分钟，不再无条件重试。 */
+     *  retries:0 —— KM 是幂等重算任务，超时重试只会让 1000×1000 矩阵再空烧数分钟，不再无条件重试。
+     *  🔧 P1-5 超时修正：长视频（45 分钟电视剧）场景切片拆成 3s 子段后切片池可达 900+，
+     *    daemon 中文 CLIP 分支需对全部候选切片重编码封面图（实测 ~0.44s/切片，950 段 ≈ 7 分钟），
+     *    原 180s 超时导致 KM 必然超时 → 走 fallback 也失败 → matchResults 全空（"一个文案都匹配不到"）。
+     *    放宽到 15 分钟：首次跑（无 clipZhEmbedding 缓存）能完成，二次跑命中缓存后显著加快。 */
     const kmTaskId = `${_context.projectId}-km-${Date.now()}`;
     try {
       const kmResult = await AIDaemon.getInstance().post('/api/solver/kuhn_munkres_match', {
@@ -531,7 +556,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           vlmApiBase: vlmConfig.baseURL,
           vlmApiModel: vlmConfig.model,
         } : {}),
-      }, { timeout: 180000, retries: 0, taskId: kmTaskId });
+      }, { timeout: 900000, retries: 0, taskId: kmTaskId });
 
       onProgress(80, '匹配完成，正在整理结果...');
 
@@ -1003,6 +1028,10 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
   static buildMatchQueries(
     scriptShots: any[],
     ttsDurations: any[],
+    /** 🎬 坐标系契约（P1-5 修正）：query.startMs 供 KM 锚定加成 / preselectTopK 时间锚分，
+     *  与 body 坐标切片比较前必须减 trimStartMs 转 body（步骤3 写入的 startMs 为源坐标）。
+     *  默认 0 = 不转换（无 OP/ED 或调用方自行处理）。 */
+    trimStartMs: number = 0,
   ): Array<{
     shotId: string;
     text: string;
@@ -1042,7 +1071,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         emotion: s.emotion || '',
         characters: Array.isArray(s.characters) ? s.characters : [],
         visualIntent,
-        startMs: timing.startMs,
+        startMs: trimStartMs > 0 ? Math.max(0, timing.startMs - trimStartMs) : timing.startMs,
         durationMs: timing.durationMs,
         keepOriginalAudio: s.keepOriginalAudio === true,
       };
@@ -1428,6 +1457,16 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     isOriginal: boolean,
   ): any {
     if (matched) {
+      /** 🔧 P1-5 数据卫生：chunkData 透传前端/落库前剥离 CLIP 大字段（clipZhEmbedding/visionEmbedding/colorHistogram
+       *  可达 512 维浮点数组），否则 matchResults 被 embedding 塞满、快照 JSON 爆炸。
+       *  embedding 仅 KM 图像编码缓存需要（存于 video_chunk_parts，不随 matchResult 下发）。 */
+      const chunkData = matched.chunkData;
+      const lightChunkData = chunkData && typeof chunkData === 'object'
+        ? (() => {
+            const { clipZhEmbedding, visionEmbedding, colorHistogram, ...rest } = chunkData;
+            return rest;
+          })()
+        : chunkData;
       return {
         shotId: q.shotId,
         text: q.text,
@@ -1436,7 +1475,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         mediaId: matched.chunkId || matched.mediaId || '',
         score: isOriginal ? 0.95 : (matched.confidence || 0),
         thumbnail: matched.coverPath || '',
-        chunkData: matched.chunkData || null,
+        chunkData: lightChunkData,
         audioDurationMs: matched.audioDurationMs || q.audioDurationMs,
         videoTimelineStartMs: matched.videoTimelineStartMs || 0,
         videoTimelineEndMs: matched.videoTimelineEndMs || 0,

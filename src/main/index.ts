@@ -11,6 +11,7 @@ import { app, shell, BrowserWindow, ipcMain, protocol, screen, safeStorage, sess
 import path from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import iconIco from '../../resources/icon.ico?asset'
 import fs from 'fs'
 
 // — 引入核心基建
@@ -254,7 +255,8 @@ class AppBootstrap {
       frame: false,
       titleBarStyle: 'hidden',
       autoHideMenuBar: true,
-      icon: icon,
+      // 🔧 Windows 任务栏/窗口图标用 .ico（PNG 在 Windows 任务栏不可靠，会回退默认 Electron 图标），其他平台用 PNG
+      icon: process.platform === 'win32' ? iconIco : icon,
       webPreferences: {
         preload: path.join(__dirname, '../preload/index.js'),
         sandbox: true,
@@ -620,7 +622,12 @@ app.whenReady().then(async () => {
     }
   })
 
-  electronApp.setAppUserModelId('com.magic.one')
+  // 任务栏图标/分组身份：仅打包模式设置 AppUserModelID。
+  // dev 跑 electron.exe，若设置系统无关联的 ID，Windows 按 ID 查不到图标会回退 exe 默认图标，
+  // 导致 dev 任务栏显示 Electron 默认图标；不设则回落窗口 icon（resources/icon.ico），恢复自定义图标。
+  if (app.isPackaged) {
+    electronApp.setAppUserModelId('com.zentect.app')
+  }
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

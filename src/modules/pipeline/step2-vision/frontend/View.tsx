@@ -6,6 +6,16 @@ import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { StatHeader, EmptyState } from "@renderer/components/shared";
 import type { VlmFrame } from "../../../../shared/types/entities/editor";
 
+/** 格式化毫秒时间为 mm:ss.mmm 可读格式（帧真实时间戳展示用） */
+const formatTimeMs = (ms?: number): string => {
+  if (typeof ms !== 'number' || !Number.isFinite(ms)) return '--:--.---';
+  const totalSeconds = ms / 1000;
+  const mm = Math.floor(totalSeconds / 60);
+  const ss = Math.floor(totalSeconds % 60);
+  const mmm = Math.round((totalSeconds % 1) * 1000);
+  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}.${String(mmm).padStart(3, '0')}`;
+};
+
 /** P2 视觉分析模式（VLM 矩阵策略）选项 */
 const MATRIX_OPTIONS = [
   { value: 'auto', label: '智能自动', desc: '自动切换', Icon: Wand2 },
@@ -129,7 +139,12 @@ export const StepVisionDescriptionView: React.FC<StepVisionDescriptionProps> = (
                     {frame.description || "点击添加描述"}
                   </div>
                 )}
-                <div className="text-[12px] text-muted-foreground">帧 {idx + 1}</div>
+                <div className="text-[11px] text-muted-foreground flex items-center justify-between gap-2">
+                  <span className="font-mono shrink-0">帧 {idx + 1} · {frame.timeStr || formatTimeMs(frame.timeMs)}</span>
+                  <span className="truncate text-emerald-600/90 dark:text-emerald-400/90" title={frame.asrText}>
+                    {frame.asrText ? `台词：${frame.asrText}` : '无匹配台词'}
+                  </span>
+                </div>
               </div>
             </div>
           ))}
