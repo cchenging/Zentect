@@ -40,6 +40,9 @@ export interface LexiconMark {
 }
 
 export interface GeneratedShot {
+  /** ✅ 身份键统一：出生处唯一主键（seg_N 全局唯一），消费点一律读 id 做编辑/时间轴定位；
+   *  与 shotId 同值并存，shotId 仅供兼容遗留消费点过渡，不再作为主身份键 */
+  id: string;
   shotId: string;
   text: string;
   cleanText: string;
@@ -1332,6 +1335,8 @@ ${roleMapLines.join('\n')}
           )
         : null;
       return {
+        /** ✅ 身份键统一：出生处唯一主键 seg_N 透传为最终产物的 id（前端 Normalizer 断言主键必存在）；shotId 同值并存兼容过渡 */
+        id: p.id,
         shotId: p.id,
         text: scanResult.original,
         cleanText: scanResult.cleanText,
