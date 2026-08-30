@@ -49,12 +49,12 @@ export class ProjectController {
       return true;
     });
 
-    // P1: 增量保存 — 只更新解说稿中被修改的段落，避免全量序列化
-    IpcRouter.handle(IPC_CHANNELS.PROJECT_UPDATE_SCRIPT_DELTA, async (_, projectId: string, deltas: Array<{ shotId: string; text: string }>) => {
+    // P1: 增量保存 — 只更新解说稿中被修改的段落（✅ 身份键统一：段落唯一真源为 id，deltas 一律按 id 对齐 shots 表主键）
+    IpcRouter.handle(IPC_CHANNELS.PROJECT_UPDATE_SCRIPT_DELTA, async (_, projectId: string, deltas: Array<{ id: string; text: string }>) => {
       if (!projectId || !deltas?.length) return true;
       const data = await this.projectService.loadData(projectId);
       if (!data?.shots) return true;
-      const shotMap = new Map(deltas.map(d => [d.shotId, d.text]));
+      const shotMap = new Map(deltas.map(d => [d.id, d.text]));
       for (const shot of data.shots) {
         if (shotMap.has(shot.id)) {
           shot.aiText = shotMap.get(shot.id);

@@ -288,6 +288,15 @@ export class OpenAICompatibleAdapter implements ILLMProvider {
         throw new Error(`接口返回了 HTML 而非 JSON（baseURL=${this.baseURL}）${v1Hint}，请检查接口地址是否正确。响应片段：${rawText.substring(0, 200)}`);
       }
       const data = JSON.parse(rawText);
+      const msg = data.choices?.[0]?.message;
+      // 🔧 诊断增强：content 为空但存在 reasoning_content → DeepSeek 思考模式被 max_tokens 截断，
+      // 明确报"思考截断"而非被误判为"后端空返回"，便于用户针对性处理（关闭思考或提高 max_tokens）
+      if (!msg?.content && msg?.reasoning_content) {
+        throw new Error(
+          `响应 content 为空：模型仅输出了思考内容（${String(msg.reasoning_content).length} 字符）而未产出正文，` +
+          `大概率是 DeepSeek 思考模式耗尽 max_tokens 被截断，请关闭思考或提高 max_tokens`,
+        );
+      }
       return { success: true, text: data.choices[0].message.content };
     } catch (error: any) { return { success: false, error: error.message }; }
   }
@@ -405,6 +414,12 @@ export class OpenAICompatibleAdapter implements ILLMProvider {
       const payload: any = { model, messages, temperature };
       if (rf) payload.response_format = rf;
       if (maxTokens) payload.max_tokens = maxTokens;
+      // 🔧 DeepSeek V4 思考模式默认开启：max_tokens 同时覆盖"思考+输出"，长任务思考易耗尽预算导致 content 为空
+      //（实例现象：章节解说请求连续两次空返回）。解说文案为创作直出任务，显式关闭思考（官方最佳实践），
+      // 同时使 temperature 真正生效（思考模式下其被静默忽略）。
+      if (/deepseek/i.test(model)) {
+        payload.thinking = { type: 'disabled' };
+      }
       return payload;
     };
 
@@ -426,6 +441,23 @@ export class OpenAICompatibleAdapter implements ILLMProvider {
     // 读取错误详情用于判断降级
     let detail = '';
     try { detail = (await response.text()).substring(0, 300); } catch {}
+
+    // 🔧 兼容性降级0：json_object 不支持时，去掉 response_format 重试（Ollama 等本地模型 / 部分中转站不实现该参数）
+    // 修复背景：ScriptGenStrategy 三处生成调用已显式传 response_format: {type:'json_object'}，
+    // 若后端不支持会 400 报错，需在此兜底降级，避免"不支持即挂掉"破坏原有可运行链路。
+    if (response.status === 400 && responseFormat?.type === 'json_object') {
+      AppLogger.warn(LOG_TAGS.AI_AGENT,
+        `[Adapter] 后端不支持 response_format(json_object)，降级为无格式约束重试`);
+      const retryNoFmt = await this.fetchWithV1Fallback(
+        'chat',
+        makeInitFactory(null),
+        `chat/no-format(fallback)`,
+      );
+      if (retryNoFmt.ok) return retryNoFmt;
+      let detail0 = '';
+      try { detail0 = (await retryNoFmt.text()).substring(0, 300); } catch {}
+      this.throwHttpError(retryNoFmt.status, detail0);
+    }
 
     // 🔧 兼容性降级1：json_schema 不支持时，降级为 json_object
     if (response.status === 400 && responseFormat?.type === 'json_schema' && detail.includes('json_schema')) {

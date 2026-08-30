@@ -71,7 +71,8 @@ export const StepShotMatching: React.FC = () => {
     const step5State = useStep5Store.getState();
     step5State.replaceMatch(shotId, chunkItem.id);
     const updated = step5State.matchResults.map((m: any) =>
-      m.shotId === shotId
+      /** ✅ 身份键统一：消费端一律读 id（出生处即段落唯一主键） */
+      m.id === shotId
         ? { ...m, mediaId: chunkItem.id, thumbnail: coverPath, chunkData: chunkItem.chunkData || chunkItem, confirmed: false }
         : m
     );

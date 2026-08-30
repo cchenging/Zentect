@@ -1,7 +1,6 @@
 // 📁 路径：src/main/engine/AIEngine.ts
 
 import { WebContents } from 'electron';
-import { NetworkPipeline } from '../core/NetworkPipeline';
 import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import { PromptBuilder } from './prompts/PromptBuilder';
 import { LLMFactory } from './adapters/LLMFactory'; 
@@ -54,41 +53,6 @@ export class AIEngine {
       AppLogger.error(LOG_TAGS.AI_ENGINE, `streamChat HTTP 错误: ${error.message}`);
       webContents.send(`${replyChannel}:error`, friendlyMsg);
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // 🎬 2. 核心业务流水线 (纯净 Prompt 调用)
-  // ---------------------------------------------------------------------------
-  static async runAIRecreatePipeline(_projectId: string, _mediaPath: string, originalShots: any[], _mediaId: string, roles: any[], targetLanguage: string = 'zh-CN'): Promise<any[]> {
-    const { adapter, modelName, temperature } = LLMFactory.createAdapter('script');
-    const systemPrompt = PromptBuilder.buildScriptPrompt(targetLanguage);
-    const multimodalContext = originalShots.map(s => ({ shotId: s.id, originalText: s.originalText || '', visionText: s.visionText || '' }));
-    const userPrompt = (PromptBuilder as any).buildUserPrompt ? (PromptBuilder as any).buildUserPrompt(roles, multimodalContext) : JSON.stringify({ roles, context: multimodalContext });
-
-    const response = await adapter.chat([{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], modelName, temperature);
-    
-    if (!response.success) throw new Error(this.translateHttpError(new Error(response.error)));
-
-    // 💥 Layer 4: 强制流经数据清洗防线，阻断脏资产向状态层渗透
-    let aiSentences: any[] = [];
-    try {
-      aiSentences = NetworkPipeline.strictParseJson(response.text || '');
-    } catch(e) {
-      throw new Error('模型返回数据格式破坏！');
-    }
-
-    const finalShots: any[] = [];
-    let idx = 0;
-    aiSentences.forEach((item: any) => {
-      const cleanPhrase = (item.aiText || '').trim();
-      if (!cleanPhrase) return;
-      const sourceShot = originalShots.find(s => s.id === item.sourceShotId) || originalShots[0];
-      finalShots.push({ 
-        id: `ai_shot_${Date.now()}_${idx++}`, mediaId: _mediaId, start: sourceShot?.start || 0, end: sourceShot ? sourceShot.start + 1.5 : 1.5, 
-        aiText: cleanPhrase, coverPath: sourceShot?.coverPath || '', roleId: item.roleId || '' 
-      });
-    });
-    return finalShots;
   }
 
   static async analyzeVision(imagePath: string): Promise<string> {

@@ -15,7 +15,7 @@ describe('Step4 Types', () => {
   describe('Step4Input', () => {
     it('合法输入应包含所有必填字段', () => {
       const input: Step4Input = {
-        scriptParagraphs: [{ id: 's1', text: '你好', editing: false }],
+        scriptParagraphs: [{ id: 's1', type: 'narration', startMs: 0, durationMs: 3000, text: '你好', editing: false }],
         engine: 'edge',
         voiceId: 'zh-CN-XiaoxiaoNeural',
         speechRate: 1.0,
@@ -50,7 +50,7 @@ describe('Step4 Types', () => {
   describe('Step4Output', () => {
     it('应包含 results 数组和统计字段', () => {
       const output: Step4Output = {
-        results: [{ shotId: 'shot1', audioUrl: '/audio/1.mp3' }],
+        results: [{ id: 'shot1', shotId: 'shot1', audioUrl: '/audio/1.mp3' }],
         successCount: 1,
         failedCount: 0,
       };
@@ -61,9 +61,9 @@ describe('Step4 Types', () => {
 
     it('failedCount 应与 results 中 _failed 标记一致', () => {
       const results: TTSResult[] = [
-        { shotId: 'a', audioUrl: '/a.mp3' },
-        { shotId: 'b', _failed: true, _error: '合成失败' },
-        { shotId: 'c', _failed: true, _error: '网络超时' },
+        { id: 'a', shotId: 'a', audioUrl: '/a.mp3' },
+        { id: 'b', shotId: 'b', _failed: true, _error: '合成失败' },
+        { id: 'c', shotId: 'c', _failed: true, _error: '网络超时' },
       ];
       const failedCount = results.filter((r) => r._failed).length;
       expect(failedCount).toBe(2);
@@ -72,21 +72,21 @@ describe('Step4 Types', () => {
 
   describe('TTSResult', () => {
     it('成功结果应含 shotId 和 audioUrl', () => {
-      const res: TTSResult = { shotId: 'shot_1', audioUrl: 'file:///output/1.wav' };
+      const res: TTSResult = { id: 'shot_1', shotId: 'shot_1', audioUrl: 'file:///output/1.wav' };
       expect(res.shotId).toBe('shot_1');
       expect(res.audioUrl).toBeTruthy();
       expect(res._failed).toBeUndefined();
     });
 
     it('失败结果应有 _failed 标记和 _error 说明', () => {
-      const res: TTSResult = { shotId: 'shot_99', _failed: true, _error: '引擎不可用' };
+      const res: TTSResult = { id: 'shot_99', shotId: 'shot_99', _failed: true, _error: '引擎不可用' };
       expect(res._failed).toBe(true);
       expect(res._error).toBe('引擎不可用');
       expect(res.audioUrl).toBeUndefined();
     });
 
     it('空音色ID时 audioUrl 可为空', () => {
-      const res: TTSResult = { shotId: 's' };
+      const res: TTSResult = { id: 's', shotId: 's' };
       expect(res.audioUrl).toBeUndefined();
       expect(res._failed).toBeUndefined();
     });
@@ -118,7 +118,7 @@ describe('Step4 Types', () => {
         ttsEngine: 'doubao',
         ttsVoiceId: 'v1',
         ttsProgress: 100,
-        ttsResults: [{ shotId: 's1', audioUrl: '/audio/1.mp3' }],
+        ttsResults: [{ id: 's1', shotId: 's1', audioUrl: '/audio/1.mp3' }],
       };
       expect(state.ttsProgress).toBe(100);
     });

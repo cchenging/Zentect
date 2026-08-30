@@ -146,11 +146,25 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     void _probeForFingerprint;
     // 2.2 视频切片缓存 key：原始 key 与「带 trim 隔离 key」双版本，避免缓存错配
     const videoRepo = new VideoChunkRepository();
-    const rawCacheKey = mediaPath;
-    const trimAwareCacheKey = needTrim ? `${mediaPath}#${trimFingerprint}` : rawCacheKey;
+    const rawCacheKey = projectId ? `${projectId}:${mediaPath}` : mediaPath;
+    const trimAwareCacheKey = needTrim ? `${rawCacheKey}#${trimFingerprint}` : rawCacheKey;
     let chunks: any[] = [];
     let matchSegments: any[] = [];
     try {
+      /** 🎬 方向3（跨项目切片污染纵深防御）：优先复用前端注入的本项目已保存切片池
+       *  （task.videoChunks ← step5State.videoChunks ← metadata.videoChunks ← 本项目上一次步骤5 结果回传）。
+       *  仅无 OP/ED 裁剪时启用（源坐标=body 坐标，复用零坐标风险）；needTrim 时 metadata 切片
+       *  坐标契约不透明（可能 body 也可能源坐标），仍走下方 trimAware 缓存链路，避免坐标二次平移错配。
+       *  契约校验与 P1 一致：非空且含 colorHistogram，不满足按"错就错"原则降级。 */
+      const ownPool: any[] = Array.isArray(task.videoChunks) ? task.videoChunks : [];
+      const ownPoolUsable = !needTrim && ownPool.length > 0
+        && ownPool.some((c: any) => Array.isArray(c.colorHistogram) && c.colorHistogram.length > 0);
+      if (ownPoolUsable) {
+        chunks = ownPool;
+        matchSegments = SemanticAnalyzeStrategy.buildMatchSegmentsFromChunks(chunks);
+        AppLogger.info(LOG_TAGS.AI_AGENT,
+          `[镜头匹配] 方向3: 优先复用本项目已保存切片池 ${chunks.length} 个镜头，候选段 ${matchSegments.length} 个（跳过 daemon 跨项目缓存）`);
+      } else {
       /** 🔧 先查 SQLite 切片缓存：先命中「trimAware key」（精确值），再回落到 raw key 做 Node 侧平移裁剪 */
       let cached = videoRepo.getByMediaId(trimAwareCacheKey) || (needTrim ? videoRepo.getByMediaId(rawCacheKey) : null);
       /** 🎨 P1 缓存契约校验：切片须含 colorHistogram（相邻切片色调连续性特征，P1 新增）。
@@ -217,6 +231,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           max_chunk_duration_sec: 3.0,
           target_seg_duration_sec: 3.0,
           /** body 窗口切片时用切片路径做缓存 key（天然 body 坐标），整段时用视频路径（源坐标） */
+          /** 🔧 缓存隔离：传 projectId 让 daemon 素材池缓存按项目隔离 */
+          projectId,
           mediaId: sceneMediaId,
         }, { timeout: 300000 });
         const chunkData = chunkResult?.data || chunkResult;
@@ -246,6 +262,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           }
         }
         AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] 场景切片检测完成，镜头 ${chunks.length} 个，匹配候选段 ${matchSegments.length} 个`);
+      }
       }
     } catch (e: any) {
       AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] 场景切片检测失败: ${e.message}，回退到帧匹配模式`);
@@ -444,7 +461,6 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
     /** 步骤3：构建 KM 匹配请求 */
     onProgress(40, `正在匹配 ${scriptShots.length} 段文案与画面...`);
-
     /**
      * 构造带音频时长 + 多维字段（情绪/角色/画面意图/时间锚/原声标记）的 query 列表，
      * 复用共享纯函数 buildMatchQueries（避免 AIService 与本策略的 query 构造漂移）。
@@ -498,6 +514,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     }
     /** 送 KM 的查询：排除已命中原声段落，避免其干扰全局求解 */
     const kmQueries = allQueries.filter((q) => !(q.keepOriginalAudio && originalMatches.has(q.shotId)));
+    /** 进度细分（L1 权重段）：原声定位完成，进入候选筛选与 KM 求解前的中间锚点 */
+    onProgress(50, '原声段落定位完成，正在筛选语义匹配候选...');
 
     if (kmQueries.length === 0) {
       /** 全部段落都是已命中的原声段落：直接组装结果，无需 KM */
@@ -540,6 +558,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *    原 180s 超时导致 KM 必然超时 → 走 fallback 也失败 → matchResults 全空（"一个文案都匹配不到"）。
      *    放宽到 15 分钟：首次跑（无 clipZhEmbedding 缓存）能完成，二次跑命中缓存后显著加快。 */
     const kmTaskId = `${_context.projectId}-km-${Date.now()}`;
+    /** 进度细分（L1 权重段）：KM 为原子长耗时调用（长视频可能数分钟），进入前锚定进度避免 40 直跳 80 */
+    onProgress(60, '正在调用匹配算法求解全局最优组合（长视频可能需要数分钟）...');
     try {
       const kmResult = await AIDaemon.getInstance().post('/api/solver/kuhn_munkres_match', {
         queries: kmQueries,
@@ -576,7 +596,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         }
         if (merged > 0) {
           try {
-            new VideoChunkRepository().save(mediaPath, chunks, matchSegments);
+            new VideoChunkRepository().save(rawCacheKey, chunks, matchSegments);
             AppLogger.info(LOG_TAGS.AI_AGENT, `[镜头匹配] clipZhEmbedding 缓存落库：${merged}/${matchSegments.length} 切片已回写 DB`);
           } catch (e: any) {
             AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] clipZhEmbedding 缓存落库失败: ${e.message}`);
@@ -756,32 +776,18 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     text: string,
     asrLines: any[],
     videoChunks: any[],
+    /** 段落画面锚点（源坐标 ms）：原声段对应 chunk 的时间窗，用于在 ASR 轴内收窄候选，避免跨镜头误匹配 */
+    anchorStartMs?: number,
+    anchorEndMs?: number,
   ): { chunkId: string; coverPath: string; chunkData: any; audioDurationMs: number; videoTimelineStartMs: number; videoTimelineEndMs: number } | null {
-    if (!text || !Array.isArray(asrLines) || asrLines.length === 0 || !Array.isArray(videoChunks) || videoChunks.length === 0) {
+    if (!Array.isArray(videoChunks) || videoChunks.length === 0) {
       return null;
     }
-    /** 归一化：去空白 + 去引号，做宽松包含匹配 */
-    const norm = (t: string) => (t || '').replace(/\s+/g, '').replace(/[「」『』""''【】()（）]/g, '');
-    const qText = norm(text);
-    if (!qText) return null;
-
-    /** 1. 在 ASR 时间轴中找与原文最贴近的行（最长包含匹配，避免短句误命中） */
-    let best: any = null;
-    let bestLen = 0;
-    for (const line of asrLines) {
-      const lineText = norm(line.text || line.originalText || '');
-      if (!lineText) continue;
-      if (qText.includes(lineText) || lineText.includes(qText)) {
-        if (lineText.length > bestLen) {
-          best = line;
-          bestLen = lineText.length;
-        }
-      }
-    }
-    if (!best) return null;
-    const startMs = best.startMs ?? 0;
-    const endMs = best.endMs ?? startMs + 3000;
-    if (endMs <= startMs) return null;
+    /** 1. 在 ASR 时间轴中找与原文最贴近的行（时间锚点收窄 + 最长包含匹配，避免短句/跨镜头误命中） */
+    const win = SemanticAnalyzeStrategy.findAsrSourceWindow(text, asrLines, anchorStartMs, anchorEndMs);
+    if (!win) return null;
+    const startMs = win.sourceStartMs;
+    const endMs = win.sourceEndMs;
 
     /** 2. 找覆盖 [startMs, endMs] 时间窗的切片（优先完整覆盖，其次 ±500ms 容差）。
      *    切片天然按 startMs 升序，用二分 O(log C) 定位到 startMs 附近，再在相邻 2-3 个切片内判定覆盖。 */
@@ -797,6 +803,96 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       videoTimelineStartMs: startMs,
       videoTimelineEndMs: endMs,
     };
+  }
+
+  /**
+   * 🎙️ 纯 ASR 时间窗定位：在 ASR 时间轴中找到与原文最贴近的行（归一化 + 最长双向包含匹配），
+   * 返回该行在原片中的 [sourceStartMs, sourceEndMs] 源坐标时间窗。
+   *
+   * 与 locateOriginalClip 的区别：本方法只做时间轴定位、不要求存在覆盖切片。
+   * 供步骤3 文案生成阶段为原声保留段直接锚定精确原声时间窗（此时尚无切片覆盖需求），
+   * 也供 locateOriginalClip 内部复用（同一坐标系契约：源坐标毫秒）。
+   * 未命中返回 null，调用方按自身语义回退（步骤3 回退 chunk 时间轴 / 步骤5 回退语义匹配）。
+   *
+   * @param text 原声引用文本（LLM 填写的原声台词原文）
+   * @param asrLines ASR 时间轴 [{ text, startMs, endMs }]（源坐标）
+   * @returns 源坐标时间窗；无命中返回 null
+   */
+  static findAsrSourceWindow(
+    text: string,
+    asrLines: any[],
+    /** 段落画面锚点（源坐标 ms）：原声段对应画面区间，用于在 ASR 轴内收窄候选，避免台词重复时跨镜头误匹配 */
+    anchorStartMs?: number,
+    anchorEndMs?: number,
+  ): { sourceStartMs: number; sourceEndMs: number } | null {
+    if (!text || !Array.isArray(asrLines) || asrLines.length === 0) {
+      return null;
+    }
+    /** 归一化：去空白 + 去引号，做宽松包含匹配 */
+    const norm = (t: string) => (t || '').replace(/\s+/g, '').replace(/[「」『』""''【】()（）]/g, '');
+    const qText = norm(text);
+    if (!qText) return null;
+
+    /** 时间锚点窗口（有锚点则收窄）：原声台词必然落在对应画面区间内，±1s 容差 */
+    const hasAnchor = Number.isFinite(anchorStartMs) && Number.isFinite(anchorEndMs)
+      && (anchorEndMs as number) > (anchorStartMs as number);
+    const winStart = hasAnchor ? (anchorStartMs as number) - 1000 : -Infinity;
+    const winEnd = hasAnchor ? (anchorEndMs as number) + 1000 : Infinity;
+
+    /**
+     * 在 [lo, hi] 时间窗内收集与 qText 有包含关系的 ASR 行。
+     * 过滤纯语气词/超短行（<2 汉字），避免"嗯/啊"这类短行污染时间窗。
+     */
+    const collect = (lines: any[], lo: number, hi: number): any[] => {
+      const out: any[] = [];
+      for (const line of lines) {
+        const s = Number(line.startMs);
+        const e = Number(line.endMs);
+        if (Number.isFinite(s) && (s > hi || e < lo)) continue; // 时间窗过滤
+        const lineText = norm(line.text || line.originalText || '');
+        if (!lineText) continue;
+        const hanCount = (lineText.match(/[\u4e00-\u9fa5]/g) || []).length;
+        if (hanCount < 2 && lineText.length < 4) continue;
+        if (qText.includes(lineText) || lineText.includes(qText)) out.push(line);
+      }
+      return out;
+    };
+
+    /** 先在锚点窗口内找；窗口内无命中时退回全轴（老数据/无锚点场景） */
+    let matched = hasAnchor
+      ? collect(asrLines, winStart, winEnd)
+      : collect(asrLines, -Infinity, Infinity);
+    if (matched.length === 0 && hasAnchor) {
+      matched = collect(asrLines, -Infinity, Infinity);
+    }
+    if (matched.length === 0) return null;
+
+    /** 按时间排序后合并连续/重叠行：台词被 ASR 切成多行时，合并成完整台词时间窗（≤1s 停顿视为同句） */
+    matched.sort((a, b) => (Number(a.startMs) || 0) - (Number(b.startMs) || 0));
+    const segs: Array<{ start: number; end: number }> = [];
+    let cur = {
+      start: Number(matched[0].startMs) || 0,
+      end: Number(matched[0].endMs) || (Number(matched[0].startMs) || 0) + 3000,
+    };
+    for (let i = 1; i < matched.length; i++) {
+      const s = Number(matched[i].startMs) || 0;
+      const e = Number(matched[i].endMs) || s + 3000;
+      if (s <= cur.end + 1000) {
+        cur.end = Math.max(cur.end, e);
+      } else {
+        segs.push(cur);
+        cur = { start: s, end: e };
+      }
+    }
+    segs.push(cur);
+
+    /** 选覆盖最长的连续块作为台词时间窗（台词重复出现时取信息量最大的一处） */
+    let bestSeg = segs[0];
+    for (const seg of segs) {
+      if (seg.end - seg.start > bestSeg.end - bestSeg.start) bestSeg = seg;
+    }
+    if (bestSeg.end <= bestSeg.start) return null;
+    return { sourceStartMs: bestSeg.start, sourceEndMs: bestSeg.end };
   }
 
   /**
@@ -1045,15 +1141,18 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
   }> {
     // 🎯 Phase 2：Step5 二次兜底 — 保证所有 query 的 visualIntent 100% 非空（老项目 canvas_data 里的 shots 也能覆盖）
     const filledShots = SemanticAnalyzeStrategy.ensureAllVisualIntentFilled(scriptShots || []);
-    /** TTS 索引：按 shotId 一次 O(N) 建，单次查询 O(1)，避免 N×M .find 热点 */
-    const ttsByShotId = new Map<string, any>();
+    /** TTS 索引：按 id 一次 O(N) 建，单次查询 O(1)，避免 N×M .find 热点；
+     *  ✅ 身份键统一：TTS 产物 id/shiedId 同源即段落主键，一律按 id 关联 */
+    const ttsById = new Map<string, any>();
     for (const t of ttsDurations || []) {
-      const id = (t as any)?.shotId;
-      if (id) ttsByShotId.set(String(id), t);
+      const id = (t as any)?.id || (t as any)?.shotId;
+      if (id) ttsById.set(String(id), t);
     }
-    return filledShots.map((s: any, i: number) => {
-      const shotId = s.shotId || s.id || `para_${i}`;
-      const ttsResult = (ttsDurations || [])[i] || ttsByShotId.get(String(s.shotId || s.id));
+    return filledShots.map((s: any) => {
+      // ✅ 身份键统一：段落主键 id（出生处 seg_{idx} 全局唯一）为唯一身份键，
+      //   shotId 与其同源；此 id 一路透传为 MatchResult.id，即前端 React key，必须等于主键。
+      const shotId = s.id;
+      const ttsResult = ttsById.get(String(s.id));
       const audioDurationMs = ttsResult?.duration ? Math.round(ttsResult.duration * 1000) : 0;
       const visualIntent = String(s.visualIntent || '').trim();
       // 🎯 Phase 2：把 visualIntent 拼接到 text 末尾（独立段落符号 | 分隔），
@@ -1073,7 +1172,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         visualIntent,
         startMs: trimStartMs > 0 ? Math.max(0, timing.startMs - trimStartMs) : timing.startMs,
         durationMs: timing.durationMs,
-        keepOriginalAudio: s.keepOriginalAudio === true,
+        /** 原声判定双口径：上游段落经 Normalizer 净化后只有 type 判别标记，老项目段落仍是 legacy keepOriginalAudio 布尔 */
+        keepOriginalAudio: s.type === 'original_audio' || s.keepOriginalAudio === true,
       };
     }).filter(q => (q.text.split('|')[0] || '').trim().length > 0);
   }
@@ -1426,7 +1526,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     if (!matches || matches.length === 0) return { total: 0, hit: 0, hitRate: 1 };
     let total = 0, hit = 0;
     for (const m of matches) {
-      const sid = String(m.shotId || '');
+      // ✅ 身份键统一：MatchResult 主键为 id（出生处 seg_N 全局唯一），审计也一律读 id
+      const sid = String(m.id || '');
       const cid = String(m.mediaId || m.chunkId || '');
       const cand = perQueryTopK[sid];
       /** keepOriginalAudio 的原声定位匹配或纯未命中（cid 空）不在预选审计范围内，跳过 */
@@ -1468,6 +1569,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           })()
         : chunkData;
       return {
+        /** ✅ 身份键统一：id 出生处即取段落唯一主键（buildMatchQueries 中 shotId 已收敛为 s.id），
+         *  消费端一律读 id；shotId 保留同值兼容历史消费点。 */
+        id: q.shotId,
         shotId: q.shotId,
         text: q.text,
         keepOriginalAudio: isOriginal,
@@ -1484,6 +1588,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       };
     }
     return {
+      /** ✅ 身份键统一：id 出生处即取段落唯一主键（与上方命中分支同源） */
+      id: q.shotId,
       shotId: q.shotId,
       text: q.text,
       keepOriginalAudio: isOriginal,

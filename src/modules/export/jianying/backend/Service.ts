@@ -100,19 +100,22 @@ export function probeCompileShotVideos(
 
 export class JianyingExportService {
   /**
-   * 组装编译镜头：以 scriptParagraphs 为主数据源，matchResults/ttsResults 按 shotId 补充切片与配音
+   * 组装编译镜头：以 scriptParagraphs 为主数据源，matchResults/ttsResults 按 id 补充切片与配音
+   * ✅ 身份键统一：三段产物主键(段落 id / MatchResult id / TTSResult id)出生处同源，一律按 id 关联
    */
   static buildCompileShots(input: JianyingExportInput): CompileShot[] {
-    const matchByShotId = new Map<string, any>(
-      (input.matchResults || []).map((m) => [m.shotId, m]),
+    // ✅ 身份键统一：matchResults/ttsResults 生出处已保证 id 必存在（=段落主键），索引一律只建 id，
+    //   消费端按 p.id 单键关联，拆除历史 id||shotId 双门
+    const matchById = new Map<string, any>(
+      (input.matchResults || []).map((m) => [m.id as string, m]),
     );
-    const ttsByShotId = new Map<string, any>(
-      (input.ttsResults || []).map((t) => [t.shotId, t]),
+    const ttsById = new Map<string, any>(
+      (input.ttsResults || []).map((t) => [t.id as string, t]),
     );
 
     const compiled: CompileShot[] = (input.scriptParagraphs || []).map((p) => {
-      const m = matchByShotId.get(p.shotId || p.id);
-      const t = ttsByShotId.get(p.id || p.shotId || '');
+      const m = matchById.get(p.id);
+      const t = ttsById.get(p.id);
       const durationSec = (t?.duration && !t._failed ? t.duration : 0) || p.duration || 3;
       return {
         id: p.id,
@@ -160,15 +163,13 @@ export class JianyingExportService {
     }
     const selectedIds = new Set(Array.from(shotByShotId.keys()));
 
-    // 1. 如果有 scriptParagraphs：先按 shotId/id 对齐过滤，保持 s_xx 命名粒度
+    // 1. 如果有 scriptParagraphs：先按 id 对齐过滤，保持 s_xx 命名粒度
+    // ✅ 身份键统一：段落主键 id 与 shotByShotId 的 key(s.id)同源，一律按 id 对齐
     let scopedParagraphs = scriptParagraphs || [];
     if (selectedIds.size > 0) {
-      scopedParagraphs = (scriptParagraphs || []).filter((p) => {
-        const key1 = p?.shotId;
-        const key2 = p?.id;
-        return (typeof key1 === 'string' && selectedIds.has(key1))
-          || (typeof key2 === 'string' && selectedIds.has(key2));
-      });
+      scopedParagraphs = (scriptParagraphs || []).filter((p) =>
+        typeof p?.id === 'string' && selectedIds.has(p.id)
+      );
     }
 
     // 2. 如果完全没有 scriptParagraphs（极端场景）：退化为按 project.shots 直接生成虚拟段落
@@ -200,10 +201,11 @@ export class JianyingExportService {
       });
     }
 
-    // 3. 正常路径：逐段 scriptParagraph，按 shotId/id 找匹配的 ExportShot → 输出 CompileShot
+    // 3. 正常路径：逐段 scriptParagraph，按 id 找匹配的 ExportShot → 输出 CompileShot
+    // ✅ 身份键统一：段落主键 id 与 shotByShotId 的 key(s.id)同源，一律按 id 关联
     return scopedParagraphs.map((p) => {
-      const id = p?.id || `s__${Math.random().toString(36).slice(2, 7)}`;
-      const shot = shotByShotId.get(p.shotId) || shotByShotId.get(p.id);
+      const id = p?.id;
+      const shot = shotByShotId.get(id);
       if (!shot) {
         // 没匹配到 ExportShot → 按 scriptParagraph 自身数据装配（无 chunkData/无 audioPath，纯字幕段落占位）
         const durationSec = p.duration || 3;

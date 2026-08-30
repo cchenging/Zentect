@@ -123,7 +123,7 @@ export class VisionProcessor {
    * @param qualityGate 可选，四重质量门禁配置（缺省用 Python 端经验最优值）
    * @returns 检测到的人脸角色列表
    */
-  public static async scanFaces(frames: string[], facesDir: string, signal?: AbortSignal, qualityGate?: VisionQualityGate): Promise<any[]> {
+  public static async scanFaces(frames: string[], facesDir: string, signal?: AbortSignal, qualityGate?: VisionQualityGate, onProgress?: (pct: number, msg: string) => void): Promise<any[]> {
     AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: scanning ${frames.length} frames`);
 
     if (!frames || frames.length === 0) {
@@ -154,6 +154,12 @@ export class VisionProcessor {
         if (signal?.aborted) break;
         const batch = frames.slice(i, i + BATCH_SIZE);
         const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+
+        // 🆕 真实进度：按已处理帧数 / 总帧数动态计算（0~90，余量留给聚类收尾）
+        if (onProgress) {
+          const pct = Math.min(90, Math.round(Math.min(i + BATCH_SIZE, frames.length) / frames.length * 100));
+          onProgress(pct, `正在检测人脸 (${Math.min(i + BATCH_SIZE, frames.length)}/${frames.length} 帧)`);
+        }
 
         AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[VisionProcessor] scanFaces: 批次 ${batchNum}/${totalBatches} (${batch.length} 帧)`);
 

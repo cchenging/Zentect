@@ -33,7 +33,7 @@ export class ClipSemanticStrategy extends BaseNodeStrategy {
       return empty;
     }
 
-    onProgress(10, `正在提取 CLIP 语义索引 (${shots.length} 个镜头)...`);
+    onProgress(5, `正在提取 CLIP 语义索引 (${shots.length} 个镜头)...`);
 
     try {
       const result = await VisionProcessor.extractSemantics(mediaId, shots);

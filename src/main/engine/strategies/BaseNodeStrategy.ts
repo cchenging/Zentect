@@ -35,11 +35,30 @@ function getPipelineConfigRepo(): PipelineModelConfigRepository {
   return _pipelineConfigRepo;
 }
 
+/** 子步骤进度元数据：用于步骤1等需要细分进度上报的场景
+ *  - subStep        子步骤身份（frames/audio/whisper/faces）
+ *  - subStepProgress 子步骤局部进度（0~100 整数），由子引擎真实完成量动态计算，与全局进度解耦
+ */
+export interface SubStepProgressMeta {
+  subStep: string;
+  subStepProgress: number;
+  /** 可选的子步骤状态文案（如 "已写出 320/450 帧"），携带真实完成数据 */
+  subStepMessage?: string;
+}
+
+/** 节点 onProgress 回调签名：4 参携带子步骤进度元数据 */
+export type NodeProgressCallback = (
+  progress: number,
+  status: string,
+  results?: any,
+  subStepMeta?: SubStepProgressMeta,
+) => void;
+
 export interface INodeStrategy {
   readonly nodeType: string;
   /** 节点失败时是否允许 Pipeline 继续执行（降级跳过而非 throw） */
   readonly isRecoverable?: boolean;
-  execute(task: PipelineTask, context: ExecutionContext, onProgress: (progress: number, status: string, results?: any) => void): Promise<any>;
+  execute(task: PipelineTask, context: ExecutionContext, onProgress: NodeProgressCallback): Promise<any>;
 }
 
 // 💥 修复：引入泛型约束 TInput 和 TOutput，彻底解决子类类型丢失问题
@@ -51,11 +70,17 @@ export abstract class BaseNodeStrategy<TInput = any, TOutput = any> implements I
 
   // 💥 约束子类：严禁重写 execute！所有业务逻辑必须在此方法内实现
   // onProgress 第三参 results 支持增量推送中间结果（如 TTS 逐段合成进度），由 execute 透传给外层
+  // onProgress 第四参 subStepMeta 支持步骤1等场景上报子步骤真实局部进度
   protected abstract performTask(
     input: TInput,
     context: ExecutionContext,
     cacheDir: string,
-    onProgress: (p: number, s: string, results?: any) => void
+    onProgress: (
+      p: number,
+      s: string,
+      results?: any,
+      subStepMeta?: SubStepProgressMeta,
+    ) => void
   ): Promise<TOutput>;
 
   // 可选的参数校验钩子
@@ -64,7 +89,7 @@ export abstract class BaseNodeStrategy<TInput = any, TOutput = any> implements I
   public async execute(
     task: PipelineTask,
     context: ExecutionContext,
-    onProgress: (progress: number, status: string, results?: any) => void
+    onProgress: NodeProgressCallback
   ): Promise<TOutput> {
     const { nodeId, params } = task;
     AppLogger.info(LOG_TAGS.SCHEDULER, `[${this.nodeType}] 节点调度启动: ${nodeId}`);
@@ -98,7 +123,7 @@ export abstract class BaseNodeStrategy<TInput = any, TOutput = any> implements I
       const nodeCacheDir = PathManager.getNodeBaseDir(context.projectId, nodeId, 'frames');
       PathManager.ensureDir(nodeCacheDir);
 
-      const results = await this.performTask(taskData as TInput, context, nodeCacheDir, (p, s, r) => onProgress(p, s, r));
+      const results = await this.performTask(taskData as TInput, context, nodeCacheDir, (p, s, r, m) => onProgress(p, s, r, m));
 
       // 防御性检查：确保 context.bus 存在
       if (!context.bus) {

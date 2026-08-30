@@ -1,34 +1,10 @@
 // 📁 路径：src/main/engine/prompts/PromptBuilder.ts
-import { PERSONAS } from './personas'
-import { CONSTRAINTS } from './constraints'
 
 /**
  * 👑 统一提示词装配中枢 (Prompt Hub)
  * 拒绝过度设计，只负责将业务对象转化为大模型可读的指令。
  */
 export class PromptBuilder {
-  /**
-   * 构建脚本生成 System Prompt
-   * @param targetLanguage 目标语言代码（默认 zh-CN）
-   * @param roles 可选，人物角色列表，注入后 LLM 生成解说词时使用统一人物名称
-   */
-  public static buildScriptPrompt(
-    targetLanguage: string = 'zh-CN',
-    roles?: Array<{ id: string; name: string; representative?: any }>,
-  ): string {
-    let prompt = `${PERSONAS.SCREENWRITER}\n【巴别塔协议】：使用 [${targetLanguage}]\n${CONSTRAINTS.NO_MERGE_SENTENCES}\n${CONSTRAINTS.JSON_ONLY}`;
-    // 🎭 注入人物名单约束：让 LLM 生成解说词时使用统一人物名称
-    if (roles && roles.length > 0) {
-      const roleLines = roles
-        .filter(r => r && r.name)
-        .map(r => `- ${r.name}`);
-      if (roleLines.length > 0) {
-        prompt += `\n\n【人物命名约束】：画面中可能出现以下人物，解说词中请优先使用其名称，严禁使用"男子/女子/青年/中年人"等模糊代称：\n${roleLines.join('\n')}`;
-      }
-    }
-    return prompt.trim();
-  }
-
   // 💥 修改：增加 agentData 入参，内部完成字符串拼装
   static buildAgentPrompt(context: any, agentData?: { medias: any[]; shots: any[] }): string {
     // 💥 执宪点：统一处理 Windows 路径转义，不再让 Engine 操心

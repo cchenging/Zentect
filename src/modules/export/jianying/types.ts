@@ -11,8 +11,10 @@ export interface JianyingExportInput {
   projectName?: string;
   /** 最终镜头数据（DB shots 表完整数据，导出主数据源，含用户编辑后的文案/时间/配音路径） */
   shots: Array<Partial<Shot>>;
-  /** 镜头匹配结果（按 shotId 补充视频切片 chunkData / 变速 / 起止时间） */
+  /** 镜头匹配结果（按 id 补充视频切片 chunkData / 变速 / 起止时间） */
   matchResults: Array<{
+    /** 身份键统一：id 为段落唯一主键，消费端一律读 id */
+    id?: string;
     shotId: string;
     mediaId: string;
     thumbnail?: string;
@@ -26,6 +28,8 @@ export interface JianyingExportInput {
   }>;
   /** TTS 合成结果（配音音频路径） */
   ttsResults: Array<{
+    /** 身份键统一：id 为段落唯一主键，消费端一律读 id */
+    id?: string;
     shotId: string;
     audioUrl?: string;
     _failed?: boolean;
@@ -120,7 +124,7 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
  * 在 DB Shot 基础上补充视频切片 / 变速 / 时间线范围等导出专属字段。
  */
 export interface CompileShot extends Shot {
-  /** 视频切片数据（matchResults 按 shotId 关联，含毫秒级 startMs/endMs/filePath） */
+  /** 视频切片数据（matchResults 按 id 关联，含毫秒级 startMs/endMs/filePath） */
   chunkData?: Record<string, unknown> | null;
   /** 变速因子（1.0=正常，<1.0=慢放，>1.0=快进） */
   appliedSpeedFactor?: number;

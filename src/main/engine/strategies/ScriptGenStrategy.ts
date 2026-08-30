@@ -1,5 +1,6 @@
 // 📁 路径：src/main/engine/strategies/ScriptGenStrategy.ts
 import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
+import { SemanticAnalyzeStrategy } from './SemanticAnalyzeStrategy';
 import { LLMFactory } from '../adapters/LLMFactory';
 import { AppLogger } from '../../core/AppLogger';
 import { LexiconFilter } from '../lexicon/LexiconFilter';
@@ -8,6 +9,8 @@ import { PERSONAS } from '../prompts/personas';
 import { CONSTRAINTS } from '../prompts/constraints';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { breakLongParagraphs } from '@modules/pipeline/step3-script/frontend/breakLongParagraphs';
+// SSOT：三档原声策略 ⇔ 密度折减系数 DR 唯一映射表，直接引用契约层单源（与前端档位切换同表）
+import { DENSITY_RATIO_BY_AUDIO_STRATEGY } from '../../../shared/types/entities/editor';
 
 export interface ScriptGenInput {
   modelName?: string;
@@ -46,6 +49,8 @@ export interface GeneratedShot {
   lexiconMarks: LexiconMark[];
   duration: number;
   emotion?: string;
+  /** 判别联合标记（对齐契约层 ScriptParagraph.type）：narration=解说段 / original_audio=原声保留段，与 keepOriginalAudio 双口径并存过渡 */
+  type?: 'narration' | 'original_audio';
   /** 原声段落标记：文案生成按原声策略标记"留原声"的段落（keep_key/original_main），下游 TTS 跳过合成、匹配锁定原片时间段 */
   keepOriginalAudio?: boolean;
   /** 🎭 P1 角色组合匹配：本段解说词对应的视频片段中出现的人物名集合（来自 step2 VLM 角色锚定），透传到步骤5 Query 端做角色契合匹配 */
@@ -57,6 +62,14 @@ export interface GeneratedShot {
   startMs?: number;
   /** 🎯 P3 时间轴锚定：本段解说词对应的画面时长（ms） */
   durationMs?: number;
+  /** 🎙️ 原声保留段音频源：步骤3 生成阶段用 ASR 精确锁定原声台词在源片中的时间窗（源坐标）。
+   *  缺失（ASR 未命中）时置空，由 Normalizer 按 chunk 时间轴 fallback（近似），不伪造精确值。 */
+  audioSource?: {
+    sourceStartMs: number;
+    sourceEndMs: number;
+    transcript: string;
+    duckingBgm: boolean;
+  };
 }
 
 /** 风格到 Prompt 指令的映射（重写：去掉废话文学，改为专业解说方向） */
@@ -306,9 +319,13 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     input: ScriptGenInput,
     context: ExecutionContext,
     _cacheDir: string,
-    onProgress: (p: number, s: string) => void
+    /** 第三参 results 承载章粒度流式推送（partialParagraphs + streamMeta，§五 5.2/5.3-C） */
+    onProgress: (p: number, s: string, results?: any) => void
   ): Promise<GeneratedShot[]> {
-    onProgress(10, '正在收集上游视觉与听觉感知数据...');
+    // 进度条 0% 起步：确保首个进度事件从 0 开始递增，避免前端进度条直接跳到 10%
+    onProgress(0, '开始生成解说文案...');
+    // 进度段重排（L1 Strategy 层按耗时权重）：阶段1（准备+剧情理解）仅占 0~15，阶段2（正文生成）20~85
+    onProgress(5, '正在收集上游视觉与听觉感知数据...');
 
     // 读取用户选择的语速（字/秒），默认 4.5
     const speechRate = input.speechRate || 4.5;
@@ -321,21 +338,26 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       emotionTone: 'neutral',
       hookIntensity: 0.7,
       targetNarrationDurationSec: 0,
+      // 🎯 目标成片篇幅：0 = 自动（沿用视频总长推导），定律一 T_target 输入口径见 PipelineParams 注释
+      targetDurationSec: 0,
     };
     const params = input.pipelineParams || context.pipelineParams || DEFAULT_PARAMS;
     const hookIntensity = params.hookIntensity ?? 0.7;
 
     /**
-     * SSOT：densityFillRate / allowOriginalMark 均由 narrationRatio（解说占比 n，0~1）
-     * 唯一派生（与 Service.ts / View.tsx 保持一致），解说与原声互斥一体，不再分两个参数相乘：
-     * - 字数填充系数 = n：n=1(全解说) → 1.0 铺满全片 / n=0.3(原声为主) → 0.3 仅关键节点解说
-     * - 允许标记原声段落 = n < 1：留了原声空间才允许 LLM 标记原声段落
+     * SSOT：解说密度折减系数 DR 直接引用契约层唯一映射表 DENSITY_RATIO_BY_AUDIO_STRATEGY
+     * （smart_keep 0.70 / pure_narration 0.85 / original_focus 0.35，与前端三选一按钮同表同口径）。
+     * legacy 兼容：老工程 pipelineParams 无 audioStrategy 字段时退化为直接采用 narrationRatio
+     * （旧口径 n 即填充率；前端切换三档预设时同步写回 narrationRatio 整体提交，两链路不发散）。
+     * 允许标记原声段落仍由 narrationRatio < 1 派生（叙述占比语义不变）。
      */
     const narrationRatio = Math.max(0, Math.min(1, params.narrationRatio ?? 0.7));
-    // 字数预算系数 = 解说占比：单段与总量共用同一填充率，LLM 逐段写满即等于总量预算，
+    // 字数预算系数 = 解说密度折减系数 DR：audioStrategy 三档优先，缺失退化为 narrationRatio；
+    // 单段与总量共用同一系数，LLM 逐段写满即等于总量预算，
     // 从源头消除"单段 85% 写满、总量只有 72%"导致的字数失控。
-    // 可变：若用户设置了"目标解说时长"，会在 totalDurationSec 计算后用目标时长覆盖（todo）
-    let densityFillRate = narrationRatio;
+    let densityFillRate =
+      (params.audioStrategy !== undefined ? DENSITY_RATIO_BY_AUDIO_STRATEGY[params.audioStrategy] : undefined)
+      ?? narrationRatio;
 
     /**
      * TTS 标点停顿折损系数：按 rhythmMode 差异化取值（之前全局固定 0.85 导致双向失真）
@@ -647,19 +669,130 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     //   → 每段只能写 5~15 字孤立短句，文案机械（"一个都不顺"的根因）。
     //   现在：densityFillRate 恒等于 narrationRatio（每段保持丰满），targetSec 只作总量软约束：
     //   ① 注入 prompt（优先关键剧情段写满、过渡段留白控制总量）② 生成后总量校验提示。
-    const targetSec = typeof params.targetNarrationDurationSec === 'number' && params.targetNarrationDurationSec > 0
+    /**
+     * 总量预算取值链（三层优先级，SSOT 见 PipelineParams.targetDurationSec 注释）：
+     * ① targetDurationSec>0（目标成片篇幅 T_target）：定律一标准式 N = ⌊T_target × v × DR × α⌋，
+     *    其中 v=speechRate、DR=densityFillRate（audioStrategy 三档打包原声让位）、α=0.85 标点停顿折损；
+     *    ⛔ 新定律一路径禁止叠加 rhythmMode 折损表（旧模型遗产），T/v/DR/α 各乘一次即止。
+     * ② targetNarrationDurationSec>0（解说净时长软约束，legacy 存量兼容）：保留旧口径
+     *    N = ⌊targetSec × v × DR × 节奏折损⌋，老工程行为零跳变。
+     * ③ 二者皆无 → null：下游退化为容量估算 floor(T_source × v × DR × discountFactor)。
+     */
+    const ALPHA_PUNCTUATION_PAUSE = 0.85; // 定律一 α：标点停顿折损系数（与方案 §八验收算例同源）
+    const presetDurationSec = typeof params.targetDurationSec === 'number' && params.targetDurationSec > 0
+      ? params.targetDurationSec
+      : null;
+    const legacyTargetSec = typeof params.targetNarrationDurationSec === 'number' && params.targetNarrationDurationSec > 0
       ? params.targetNarrationDurationSec
       : null;
-    // 目标总量预算（字数）：目标时长 × 语速 × 节奏折损（供 prompt 注入与生成后校验）
-    const discountByRhythmForTarget: Record<string, number> = { short_fast: 0.85, mixed: 0.90, slow_soothing: 0.93 };
-    const targetBudgetChars = targetSec !== null
-      ? Math.floor(targetSec * speechRate * (discountByRhythmForTarget[params.rhythmMode] ?? 0.90))
-      : null;
+    // 目标总量预算（字数）：定律一 N_total = ⌊T_target × v × DR × α⌋。
+    // 🔍 双重扣减审计：presetDurationSec / legacyTargetSec 均为用户纯输入目标时长，此处与全链路均无
+    // T_target−T_original_asr 式二次减扣；densityFillRate 已是 DR 本体（或 legacy narrationRatio），下游不得再乘。
+    const discountByRhythmForLegacy: Record<string, number> = { short_fast: 0.85, mixed: 0.90, slow_soothing: 0.93 };
+    const targetBudgetChars = presetDurationSec !== null
+      ? Math.floor(presetDurationSec * speechRate * densityFillRate * ALPHA_PUNCTUATION_PAUSE)
+      : legacyTargetSec !== null
+        ? Math.floor(legacyTargetSec * speechRate * densityFillRate * (discountByRhythmForLegacy[params.rhythmMode] ?? 0.90))
+        : null;
+    /** 注入 prompt / 日志的"当前生效目标时长"展示别名：成片篇幅优先，legacy 解说时长兜底 */
+    const effectiveTargetSec = presetDurationSec ?? legacyTargetSec;
 
     // 使用 LLMFactory.createAdapter 自动读取用户配置的模型和 API Key
     const { adapter, modelName, temperature } = LLMFactory.createAdapter('script');
 
-    onProgress(30, '正在组装剧本 Prompt 并设定创作逻辑...');
+    onProgress(12, '正在组装剧本 Prompt 并设定创作逻辑...');
+
+    // ========== §3.5 两阶段生成基建：触发判定 / 本地章节装箱 / 定律二章节配额 ==========
+    /**
+     * 两阶段触发判定（§3.5 量化）：原片总时长 > 15 分钟启用两阶段流水线，防长视频
+     * "前松后紧"剧情压缩；≤15min 保持单阶段直出，节省耗时与 token。
+     * 时长口径取 chunk 合并后的画面真实时间轴总和 totalDurationSec。
+     */
+    const TWO_PHASE_TRIGGER_SEC = 900;
+
+    /**
+     * 章节时序装箱（本地代码层，非 LLM）：先按 §3.5 密度公式折算目标章节数
+     * N_beats = clamp(⌈T_source(min) × 1.6⌉, 12, 18)，且不超过实际 chunk 数以防空章；
+     * 再按时间轴均值贪心装箱为若干连续章节。实际章数允许与目标少量偏差——
+     * 配额按实际章数组运行时分摊，Σquota ≡ N_total 不受影响。
+     * @param chunks 微切分+合并后的时序 ContextChunk 数组（有序）
+     * @returns 连续章节二维数组（每章至少 1 个 chunk）
+     */
+    const splitIntoChapters = (chunks: any[]): any[][] => {
+      if (chunks.length <= 1) return [chunks];
+      const targetCount = Math.min(
+        Math.max(12, Math.min(18, Math.ceil((totalDurationSec / 60) * 1.6))),
+        chunks.length,
+      );
+      const avgSec = totalDurationSec / targetCount;
+      const groups: any[][] = [];
+      let cur: any[] = [];
+      let acc = 0;
+      for (const c of chunks) {
+        // 当前章达到时间窗均值即封章；封章动作最多执行 targetCount-1 次，剩余全部归入末章
+        if (cur.length > 0 && acc >= avgSec && groups.length < targetCount - 1) {
+          groups.push(cur);
+          cur = [];
+        }
+        cur.push(c);
+        acc += c.durationSec;
+      }
+      if (cur.length > 0) groups.push(cur);
+      return groups;
+    };
+
+    /**
+     * §3.2 定律二章节配额分摊（两阶段 Stage2 quota[k] 的唯一计算方式）：
+     * quota[k] = ⌊N_total × T_k / Σ_j T_j⌋，权重为各章覆盖的解说类 chunk 时长占比。
+     * Keep_ASR 原声槽位的预留已体现在 N_total 的 DR 三档折减中，此处不做二次扣减；
+     * 内置除零 Guard：ΣT_j = 0（极端素材全片高能对白/空片段流）时回退均分垫片，
+     * 在可行章节间等分 N_total（与"原声为主 · 解说垫片"产品语义一致，不静默产出空文案）；
+     * 取整误差一律沉入末章（尾段 absorb），保证 Σ_k quota[k] ≡ N_total。
+     * @param groups 实际章节数组
+     * @param totalChars 两阶段全局字数预算 N_total（定律一口径 SSOT）
+     * @returns 与 groups 等长的显式配额数组 quota[k]
+     */
+    const computeChapterQuotas = (groups: any[][], totalChars: number): number[] => {
+      const durations = groups.map((g) => g.reduce((s: number, c: any) => s + c.durationSec, 0));
+      const totalDur = durations.reduce((a: number, b: number) => a + b, 0);
+      if (totalDur <= 0) {
+        const even = Math.floor(totalChars / Math.max(1, groups.length));
+        const evenQuotas = groups.map(() => even);
+        evenQuotas[evenQuotas.length - 1] += totalChars - even * groups.length;
+        return evenQuotas;
+      }
+      const quotas = durations.map((d: number) => Math.floor((totalChars * d) / totalDur));
+      quotas[quotas.length - 1] += totalChars - quotas.reduce((a: number, b: number) => a + b, 0);
+      return quotas;
+    };
+
+    const isTwoPhase = totalDurationSec > TWO_PHASE_TRIGGER_SEC;
+    // 两阶段全局预算 N_total SSOT：用户设置目标解说时长时用目标预算（定律一），
+    // 未设置时退化为容量估算 floor(T_total × v × DR × α)，与生成后总量校验基准同一表达式
+    const phaseTotalBudgetChars = targetBudgetChars !== null
+      ? targetBudgetChars
+      : Math.floor(totalDurationSec * speechRate * densityFillRate * discountFactor);
+    const chapterGroups = isTwoPhase ? splitIntoChapters(contextChunks) : [];
+    const chapterQuotas = isTwoPhase ? computeChapterQuotas(chapterGroups, phaseTotalBudgetChars) : [];
+    /** 每章首个 chunk 在 contextChunks 中的全局基址下标（供 Stage2 产物回锚时间轴/角色/视觉上下文） */
+    const chapterBaseIndexes: number[] = [];
+    {
+      let cursor = 0;
+      for (const g of chapterGroups) {
+        chapterBaseIndexes.push(cursor);
+        cursor += g.length;
+      }
+    }
+    /** Stage1 回填的章节剧情元信息（标题/概要），缺失或大纲失败时用本地默认值 */
+    let chapterMetaList: Array<{ title: string; summary: string } | null> = [];
+
+    if (isTwoPhase) {
+      AppLogger.info(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成] 两阶段生成已启用（原片 ${totalDurationSec.toFixed(1)}s > ${TWO_PHASE_TRIGGER_SEC}s）：` +
+        `${chapterGroups.length} 章 · 全局预算 ${phaseTotalBudgetChars} 字 · 配额 [${chapterQuotas.join(', ')}]`,
+      );
+    }
 
     // ========== 阶段A：剧情理解（剧情驱动解说的前置大纲） ==========
     // 🎬 用户核心诉求：解说应"贴合剧情主线 + 加合理解读"，而非"画面翻译"。
@@ -668,8 +801,10 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     // 失败处理（设计上的多路径）：剧情理解是增强路径，失败时明确告警并回退"逐段解说"基础路径
     // （与 BGM 节拍检测失败继续无 BGM 模式同哲学），不静默掩盖。
     let plotOutline: any = null;
+    /** 🔧 诊断用：阶段A 原始响应文本缓存，供 catch 告警携带片段（chat 结果在 try 内声明，catch 作用域不可见） */
+    let outlineRawText = '';
     try {
-      onProgress(33, '正在理解剧情主线（阶段1/2）...');
+      onProgress(15, '正在理解剧情主线（阶段1/2）...');
       const outlineSystemPrompt = `你是一位顶级的影视剧情分析师。你的任务是从片段流中提炼完整剧情主线，供解说创作者撰写"贴合剧情"的解说文案。
 你绝不描述画面细节（那是画面翻译，不是剧情理解），只提炼剧情逻辑：发生了什么、为什么、人物想要什么、转折在哪里。`;
       const roleLinesForOutline = (input.roles || [])
@@ -680,6 +815,14 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
 ${roleLinesForOutline || '（未识别到角色，以片段流中的代称为准）'}
 ${storyLine ? `\n【全片剧情故事线】（步骤2视觉分析按时间顺序串联的画面动作脉络，供你理解全局剧情走向）：
 ${storyLine}` : ''}
+${isTwoPhase ? `
+【预划分章节结构】（系统已按时间轴将片段流划分为 ${chapterGroups.length} 个连续章节，你的大纲须严格按此章节编号对齐归纳，不得增删章节数）：
+${chapterGroups.map((g: any[], i: number) => {
+  const head = g[0];
+  const tail = g[g.length - 1];
+  const asrDigest = g.map((c: any) => c.asrContext || '').filter(Boolean).join(' ').slice(0, 120);
+  return `- 章节${i + 1}（chunk ${head?.chunkId} ~ ${tail?.chunkId}）：${asrDigest || '（无台词段）'}`;
+}).join('\n')}` : ''}
 
 【视频片段流（含时间轴 / 画面描述 / 原声台词）】：
 ${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}
@@ -689,7 +832,11 @@ ${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}
   "logline": "一句话故事梗概（谁 + 想做什么 + 阻碍 + 结果）",
   "arc": ["开场钩子", "铺垫", "冲突升级", "高潮", "结局"],
   "characterMotives": { "角色名": "该角色的目标与动机（无角色则空对象）" },
-  "keyTurns": [{ "chunkId": "片段流中的 chunkId", "turn": "剧情转折点描述" }]
+  "keyTurns": [{ "chunkId": "片段流中的 chunkId", "turn": "剧情转折点描述" }]${isTwoPhase ? `,
+  "chapters": [
+    { "index": 1, "title": "本幕标题（10字内）", "summary": "本幕剧情概要（60字内：发生了什么+人物目标/转折）" }
+    // ……逐章列出，chapters 数组长度必须等于 ${chapterGroups.length}，index 从 1 开始连续编号
+  ]` : ''}
 }`;
       const outlineResponse = await adapter.chat(
         [
@@ -698,142 +845,76 @@ ${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}
         ],
         modelName,
         0.3, // 大纲生成用低温，保证剧情归纳稳定
-        { max_tokens: 1500 }, // 🔧 P1-5 剧情大纲输出量小（logline/arc/motives/keyTurns），设上限防拖尾空转
+        { max_tokens: 2500, response_format: { type: 'json_object' } }, // 🔧 防截断：两阶段需额外输出 chapters 数组，1500 在长片场景会截断 JSON 致解析失败；response_format 激活 adapter 的 json_object 降级链，约束大纲输出为 JSON 对象
       );
-      const parsedOutline = NetworkPipeline.strictParseJson(outlineResponse.text || '');
+      outlineRawText = outlineResponse.text || '';
+      // 🔧 修复：chat() 失败时不抛异常而是返回 {success:false,error}；必须先检查 success，
+      // 否则 text=undefined 经 `|| ''` 后被误报为 "Unexpected end of JSON input"，真实错误（如 HTTP 503 模型加载中）被吞
+      if (!outlineResponse.success) {
+        throw new Error(`剧情理解请求失败: ${outlineResponse.error || '未知错误'}`);
+      }
+      if (!outlineRawText) {
+        throw new Error('剧情理解响应 content 为空（可能为推理模型分离输出或后端忙时空返回）');
+      }
+      const parsedOutline = NetworkPipeline.strictParseJson(outlineRawText);
       if (parsedOutline && typeof parsedOutline === 'object' && !Array.isArray(parsedOutline) && parsedOutline.logline) {
         plotOutline = parsedOutline;
         AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 剧情理解完成：${parsedOutline.logline}`);
+        // 两阶段：从大纲产物中提取 chapters 结构回填章节元信息（标题/概要），
+        // 供 Stage2 每章请求注入剧情定位提示；index 对齐失败或缺失时按位置映射兜底，仍无则保留 null 走本地默认值
+        if (isTwoPhase && Array.isArray(parsedOutline.chapters) && parsedOutline.chapters.length > 0) {
+          chapterMetaList = chapterGroups.map((_g: any[], i: number) => {
+            const meta = parsedOutline.chapters.find((c: any) => Number(c?.index) === i + 1) || parsedOutline.chapters[i];
+            if (!meta) return null;
+            return {
+              title: String(meta.title || '').trim(),
+              summary: String(meta.summary || '').trim(),
+            };
+          });
+          AppLogger.info(
+            LOG_TAGS.AI_AGENT,
+            `[文案生成] 章节大纲对齐完成：${chapterMetaList.filter(Boolean).length}/${chapterGroups.length} 章获得剧情概要`,
+          );
+        }
       } else {
         AppLogger.warn(LOG_TAGS.AI_AGENT, '[文案生成] 剧情大纲返回格式异常，降级为逐段解说模式');
       }
     } catch (e: any) {
-      AppLogger.warn(LOG_TAGS.AI_AGENT, `[文案生成] 剧情理解失败，降级为逐段解说模式: ${e.message}`);
+      // 🔧 诊断增强：失败告警携带原始响应片段（前 200 字符），便于区分空响应/截断/脏数据三类根因
+      const snippet = outlineRawText ? `｜响应片段: ${outlineRawText.substring(0, 200)}` : '';
+      AppLogger.warn(LOG_TAGS.AI_AGENT, `[文案生成] 剧情理解失败，降级为逐段解说模式: ${e.message}${snippet}`);
     }
 
-    // 动态注入用户选择的风格
-    const style = input.scriptStyle || '爆款短视频';
-    const styleInstruction = STYLE_PROMPTS[style] || STYLE_PROMPTS['爆款短视频'];
-
-    // 叙事视角 → prompt 指令
-    const perspectiveMap: Record<string, string> = {
-      'third': '第三人称上帝视角："画面中，张三走进房间..." — 客观叙述，俯视全局',
-      'first': '第一人称沉浸视角："我推开门，看见了..." — 代入主角内心，主观体验',
-      'second': '第二人称吐槽视角："换作是你，看到桌上这三十万，你敢接吗？" — 与观众建立交互问答',
+    // ========== System Prompt 参数包 ==========
+    // 抽取私有方法 buildSystemPrompt 统一组装：单阶段直接使用；两阶段按章 spread 覆盖
+    // （targetSec/targetBudgetChars 置空屏蔽全局总量块，chapterQuotaWords 注入本章定律二配额）
+    const promptBaseArgs = {
+      plotOutline,
+      styleName: input.scriptStyle || '爆款短视频',
+      hookIntensity,
+      /** 解说占比 < 100% 即留了原声空间，才允许 LLM 标记原声段落 */
+      allowOriginalMark: narrationRatio < 1,
+      speechRate,
+      densityFillRate,
+      discountFactor,
+      /** 单阶段=全片时长；两阶段逐章调用时传本章累计时长 */
+      totalDurationSec,
+      /** 当前生效目标时长（成片篇幅优先、legacy 兜底；两阶段逐章调用时由 spread 置 null 屏蔽全局总量块） */
+      targetSec: effectiveTargetSec,
+      targetBudgetChars,
+      narrationRatio,
+      rhythmMode: params.rhythmMode,
+      emotionTone: params.emotionTone,
+      narrativePerspective: params.narrativePerspective,
+      /** 两阶段每章注入的本章配额字数；null 表示单阶段全局模式 */
+      chapterQuotaWords: null as number | null,
     };
-    // 解说占比 → prompt 指令（按解说占比 n 分档描述解说铺陈与留白语义，字数预算统一由"字数预算与参数指引"注入）
-    const narrationRatioText = narrationRatio >= 0.95
-      ? '全量解说：解说铺满全片，忽略原声，全力重新编排旁白'
-      : narrationRatio >= 0.6
-      ? `解说为主（解说占比 ${Math.round(narrationRatio * 100)}%）：关键画面持续解说，过渡段留白给原声/静音让位`
-      : narrationRatio >= 0.3
-      ? `各占一半（解说占比 ${Math.round(narrationRatio * 100)}%）：识别ASR中高压/冲突台词区间，在该时间段暂停解说留出原声出场`
-      : `原声为主（解说占比 ${Math.round(narrationRatio * 100)}%）：原声保留，解说仅辅助过渡`;
-    // 是否允许标记原声段落：解说占比 < 100% 即留了原声空间，才允许 LLM 标记原声段落
-    const allowOriginalMark = narrationRatio < 1;
-    // 节奏模式 → prompt 指令（含TTS标记规范）
-    const rhythmMap: Record<string, string> = {
-      'short_fast': '短句快切：严格使用微型短句。每句末尾强制使用逗号或感叹号。适合极速快切。密集注入 [pause: 200ms]',
-      'mixed': '长短交替：短句铺垫+长句叙事。节奏抑扬顿挫。关键转折处插入 [pause: 400ms]',
-      'slow_soothing': '长句舒缓：使用优美长句与分词，多用句号。关键情感节点后追加 [pause: 800ms] 标记',
-    };
-    // 节奏模式 → 单句字数上限（short_fast=18 / mixed=30 / slow_soothing=40）
-    const maxSentenceChars = params.rhythmMode === 'short_fast' ? 18
-                           : params.rhythmMode === 'slow_soothing' ? 40
-                           : 30;
-    // 情绪基调 → prompt 词库
-    const emotionToneMap: Record<string, string> = {
-      'neutral': '客观中立：平铺直叙，不刻意渲染情绪，多用"隐喻"、"戏剧性的转变"等文学化表达',
-      'emotional': '情感渲染：感性共鸣，善用比喻和意象，"他的眼神像熄灭的烟头"',
-      'suspense': '悬疑营造：层层设问，"注意看他的手"、"这个细节很多人都忽略了"',
-      'epic': '高燃热血：情绪卡点必须高燃，多用"绝了"、"降维打击"、"全网泪目"等情绪助推词',
-      'comedy': '搞笑吐槽：网络流行语和反转梗，"这波操作我给满分"，让观众会心一笑',
-    };
+    const systemPrompt = this.buildSystemPrompt(promptBaseArgs);
 
-    // 钩子强度 → 开头指令
-    const hookInstruction = hookIntensity >= 0.7
-      ? `【黄金3秒钩子（强度${(hookIntensity * 100).toFixed(0)}%）】：第一句必须制造极大悬念或冲突！示例："谁能想到，这个在菜市场被按在地上摩擦的卖鱼佬，三年后竟然成了全省最大的黑老大！"`
-      : hookIntensity >= 0.4
-      ? `【开头钩子（强度${(hookIntensity * 100).toFixed(0)}%）】：第一句设置适度悬念吸引观众。示例："这个故事，要从一杯水说起。"`
-      : `【开头风格（强度${(hookIntensity * 100).toFixed(0)}%）】：平铺直叙开场，适合纪录片。示例："今天给大家讲讲高启强的故事。"`;
-
-    const systemPrompt = `${PERSONAS.SCREENWRITER}
-
-## Task
-你将收到一份经过物理切片与视觉分析的视频片段流（含有时间轴、角色锚定、ASR原声及画面描述）${plotOutline ? '，以及一份已提炼的【全局剧情大纲】' : ''}。
-请据此撰写一份"贴合剧情主线、在关键节点给出合理解读"的高吸引力解说文案。
-
-## 🎬 剧情思维（最高优先级，先于一切形式规则）
-1. **贴剧情，不贴画面**：解说不是画面翻译！每一段解说必须回答"这段在剧情中推进了什么"（因果/转折/人物弧线），段与段之间承上启下、逻辑连贯。
-2. **合理解读**：每 3~5 段至少 1 段是解读——剖析人物动机、前后呼应、主题升华或现实隐喻。解读必须基于已确认的剧情事实，严禁编造剧情。
-3. **剧情优先于形式**：所有短句/卡点/句式规则都是表达手段，不得以牺牲剧情逻辑为代价。宁可放弃一个"金句"，也要保证剧情链条完整。
-
-${plotOutline ? `## 📖 全局剧情大纲（必须首先通读，解说严格贴合以下主线）
-${JSON.stringify(plotOutline, null, 2)}` : ''}
-
-## 创作风格
-${style}：${styleInstruction}
-
-${hookInstruction}
-
-${targetSec !== null ? `## 📏 目标解说总时长（总量约束，与"解说占比"独立）
-本片目标解说总时长约 ${targetSec} 秒（约 ${targetBudgetChars} 字）。片段流中存在过渡/次要段落时：优先为关键剧情/冲突/转折段落撰写**丰满**解说（每段按字数上限写满，保留解读）；过渡/次要段落应${allowOriginalMark ? '标记 "keepOriginalAudio": true 留白给原声' : '精简字数'}，使全部解说总量贴近目标时长。` : ''}
-
-## ⚡ 爆款短句与卡点硬性规则 (Core Short-Sentence Rules)
-1. **单句字数硬限制**：每个单句（两个标点之间的文字）绝对不能超过 ${maxSentenceChars} 字！多用动词、感叹句与极速短句（如："死死盯住！"、"眼神杀气顿显！"）。
-2. **镜头级连贯叙事**：每个分镜的解说词应写成通顺完整的句子或短句群，字数尽量贴近单段字数上限（不要刻意压短成碎片）；相邻分镜之间善用衔接词（接着／没想到／于是／然而／下一秒）承上启下，形成连贯的剧情流，避免每段都是孤立无关联的短句。长句交给断句器按字幕安全框自动拆分。
-3. **角色名称绝对统一**：严格使用【全局已知角色列表】中的姓名，严禁混淆人名或凭空创造角色列表之外的人名。
-4. **消除视觉幻觉**：若 ASR 旁白与画面物理描述不一致，以【画面物理描述】为准描绘现场动作，以 ASR 为补充。
-5. **拒绝流水账**：严禁描述画面直观已呈现的表面动作，重点剖析言下之意、内心戏与剧情冲突。
-
-${CONSTRAINTS.ANTI_LITERAL}
-${CONSTRAINTS.TTS_FRIENDLY}
-${CONSTRAINTS.ROLE_ALIAS}
-${CONSTRAINTS.NO_MERGE_SENTENCES}
-${CONSTRAINTS.JSON_ONLY}
-
-## 字数预算与参数指引
-【严格字数约束】：每个解说段应写成通顺连贯的完整句子或短句群，确保剧情表达完整，不要为了凑字数而碎成几个字。
-- 单段字数上限 = ⌊ 时长(秒) × ${speechRate} × ${(densityFillRate * 100).toFixed(0)}% × ${discountFactor} ⌋
-- 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * speechRate * densityFillRate * discountFactor)} 字
-- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * speechRate * densityFillRate * discountFactor)} 字
-- 视频总时长约 ${totalDurationSec.toFixed(1)} 秒，解说词总量绝对严禁超过 ${Math.floor(totalDurationSec * speechRate * densityFillRate * discountFactor)} 字
-
-【专业解说参数指引】：
-- 叙事视角：${perspectiveMap[params.narrativePerspective] || perspectiveMap.third}
-- 解说占比：${narrationRatioText}
-- 节奏模式：${rhythmMap[params.rhythmMode] || rhythmMap.mixed}
-- 情绪基调：${emotionToneMap[params.emotionTone] || emotionToneMap.neutral}
-
-${allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
-原声策略要求保留部分原片原声。当某段分镜的核心是"原片台词/标志性对白/冲突声"（观众需要亲耳听到原声），请将该分镜标记为原声段落：
-1. 该分镜输出 \`"keepOriginalAudio": true\`，\`text\` 填写原声台词原文（或最贴近的原文引用）。
-2. 原声段落字数预算不适用，\`duration\` 填写原声在视频中的实际时长（秒）。
-3. 每段解说之间最多允许 1~2 个原声段落，避免整片变成原声；原声段落前后各留一段解说引导。
-4. 仅当该段原声与剧情强相关（名场面/冲突高潮/关键台词）才标记，普通背景音不标记。
-` : ``}
-## 画面意图与情绪标注（Visual Intent & Emotion Marking）
-每个分镜除解说词外，必须输出两个辅助字段，供下游画面匹配使用：
-1. \`"emotion"\`：本段解说词的情绪基调，从以下类别中选择一个：紧张悬疑 / 悲伤沉重 / 愤怒激昂 / 欢快轻松 / 平静舒缓 / 中性。
-2. \`"visualIntent"\`（【必填】禁止空字符串/缺字段/写"无"/写"不需要"）：本段解说词"应该配什么画面"的画面意图描述，用画面语言（非文学语言）概括主体、动作、场景、景别、氛围，20~40 字。必须基于【多模态上下文片段流】中对应 chunk 的画面描述（对应位置的 visualContext.keyAction/shotType/emotion/atmosphere），不得凭空编造画面。✅ 正例：\`"男子面部特写，眼神凌厉，室内昏暗，紧张氛围"\`；❌ 反例：\`""\`、\`"无"\`、整个 JSON 对象缺 visualIntent 字段。
-
-## Output Format
-### 必填字段声明（缺任何一项视为无效输出）
-- shotId / text / duration / emotion / visualIntent 五个字段**必须全部出现且非空**
-${allowOriginalMark ? '- keepOriginalAudio 为可选布尔字段，默认 false 时可省略' : ''}
-
-请严格按照以下 JSON 数组格式返回结果，切勿包含任何 Markdown 格式化标记或额外解释：
-[
-  { "shotId": "s_01", "text": "解说词内容", "duration": 3.5, "emotion": "紧张悬疑", "visualIntent": "男子面部特写，眼神凌厉，室内昏暗，紧张氛围"${allowOriginalMark ? ', "keepOriginalAudio": false' : ''} }
-]`;
-
-    // ========== 组装用户 Prompt：ContextChunk JSON + 角色ID映射 ==========
-    // 阶段1：用 ContextChunk JSON 替代旧的松散文本拼接，让 LLM 看到结构化的时序数据
-    let userPrompt = `【多模态上下文片段流（ContextChunk）】：
-${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}`;
-
-    // 阶段2：角色实体消歧 — 显式 ID→名称映射，禁止 LLM 凭空创造人名
-    if (input.roles && input.roles.length > 0) {
+    // ========== 用户 Prompt 组装与主调用：单阶段全量直出 / 两阶段逐章滑窗 ==========
+    /** 角色 ID→名称映射与写作准则块（单阶段与两阶段每章复用） */
+    const roleBlock = (() => {
+      if (!input.roles || input.roles.length === 0) return '';
       const roleMapLines = input.roles
         .filter(r => r && r.name)
         .map(r => {
@@ -847,8 +928,8 @@ ${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}`;
           const attrStr = attrs.length > 0 ? `（${attrs.join('，')}）` : '';
           return `- ${r.id} -> ${r.name}${attrStr}`;
         });
-      if (roleMapLines.length > 0) {
-        userPrompt += `\n\n【全局已知角色列表】：
+      if (roleMapLines.length === 0) return '';
+      return `【全局已知角色列表】：
 ${roleMapLines.join('\n')}
 
 【角色写作硬性准则】：
@@ -856,38 +937,327 @@ ${roleMapLines.join('\n')}
 2. 严禁凭空创造角色列表之外的人名。
 3. 严禁使用"男子/女子/青年/中年人"等模糊代称。
 4. 可在真实姓名与合乎情理的身份代词之间智能轮换，避免听觉疲劳。`;
+    })();
+
+    /**
+     * 定律二兑现阀：章节产物超出配额 ±20% 时本地截断回填（不静默放水）。
+     * 原声段落不计入解说净字数；越界段按句末标点贪心截断保留最长完整句，
+     * 其后分镜一律留白交还画面时间轴，防止单章击穿全局预算造成前松后紧。
+     */
+    const enforceChapterQuota = (
+      shots: Array<{ shotId: string; text: string; duration: number; emotion?: string; visualIntent?: string; keepOriginalAudio?: boolean }>,
+      quotaWords: number,
+    ): typeof shots => {
+      if (!(quotaWords > 0)) return shots;
+      const upper = Math.ceil(quotaWords * 1.2);
+      const narrLens = shots.map((s) => (s.keepOriginalAudio === true ? 0 : String(s.text || '').length));
+      const total = narrLens.reduce((a, b) => a + b, 0);
+      if (total <= upper) return shots;
+      const kept: typeof shots = [];
+      let acc = 0;
+      for (let i = 0; i < shots.length; i++) {
+        const s = shots[i];
+        const len = narrLens[i];
+        if (s.keepOriginalAudio !== true && len > upper - acc) {
+          // 本段必然越界：句末标点贪心截断，取最长的不越界完整句前缀
+          const budget = upper - acc;
+          const txt = String(s.text || '');
+          let cutAt = 0;
+          for (let j = 0; j < txt.length; j++) {
+            const ch = txt[j];
+            if ('。！？!?…'.includes(ch)) {
+              if (j + 1 <= budget) cutAt = j + 1;
+              else break;
+            }
+          }
+          if (cutAt > 0) {
+            kept.push({ ...s, text: txt.slice(0, cutAt) });
+            acc += cutAt;
+            break; // 已尽力收满配额，收尾
+          }
+          // 越界段无完整句可收：跳过该段，继续尝试后续段落。
+          // 🔧 修复：旧版在此处硬切 txt.slice(0, budget) 制造"…传"/"…嗓"式无标点半句
+          // （绕过上游 assert 直接落库），违反"错就错，不降级"——配额不足宁可留白，绝不产半句。
+          continue;
+        }
+        kept.push(s);
+        acc += len;
+        if (acc >= upper) break;
       }
+      AppLogger.warn(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成] 章节配额兑现阀触发：实际 ${total} 字 > 配额上限 ${upper} 字（quota ${quotaWords}），已截断至 ${acc} 字、尾部 ${shots.length - kept.length} 个分镜留白`,
+      );
+      return kept;
+    };
+
+    /**
+     * 清洗并规范化文案中的 [pause] 控制标签：
+     * 1. 将完整合法标签统一为 [pause: Nms]（如 [pause: 400ms] / [pause:400] / [pause: 400 ms]）
+     * 2. 剔除未闭合/残缺的标签（如 "[pause: 4"、" [pause:"、" [pause: 300"），避免残标流入 TTS 链路
+     */
+    const sanitizePauseTags = (text: string): string => {
+      if (!text || typeof text !== 'string') return '';
+      return text
+        // 一次遍历处理 pause 标签：匹配 [pause: ...]（含闭合 ] 或到串尾的残缺片段）
+        //  - 完整合法（含数字且闭合）→ 统一规范为 [pause: Nms]
+        //  - 残缺/非法（无数字 / 未闭合，如 "[pause: 4"、"[pause:"）→ 剔除
+        .replace(/\[pause:[^\]]*\]?/gi, (m) => {
+          const norm = /^\[pause:\s*(\d+)\s*(?:ms)?\]$/i.exec(m.trim());
+          return norm ? ` [pause: ${norm[1]}ms] ` : '';
+        })
+        // 收拢可能产生的连续多余空格
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    /**
+     * 相邻草稿迭代消歧：拦截"模型对同一节拍反复打磨写出的多个草稿版本"，仅保留最终演化版本。
+     * 两类草稿都会被清除：
+     * 1. 严格前缀递增展开：A"牌匾藏进了箱底，可" → B"牌匾藏进了箱底，可崔哥的心里，"
+     * 2. 同义改写迭代：A"崔哥刚歇下，就被叫去" → B"崔哥刚歇下，就被人拽" → C"崔哥刚歇下，就被人拽住，耳边传来怒骂。"
+     *    （旧版只按"去标点骨架 + startsWith 且更长"的严格前缀判定，漏掉"叫去→人拽"式同义改写草稿，
+     *      导致"崔哥刚歇下"连出三句的重复文案落库）
+     * 判定口径：当前句未完结（不以句号/叹号/问号收尾）且与下一句清洗文本的最长公共前缀
+     * 达到 min(max(4, ⌊minLen×50%⌋)) 即视为草稿迭代——未完结句本就无法通过下游质量校验，
+     * 删除草稿只可能变好；已完结句无论共享多长前缀都保留，绝不误删正常叙事承接。
+     */
+    const deduplicatePrefixIterations = <T extends { text?: string }>(
+      shots: T[],
+    ): T[] => {
+      if (!Array.isArray(shots) || shots.length <= 1) return shots;
+      const result: typeof shots = [];
+      const FINISHED_END = /[。！？!?](?:["'"”’」』）)】]*)$/;
+      const clean = (s: string) => s.replace(/[，。！？、；：\s\[\]:0-9ms]/g, '');
+      /** 最长公共前缀长度：逐字符比较，中文按码点相等判定即可 */
+      const lcpLen = (a: string, b: string): number => {
+        let i = 0;
+        const m = Math.min(a.length, b.length);
+        while (i < m && a[i] === b[i]) i++;
+        return i;
+      };
+      for (let i = 0; i < shots.length; i++) {
+        const cur = (shots[i]?.text || '').trim();
+        const next = (shots[i + 1]?.text || '').trim();
+        if (!cur) continue; // 空文本占位段由下游保留语义，此处剔除
+        // 已完结句永不删除：即便被下一句继续展开也保留，防误删正常叙事承接
+        if (FINISHED_END.test(cur)) {
+          result.push(shots[i]);
+          continue;
+        }
+        const cleanCur = clean(cur);
+        const cleanNext = clean(next);
+        const minLen = Math.min(cleanCur.length, cleanNext.length);
+        if (minLen <= 0) {
+          result.push(shots[i]);
+          continue;
+        }
+        const common = lcpLen(cleanCur, cleanNext);
+        // 未完结 + 与下一句共享足够长的公共前缀 → 当前句是下一句的草稿迭代，跳过（由更完整的下一句承接）
+        const isDraft = common >= Math.max(4, Math.floor(minLen * 0.5));
+        if (isDraft) continue;
+        result.push(shots[i]);
+      }
+      return result;
+    };
+
+    /**
+     * 入库前统一规整（在 assertChapterQuality 之前挂载）：
+     * 先剔除递增前缀草稿（让 assert 只对"最终保留版本"把关完结性），再清洗残缺 pause 标签。
+     */
+    const normalizeRawShots = <T extends { text?: string; content?: string }>(shots: T[]): T[] => {
+      if (!Array.isArray(shots)) return shots;
+      return deduplicatePrefixIterations(shots).map((s) => ({
+        ...s,
+        text: sanitizePauseTags(s.text || s.content || ''),
+      }));
+    };
+
+    /**
+     * 章节产物质量校验（fail-fast，符合"错就错，不降级"原则）：
+     * 拦截 LLM 碎片化输出——半截句（以未完结标点收尾 / 过短且无完结标点）与完全重复句。
+     * 命中即抛错，由 Stage2 内联重试兜底重生成；连续两次仍碎片则整章硬抛错暴露给用户，
+     * 绝不将碎片化解说静默落库（历史根因：文案开头大量"传承未断，可崔国明的脚步，却"式
+     * 半截句 + "这句话，像一盆冷水"式复读直接落库，UI 只能看到碎文案而非报错）。
+     * @param shots 本章/本批 LLM 原始分镜数组
+     */
+    const assertChapterQuality = (
+      shots: Array<{ shotId?: string; text?: string; keepOriginalAudio?: boolean }>,
+    ): void => {
+      // 完结标点（中英文）：句号/叹号/问号
+      const FINISHED_END = /[。！？!?](?:["'"”’」』）)】]*)$/;
+      const seen = new Set<string>();
+      for (const shot of shots) {
+        // 原声段为 ASR 台词原文，允许口语化半句，不参与碎片判定
+        if (shot.keepOriginalAudio === true) continue;
+        const t = String(shot.text || '').replace(/\s+/g, '');
+        if (!t) continue; // 空文本占位段由下游保留，不判碎片
+        // 硬性完结：解说段必须以句号/叹号/问号收尾。
+        // 用户反馈的悬空半句多以汉字悬空（"传承未断，可崔国明的脚步，却"以"却"收尾、
+        // "这句话，像一盆冷水，浇在"以"在"收尾），旧版只查"以未完结标点收尾"会漏掉这些
+        // 以汉字结尾的句子，故直接要求完结标点，命中即抛错走内联重试，绝不静默落库。
+        if (!FINISHED_END.test(t)) {
+          throw new Error(`碎片化半截句（未以句号/叹号/问号收尾）: "${t.slice(0, 24)}..."`);
+        }
+        if (seen.has(t)) {
+          throw new Error(`完全重复句: "${t.slice(0, 24)}..."`);
+        }
+        seen.add(t);
+      }
+    };
+
+    /** 主产物容器：rawShots 为各章/全量分镜顺次拼接的中间形态 */
+    let rawShots: Array<{ shotId: string; text: string; duration: number; emotion?: string; visualIntent?: string; keepOriginalAudio?: boolean }> = [];
+    /** 每个 shot 对应 contextChunks 的全局下标（单阶段恒等；两阶段=本章基址+段内序号钳制） */
+    const chunkIndexByShot: number[] = [];
+
+    if (!isTwoPhase) {
+      // —— 单阶段：保持与重构前逐字节一致的全量直出 ——
+      const userPrompt =
+        `【多模态上下文片段流（ContextChunk）】：` +
+        '\n\n' +
+        `${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}` +
+        (roleBlock ? '\n\n' + roleBlock : '') +
+        `\n\n【附加指令】：${input.customPrompt || '自由发挥'}` +
+        '\n\n请直接输出 JSON 数组：';
+
+      onProgress(20, `正在呼叫 [${modelName}] 引擎进行创造性脑暴...`);
+      const response = await adapter.chat([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ], modelName, temperature, { response_format: { type: 'json_object' } });
+
+      // 🔧 修复：chat() 失败时不抛异常而是返回 {success:false,error}；先检查 success，
+      // 避免请求失败被伪装成"脏数据"误报，真实错误（如 HTTP 状态/服务端详情）得以透传
+      if (!response.success) {
+        throw new Error(`主生成请求失败: ${response.error || '未知错误'}`);
+      }
+      if (!response.text) {
+        throw new Error('主生成响应 content 为空（可能为推理模型分离输出或后端忙时空返回）');
+      }
+
+      try {
+        rawShots = NetworkPipeline.strictParseJson(response.text);
+        if (!Array.isArray(rawShots)) {
+          throw new Error('大模型未返回预期的数组格式');
+        }
+        // 入库前规整：先剔除递增前缀草稿（让下方 assert 只对最终保留版本把关完结性），再清洗残缺 pause 标签
+        rawShots = normalizeRawShots(rawShots);
+      } catch (e) {
+        AppLogger.error('ScriptGenStrategy', 'Failed to parse JSON from LLM', { error: String(e) });
+        throw new Error(`剧本解析失败，大模型输出了脏数据: ${response.text.substring(0, 50)}...`);
+      }
+      // 碎片化质量校验独立于 JSON 解析执行：命中半截句/重复句直接透传校验错误（保留根因），
+      // 不被上面的"剧本解析失败"重包装掩盖，便于上层识别是"格式脏"还是"内容碎片"后针对性处理
+      assertChapterQuality(rawShots);
+      for (let i = 0; i < rawShots.length; i++) chunkIndexByShot.push(i);
+      /** 单阶段兼容（评审回填 §5.2）：无逐章循环，全量直出后一次性推送全部段落供前端渲染；
+       *  进度锚定阶段2 终点 85（而非 100），避免与后续反序列化 90 的进度倒退；
+       *  streamMeta 标记为单章完成（§五 5.3-C 当前章进度显示用） */
+      onProgress(85, '解说文案生成完成', {
+        partialParagraphs: rawShots,
+        streamMeta: { chapterIndex: 1, totalChapters: 1 },
+      });
+    } else {
+      // —— 两阶段滑窗：逐章 Stage2 请求 + 内联重试一次 + ±20% 配额兑现 ——
+      let chapterPrevTail = '';
+      for (let k = 0; k < chapterGroups.length; k++) {
+        const group: any[] = chapterGroups[k];
+        const baseIndex = chapterBaseIndexes[k];
+        const quotaWords = chapterQuotas[k];
+        const meta = chapterMetaList[k];
+        /** 本章累计时长：喂给 System Prompt 作"总时长行"的本章口径 */
+        const chapterTotalSec = group.reduce((s: number, c: any) => s + c.durationSec, 0);
+
+        const systemPromptK = this.buildSystemPrompt({
+          ...promptBaseArgs,
+          targetSec: null,
+          targetBudgetChars: null,
+          totalDurationSec: chapterTotalSec,
+          chapterQuotaWords: quotaWords,
+        });
+
+        const parts: string[] = [
+          `【本章定位】：第 ${k + 1}/${chapterGroups.length} 章${meta?.title ? `「${meta.title}」` : ''}${meta?.summary ? `。剧情概要：${meta.summary}` : ''}`,
+        ];
+        if (chapterPrevTail) {
+          parts.push(`【上一章结尾衔接】：上一章最后一句为「…${chapterPrevTail}」。本章第一段解说须自然承接上述剧情与语气。`);
+        }
+        parts.push(`【多模态上下文片段流（ContextChunk）——仅限本章 chunk ${group[0]?.chunkId ?? ''} ~ ${group[group.length - 1]?.chunkId ?? ''}】：\n\n${JSON.stringify(ScriptGenStrategy.slimContextChunks(group), null, 2)}`);
+        if (roleBlock) parts.push(roleBlock);
+        parts.push(`【附加指令】：${input.customPrompt || '自由发挥'}\n\n请直接输出 JSON 数组：`);
+        /** 段间以双换行拼合 */
+        const userPromptK = parts.join('\n\n');
+
+        const messagesK = [
+          { role: 'system', content: systemPromptK },
+          { role: 'user', content: userPromptK },
+        ];
+
+        /** 本章原始分镜数组；连续两次解析失败则带章号硬抛（错就错，不降级） */
+        let chapterRaw: Array<{ shotId: string; text: string; duration: number; emotion?: string; visualIntent?: string; keepOriginalAudio?: boolean }> | null = null;
+        let lastErr = '';
+        for (let attempt = 1; attempt <= 2 && !chapterRaw; attempt++) {
+          try {
+            const resp = await adapter.chat(messagesK, modelName, temperature, { max_tokens: 8000, response_format: { type: 'json_object' } });
+            // 🔧 防截断：3000 在配额大的章节会被 LLM 输出耗尽，JSON 数组被硬截断，
+            // 报 "LLM JSON contract damaged: Expected ',' or ']' after array element ... position 6475"，
+            // 提到 6000 覆盖 8000~12000 字符；但末章（如 18/18）配额最大、shot 最多，
+            // 单批输出仍会在 ~13533 字符处被 6000 tokens 榨干，故进一步提到 8000
+            // （≈18000 字符，接近 DeepSeek 等通用 OpenAI 兼容模型 8192 上限；thinking 已禁用不额外占预算）。
+            // ⚠️ 若某章单批仍超模型单次输出上限，报错会继续暴露而非静默降级，此时需对超长章做章内拆分。
+            // 🔧 修复：chat() 失败不抛异常而是返回 {success:false,error}；先检查 success，
+            // 避免"请求失败"被伪装成 "Unexpected end of JSON input"，真实错误经 lastErr 累积进最终硬抛信息
+            if (!resp.success) throw new Error(`请求失败: ${resp.error || '未知错误'}`);
+            if (!resp.text) throw new Error('响应 content 为空（可能为推理模型分离输出或后端忙时空返回）');
+            const parsedChapter = NetworkPipeline.strictParseJson(resp.text);
+            if (!Array.isArray(parsedChapter)) throw new Error('非数组输出');
+            // 入库前规整：先剔除递增前缀草稿（让下方 assert 只对最终保留版本把关完结性），再清洗残缺 pause 标签
+            const normalizedChapter = normalizeRawShots(parsedChapter);
+            // 碎片化质量校验：半截句/重复句命中即抛错，走内联重试（最多 2 次），
+            // 杜绝"传承未断，可崔国明的脚步，却"式半截句直接落库
+            assertChapterQuality(normalizedChapter);
+            chapterRaw = normalizedChapter;
+          } catch (e: any) {
+            lastErr = e?.message || String(e);
+            AppLogger.warn(LOG_TAGS.AI_AGENT, `[文案生成] 第 ${k + 1} 章 Stage2 请求返回异常（第 ${attempt}/2 次）：${lastErr}`);
+          }
+        }
+        if (!chapterRaw) {
+          throw new Error(`两阶段生成失败：第 ${k + 1}/${chapterGroups.length} 章连续两次返回脏数据（${lastErr}）。请更换模型或重试。`);
+        }
+
+        /** 本章生成进度 + 章粒度流式推送（§五 5.2）：
+         *  第一卡从 20 起可见推进，按章数均匀分配到 85；每章通过质量校验后，
+         *  把该章完整段落放入第三参 partialParagraphs 驱动前端增量渲染（不做字符级打字机）；
+         *  streamMeta 携带当前章序号/总章数（§五 5.3-C 前端"正在推演第k/N章"进度显示） */
+        const N = chapterGroups.length;
+        onProgress(
+          Math.min(85, 20 + Math.floor(((k + 1) / N) * 65)),
+          `正在撰写第 ${k + 1}/${chapterGroups.length} 章「${meta?.title || `章节${k + 1}`}」解说文案...`,
+          {
+            partialParagraphs: chapterRaw,
+            streamMeta: { chapterIndex: k + 1, totalChapters: N },
+          },
+        );
+
+        /** ±20% 兑现：超配额本地截断，同时登记 shot→chunk 全局映射（钳制到本章末位） */
+        const enforced = enforceChapterQuota(chapterRaw, quotaWords);
+        for (let i = 0; i < enforced.length; i++) {
+          chunkIndexByShot.push(baseIndex + Math.min(i, group.length - 1));
+        }
+        rawShots.push(...enforced);
+        const lastSeg = enforced[enforced.length - 1];
+        chapterPrevTail = lastSeg ? String(lastSeg.text || '').replace(/\s+/g, '').slice(-60) : '';
+      }
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 两阶段滑窗完成：${chapterGroups.length} 章 · 共 ${rawShots.length} 段分镜`);
     }
-
-    userPrompt += `\n\n【附加指令】：${input.customPrompt || '自由发挥'}\n\n请直接输出 JSON 数组：`;
-
-    onProgress(45, `正在呼叫 [${modelName}] 引擎进行创造性脑暴...`);
-
-    const response = await adapter.chat([
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt }
-    ], modelName, temperature);
 
     onProgress(90, '正在对生成的剧本进行反序列化...');
-
-    let rawShots: Array<{ shotId: string; text: string; duration: number; emotion?: string; visualIntent?: string; keepOriginalAudio?: boolean }> = [];
-    try {
-      rawShots = NetworkPipeline.strictParseJson(response.text || '');
-      if (!Array.isArray(rawShots)) {
-        throw new Error('大模型未返回预期的数组格式');
-      }
-    } catch (e) {
-      AppLogger.error('ScriptGenStrategy', 'Failed to parse JSON from LLM', { error: String(e) });
-      throw new Error(`剧本解析失败，大模型输出了脏数据: ${(response.text || '').substring(0, 50)}...`);
-    }
-
-    // 🎯 P3 兜底：对 rawShots 逐段执行 ensureVisualIntentFilled，保证 100% 有画面意图。
-    // （LLM 在 json_object 模式下常漏写 visualIntent 字段，导致步骤5 只能回退解说词跨空间匹配，
-    //  这里用对应 chunk 的真实视觉上下文（步骤2 VLM 已产出）本地化拼装，不造假，零额外 RPC）
     const filledCount = { value: 0 };
     const rawShotsWithVI = rawShots.map((raw, idx) => {
       const originalVI = String(raw?.visualIntent || '').trim();
-      const filled = ensureVisualIntentFilled(raw, contextChunks[idx], raw.text || '');
+      const filled = ensureVisualIntentFilled(raw, contextChunks[chunkIndexByShot[idx] ?? idx], raw.text || '');
       if (!originalVI || filled !== originalVI) filledCount.value++;
       return { ...raw, visualIntent: filled };
     });
@@ -908,24 +1278,29 @@ ${roleMapLines.join('\n')}
 
     // 先构造带 __order 的中间分镜（__order = chunk 下标，供断句后按原始顺序合并、回查 contextChunks）
     const parsed = rawShotsWithVI.map((raw, idx) => {
-      const baseDuration = contextChunks[idx]?.durationSec ?? (raw.duration || 3);
+      const srcChunk = contextChunks[chunkIndexByShot[idx] ?? idx];
+      const baseDuration = srcChunk?.durationSec ?? (raw.duration || 3);
       return {
         __order: idx,
-        id: raw.shotId || `shot_${Math.random().toString(36).slice(8)}`,
+        /** ✅ 唯一主键统一（单一权威源头）：全片全局递增下标 seg_{idx}，出生即唯一，此后全链路透传不改。
+         *  LLM 章内编号(raw.shotId=s_01)按章重新计数、跨章必撞号，绝不可充当唯一键——它是重复
+         *  key 的根因。此处强制用全局下标生成唯一主键后，断句子句追加 _sub_N 依旧唯一，
+         *  自此从来不需要下游任何一层再去做重/追加后缀。 */
+        id: `seg_${idx}`,
         text: raw.text || '',
         duration: baseDuration,
         /** 原声段落标记：切分时保护，不拆分（原声定位依赖整段文本锁时间轴，拆分会破坏） */
         keepOriginalAudio: raw.keepOriginalAudio === true,
         /** 🎭 P1 角色组合匹配：本段解说词对应的 chunk 锚定角色（按下标一一对应，子句断句后原样继承） */
-        characters: contextChunks[idx]?.anchoredCharacters || [],
+        characters: srcChunk?.anchoredCharacters || [],
         /** 🎭 P0 意境维度：段落情绪标签（LLM 生成），断句后子句继承，供步骤5 情绪匹配 */
         emotion: raw.emotion || '',
         /** 🎯 P3 画面意图：已通过 ensureVisualIntentFilled 保证非空，子句继承后供步骤5 语义匹配
          *  （优先取 LLM 原生生成；LLM 漏写/写占位词时由 chunk 视觉上下文本地拼装） */
         visualIntent: raw.visualIntent,
         /** 🎯 P3 时间轴锚定：对应 chunk 的画面时间起点/时长（ms），供步骤5 锚定切片 */
-        startMs: contextChunks[idx]?.startMs ?? 0,
-        durationMs: contextChunks[idx]?.durationMs ?? 0,
+        startMs: srcChunk?.startMs ?? 0,
+        durationMs: srcChunk?.durationMs ?? 0,
       };
     });
 
@@ -943,6 +1318,19 @@ ${roleMapLines.join('\n')}
 
     const parsedShots: GeneratedShot[] = merged.map((p) => {
       const scanResult = lexiconFilter.scan(p.text || '');
+      /** 🎙️ 原声保留段：生成阶段即用 ASR 精确锁定原声台词在源片中的时间窗（源坐标），
+       *  步骤4 原声试听/导出硬绑定直接可读。与步骤5 locateOriginalClip 同源（findAsrSourceWindow）；
+       *  ASR 未命中时 audioSource 置空，由 Normalizer 按 chunk 时间轴 fallback（近似），不伪造精确值。 */
+      const isOriginalAudio = (p as any).keepOriginalAudio === true;
+      /** 原声段用 chunk 画面时间窗做锚点收窄 ASR 匹配范围，防止台词重复时跨镜头误匹配 */
+      const asrWin = isOriginalAudio
+        ? SemanticAnalyzeStrategy.findAsrSourceWindow(
+            p.text || '',
+            asrLines,
+            (p as any).startMs,
+            (p as any).startMs + (p as any).durationMs,
+          )
+        : null;
       return {
         shotId: p.id,
         text: scanResult.original,
@@ -956,8 +1344,10 @@ ${roleMapLines.join('\n')}
           replaced: m.replaced,
         })),
         duration: p.duration,
+        /** 判别联合正向标记：与 keepOriginalAudio 同源推导（b3 落地 ORIGINAL_AUDIO_BRIDGE 后改由 LLM 直接输出 type） */
+        type: isOriginalAudio ? 'original_audio' : 'narration',
         /** 原声段落透传：keep_key/original_main 模式下 LLM 标记的 keepOriginalAudio 原样保留 */
-        keepOriginalAudio: (p as any).keepOriginalAudio === true,
+        keepOriginalAudio: isOriginalAudio,
         /** 🎭 P1 角色组合匹配：子句继承父段落的锚定角色（断句后每个子句沿用同一 chunk 的角色名单） */
         characters: (p as any).characters || [],
         /** 🎭 P0 意境维度：子句继承父段落的情绪标签 */
@@ -967,6 +1357,15 @@ ${roleMapLines.join('\n')}
         /** 🎯 P3 时间轴锚定：子句继承父段落对应 chunk 的时间起点/时长（ms） */
         startMs: (p as any).startMs ?? 0,
         durationMs: (p as any).durationMs ?? 0,
+        /** 🎙️ 原声保留段音频源：ASR 精确时间窗（源坐标），供步骤4 原声试听与导出硬绑定 */
+        audioSource: asrWin
+          ? {
+              sourceStartMs: asrWin.sourceStartMs,
+              sourceEndMs: asrWin.sourceEndMs,
+              transcript: p.text || '',
+              duckingBgm: true,
+            }
+          : undefined,
       } as GeneratedShot;
     });
 
@@ -977,8 +1376,9 @@ ${roleMapLines.join('\n')}
     }
 
     // ========== 任务B：生成后总量字数强校验 ==========
-    // 🔧 P1-5 预算基准：用户设置目标解说时长时用目标预算（targetSec × 语速 × 折损）；
-    //   未设置时用「视频总时长 × 语速 × 解说占比 × 折损」——占比只决定每段密度，不再被目标时长覆盖。
+    // 🔧 预算基准（与定律一 N_total = ⌊T_target × v × DR × α⌋ 同口径）：
+    //   三层取值链命中①②时用目标预算（targetBudgetChars）；③ 未设任何目标时退化为
+    //   「视频总时长 × 语速 × DR(densityFillRate) × 折损」——密度只决定每段填充，不再被目标时长覆盖。
     // 超限时不静默截断文案（会破坏句子结构/节奏），而是 WARN 明确暴露 预算/实际/超限比例，
     // 让用户据此调整后重新生成（符合"错就错，不降级"原则）。
     const totalBudgetChars = targetBudgetChars !== null
@@ -986,12 +1386,16 @@ ${roleMapLines.join('\n')}
       : Math.floor(totalDurationSec * speechRate * densityFillRate * discountFactor);
     const actualTotalChars = parsedShots.reduce((sum, s) => sum + (s.text || '').length, 0);
     if (actualTotalChars > totalBudgetChars) {
-      const overPct = Math.round(((actualTotalChars - totalBudgetChars) / totalBudgetChars) * 100);
+      // 定律二除零 Guard：预算基准为 0（如空片段流等异常场景）时跳过比例计算，
+      // 直接按超限 100% WARN 暴露，杜绝 NaN 混入日志误导排查
+      const overPct = totalBudgetChars > 0
+        ? Math.round(((actualTotalChars - totalBudgetChars) / totalBudgetChars) * 100)
+        : 100;
       AppLogger.warn(
         LOG_TAGS.AI_AGENT,
         `[文案生成] 总量字数超预算：实际 ${actualTotalChars} 字 > 预算 ${totalBudgetChars} 字（超 ${overPct}%）。` +
         (targetBudgetChars !== null
-          ? `当前按目标解说时长 ${targetSec}s 核算。若想解说更饱满，请调大目标时长；若想控制总量，请降低解说占比。`
+          ? `当前按目标篇幅 ${effectiveTargetSec}s 核算。若想解说更饱满，请调大目标篇幅；若想控制总量，请调低原声策略档位对应解说密度。`
           : `建议降低解说占比后重新生成。`),
       );
     } else {
@@ -1004,5 +1408,149 @@ ${roleMapLines.join('\n')}
     onProgress(100, `剧本重铸成功，共计 ${parsedShots.length} 幕分镜！`);
     // 返回 Object 而非裸数组，兼容前端 mapPipelineResultToState 的 { shots: [...] } 格式
     return { shots: parsedShots } as unknown as GeneratedShot[];
+  }
+
+  /**
+   * 构建 Step3 文案生成的 System Prompt。
+   * 单阶段：传全局参数直接产出"目标总时长/字数预算"模板；
+   * 两阶段：调用方以 spread 覆盖 targetSec=null/chapterQuotaWords=本章配额，
+   * 屏蔽全局总量块并注入本章硬性配额，定律二 SSOT 只在 quota 一处收敛。
+   */
+  private buildSystemPrompt(args: {
+    plotOutline: any;
+    styleName: string;
+    hookIntensity: number;
+    allowOriginalMark: boolean;
+    speechRate: number;
+    densityFillRate: number;
+    discountFactor: number;
+    /** 单阶段=全片时长；两阶段逐章调用时为本章累计时长（仅用于示例卡尺外的口径描述） */
+    totalDurationSec: number;
+    targetSec: number | null;
+    targetBudgetChars: number | null;
+    narrationRatio: number;
+    rhythmMode: string;
+    emotionTone: string;
+    narrativePerspective: string;
+    /** 非 null 表示两阶段第 N 章调用（全局总量块被屏蔽，由 quota 行接管） */
+    chapterQuotaWords: number | null;
+  }): string {
+    // 风格词库：用户未选风格时回退默认
+    const styleInstruction = STYLE_PROMPTS[args.styleName] || STYLE_PROMPTS['爆款短视频'];
+    // 叙事视角 → prompt 指令
+    const perspectiveMap: Record<string, string> = {
+      'third': '第三人称上帝视角："画面中，张三走进房间..." — 客观叙述，俯视全局',
+      'first': '第一人称沉浸视角："我推开门，看见了..." — 代入主角内心，主观体验',
+      'second': '第二人称吐槽视角："换作是你，看到桌上这三十万，你敢接吗？" — 与观众建立交互问答',
+    };
+    // 解说占比 → prompt 指令（字数预算统一由下方"字数预算"区注入）
+    const narrationRatioText = args.narrationRatio >= 0.95
+      ? '全量解说：解说铺满全片，忽略原声，全力重新编排旁白'
+      : args.narrationRatio >= 0.6
+      ? `解说为主（解说占比 ${Math.round(args.narrationRatio * 100)}%）：关键画面持续解说，过渡段留白给原声/静音让位`
+      : args.narrationRatio >= 0.3
+      ? `各占一半（解说占比 ${Math.round(args.narrationRatio * 100)}%）：识别ASR中高压/冲突台词区间，在该时间段暂停解说留出原声出场`
+      : `原声为主（解说占比 ${Math.round(args.narrationRatio * 100)}%）：原声保留，解说仅辅助过渡`;
+    // 节奏模式 → prompt 指令（含 TTS 标记规范）
+    const rhythmMap: Record<string, string> = {
+      'short_fast': '短句快切：严格使用微型短句。每句末尾强制使用逗号或感叹号。适合极速快切。密集注入 [pause: 200ms]',
+      'mixed': '长短交替：短句铺垫+长句叙事。节奏抑扬顿挫。关键转折处插入 [pause: 400ms]',
+      'slow_soothing': '长句舒缓：使用优美长句与分词，多用句号。关键情感节点后追加 [pause: 800ms] 标记',
+    };
+    // 节奏模式 → 单句字数上限（short_fast=18 / mixed=30 / slow_soothing=40）
+    const maxSentenceChars = args.rhythmMode === 'short_fast' ? 18
+                           : args.rhythmMode === 'slow_soothing' ? 40
+                           : 30;
+    // 情绪基调 → prompt 词库
+    const emotionToneMap: Record<string, string> = {
+      'neutral': '客观中立：平铺直叙，不刻意渲染情绪，多用"隐喻"、"戏剧性的转变"等文学化表达',
+      'emotional': '情感渲染：感性共鸣，善用比喻和意象，"他的眼神像熄灭的烟头"',
+      'suspense': '悬疑营造：层层设问，"注意看他的手"、"这个细节很多人都忽略了"',
+      'epic': '高燃热血：情绪卡点必须高燃，多用"绝了"、"降维打击"、"全网泪目"等情绪助推词',
+      'comedy': '搞笑吐槽：网络流行语和反转梗，"这波操作我给满分"，让观众会心一笑',
+    };
+    // 钩子强度 → 开头指令
+    const hookInstruction = args.hookIntensity >= 0.7
+      ? `【黄金3秒钩子（强度${(args.hookIntensity * 100).toFixed(0)}%）】：第一句必须制造极大悬念或冲突！示例："谁能想到，这个在菜市场被按在地上摩擦的卖鱼佬，三年后竟然成了全省最大的黑老大！"`
+      : args.hookIntensity >= 0.4
+      ? `【开头钩子（强度${(args.hookIntensity * 100).toFixed(0)}%）】：第一句设置适度悬念吸引观众。示例："这个故事，要从一杯水说起。"`
+      : `【开头风格（强度${(args.hookIntensity * 100).toFixed(0)}%）】：平铺直叙开场，适合纪录片。示例："今天给大家讲讲高启强的故事。"`;
+
+    return `${PERSONAS.SCREENWRITER}
+
+## Task
+你将收到一份经过物理切片与视觉分析的视频片段流（含有时间轴、角色锚定、ASR原声及画面描述）${args.plotOutline ? '，以及一份已提炼的【全局剧情大纲】' : ''}。
+请据此撰写一份"贴合剧情主线、在关键节点给出合理解读"的高吸引力解说文案。
+
+## 🎬 剧情思维（最高优先级，先于一切形式规则）
+1. **贴剧情，不贴画面**：解说不是画面翻译！每一段解说必须回答"这段在剧情中推进了什么"（因果/转折/人物弧线），段与段之间承上启下、逻辑连贯。
+2. **合理解读**：每 3~5 段至少 1 段是解读——剖析人物动机、前后呼应、主题升华或现实隐喻。解读必须基于已确认的剧情事实，严禁编造剧情。
+3. **剧情优先于形式**：所有短句/卡点/句式规则都是表达手段，不得以牺牲剧情逻辑为代价。宁可放弃一个"金句"，也要保证剧情链条完整。
+
+${args.plotOutline ? `## 📖 全局剧情大纲（必须首先通读，解说严格贴合以下主线）
+${JSON.stringify(args.plotOutline, null, 2)}` : ''}
+
+## 创作风格
+${args.styleName}：${styleInstruction}
+
+${hookInstruction}
+
+${args.chapterQuotaWords !== null ? `## 📏 本章硬性字数配额（Hard Quota）
+本请求只负责撰写整片中的其中一个章节解说：解说词净字数必须控制在 **≤ ${args.chapterQuotaWords} 字**（keepOriginalAudio 原声段不计入）。这是全局预算分摊到你这一章的硬性配额，宁可稍少、严禁超发。` : args.targetSec !== null ? `## 📏 目标解说总时长（总量约束，与"解说占比"独立）
+本片目标解说总时长约 ${args.targetSec} 秒（约 ${args.targetBudgetChars} 字）。片段流中存在过渡/次要段落时：优先为关键剧情/冲突/转折段落撰写**丰满**解说（每段按字数上限写满，保留解读）；过渡/次要段落应${args.allowOriginalMark ? '标记 "keepOriginalAudio": true 留白给原声' : '精简字数'}，使全部解说总量贴近目标时长。` : ''}
+
+## ⚡ 爆款短句与卡点硬性规则 (Core Short-Sentence Rules)
+1. **单句字数硬限制**：每个单句（两个标点之间的文字）绝对不能超过 ${maxSentenceChars} 字！多用动词、感叹号与极速短句（如："死死盯住！"、"眼神杀气顿显！"）。
+2. **镜头级连贯叙事**：每个分镜的解说词应写成通顺完整的句子或短句群，字数尽量贴近单段字数上限（不要刻意压短成碎片）；相邻分镜之间善用衔接词（接着／没想到／于是／然而／下一秒）承上启下，形成连贯的剧情流，避免每段都是孤立无关联的短句。长句交给断句器按字幕安全框自动拆分。
+3. **角色名称绝对统一**：严格使用【全局已知角色列表】中的姓名，严禁混淆人名或凭空创造角色列表之外的人名。
+4. **消除视觉幻觉**：若 ASR 旁白与画面物理描述不一致，以【画面物理描述】为准描绘现场动作，以 ASR 为补充。
+5. **拒绝流水账**：严禁描述画面直观已呈现的表面动作，重点剖析言下之意、内心戏与剧情冲突。
+6. **每段必须完结收尾**：每个分镜的解说词必须以句号/感叹号/问号等完结标点结束，严禁以逗号、顿号、冒号、破折号或悬空半句收尾（禁止"可崔国明的脚步，却"这类悬念截断式结尾）。允许按高颗粒度拆成独立短句，但**每个短句都必须是一句完结的话**；一句在画面时间内说不完时，拆出的每一段也必须各自完结，严禁把"下一句"留给下一个分镜续写。
+7. **严禁复读与空转**：同一章节内相邻分镜严禁出现文本完全相同的解说句，严禁用相似句子反复铺垫同一剧情点（如连续多段都以"这句话，像一盆冷水"开头）；若多段解说指向同一剧情点，只保留最丰满的一段，其余段落必须推进新剧情或写入新信息。
+
+${CONSTRAINTS.ANTI_LITERAL}
+${CONSTRAINTS.TTS_FRIENDLY}
+${CONSTRAINTS.ROLE_ALIAS}
+${CONSTRAINTS.NO_MERGE_SENTENCES}
+${args.allowOriginalMark ? CONSTRAINTS.ORIGINAL_AUDIO_BRIDGE : ''}
+${CONSTRAINTS.JSON_ONLY}
+${CONSTRAINTS.NO_DRAFT_ITERATION}
+
+## 字数预算与参数指引
+【严格字数约束】：每个解说段应写成通顺连贯的完整句子或短句群，确保剧情表达完整，不要为了凑字数而碎成几个字。
+- 单段字数上限 = ⌊ 时长(秒) × ${args.speechRate} × ${(args.densityFillRate * 100).toFixed(0)}% × ${args.discountFactor} ⌋
+- 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * args.speechRate * args.densityFillRate * args.discountFactor)} 字
+- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * args.speechRate * args.densityFillRate * args.discountFactor)} 字
+${args.chapterQuotaWords !== null ? `- 本章解说词总量严格执行上方硬性配额（≤ ${args.chapterQuotaWords} 字），原声段不计入，严禁超出配额超发` : `- 视频总时长约 ${args.totalDurationSec.toFixed(1)} 秒，解说词总量绝对严禁超过 ${Math.floor(args.totalDurationSec * args.speechRate * args.densityFillRate * args.discountFactor)} 字`}
+
+【专业解说参数指引】：
+- 叙事视角：${perspectiveMap[args.narrativePerspective] || perspectiveMap.third}
+- 解说占比：${narrationRatioText}
+- 节奏模式：${rhythmMap[args.rhythmMode] || rhythmMap.mixed}
+- 情绪基调：${emotionToneMap[args.emotionTone] || emotionToneMap.neutral}
+
+${args.allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
+原声策略要求保留部分原片原声。当某分镜的核心是"原片台词/标志性对白/冲突声"（观众需要亲耳听到原声），请将该分镜标记为原声段落：
+1. 该分镜输出 \`"keepOriginalAudio": true\`，\`text\` 必须从该分镜所在片段的【原声】原文中**逐字抄录原台词**（保留语气词与停顿，一字不差，视为可被原样引用的台词原文）。
+2. ⛔ **严禁**对原声 \`text\` 做改写、润色、删增或添加旁白衔接词——诸如"牌匾裂开，老爷的心也跟着裂了"这种对画面/剧情的旁白解读，是解说词而非原声台词，**绝不能**作为原声段的 \`text\`。判别标准：只有你从片段流【原声】中能逐字摘到的台词原文，才允许作为原声 \`text\`。
+3. 只有当对应片段确实出现可逐字摘录的原台词/对白时才标记原声；纯动作、空镜、无人声的分镜**严禁**标记原声（原声段必须有真实人声台词）。
+4. 原声段落字数预算不适用，\`duration\` 填写该原声台词在原片中的实际时长（秒）。
+5. 每段解说之间最多允许 1~2 个原声段落，避免整片变成原声；原声段落前后各留一段解说引导。
+6. 仅当该段原声与剧情强相关（名场面/冲突高潮/关键台词）才标记，普通背景音不标记。
+` : ''}
+## 画面意图与情绪标注（Visual Intent & Emotion Marking）
+每个分镜除解说词外，必须输出两个辅助字段，供下游画面匹配使用：
+1. \`"emotion"\`：本段解说词的情绪基调，从以下类别中选择一个：紧张悬疑 / 悲伤沉重 / 愤怒激昂 / 欢快轻松 / 平静舒缓 / 中性。
+2. \`"visualIntent"\`（【必填】禁止空字符串/缺字段/写"无"/写"不需要"）：本段解说词"应该配什么画面"的画面意图描述，用画面语言（非文学语言）概括主体、动作、场景、景别、氛围，20~40 字。必须基于【多模态上下文片段流】中对应 chunk 的画面描述（对应位置的 visualContext.keyAction/shotType/emotion/atmosphere），不得凭空编造画面。✅ 正例：\`"男子面部特写，眼神凌厉，室内昏暗，紧张氛围"\`；❌ 反例：\`""\`、\`"无"\`、整个 JSON 对象缺 visualIntent 字段。
+
+## Output Format
+### 必填字段声明（缺任何一项视为无效输出）
+- shotId / text / duration / emotion / visualIntent 五个字段**必须全部出现且非空**
+${args.allowOriginalMark ? '- keepOriginalAudio 为可选布尔字段，默认 false 时可省略' : ''}
+
+请严格按照以下 JSON 数组格式返回结果，切勿包含任何 Markdown 格式化标记或额外解释：
+[
+  { "shotId": "s_01", "text": "解说词内容", "duration": 3.5, "emotion": "紧张悬疑", "visualIntent": "男子面部特写，眼神凌厉，室内昏暗，紧张氛围"${args.allowOriginalMark ? ', "keepOriginalAudio": false' : ''} }
+]`;
   }
 }

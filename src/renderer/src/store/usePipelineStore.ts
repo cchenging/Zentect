@@ -100,13 +100,19 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
   pipelineError: null,
   pipelineNodes: [],
 
+  // SSOT 红线：audioStrategy 三档与 narrationRatio 数值同源绑定（smart_keep ⇔ 0.70），
+  // UI 仅暴露三选一按钮，切换时整体提交二者（详见 PipelineParams.audioStrategy 注释）
   pipelineParams: {
     narrativePerspective: 'third',
+    audioStrategy: 'smart_keep',
+    vibePreset: 'viral',
     narrationRatio: 0.7,
     rhythmMode: 'mixed',
     emotionTone: 'neutral',
     hookIntensity: 0.7,
     targetNarrationDurationSec: 0,
+    // 🎯 目标成片篇幅：0 = 自动（沿用视频总长推导）
+    targetDurationSec: 0,
   },
   extractionConfig: null,
 
@@ -184,11 +190,16 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
     pipelineNodes: [],
     pipelineParams: {
     narrativePerspective: 'third',
+    // SSOT 红线：audioStrategy 三档与 narrationRatio 数值同源绑定（smart_keep ⇔ 0.70）
+    audioStrategy: 'smart_keep',
+    vibePreset: 'viral',
     narrationRatio: 0.7,
     rhythmMode: 'mixed',
     emotionTone: 'neutral',
     hookIntensity: 0.7,
     targetNarrationDurationSec: 0,
+    // 🎯 目标成片篇幅：0 = 自动（沿用视频总长推导）
+    targetDurationSec: 0,
   },
     extractionConfig: null,
   }),

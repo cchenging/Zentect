@@ -13,8 +13,10 @@ import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOr
 import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
 import { persistProjectSnapshot } from "@modules/editor/shell/utils/persistSnapshot";
 import { AppNotifier } from "@renderer/core/AppNotifier";
+import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { StepTTSSynthesisView } from "./View";
 import type { TtsVoiceOption } from "../types";
+import type { OriginalAudioParagraph } from "../../../../shared/types/entities/editor";
 
 const VOICE_OPTIONS: Record<string, TtsVoiceOption[]> = {
   edge: [
@@ -109,21 +111,47 @@ export const StepTTSSynthesis: React.FC = () => {
     // 递增 token，使进行中的 async 试听失效
     const token = ++playTokenRef.current;
     const audio = new Audio(audioUrl); audioRef.current = audio;
+    // 🐛 双提示去重：同一音频加载失败会同时触发 play().catch 与 error 事件，
+    //   用标志保证只弹一次提示（此前原声段试听失败会重复弹框）
+    let errorNotified = false;
+    const notifyOnce = (msg: string) => {
+      if (errorNotified || playTokenRef.current !== token) return;
+      errorNotified = true;
+      setPlayingIdx(null);
+      AppNotifier.warning(msg);
+    };
     audio.play().catch(() => {
       // 播放失败：文件可能已失效（旧项目脏数据、L2 cache 被清理等），提示用户重新合成
-      if (playTokenRef.current === token) {
-        setPlayingIdx(null);
-        AppNotifier.warning("音频文件已失效，请重新合成");
-      }
+      notifyOnce("音频文件已失效，请重新合成");
     }); setPlayingIdx(idx);
     audio.onended = () => { if (playTokenRef.current === token) setPlayingIdx(null); };
     audio.onerror = () => {
-      if (playTokenRef.current === token) {
-        setPlayingIdx(null);
-        AppNotifier.warning("音频文件加载失败，请重新合成");
-      }
+      // 加载失败（HTTP 错误/范围非法）：补充一次性提示，不再重复弹框
+      notifyOnce("音频文件加载失败，请重新合成");
     };
   }, [playingIdx, speechRate, stopAudio]);
+
+  /**
+   * 原声段试听：基于原片时间轴截取 [sourceStartMs, sourceEndMs] 的音频片段播放。
+   *
+   * 原声段永远无 TTS 结果（后端已过滤），其"试听"必须是原片对应时间窗的真实台词。
+   * 实现：给源视频 magic:// URL 追加 ?start/end（ms）查询参数，后端 magic 协议用 ffmpeg
+   * 精确提取该时间窗纯音频返回；与解说段 TTS 试听互不影响。
+   * 错就错：音频源信息缺失/时间窗非法时明确提示，不静默降级播放整片。
+   */
+  const handleOriginalAudioPreview = useCallback((idx: number, audioSource: OriginalAudioParagraph['audioSource']) => {
+    console.log('[handleOriginalAudioPreview] 点击原声段试听', { idx, audioSource });
+    const projectState = useProjectStore.getState();
+    const mediaPath = projectState.mediaItems?.[0]?.filePath;
+    const startMs = audioSource?.sourceStartMs;
+    const endMs = audioSource?.sourceEndMs;
+    if (!mediaPath || !Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      AppNotifier.warning("原声段音频时间窗不完整，无法试听");
+      return;
+    }
+    const url = `${getSafeMediaUrl(mediaPath)}?start=${Math.round(startMs)}&end=${Math.round(endMs)}`;
+    handlePreview(idx, url);
+  }, [handlePreview]);
 
   // 音色试听：调用后端动态合成临时音频后播放（async，存在竞态，用 token 防护）
   const handleVoicePreview = useCallback(async (voiceId: string) => {
@@ -186,10 +214,10 @@ export const StepTTSSynthesis: React.FC = () => {
     }
 
     // 启动新的顺序播放：构建有效段落索引队列（仅成功段，跳过失败/待合成）
-    // 严格按 id/shotId 匹配，禁止下标回退：避免 ttsResults 残留旧数据时误播试听文案
+    // ✅ 身份键统一：段落主键 p.id 与产物 id 同源，严格按 id 匹配，禁止下标回退，删除了旧 shotId 双门
     const queue: number[] = [];
     paragraphs.forEach((p: any, idx: number) => {
-      const r = results.find((rr: any) => rr.shotId && (rr.shotId === p.id || rr.shotId === p.shotId));
+      const r = results.find((rr: any) => rr.id === p.id);
       if (r && !r._failed && r.audioUrl) queue.push(idx);
     });
     if (queue.length === 0) {
@@ -223,7 +251,7 @@ export const StepTTSSynthesis: React.FC = () => {
       }
       const paragraphIdx = queueArr[cursor];
       const p = paragraphs[paragraphIdx];
-      const r = results.find((rr: any) => rr.shotId && (rr.shotId === p?.id || rr.shotId === p?.shotId));
+      const r = results.find((rr: any) => rr.id === p?.id);
       if (!r || !r.audioUrl) {
         // 防御：队列构建时已过滤，理论上不会进入；若进入则跳过下一段
         sequentialCursorRef.current = cursor + 1;
@@ -266,6 +294,7 @@ export const StepTTSSynthesis: React.FC = () => {
     const pipelineState = usePipelineStore.getState();
 
     if (!step3State.scriptParagraphs?.length) { AppNotifier.warning("请先完成步骤3（解说文案）"); return; }
+    console.log('[步骤4诊断] scriptParagraphs 数量=', step3State.scriptParagraphs.length, '首个=', JSON.stringify(step3State.scriptParagraphs[0]));
     setIsSynthesizing(true);
     // 合成前主动清空历史 TTS 结果与进度，避免残留旧数据（含试听/上次失败产物）被误匹配播放
     // 严格遵循"错就错"原则：新合成开始即丢弃旧状态，错误以原始形态暴露，不靠 if 守卫兜底
@@ -321,13 +350,18 @@ export const StepTTSSynthesis: React.FC = () => {
     const step4State = useStep4Store.getState();
     const projectState = useProjectStore.getState();
     const p = step3State.scriptParagraphs?.[idx];
-    if (!p?.text) { AppNotifier.warning(`第 ${idx + 1} 段没有文案`); return; }
+    // 判别联合三段式拦截：段落不存在 / 原声保留段（无解说词不应合成）/ 解说段空文案；
+    // 三重守卫之后 p 收窄为 NarrationParagraph，下游 p.text 为必填 string 可安全读取
+    if (!p) { AppNotifier.warning(`第 ${idx + 1} 段不存在`); return; }
+    if (p.type === 'original_audio') { AppNotifier.info(`第 ${idx + 1} 段为原声保留段，无需配音`); return; }
+    if (!p.text) { AppNotifier.warning(`第 ${idx + 1} 段没有文案`); return; }
     // 🛑 错就错：单段配音必须要有项目 ID，缺失时明确报错，不做兜底
     if (!projectState.projectId) { AppNotifier.warning('系统异常：未找到当前工程 ID'); return; }
     if (singleSynthIdx !== null) return; // 已有单段合成进行中
     setSingleSynthIdx(idx);
     stopAudio();
-    const shotId = p.id || p.shotId || `para_${idx}`;
+    // ✅ 身份键统一：段落主键 id 出生处即全局唯一，单段试听产物亦以 id 记
+    const shotId = p.id;
     try {
       const result = await API.ai.runSingleTTS(projectState.projectId, {
         id: shotId,
@@ -343,6 +377,7 @@ export const StepTTSSynthesis: React.FC = () => {
         audioUrl = `magic://local/${audioUrl.replace(/\\/g, '/')}`;
       }
       const entry = {
+        id: shotId,
         shotId,
         audioUrl,
         duration: p.duration || 0,
@@ -350,15 +385,15 @@ export const StepTTSSynthesis: React.FC = () => {
         _error: !audioPath ? (result?.error || '合成失败') : '',
       };
       const cur = useStep4Store.getState().ttsResults || [];
-      const idxIn = cur.findIndex((r: any) => r.shotId === shotId);
+      const idxIn = cur.findIndex((r: any) => r.id === shotId);
       const next = idxIn >= 0 ? cur.map((r: any, i: number) => (i === idxIn ? entry : r)) : [...cur, entry];
       useStep4Store.getState().setTtsResults(next);
       if (!audioPath) AppNotifier.error(`第 ${idx + 1} 段合成失败: ${result?.error || ''}`);
     } catch (err: any) {
       // 错就错：失败必须标记进结果列表，不让用户误以为成功
       const cur = useStep4Store.getState().ttsResults || [];
-      const entry = { shotId, audioUrl: '', duration: p.duration || 0, _failed: true, _error: err?.message || '合成失败' };
-      const idxIn = cur.findIndex((r: any) => r.shotId === shotId);
+      const entry = { id: shotId, shotId, audioUrl: '', duration: p.duration || 0, _failed: true, _error: err?.message || '合成失败' };
+      const idxIn = cur.findIndex((r: any) => r.id === shotId);
       const next = idxIn >= 0 ? cur.map((r: any, i: number) => (i === idxIn ? entry : r)) : [...cur, entry];
       useStep4Store.getState().setTtsResults(next);
       AppNotifier.error(`第 ${idx + 1} 段合成失败: ${err?.message || ''}`);
@@ -385,6 +420,7 @@ export const StepTTSSynthesis: React.FC = () => {
       onSetTtsEngine={setTtsEngine} onSetTtsVoiceId={setTtsVoiceId} onSetSpeechRate={setSpeechRate}
       onPreview={handlePreview} onVoicePreview={handleVoicePreview} onSynthesize={handleSynthesize}
       onSingleSynthesize={handleSingleSynthesize}
+      onOriginalAudioPreview={handleOriginalAudioPreview}
       onSequentialPlay={handleSequentialPlay} onSequentialStop={handleSequentialStop}
     />
   );

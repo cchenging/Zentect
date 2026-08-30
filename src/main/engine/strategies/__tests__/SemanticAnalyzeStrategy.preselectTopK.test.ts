@@ -80,8 +80,9 @@ beforeEach(() => {
 describe('SemanticAnalyzeStrategy.preselectTopK — P2 #11 方案A Top-K预选', () => {
   it('[TK-1] 保护规则① description覆盖率<30% → 直接返回全集，applied=false', () => {
     const qs = buildQueries(20);
-    // 100 chunks 只给 20 个有 description → 20% < 30% 阈值
-    const cs = buildChunks(100, { descRatio: 0.2 });
+    // 100 chunks 全空描述（禁止继承，否则空描述会从相邻 chunk 继承导致覆盖率被拉满）
+    // → 覆盖率 0% < 30% 阈值，触发保护规则①，跳过预选
+    const cs = buildChunks(100, { descRatio: 0 });
     const out = runPre(qs, cs, { logProjectId: '[TK-1]' });
     expect(out.applied).toBe(false);
     expect(out.filteredChunks).toHaveLength(100);
@@ -120,8 +121,9 @@ describe('SemanticAnalyzeStrategy.preselectTopK — P2 #11 方案A Top-K预选',
         durationMs: 3000,
       },
     ];
-    // 构造 30 个 chunk (60s), 其中 c_5 描述关键词完全匹配, 且 startMs=10000 完美靠时间锚
-    const cs = buildChunks(30, {
+    // 构造 60 个 chunk (120s)，其中 c_5 描述关键词完全匹配, 且 startMs=10000 完美靠时间锚
+    // 60 个 chunk 避开 M<=30 小池保护（否则 applied=false，无法断言预选生效）
+    const cs = buildChunks(60, {
       stepMs: 2000,
       seedDesc: (i) =>
         i === 5
@@ -209,10 +211,10 @@ describe('SemanticAnalyzeStrategy.auditPreselectTopK — 命中审计', () => {
       s_2: ['c_4', 'c_5', 'c_6'],
     };
     const matches = [
-      { shotId: 's_0', mediaId: 'c_0' },  // 在 top
-      { shotId: 's_1', mediaId: 'c_2' },  // 在 top
-      { shotId: 's_2', chunkId: 'c_5' },  // 在 top（chunkId 字段也支持）
-      { shotId: 's_keep', mediaId: 'c_99', keepOriginalAudio: true }, // 原声跳过
+      { id: 's_0', shotId: 's_0', mediaId: 'c_0' },  // 在 top
+      { id: 's_1', shotId: 's_1', mediaId: 'c_2' },  // 在 top
+      { id: 's_2', shotId: 's_2', chunkId: 'c_5' },  // 在 top（chunkId 字段也支持）
+      { id: 's_keep', shotId: 's_keep', mediaId: 'c_99', keepOriginalAudio: true }, // 原声跳过
     ];
     const result = runAudit(perQueryTopK, matches, 'AUD-1');
     expect(result.total).toBe(3);
@@ -232,7 +234,7 @@ describe('SemanticAnalyzeStrategy.auditPreselectTopK — 命中审计', () => {
     for (let i = 0; i < 10; i++) {
       // s_0 → c_999（未入 top）, s_1 → c_1000（未入 top）, 其余 8 条正常命中 c_i
       const mediaId = i === 0 ? 'c_999' : i === 1 ? 'c_1000' : `c_${i}`;
-      matches.push({ shotId: `s_${i}`, mediaId });
+      matches.push({ id: `s_${i}`, shotId: `s_${i}`, mediaId });
     }
     const result = runAudit(perQueryTopK, matches, 'AUD-2');
     expect(result.total).toBe(10);

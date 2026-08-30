@@ -46,7 +46,7 @@ export class ASRStrategy extends BaseNodeStrategy {
     const language = (task.params as any)?.language || 'zh';
     const engine = (task.params as any)?.engine || 'sensevoice';
     AppLogger.info(LOG_TAGS.SCHEDULER, `[ASR] 启动真实语音识别，音频: ${targetAudioPath}, 引擎: ${engine}`);
-    onProgress(10, '正在启动语音识别引擎...');
+    onProgress(5, '正在启动语音识别引擎...');
     try {
       const result = await this.whisperStrategy.transcribe(targetAudioPath, outDir, mediaId, language, engine);
       onProgress(100, 'success');

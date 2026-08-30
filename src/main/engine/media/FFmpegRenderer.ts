@@ -212,7 +212,7 @@ export class FFmpegRenderer {
         const speedFactor = match.appliedSpeedFactor || 1.0;
 
         if (!chunk) {
-          AppLogger.warn(LOG_TAGS.EXPORT, `[FFmpeg物理混剪线] 镜头 ${match.shotId} 无 chunkData，跳过`);
+          AppLogger.warn(LOG_TAGS.EXPORT, `[FFmpeg物理混剪线] 镜头 ${match.id || match.shotId} 无 chunkData，跳过`);
           return;
         }
 

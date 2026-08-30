@@ -177,7 +177,10 @@ export class JobScheduler {
             const text = progressData.message || '';
             const progress = progressData.progress || 0;
             this.repo.updateJobStatus(job.id, DICT.TASK_STATUS.RUNNING, progress, text);
-            MainNotifier.notifyTaskProgress(job.targetId, job.projectId, text, progress, DICT.TASK_STATUS.RUNNING);
+            MainNotifier.notifyTaskProgress(
+              job.targetId, job.projectId, text, progress, DICT.TASK_STATUS.RUNNING,
+              progressData.subStep, progressData.subStepProgress,
+            );
           }
         );
 

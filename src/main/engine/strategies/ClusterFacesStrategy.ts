@@ -47,7 +47,7 @@ export class ClusterFacesStrategy extends BaseNodeStrategy {
       return { clusters: {}, clustersMap: {}, roles: [] };
     }
 
-    onProgress(10, `正在对人脸特征聚类 (${faces.length} 个)...`);
+    onProgress(5, `正在对人脸特征聚类 (${faces.length} 个)...`);
 
     try {
       const clustersMap = await VisionProcessor.clusterFaces(mediaId, faces);

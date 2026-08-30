@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 import { CODE_TO_NAME } from '../../utils/pipelineConstants';
+import type { StepStatus } from '../../../../../shared/types/entities/editor';
 
 /** 启动类 code → 子步骤 key */
 const CODE_TO_SUBSTEP: Record<string, string> = {
@@ -74,7 +75,7 @@ export const useTaskProgress = () => {
 
   useEffect(() => {
     const handler = (_event: any, payload: any) => {
-      const { code, percent, status } = payload;
+      const { code, percent, status, subStep, subStepProgress } = payload;
       if (!code) return;
 
       const state = usePipelineStore.getState();
@@ -82,6 +83,22 @@ export const useTaskProgress = () => {
         return;
       }
       lastProgressRef.current[code] = percent;
+
+      // 🆕 子步骤真实进度：优先采用 payload 显式携带的 subStep/subStepProgress（由子引擎真实完成量动态计算）
+      //   直接写入各子业务进度，替代固定档位换算；这是步骤1各子业务百分比的数据来源。
+      if (subStep && typeof subStepProgress === 'number') {
+        const failed = status === 'error' || status === 'failed';
+        const stepStatus: StepStatus = failed
+          ? 'failed'
+          : subStepProgress >= 100 ? 'completed' : 'running';
+        usePipelineStore.setState({
+          subStepStatuses: { ...state.subStepStatuses, [subStep]: stepStatus },
+          subStepProgresses: { ...state.subStepProgresses, [subStep]: subStepProgress },
+          pipelineProgress: typeof percent === 'number' ? percent : state.pipelineProgress,
+          pipelineNode: CODE_TO_NAME[code] || code || state.pipelineNode,
+        });
+        return;
+      }
 
       if (code === 'TASK_SUCCESS' || status === 'completed') {
         usePipelineStore.setState({

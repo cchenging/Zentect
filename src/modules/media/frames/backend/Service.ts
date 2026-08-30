@@ -113,6 +113,10 @@ export interface ExtractOptions {
   // ── P3 · V2 真补帧参数（长镜头空段二次 FFmpeg 单帧 seek） ─────────────────
   /** P3 V2 真补帧配置（追加式；默认启用；UNIFORM_FPS gate=空；缺省补 1 帧/长空段 12s 阈值） */
   refillConfig?: GapRefillConfig;
+
+  /** 真实进度回调：由 FFmpeg 解码进度（time= 输出）动态计算，0~100。
+   *  步骤1 依赖它上报「抽帧」子业务的真实局部进度，替代固定档位。 */
+  onProgress?: (pct: number, msg: string) => void;
 }
 
 // ──────────────────────────────────────────────
@@ -220,6 +224,7 @@ export class FrameExtractionService {
       asrLines,
       refillConfig,
       jpegQuality,
+      onProgress,
     } = options;
 
     // P0 · PRECISE_SINGLE 守卫：定点截图不走批量抽帧，改走独立 screenshotAt API
@@ -282,6 +287,12 @@ export class FrameExtractionService {
     const actualIn = inPoint ?? 0;
     const actualOut = outPoint ?? probedDurationSec;
     const videoDurationSec = Math.max(0, actualOut - actualIn);
+    // 解码进度分母：FFmpeg -ss 前置(input seek)后 time= 输出自 0 起，解码目标 = body 窗口时长
+    const decodeTargetSec = Math.max(0.001, videoDurationSec);
+    // 真实进度回调（无回调时不产生任何开销/副作用）
+    const emitProgress = (pct: number, msg: string) => {
+      if (onProgress) onProgress(Math.max(0, Math.min(100, Math.round(pct))), msg);
+    };
     let adaptiveMinInterval = effectiveMinInterval;
     if (videoDurationSec > 600) {
       // 长视频兜底只做放大（不小于 preset 派生）
@@ -330,6 +341,16 @@ export class FrameExtractionService {
               const sec = parseFloat(m.replace('pts_time:', ''));
               if (!Number.isNaN(sec)) ptsSeconds.push(sec);
             }
+          }
+        }
+        // 🆕 真实解码进度：解析 FFmpeg 输出的 time= 时间戳，除以解码目标时长得到动态百分比
+        if (onProgress) {
+          const m = text.match(/time=(\d+):(\d+):([\d.]+)/);
+          if (m) {
+            const decodedSec = parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3]);
+            // 解码阶段占抽帧总进度的 0~85（余下的 85~100 留给后处理/收尾），无后处理时直达 95
+            const cap = postProcess ? 85 : 95;
+            emitProgress((decodedSec / decodeTargetSec) * cap, `正在提取关键帧 (已解码 ${Math.round(decodedSec)}s / ${Math.round(decodeTargetSec)}s)`);
           }
         }
       });
@@ -445,6 +466,11 @@ export class FrameExtractionService {
           const totalSizeMB = Number((totalSizeBytes / (1024 * 1024)).toFixed(2));
           const processingFps = durationMs > 0 ? Number((frameCount / (durationMs / 1000)).toFixed(2)) : 0;
 
+          const keptCount = keptFiles.length;
+          // 🆕 收尾进度：后处理/筛选阶段真实帧量
+          if (onProgress) {
+            emitProgress(postProcess ? 95 : 98, `关键帧提取完成，正在校验 ${keptCount} 帧`);
+          }
           resolve({
             files: keptFiles,
             metrics: { durationMs, frameCount, totalSizeMB, processingFps },

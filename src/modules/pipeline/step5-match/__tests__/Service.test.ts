@@ -12,13 +12,13 @@ function makeInput(overrides: Partial<MatchPipelineInput> = {}): MatchPipelineIn
     projectId: 'proj-001',
     sourceMediaPath: '/media/video.mp4',
     scriptParagraphs: [
-      { id: 's1', text: '开场白', editing: false },
-      { id: 's2', text: '核心内容', editing: false },
+      { id: 's1', type: 'narration', startMs: 0, durationMs: 3000, text: '开场白', editing: false },
+      { id: 's2', type: 'narration', startMs: 3000, durationMs: 3000, text: '核心内容', editing: false },
     ],
     vlmFrames: [
       { url: '/f1.jpg', description: '山川风景', editing: false, confirmed: true },
     ],
-    ttsResults: [{ shotId: 's1', audioUrl: '/audio/1.wav' }],
+    ttsResults: [{ id: 's1', shotId: 's1', audioUrl: '/audio/1.wav' }],
     activeBgm: { id: 'bgm-1', filePath: '/bgm/epic.mp3' },
     ...overrides,
   };
@@ -36,8 +36,8 @@ function makeMockAPI(
       return {
         data: {
           matchResults: [
-            { shotId: 's1', mediaId: 'chunk1', score: 0.95, confirmed: false },
-            { shotId: 's2', mediaId: 'chunk2', score: 0.72, confirmed: false },
+            { id: 's1', shotId: 's1', mediaId: 'chunk1', score: 0.95, confirmed: false },
+            { id: 's2', shotId: 's2', mediaId: 'chunk2', score: 0.72, confirmed: false },
           ],
         },
       };

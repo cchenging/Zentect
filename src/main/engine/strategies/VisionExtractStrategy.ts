@@ -952,6 +952,9 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     };
 
     let completedFrames = 0;
+    /** 🔧 逐帧进度单调保护：并发批次下 completedFrames 更新顺序不可控，
+     *  用 lastFrameProgress 记录已推送的最大值，后续进度一律 Math.max 保证只增不减、不重复倒退 */
+    let lastFrameProgress = 30;
     /** 🔧 fail fast：连续失败计数，成功时清零 */
     let consecutiveFailures = 0;
     /** fail fast 触发后的终止信号 */
@@ -1248,8 +1251,10 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           frameDescriptions[frameIdx] = parts.join(' ');
 
           completedFrames++;
-          /** P0-2：每帧解析完立即推送，前端实时渲染打字机效果 */
-          const frameProgressPct = 30 + Math.floor((completedFrames / totalFrameCount) * 65);
+          /** P0-2：每帧解析完立即推送，前端实时渲染打字机效果
+           *  🔧 单调保护：并发批次完成顺序不可控，Math.max(已推送最大值, 计算值) 保证只增不减 */
+          const frameProgressPct = Math.max(lastFrameProgress, 30 + Math.floor((completedFrames / totalFrameCount) * 65));
+          lastFrameProgress = frameProgressPct;
           onProgress(frameProgressPct, `画面分析 ${completedFrames}/${totalFrameCount} 帧`, {
             partialFrames: buildPartialFrames(),
             completedCount: completedFrames,
@@ -1322,7 +1327,8 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         if (gridResult) ContactSheetBuilder.cleanup(gridResult.gridPath);
       }
 
-      const progressPct = 30 + Math.floor((completedFrames / totalFrameCount) * 65);
+      const progressPct = Math.max(lastFrameProgress, 30 + Math.floor((completedFrames / totalFrameCount) * 65));
+      lastFrameProgress = progressPct;
       onProgress(progressPct, `画面分析 ${completedFrames}/${totalFrameCount} 帧...`);
     };
 
@@ -1366,9 +1372,10 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     completedFrames = skippedCount;
     if (skippedCount > 0) {
       AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] P1 跳过 ${skippedCount} 帧（pHash 静态 ${skipFrameIndices.size} + L2 缓存 ${cachedFrameIndices.size}），实际需分析 ${framesToAnalyze.length} 帧`);
-      /** 推送已跳过帧的描述到前端 */
+      /** 推送已跳过帧的描述到前端（含缓存命中） */
       if (skippedCount > 0) {
-        const skipPct = 30 + Math.floor((completedFrames / totalFrameCount) * 65);
+        const skipPct = Math.max(lastFrameProgress, 30 + Math.floor((completedFrames / totalFrameCount) * 65));
+        lastFrameProgress = skipPct;
         onProgress(skipPct, `画面分析 ${completedFrames}/${totalFrameCount} 帧（含缓存命中）`, {
           partialFrames: buildPartialFrames(),
           completedCount: completedFrames,
@@ -1383,7 +1390,11 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     // 阈值：待分析帧数 >= 4（一个 2x2 批次）时才构建，帧数少时一次性分析即可
     const GLOBAL_SUMMARY_MIN_FRAMES = 4;
     if (framesToAnalyze.length >= GLOBAL_SUMMARY_MIN_FRAMES) {
-      onProgress(28, '正在构建全局场景摘要...');
+      /** 🔧 修复进度倒退：原 28 低于"抽取完成"的 30，且可能低于缓存命中分支已推送值，
+       *  统一走单调保护（不低于已推送最大值） */
+      const globalSummaryPct = Math.max(lastFrameProgress, 30);
+      lastFrameProgress = globalSummaryPct;
+      onProgress(globalSummaryPct, '正在构建全局场景摘要...');
       globalContext = await buildGlobalContext(framesToAnalyze);
       // 🔧 关键修复：全局摘要刚完成了一次大输入 VLM 请求，与批次1请求之间强制冷却，
       // 避免在服务商 60s TPM/RPM 滑动窗口内瞬间堆积连续请求

@@ -90,11 +90,17 @@ function loadFixture(): JianyingExportInput {
   const ttsResults = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, 'ttsResults.json'), 'utf-8'));
   const scriptParagraphs = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, 'scriptParagraphs.json'), 'utf-8'));
 
+  // ✅ 身份键统一：本 fixture 为 id 契约落地前的 legacy 快照（产物只有 shotId），
+  //   于此复刻生产装配器 ExportProjectAssembler 的 hydrate 点，归一 id=id||shotId，
+  //   对齐 buildCompileShots 的"一律读 id"约定。
+  const normalizedMatch = matchResults.map((m: any) => m && m.id ? m : { ...m, id: m?.shotId });
+  const normalizedTts = ttsResults.map((t: any) => t && t.id ? t : { ...t, id: t?.shotId });
+
   return {
     projectId: meta.id,
     shots: [],
-    matchResults,
-    ttsResults,
+    matchResults: normalizedMatch,
+    ttsResults: normalizedTts,
     scriptParagraphs,
     bgmPath: meta.mediaItems?.find((m: any) => m.extractedBgm)?.extractedBgm || undefined,
     mediaPath: meta.mediaItems?.[0]?.filePath || '',
@@ -650,7 +656,8 @@ describe('JianyingExportService - Aug 6 Real Data Integration Test', () => {
 
       const allSegs = draft.tracks.flatMap((t: any) => t.segments);
       for (const seg of allSegs) {
-        expect(seg.id).toMatch(/^[0-9a-f]{32}$/);
+        // 剪映 id 由 IdUtils.genHexId() 生成（大写 hex），断言用大小写不敏感正则
+        expect(seg.id).toMatch(/^[0-9a-fA-F]{32}$/);
       }
     });
 
@@ -660,7 +667,8 @@ describe('JianyingExportService - Aug 6 Real Data Integration Test', () => {
       const draft = JianyingExportService.compileDraft(shots, input.mediaPath!) as any;
 
       for (const track of draft.tracks) {
-        expect(track.id).toMatch(/^[0-9a-f]{32}$/);
+        // 剪映 id 由 IdUtils.genHexId() 生成（大写 hex），断言用大小写不敏感正则
+        expect(track.id).toMatch(/^[0-9a-fA-F]{32}$/);
       }
     });
 

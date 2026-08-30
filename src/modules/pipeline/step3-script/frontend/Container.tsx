@@ -2,7 +2,8 @@
 // @migrated 阶段三：从 useStore → useStep3Store + useStep2Store + usePipelineStore + useProjectStore
 // 阶段四：移除 mapPipelineResultToState 的 useStore fallback
 
-import React, { useCallback } from "react";
+import React, { useCallback, useEffect, useRef } from "react";
+import type { PipelineParams } from "../../../../shared/types/entities/editor";
 import { useStep3Store } from "../../stores/useStep3Store";
 import { useStep2Store } from "../../stores/useStep2Store";
 import { useStep1Store } from "../../stores/useStep1Store";
@@ -15,13 +16,14 @@ import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
 import { diffParagraphs, applyDiffUpdate } from "@modules/editor/shell/utils/scriptDiffTree";
 import { StepScriptGenerationView } from "./View";
 import { breakLongParagraphs } from "./breakLongParagraphs";
+// 判别联合契约唯一净化入口：renderer「重新生成」路径的段落同样必须过 Normalizer
+import { normalizeScriptParagraph } from "../../../../shared/utils/normalizeScriptParagraph";
 
 export const StepScriptGeneration: React.FC = () => {
   const scriptParagraphs = useStep3Store((s) => s.scriptParagraphs);
-  const scriptStyle = useStep3Store((s) => s.scriptStyle);
   const speechRate = useStep3Store((s) => s.speechRate);
   const pipelineParams = useStep3Store((s) => s.pipelineParams);
-  const setScriptStyle = useStep3Store((s) => s.setScriptStyle);
+  const streamMeta = useStep3Store((s) => s.streamMeta);
   const setSpeechRate = useStep3Store((s) => s.setSpeechRate);
   const setPipelineParams = useStep3Store((s) => s.setPipelineParams);
   const updateScriptParagraph = useStep3Store((s) => s.updateScriptParagraph);
@@ -47,6 +49,9 @@ export const StepScriptGeneration: React.FC = () => {
     pipelineState.resetPipeline();
     pipelineState.setStepStatus(3, "running");
     pipelineState.setPipelineRunning(true);
+    // 🔧 重新生成前先清空旧文案：避免旧文案残留显示；若本次生成失败，UI 显示空（符合"错就错"原则，
+    //   不让失败被旧文案 + completed 状态掩盖）。旧文案已持久化在 DB，可随时再生成恢复。
+    setScriptParagraphs([]);
     try {
       const sequence = STEP_SEQUENCES[3].map((node: any) => ({
         ...node,
@@ -77,13 +82,11 @@ export const StepScriptGeneration: React.FC = () => {
         const rawData = result?.data || result;
         const nodeResult = rawData["script-1"] || rawData["script"] || rawData;
         if (nodeResult) {
-          const idCountMap: Record<string, number> = {};
-          const rawParagraphs = (nodeResult.paragraphs || nodeResult.shots || []).map((p: any, idx: number) => {
-            const baseId = p.id || p.shotId || `para_${idx}`;
-            const count = (idCountMap[baseId] || 0) + 1;
-            idCountMap[baseId] = count;
+          /** ✅ 身份键统一：段落主键 id 出生处(ScriptGenStrategy)已强制全局唯一，此层仅透传、
+           *  不再做任何去重/追加后缀（删除了旧 idCountMap 兜底）。 */
+          const rawParagraphs = (nodeResult.paragraphs || nodeResult.shots || []).map((p: any) => {
             return {
-              id: count > 1 ? `${baseId}_${idx}` : baseId,
+              id: p.id,
               text: p.text || p.content || p.narration || "",
               shotId: p.shotId,
               duration: p.duration,
@@ -98,11 +101,11 @@ export const StepScriptGeneration: React.FC = () => {
               durationMs: p.durationMs,
             };
           });
-          // 爆破切分器：将超长段落按标点拆分为卡点短句，再补充 editing 状态
-          const newParagraphs = breakLongParagraphs(rawParagraphs).map((p) => ({
-            ...p,
-            editing: false,
-          }));
+          // 爆破切分器拆分超长段落后，统一过 Normalizer 净化为判别联合契约
+          // （补齐 type / 毫秒时间轴，editing 布尔由 Normalizer narration 分支透传保留）
+          const newParagraphs = breakLongParagraphs(rawParagraphs).map(
+            (p) => normalizeScriptParagraph({ ...p, editing: false })
+          );
           const diffs = diffParagraphs(step3State.scriptParagraphs, newParagraphs);
           setScriptParagraphs(applyDiffUpdate(step3State.scriptParagraphs, diffs));
         } else {
@@ -143,17 +146,45 @@ export const StepScriptGeneration: React.FC = () => {
     // delegated to bidirectionalMatcher utility if available
   }, []);
 
+  // ── 步骤3 参数即时持久化 ──
+  // 根因：pipelineParams（含目标时长 targetDurationSec）此前只在管线执行/重新生成时落盘，
+  //       用户仅修改参数（如填时长）不点生成就切走/关窗 → DB 从未写入新值 → 重进项目回退默认。
+  // 修复：修改参数即防抖落盘；自定义秒数输入框 onChange 连续触发，故 500ms 合并后一次性写入。
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushPipelineParams = useCallback((params: PipelineParams) => {
+    const projectId = useProjectStore.getState().projectId;
+    if (!projectId) return;
+    API.project.saveData(projectId, { pipelineParams: params }).catch((err) => {
+      console.error("[步骤3] 参数落盘失败:", err);
+    });
+  }, []);
+  const handleSetPipelineParams = useCallback((params: PipelineParams) => {
+    setPipelineParams(params);
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    // 落盘 store 归一化后的最终态：setPipelineParams 内做 SSOT 兼容迁移
+    // （audioStrategy 缺失回填默认档并同步 narrationRatio 镜像），确保 DB 持久化值
+    // 与 UI 展示、后端 DR 折减三处口径一致，legacy 残留值（如 narrationRatio=0.85）随
+    // 任一次参数变更即被修复，不会在重开项目后再次回退成旧值。
+    saveTimerRef.current = setTimeout(() => flushPipelineParams(useStep3Store.getState().pipelineParams), 500);
+  }, [setPipelineParams, flushPipelineParams]);
+  // 组件卸载时清理未触发的防抖定时器，避免泄漏
+  useEffect(() => () => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+  }, []);
+
   return (
     <StepScriptGenerationView
       scriptParagraphs={scriptParagraphs}
-      scriptStyle={scriptStyle}
       speechRate={speechRate}
       pipelineParams={pipelineParams}
       vlmFrames={vlmFrames}
       isGenerating={pipelineRunning}
-      onSetScriptStyle={setScriptStyle}
+      streamMeta={streamMeta}
       onSetSpeechRate={setSpeechRate}
-      onSetPipelineParams={setPipelineParams}
+      onSetPipelineParams={handleSetPipelineParams}
       onUpdateParagraph={updateScriptParagraph}
       onUpdateParagraphEmotion={updateParagraphEmotion}
       onSetScriptParagraphs={setScriptParagraphs}

@@ -328,7 +328,7 @@ describe('JianyingExportService', () => {
       expect(materials.videos[0].path).toBe('C:/media/video.mp4');
     });
 
-    it('buildCompileShots 应以 scriptParagraphs 为主数据源，matchResults/ttsResults 按 shotId 补充切片与配音', () => {
+    it('buildCompileShots 应以 scriptParagraphs 为主数据源，matchResults/ttsResults 按 id 补充切片与配音', () => {
       const input = {
         projectId: 'p',
         scriptParagraphs: [
@@ -336,10 +336,10 @@ describe('JianyingExportService', () => {
           { id: 's2', shotId: 's2', text: '第二段解说', duration: 3 },
         ] as any[],
         matchResults: [
-          { shotId: 's1', mediaId: 'm1', thumbnail: '/thumb1.jpg', audioDurationMs: 4000, chunkData: { filePath: 'C:/chunk/s1.mp4', startMs: 1000, endMs: 5000 }, appliedSpeedFactor: 1.1 },
+          { id: 's1', shotId: 's1', mediaId: 'm1', thumbnail: '/thumb1.jpg', audioDurationMs: 4000, chunkData: { filePath: 'C:/chunk/s1.mp4', startMs: 1000, endMs: 5000 }, appliedSpeedFactor: 1.1 },
         ] as any[],
         ttsResults: [
-          { shotId: 's1', audioUrl: 'C:/tts/s1.mp3', duration: 4.2 },
+          { id: 's1', shotId: 's1', audioUrl: 'C:/tts/s1.mp3', duration: 4.2 },
         ] as any[],
         shots: [] as any[],
         outputDir: 'C:/out',
@@ -389,12 +389,12 @@ describe('JianyingExportService', () => {
           { id: 's1_sub_2', shotId: 's1', text: '第二句解说', duration: 2 },
         ] as any[],
         matchResults: [
-          { shotId: 's1', mediaId: 'm1', chunkData: { filePath: 'C:/chunk/s1.mp4', startMs: 0, endMs: 4000 }, audioDurationMs: 4000 },
+          { id: 's1', shotId: 's1', mediaId: 'm1', chunkData: { filePath: 'C:/chunk/s1.mp4', startMs: 0, endMs: 4000 }, audioDurationMs: 4000 },
         ] as any[],
-        // TTS 结果以 s.id 作为 shotId（= 子句唯一 id），与 shotId 不同
+        // TTS 结果以 s.id 作为唯一 id（= 子句唯一 id），与共享的父级 shotId 不同
         ttsResults: [
-          { shotId: 's1_sub_1', audioUrl: 'C:/tts/s1_sub_1.mp3', duration: 2.1 },
-          { shotId: 's1_sub_2', audioUrl: 'C:/tts/s1_sub_2.mp3', duration: 1.9 },
+          { id: 's1_sub_1', shotId: 's1_sub_1', audioUrl: 'C:/tts/s1_sub_1.mp3', duration: 2.1 },
+          { id: 's1_sub_2', shotId: 's1_sub_2', audioUrl: 'C:/tts/s1_sub_2.mp3', duration: 1.9 },
         ] as any[],
         shots: [] as any[],
         outputDir: 'C:/out',

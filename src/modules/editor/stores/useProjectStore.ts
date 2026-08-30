@@ -756,6 +756,9 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     // ── Step3Store ──
     const s3 = useStep3Store.getState();
     if (typeof s3.setScriptParagraphs === 'function') {
+      /** ✅ 唯一主键统一：落库段落的 id 在出生处(ScriptGenStrategy)已强制 seg_{idx} 全局唯一，
+       *  载入路径仅原样透传 DB 原文，不再做任何去重/追加后缀（防线收敛到唯一权威源头）。
+       *  历史重复 id（LLM 章内编号跨章撞号）已由出生处修复，此层不再兜底。 */
       s3.setScriptParagraphs(Array.isArray(d.scriptParagraphs) ? d.scriptParagraphs : []);
     }
     if (typeof s3.setScriptStyle === 'function') s3.setScriptStyle((d.scriptStyle as string) || '');
@@ -770,7 +773,11 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       //    旧版本 bug 可能导致试听文件被误持久化，重进项目后临时文件已被系统清理
       // 2. 失效路径标记为 _failed，让 UI 显示"失败"而非"已完成"，提示用户重新合成
       const rawTtsResults = Array.isArray(d.ttsResults) ? d.ttsResults : [];
-      const sanitizedTtsResults = rawTtsResults.map((r: any) => {
+      // ✅ 身份键统一：legacy 产物可能只有 shotId 无 id，于此归一 id=id||shotId（单一权威键出生即段落主键）
+      const normalizedTtsResults = rawTtsResults.map((r: any) =>
+        r && typeof r.id === 'string' ? r : { ...r, id: r?.shotId }
+      );
+      const sanitizedTtsResults = normalizedTtsResults.map((r: any) => {
         const audioUrl = r?.audioUrl || '';
         // 试听临时文件前缀：直接标记失败（旧版本 bug 残留）
         if (audioUrl.includes('tts_preview_')) {

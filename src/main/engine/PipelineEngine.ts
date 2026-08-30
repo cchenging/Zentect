@@ -21,6 +21,7 @@ import { WorkflowService } from '../services/WorkflowService';
 import { EngineStateGuard } from '../core/EngineStateGuard';
 import { ExceptionHub } from '../core/ExceptionHub';
 import { AIDaemon } from '../core/AIDaemon';
+import { ProgressAccumulator } from './ProgressAccumulator';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -29,6 +30,8 @@ export class PipelineEngine {
   private isAborted = false;
   /** Fix 10: 当前管线的 AbortController，用于向子进程/HTTP 请求传播取消信号 */
   private abortController: AbortController | null = null;
+  /** L2 全局进度归一化器：线性管线（executePipeline）专属，DAG 并行模式不接入 */
+  private accumulator: ProgressAccumulator | null = null;
 
   constructor() {
     // 💥 注册点：符合 OCP 原则，未来新增节点仅需在此添加一行
@@ -67,6 +70,7 @@ export class PipelineEngine {
       emotionTone: 'neutral',
       hookIntensity: 0.7,
       targetNarrationDurationSec: 0,
+      targetDurationSec: 0,
     };
   }
 
@@ -263,6 +267,22 @@ export class PipelineEngine {
 
     AppLogger.info(LOG_TAGS.SCHEDULER, `🚀 开始执行工作流，共 ${sequence.length} 个节点`);
 
+    // 💥 L2 全局进度归一化：静态经验权重表（裁定 #4，仅覆盖步骤2~5；
+    //   步骤1 走独立 media:process 通道，进度由 subStepProgresses 独立显示，不在此列）
+    this.accumulator = new ProgressAccumulator();
+    /** 按 actionType 匹配的真实耗时权重：步骤2 视觉2 / 步骤3 文案4.5 / 步骤4 TTS 1.5 / 步骤5 匹配2 */
+    const STEP_WEIGHTS: Record<string, number> = {
+      'vision-extract': 2,
+      'script-gen': 4.5,
+      'tts-synthesize': 1.5,
+      'semantic-analyze': 2,
+    };
+    const weights: Record<string, number> = {};
+    for (const t of sequence) {
+      weights[t.nodeId] = STEP_WEIGHTS[t.actionType || t.type] ?? 1;
+    }
+    this.accumulator.register(sequence.map((t) => ({ nodeId: t.nodeId })), weights);
+
     for (const task of sequence) {
       if (this.isAborted) break;
 
@@ -298,6 +318,8 @@ export class PipelineEngine {
           onProgressUpdate({
             nodeId: task.nodeId,
             progress: 100,
+            /** 降级节点也固定到区间终点（防丢尾），保证后续节点接续推进 */
+            globalProgress: this.accumulator ? this.accumulator.settle(task.nodeId) : 100,
             status: 'degraded',
             message: `${nodeType} 降级跳过（可在审阅模式中手动重试）`,
             results: result
@@ -313,6 +335,8 @@ export class PipelineEngine {
         onProgressUpdate({
           nodeId: task.nodeId,
           progress: 100,
+          /** 错误节点固定到区间终点（防丢尾），保证进度不因失败而停滞 */
+          globalProgress: this.accumulator ? this.accumulator.settle(task.nodeId) : 100,
           status: 'error',
           message: i18nPayload.titleKey,
           results: ExceptionHub.toIPCPayload(i18nPayload),
@@ -345,25 +369,35 @@ export class PipelineEngine {
     context: ExecutionContext,
     onProgressUpdate: (progressData: TaskProgressPayload) => void
   ): Promise<any> {
-    return await strategy.execute(task, context, (progress, status, results) => {
-      onProgressUpdate({
+    return await strategy.execute(task, context, (progress, status, results, subStepMeta) => {
+      /** L2 全局归一化：节点内部进度映射为全局进度（单调保护），载荷同时保留节点内进度与全局进度 */
+      const globalProgress = this.accumulator ? this.accumulator.map(task.nodeId, progress) : progress;
+      const payload: TaskProgressPayload = {
         nodeId: task.nodeId,
         progress,
+        globalProgress,
         status,
         message: status || `节点运行中...`,
         results
-      });
+      };
+      // 🆕 子步骤进度：透传步骤1各子业务的真实局部进度（frames/audio/whisper/faces）
+      if (subStepMeta) {
+        payload.subStep = subStepMeta.subStep;
+        payload.subStepProgress = subStepMeta.subStepProgress;
+      }
+      onProgressUpdate(payload);
 
-      // 当节点产出包含 shotId 的数据时，额外推送到故事板卡片通道
+      // 当节点产出包含段落唯一主键 id 的数据时，额外推送到故事板卡片通道
+      // ✅ 身份键统一：段落卡片唯一真源为 id（出生处 seg_N 全局唯一），不再消费 shotId
       if (progress === 100 && Array.isArray(results) && !task.nodeId?.includes('tts')) {
         for (const item of results) {
-          if (item && item.shotId) {
+          if (item && (typeof item.id === 'string' && item.id)) {
             onProgressUpdate({
-              nodeId: `shot:${item.shotId}`,
+              nodeId: `shot:${item.id}`,
               progress: 100,
               status: 'shot-data',
               message: `镜头卡片数据就绪`,
-              results: { shotId: item.shotId, data: item },
+              results: { shotId: item.id, data: item },
             });
           }
         }

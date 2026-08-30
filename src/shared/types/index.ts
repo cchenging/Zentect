@@ -87,6 +87,9 @@ export interface PipelineTask {
   frameDescriptions?: any[];
   ttsDurations?: number[];
   bgmInfo?: any;
+  /** 🎬 方向3（跨项目切片污染纵深防御）：本项目已保存的切片池（metadata.videoChunks 透传），
+   *  步骤5 优先复用本项目自己的切片，避免依赖 daemon 跨项目缓存（PROJECT_MATERIAL_POOL）。 */
+  videoChunks?: any[];
   /** 该节点执行完成后的输出结果，供下游节点作为上游上下文合并 */
   result?: any;
 }
@@ -105,7 +108,13 @@ export interface TaskProgressPayload {
   nodeId?: string;
   mediaId?: string;
   progress?: number;
+  /** L2 引擎层全局归一化进度（0~100 整数，单调递增）；前端状态条优先读它 */
+  globalProgress?: number;
   percent?: number;
+  /** 步骤1子步骤身份：frames/audio/whisper/faces。存在时表示本条进度属于该子步骤 */
+  subStep?: string;
+  /** 步骤1子步骤局部进度（0~100），由子引擎真实完成量动态计算，与全局 percent 解耦 */
+  subStepProgress?: number;
   status?: 'processing' | 'success' | 'error' | string;
   code?: string;
   message?: string;

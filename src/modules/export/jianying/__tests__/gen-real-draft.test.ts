@@ -12,18 +12,23 @@ describe('Generate real draft for JianYing', () => {
     const ttsResults = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, 'ttsResults.json'), 'utf-8'));
     const scriptParagraphs = JSON.parse(fs.readFileSync(path.join(FIXTURE_DIR, 'scriptParagraphs.json'), 'utf-8'));
 
+    // ✅ 身份键统一：fixture 为 legacy 快照（产物只有 shotId），复刻装配器 hydrate 点归一 id
+    const matchByIdData = matchResults.map((m: any) => m && m.id ? m : { ...m, id: m?.shotId });
+    const ttsByIdData = ttsResults.map((t: any) => t && t.id ? t : { ...t, id: t?.shotId });
+
     const bgmRelative = meta.mediaItems.find((m: any) => m.extractedBgm).extractedBgm;
     const projectBase = 'F:/Tools/Zentect/data/projects/proj_1786021445479_kfwtnf';
     const bgmPath = path.join(projectBase, bgmRelative).replace(/\\/g, '/');
     const mediaPath = meta.mediaItems[0].filePath;
 
     // 用 scriptParagraphs 作为主遍历源（与实际管线产出一致）
-    const matchByShotId = new Map<string, any>(matchResults.map((m: any) => [m.shotId, m]));
-    const ttsByShotId = new Map<string, any>(ttsResults.map((t: any) => [t.shotId, t]));
+    // ✅ 身份键统一：matchResults/ttsResults 主键为 id（=段落主键），索引一律按 id 关联
+    const matchById = new Map<string, any>(matchByIdData.map((m: any) => [m.id, m]));
+    const ttsById = new Map<string, any>(ttsByIdData.map((t: any) => [t.id, t]));
 
     const compileShots = scriptParagraphs.map((p: any) => {
-      const m = matchByShotId.get(p.shotId || p.id);
-      const t = ttsByShotId.get(p.shotId || p.id);
+      const m = matchById.get(p.id);
+      const t = ttsById.get(p.id);
       const durationSec = (t?.duration && !t._failed ? t.duration : 0) || p.duration || 3;
       return {
         id: p.id,

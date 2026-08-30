@@ -70,12 +70,51 @@ export interface VlmFrame {
   characters?: string[];
 }
 
-/** 解说文案段落 */
-export interface ScriptParagraph {
-  id: string; shotId?: string; text: string; duration?: number; emotion?: string; editing: boolean;
-  audioSafeText?: string; cleanText?: string;
-  /** 原声段落标记：true 表示该段不合成配音，直接使用原片原声（关键台词保留/原声为主策略时由文案生成标记） */
+/**
+ * 公共基座：解说旁白段 / 原声穿插段共享的时间轴与语义元数据。
+ * 判别联合（Discriminated Union）：下游一律以 `p.type === 'narration'` 完成类型收窄，
+ * 编译期杜绝「原声段误读 text」「解说段缺时间轴」两类静默错误。
+ */
+export interface BaseScriptParagraph {
+  id: string;
+  shotId?: string;
+  /** 判别字段：AI 旁白 vs 原片原声；下游按 p.type 收窄的唯一依据 */
+  type: 'narration' | 'original_audio';
+  /** 该段落/原声在正片中的基准时间戳（源绝对起点，ms）；步骤4 试听定位、步骤5 时间锚定、前端渲染共用 */
+  startMs: number;
+  /** 刚性占有时长（毫秒）；与 startMs 同为契约硬约束，经 Normalizer 工厂保证入库非空 */
+  durationMs: number;
+  /** 情绪标签；步骤4 音色/停顿选择、步骤5 情绪维度匹配共用 */
+  emotion?: string;
+  /**
+   * ⏱️ 秒级时长遗留兼容字段（≈ durationMs/1000，历史 TTS/字幕链路仍按秒读取）
+   * @deprecated 新代码一律以 durationMs 为准；兼容期结束随 keepOriginalAudio 一并移除
+   */
+  duration?: number;
+  /**
+   * 🔁 兼容迁移期遗留标记（@deprecated，保留一个版本周期）：判别联合落地前旧数据的原声布尔标记。
+   * 读取端临时以 `type ?? keepOriginalAudio` 回退判定；所有持久化入口已经
+   * normalizeScriptParagraph（§4.1 Normalizer 工厂）统一净化补齐 type，期满整体删除本字段。
+   */
   keepOriginalAudio?: boolean;
+}
+
+/** 解说旁白段：正文 text 必填（编译期即杜绝空引用风险，取代散落的 `p.text || ""` 运行时兜底链） */
+export interface NarrationParagraph extends BaseScriptParagraph {
+  type: 'narration';
+  /** 解说词正文（严格 ≤ maxSentenceChars 上限，由爆破器二次兜底） */
+  text: string;
+  /** UI 行内编辑态 */
+  editing?: boolean;
+  /** TTS 净化副本（剥离特殊符号后送合成） */
+  audioSafeText?: string;
+  /** 计费/缓存用规范化文本 */
+  cleanText?: string;
+  /**
+   * 🎯 P3 画面意图：本段解说词"应配什么画面"的画面语言描述（主体/动作/场景/景别/氛围），
+   * 步骤5 以此为匹配查询依据，与切片描述做文本↔文本语义匹配
+   */
+  visualIntent?: string;
   /**
    * 🎭 P1 角色组合匹配：本段解说词所对应的视频片段中出现的人物名集合。
    * 来源：步骤2 VLM 角色锚定（downstream.characters），经步骤3 按 chunk 透传、前端持久化到本字段。
@@ -83,13 +122,58 @@ export interface ScriptParagraph {
    * 用户手动修改本段解说后，前端更新此字段，步骤5 重新匹配即可实时感知。
    */
   characters?: string[];
-  /** 🎯 P3 画面意图：本段解说词"应配什么画面"的画面语言描述（主体/动作/场景/景别/氛围），
-   *  步骤5 以此为匹配查询依据，与切片描述做文本↔文本语义匹配 */
-  visualIntent?: string;
-  /** 🎯 P3 时间轴锚定：本段解说词对应的画面时间起点/时长（ms），供步骤5 锚定切片 */
-  startMs?: number;
-  durationMs?: number;
 }
+
+/** 原声穿插段：播放以原片切片硬绑定为准，正文概念由 audioSource.transcript 承载（不参与 TTS 合成） */
+export interface OriginalAudioParagraph extends BaseScriptParagraph {
+  type: 'original_audio';
+  /**
+   * 必填结构体：步骤4 据此在最外层跳过 TTS 请求，步骤5 据此 100% 硬绑定画面切片，
+   * 导出层据此对 BGM 做 -12dB 自动闪避（ducking）。历史数据缺失时由 Normalizer 按源时间窗 fallback 重建。
+   */
+  audioSource: {
+    /** 原片 ASR 真实绝对起始时间戳（ms） */
+    sourceStartMs: number;
+    /** 原片 ASR 真实绝对结束时间戳（ms） */
+    sourceEndMs: number;
+    /** 说话人姓名（如 "高启强"；历史数据缺失时由 Normalizer 标注占位） */
+    speaker: string;
+    /** 原声台词文本（替代旧原声段的 text 字段语义） */
+    transcript: string;
+    /** 导出时是否自动压低 BGM（-12dB ducking，突出台词） */
+    duckingBgm: boolean;
+  };
+}
+
+/** 步骤3 对外产出契约：调用方必须以 type 收窄处理，禁止直接访问联合独有字段 */
+export type ScriptParagraph = NarrationParagraph | OriginalAudioParagraph;
+
+/** 🎚️ 原声策略三档取值元组（SSOT 单源：主进程密度折减系数映射与前端三选一按钮共用本联合，禁止在别处复写字面量） */
+export const AUDIO_STRATEGY_VALUES = ['smart_keep', 'pure_narration', 'original_focus'] as const;
+/** 原声策略三档联合类型别名 */
+export type AudioStrategy = (typeof AUDIO_STRATEGY_VALUES)[number];
+
+/**
+ * SSOT 红线：三档原声策略 ⇔ 解说密度折减系数 DensityRatio 的唯一映射表
+ * （定律一 N_total = ⌊T_target × v × DR × α⌋ 中 DR 的唯一来源，主进程 ScriptGenStrategy 与前端档位切换共用本表）。
+ * 表内数值同时是前端切档时同步写回 narrationRatio 的同源值（smart_keep ⇔ 0.70 / pure_narration ⇔ 0.85 /
+ * original_focus ⇔ 0.35），保证 legacy narrationRatio 口径与策略口径永不发散；修改任一档系数只动这里。
+ */
+export const DENSITY_RATIO_BY_AUDIO_STRATEGY: Record<AudioStrategy, number> = {
+  smart_keep: 0.70,
+  pure_narration: 0.85,
+  original_focus: 0.35,
+};
+
+/** 🎨 风格氛围五档取值元组（前端预设联动载体的合法取值：仅持久化与回显，主进程不单独解析） */
+export const VIBE_PRESET_VALUES = ['viral', 'deep_suspense', 'sharp_roast', 'immersive_first', 'documentary'] as const;
+/** 风格氛围五档联合类型别名 */
+export type VibePreset = (typeof VIBE_PRESET_VALUES)[number];
+
+/** 🗣️ 解说人称三档取值元组（SSOT 单源：前端三选一按钮顺序与调性预设联动写入均用本联合，禁止在别处复写字面量） */
+export const NARRATIVE_PERSPECTIVE_VALUES = ['third', 'first', 'second'] as const;
+/** 解说人称三档联合类型别名 */
+export type NarrativePerspective = (typeof NARRATIVE_PERSPECTIVE_VALUES)[number];
 
 /**
  * 解说文案生成参数（融合方案：枚举按钮组 + 连续值协同）
@@ -106,6 +190,21 @@ export interface PipelineParams {
    * - 允许标记原声段落 allowOriginalMark = narrationRatio < 1（留了原声空间才允许标记）
    */
   narrationRatio: number;
+  /**
+   * 🎚️ 原声策略三档预设（SSOT 红线：唯一映射解说密度折减系数 DensityRatio，
+   * 与 ScriptGenStrategy 预算定律 N_total = ⌊T_target × v × DR × α⌋ 同口径）：
+   * - smart_keep=智能保留（DR=0.70）/ pure_narration=纯解说（DR=0.85）/ original_focus=原声主打（DR=0.35）
+   * ⛔ 与 narrationRatio 滑杆互斥并存：前端 UI 三选一按钮驱动，选中即同步写回 narrationRatio 整体提交；
+   * legacy 兼容：老工程无此字段时，主进程退化为直接采用 narrationRatio（与旧口径一致）。
+   */
+  audioStrategy?: AudioStrategy;
+  /**
+   * 🎨 风格氛围预设五档（仅前端预设联动载体）：viral=爆款爽感 / deep_suspense=深度悬疑 /
+   * sharp_roast=犀利吐槽 / immersive_first=第一人称沉浸 / documentary=纪录片质感。
+   * 切换时由前端一次性同步写回叙事视角/情绪基调/钩子强度等离散参数并整体 setPipelineParams 提交；
+   * 主进程不单独解析本字段，仅为持久化与回显保留。
+   */
+  vibePreset?: VibePreset;
   /** 节奏模式：short_fast=短句快切 / mixed=长短交替 / slow_soothing=长句舒缓 */
   rhythmMode: 'short_fast' | 'mixed' | 'slow_soothing';
   /** 情绪基调：neutral=客观中立 / emotional=情感渲染 / suspense=悬疑营造 / epic=高燃热血 / comedy=搞笑吐槽 */
@@ -117,13 +216,29 @@ export interface PipelineParams {
    * 0 / undefined = 不限制，按 narrationRatio 自动计算。用于直接控制解说总时长。
    */
   targetNarrationDurationSec?: number;
+  /**
+   * 🎯 目标成片篇幅（秒）：定律一预算公式 N_total = ⌊T_target × v × DR × α⌋ 的 T_target 输入，
+   * 其中 v=基准语速（vibePreset 联动）、DR=原声密度比（audioStrategy 三档打包）、α=0.85 标点停顿折损。
+   * 预设档：180=3min 快剪 / 600=10min 精讲(推荐) / 1200=20min 深度大片。
+   * 0 / undefined = 自动：沿用视频总长推导（T_target = totalDurationSec），避免老工程行为跳变。
+   * ⛔ 语义区分：本字段为"成片总时长"口径，与 targetNarrationDurationSec（解说净时长软约束）不可混用；
+   * 优先级：targetDurationSec >0 最高，targetNarrationDurationSec 次之（存量兼容），最后视频总长推导。
+   */
+  targetDurationSec?: number;
 }
 
 /** TTS 合成结果 */
-export interface TtsResult { shotId: string; audioUrl?: string; _failed?: boolean; _error?: string; _synthesizing?: boolean; }
+export interface TtsResult {
+  /** ✅ 身份键统一：id 为段落唯一主键（出生处全局唯一），消费端一律读 id；shotId 保留同值兼容 */
+  id: string;
+  shotId: string;
+  audioUrl?: string; _failed?: boolean; _error?: string; _synthesizing?: boolean;
+}
 
 /** 镜头匹配结果 */
 export interface MatchResult {
+  /** ✅ 身份键统一：id 为段落唯一主键（出生处全局唯一），此即前端 React key，消费端一律读 id */
+  id: string;
   shotId: string; mediaId: string; thumbnail?: string; score: number;
   confirmed: boolean; appliedSpeedFactor?: number; audioDurationMs?: number; chunkData?: Record<string, unknown>;
   /** 该段落对应的解说台词（用于卡片与预览展示，语义上即"这段台词匹配这个片段"） */

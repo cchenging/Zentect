@@ -7,6 +7,7 @@ import type {
   StepScriptGenerationProps,
 } from '../types';
 import type {
+  NarrationParagraph,
   ScriptParagraph,
   PipelineParams,
   VlmFrame,
@@ -80,13 +81,18 @@ describe('Step3 Types', () => {
     it('应包含 scriptParagraphs 数组', () => {
       const output: Step3Output = {
         scriptParagraphs: [
-          { id: 's_01', shotId: 's_01', text: '这是第一段解说', duration: 3.5, editing: false },
-          { id: 's_02', shotId: 's_02', text: '这是第二段解说', duration: 4.0, editing: false },
+          { id: 's_01', shotId: 's_01', type: 'narration', startMs: 0, durationMs: 3500, text: '这是第一段解说', duration: 3.5, editing: false },
+          { id: 's_02', shotId: 's_02', type: 'narration', startMs: 4000, durationMs: 4000, text: '这是第二段解说', duration: 4.0, editing: false },
         ],
       };
 
       expect(output.scriptParagraphs).toHaveLength(2);
-      expect(output.scriptParagraphs[0].text).toBe('这是第一段解说');
+      // 判别联合契约：text 为 narration 成员独有，须先按 type 收窄再访问
+      const firstPara = output.scriptParagraphs[0];
+      if (firstPara?.type !== 'narration') {
+        throw new Error('第一段应为 narration 类型');
+      }
+      expect(firstPara.text).toBe('这是第一段解说');
     });
 
     it('空输出在未生成时合法', () => {
@@ -103,6 +109,9 @@ describe('Step3 Types', () => {
           {
             id: 's_01',
             shotId: 's_01',
+            type: 'narration',
+            startMs: 0,
+            durationMs: 2500,
             text: '欢迎收看本期节目',
             duration: 2.5,
             emotion: '热情',
@@ -114,7 +123,12 @@ describe('Step3 Types', () => {
       };
 
       expect(output.scriptParagraphs[0].emotion).toBe('热情');
-      expect(output.scriptParagraphs[0].cleanText).toBeTruthy();
+      // 判别联合契约：cleanText 为 narration 成员独有，须先按 type 收窄再访问
+      const cleanPara = output.scriptParagraphs[0];
+      if (cleanPara?.type !== 'narration') {
+        throw new Error('该段应为 narration 类型');
+      }
+      expect(cleanPara.cleanText).toBeTruthy();
     });
   });
 
@@ -122,8 +136,12 @@ describe('Step3 Types', () => {
 
   describe('ScriptParagraph', () => {
     it('必填字段 id / text / editing 必须存在', () => {
-      const p: ScriptParagraph = {
+      // 判别联合契约落地后 text/editing 为 narration 成员独有，夹具直接按成员类型构造
+      const p: NarrationParagraph = {
         id: 'para_001',
+        type: 'narration',
+        startMs: 0,
+        durationMs: 3000,
         text: '测试文案',
         editing: false,
       };
@@ -136,6 +154,9 @@ describe('Step3 Types', () => {
     it('可选字段 shotId / duration / emotion 可为 undefined', () => {
       const p: ScriptParagraph = {
         id: 'p1',
+        type: 'narration',
+        startMs: 0,
+        durationMs: 3000,
         text: 'hello',
         editing: true,
       };
@@ -146,8 +167,12 @@ describe('Step3 Types', () => {
     });
 
     it('audioSafeText / cleanText 可选字段存在时应正常访问', () => {
-      const p: ScriptParagraph = {
+      // 判别联合契约落地后 cleanText/audioSafeText 为 narration 成员独有，夹具直接按成员类型构造
+      const p: NarrationParagraph = {
         id: 'p2',
+        type: 'narration',
+        startMs: 0,
+        durationMs: 3000,
         text: '原始文案',
         editing: false,
         cleanText: '清洗后文案',
@@ -226,7 +251,6 @@ describe('Step3 Types', () => {
     it('应包含所有 View 需要的回调函数', () => {
       const props: StepScriptGenerationProps = {
         scriptParagraphs: [],
-        scriptStyle: '硬核科普',
         speechRate: 4.5,
         pipelineParams: {
           narrativePerspective: 'third',
@@ -237,7 +261,7 @@ describe('Step3 Types', () => {
         },
         vlmFrames: [],
         isGenerating: false,
-        onSetScriptStyle: () => {},
+        streamMeta: null,
         onSetSpeechRate: () => {},
         onSetPipelineParams: () => {},
         onUpdateParagraph: () => {},
@@ -247,11 +271,9 @@ describe('Step3 Types', () => {
         onMatchVision: () => {},
       };
 
-      expect(props.scriptStyle).toBe('硬核科普');
       expect(props.isGenerating).toBe(false);
       expect(typeof props.onRegenerate).toBe('function');
       expect(typeof props.onMatchVision).toBe('function');
-      expect(typeof props.onSetScriptStyle).toBe('function');
       expect(typeof props.onSetSpeechRate).toBe('function');
       expect(typeof props.onUpdateParagraph).toBe('function');
       expect(typeof props.onUpdateParagraphEmotion).toBe('function');
@@ -259,8 +281,7 @@ describe('Step3 Types', () => {
 
     it('isGenerating 为 true 时应正常传递', () => {
       const props: StepScriptGenerationProps = {
-        scriptParagraphs: [{ id: 's1', text: '文案', editing: false }],
-        scriptStyle: '情感叙事',
+        scriptParagraphs: [{ id: 's1', type: 'narration', startMs: 0, durationMs: 3000, text: '文案', editing: false }],
         speechRate: 3.0,
         pipelineParams: {
           narrativePerspective: 'first',
@@ -271,7 +292,7 @@ describe('Step3 Types', () => {
         },
         vlmFrames: [{ url: '/a.jpg', description: 'test', editing: false, confirmed: true }],
         isGenerating: true,
-        onSetScriptStyle: () => {},
+        streamMeta: null,
         onSetSpeechRate: () => {},
         onSetPipelineParams: () => {},
         onUpdateParagraph: () => {},

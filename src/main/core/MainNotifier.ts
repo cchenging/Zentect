@@ -27,11 +27,20 @@ export class MainNotifier {
     }
   }
 
-  /** 推送任务进度到渲染进程并持久化 */
-  static notifyTaskProgress(mediaId: string, projectId: string, code: string, percent: number, status: string = DICT.TASK_STATUS.RUNNING) {
+  /** 推送任务进度到渲染进程并持久化
+   *  subStep / subStepProgress：步骤1子业务的真实局部进度，透传自 PipelineEngine 的子步骤元数据 */
+  static notifyTaskProgress(
+    mediaId: string,
+    projectId: string,
+    code: string,
+    percent: number,
+    status: string = DICT.TASK_STATUS.RUNNING,
+    subStep?: string,
+    subStepProgress?: number,
+  ) {
     MainNotifier.taskRepo.upsertTask({ mediaId, projectId, status, progress: percent, text: code });
 
-    const payload = { mediaId, code, percent, status };
+    const payload = { mediaId, code, percent, status, subStep, subStepProgress };
     this.safeSend(this.getMainWindow(), IPC_CHANNELS.EVENT_TASK_PROGRESS, payload);
   }
 

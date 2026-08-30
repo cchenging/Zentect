@@ -61,8 +61,8 @@ vi.mock('../../../../renderer/src/components/shared/drag-reorder-list', () => ({
     React.createElement('div', { 'data-testid': 'drag-list' },
       items.map((item: any, idx: number) =>
         React.createElement('div', {
-          key: item.shotId || idx,
-          'data-testid': `drag-item-${item.shotId || idx}`,
+          key: item.id ?? idx,
+          'data-testid': `drag-item-${item.id ?? idx}`,
         }, renderItem(item, idx, false)),
       ),
     ),
@@ -78,13 +78,15 @@ beforeAll(async () => {
 // ---------- helpers ----------
 
 function makeMatchResult(overrides: Partial<MatchResult> = {}): MatchResult {
-  return {
+  const merged = {
     shotId: 'shot-001',
     mediaId: 'media-001',
     score: 0.9,
     confirmed: false,
     ...overrides,
   };
+  // ✅ 身份键统一：id 与 shotId 同值（即使 overrides 覆盖了 shotId）
+  return { ...merged, id: merged.shotId };
 }
 
 function makeProps(overrides: Partial<StepShotMatchingProps> = {}): StepShotMatchingProps {
@@ -252,7 +254,7 @@ describe('StepShotMatchingView', () => {
     it('有配音音频时应显示"配音同步播放"', () => {
       renderView({
         matchResults: [makeMatchResult({ shotId: 's1', text: '预览台词' })],
-        ttsResults: [{ shotId: 's1', audioUrl: 'magic://local/audio.wav' }],
+        ttsResults: [{ id: 's1', shotId: 's1', audioUrl: 'magic://local/audio.wav' }],
       });
       const item = screen.getByTestId('drag-item-s1');
       fireEvent.click(within(item).getByText('预览'));
@@ -297,7 +299,7 @@ describe('StepShotMatchingView', () => {
     it('原声段落预览应显示"原声播放（切片自带音轨）"而非配音', () => {
       renderView({
         matchResults: [makeMatchResult({ shotId: 's1', text: '原声台词', keepOriginalAudio: true })],
-        ttsResults: [{ shotId: 's1', audioUrl: 'magic://local/audio.wav' }],
+        ttsResults: [{ id: 's1', shotId: 's1', audioUrl: 'magic://local/audio.wav' }],
       });
       const item = screen.getByTestId('drag-item-s1');
       fireEvent.click(within(item).getByText('预览'));

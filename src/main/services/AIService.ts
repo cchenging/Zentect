@@ -732,6 +732,8 @@ export class AIService {
         threshold: 0.3,
         min_chunk_duration_sec: 1.0,
         /** body 窗口切片时用切片路径做缓存 key，整段时用视频路径 */
+        /** 🔧 缓存隔离：传 projectId 让 daemon 素材池缓存按项目隔离 */
+        projectId: payload.projectId,
         mediaId: chunkSource,
       });
       const videoChunks = chunkResponse?.data || chunkResponse || [];
@@ -778,6 +780,9 @@ export class AIService {
         const chunkId = r.chunkId || r.mediaId || '';
         const fullChunk = originalChunksByIdAIS.get(String(chunkId));
         return {
+          /** ✅ 身份键统一：id 出生处取段落唯一主键（r.shotId 由 buildMatchQueries 收敛为 s.id），
+           *  消费端一律读 id；shotId 保留同值兼容 */
+          id: r.shotId,
           shotId: r.shotId,
           mediaType: 'video_chunk' as const,
           mediaId: chunkId,

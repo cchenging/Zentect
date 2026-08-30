@@ -9,13 +9,15 @@ import type {
 import type { MatchResult } from '../../../../shared/types/entities/editor';
 
 function makeMatchResult(overrides: Partial<MatchResult> = {}): MatchResult {
-  return {
+  const merged = {
     shotId: 'shot-001',
     mediaId: 'media-001',
     score: 0.9,
     confirmed: false,
     ...overrides,
   };
+  // ✅ 身份键统一：id 与 shotId 同值（即使 overrides 覆盖了 shotId）
+  return { ...merged, id: merged.shotId };
 }
 
 describe('Storyboard Types', () => {

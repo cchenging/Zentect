@@ -57,6 +57,9 @@ type TTSProvider = 'doubao' | 'edge' | 'kokoro';
 
 /** 单段 TTS 合成结果 */
 interface TTSItemResult {
+  /** ✅ 身份键统一：id 为段落唯一主键，消费端一律读 id */
+  id: string;
+  /** 身份键兼容字段，与 id 同值，供历史消费点读取 */
   shotId: string;
   text: string;
   audioPath: string | null;
@@ -135,22 +138,28 @@ export class TTSStrategy extends BaseNodeStrategy {
     // 语速倍率(0.5~2.0)，默认 1.0，传给 TTS 引擎控制合成速度
     const speechRate: number = typeof input.speechRate === 'number' ? input.speechRate : 1.0;
 
-    // 收集待合成的段落列表
-    let shots: Array<{ shotId: string; text: string; duration: number }> = [];
+    // 🐛 临时诊断：确证 scriptShots 是否真正到达后端（排查"未找到前置剧本"空配音问题）
+    AppLogger.warn(LOG_TAGS.AI_AGENT, `[TTS诊断] input.scriptShots=${JSON.stringify(Array.isArray(input.scriptShots) ? { len: input.scriptShots.length, first: input.scriptShots[0] ?? null } : input.scriptShots)} input.keys=${JSON.stringify(Object.keys(input))}`);
+
+    // 收集待合成的段落列表（keepOriginalAudio 为内部拦截标记，非持久化契约）
+    let shots: Array<{ id: string; shotId: string; text: string; duration: number; keepOriginalAudio?: boolean }> = [];
 
     // 优先从前端注入的 scriptShots 参数获取（步骤独立执行时 context.bus 为空）
     if (input.scriptShots && Array.isArray(input.scriptShots) && input.scriptShots.length > 0) {
       shots = input.scriptShots.map((s: any, idx: number) => ({
-        // 用 id（唯一）而非 shotId（breakLongParagraphs 切分后子句共享 shotId 会重复）
-        // 前端 View 按 shotId 匹配试听音频，重复会导致多个子句播放同一段音频
+        // ✅ 身份键统一：id 出生处取段落唯一主键（s.id），消费端一律读 id；
+        //   shotId 保留同值（s.id||s.shotId）兼容历史消费点。
+        id: s.id || s.shotId || `shot_${idx + 1}`,
         shotId: s.id || s.shotId || `shot_${idx + 1}`,
         text: s.text || '',
-        duration: s.duration || 3,
-        keepOriginalAudio: s.keepOriginalAudio === true,
+        /** 时长双源兜底：新契约段落经 Normalizer 净化后仅携带 durationMs（毫秒），老项目段落为秒制 duration */
+        duration: s.duration || (typeof s.durationMs === 'number' ? +(s.durationMs / 1000).toFixed(2) : 3),
+        /** 原声判定双口径：净化的新契约段落只有 type 判别标记，老项目段落仍是 legacy keepOriginalAudio 布尔 */
+        keepOriginalAudio: s.type === 'original_audio' || s.keepOriginalAudio === true,
       }))
-        // 原声段落（keepOriginalAudio）不合成 TTS，直接保留原片原声
+        // 原声段落不合成 TTS，直接保留原片原声
         .filter((s: any) => s.text && s.text.trim().length > 0 && !s.keepOriginalAudio);
-      const originalCount = input.scriptShots.filter((s: any) => s.keepOriginalAudio === true).length;
+      const originalCount = input.scriptShots.filter((s: any) => s.type === 'original_audio' || s.keepOriginalAudio === true).length;
       if (originalCount > 0) {
         AppLogger.info(LOG_TAGS.AI_AGENT, `TTS 跳过 ${originalCount} 段原声段落（保留原片原声），合成 ${shots.length} 段配音`);
       }
@@ -163,10 +172,14 @@ export class TTSStrategy extends BaseNodeStrategy {
         if (nodeId.includes('script')) {
           if (busData?.shots && Array.isArray(busData.shots)) {
             shots = busData.shots.map((s: any, idx: number) => ({
+              /** ✅ 身份键统一：与 scriptShots 分支同源，id 出生处取段落唯一主键 */
+              id: s.id || s.shotId || `shot_${idx + 1}`,
               shotId: s.id || s.shotId || `shot_${idx + 1}`,
               text: s.text || '',
-              duration: s.duration || 3,
-              keepOriginalAudio: s.keepOriginalAudio === true,
+              /** 时长双源兜底：同上，durationMs（毫秒）优先于 legacy 秒制 duration */
+              duration: s.duration || (typeof s.durationMs === 'number' ? +(s.durationMs / 1000).toFixed(2) : 3),
+              /** 原声判定双口径：type 判别标记（新契约）与 keepOriginalAudio 布尔（老项目）并重 */
+              keepOriginalAudio: s.type === 'original_audio' || s.keepOriginalAudio === true,
             }))
               // 原声段落不合成 TTS
               .filter((s: any) => s.text && s.text.trim().length > 0 && !s.keepOriginalAudio);
@@ -200,7 +213,7 @@ export class TTSStrategy extends BaseNodeStrategy {
         // 替代步骤3 的"字数/语速"估算值，让步骤5 的时长惩罚与变速基于真实声画时长
         const realDuration = await probeAudioDurationSec(audioPath);
         AppLogger.info(LOG_TAGS.AI_AGENT, `[TTS] ${shot.shotId} 真实时长 ${realDuration.toFixed(2)}s（预估 ${shot.duration}s，偏差 ${((realDuration - (shot.duration || 0)) / Math.max(realDuration, 0.1) * 100).toFixed(0)}%）`);
-        return { shotId: shot.shotId, text: shot.text, audioPath, duration: realDuration } as TTSItemResult;
+        return { id: shot.id, shotId: shot.shotId, text: shot.text, audioPath, duration: realDuration } as TTSItemResult;
       },
       // 进度回调：每完成一段更新进度 + 推送增量结果（settled 是本段结果，直接累计到 completedSoFar）
       (completed, total, idx, settled) => {
@@ -208,6 +221,7 @@ export class TTSStrategy extends BaseNodeStrategy {
         // 把本段结果转为 TTSItemResult 并累计
         if (settled.error || !settled.result) {
           completedSoFar.push({
+            id: shots[idx].id,
             shotId: shots[idx].shotId,
             text: shots[idx].text,
             audioPath: null,
@@ -234,6 +248,7 @@ export class TTSStrategy extends BaseNodeStrategy {
         failCount++;
         AppLogger.warn(LOG_TAGS.AI_AGENT, `TTS 第 ${idx + 1} 段 [${shots[idx].shotId}] 合成失败: ${item.error?.message}`);
         return {
+          id: shots[idx].id,
           shotId: shots[idx].shotId,
           text: shots[idx].text,
           audioPath: null,

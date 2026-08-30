@@ -33,6 +33,8 @@ class SceneChunkReq(BaseModel):
     # 传 null/0 表示不拆分（matchSegments == chunks，方便调试对比）。
     target_seg_duration_sec: Optional[float] = 3.0
     mediaId: str = 'default'
+    # 🔧 缓存隔离：projectId 参与素材池缓存 key，避免同源视频跨项目复用旧切片池/封面
+    projectId: str = ''
 
 
 @router.post("/api/video/detect_scene_chunks")
@@ -50,7 +52,8 @@ async def detect_scene_chunks(req: SceneChunkReq):
 
         # 🚀 缓存命中：如果该 media_id 已切片，直接返回缓存结果，秒级响应
         # 阶段 B：PROJECT_MATERIAL_POOL 缓存结构升级为 {"chunks","matchSegments"}，命中时同样双写 data=chunks
-        media_id = req.mediaId or "default"
+        # 🔧 缓存隔离：projectId 参与 key（"<projectId>:<mediaId>"），同源视频跨项目不命中旧切片池/封面
+        media_id = f"{req.projectId}:{req.mediaId}" if req.projectId else (req.mediaId or "default")
         cached = PROJECT_MATERIAL_POOL.get(media_id)
         if cached is not None:
             if isinstance(cached, dict) and "chunks" in cached:

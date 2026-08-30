@@ -105,7 +105,10 @@ export const useEditorHydration = (id: string | undefined) => {
           // 💥 步骤5 数据恢复：匹配结果/切片池/BGM 节拍（步骤5 完成时已写入 metadata）
           const step5State = useStep5Store.getState();
           if (Array.isArray(projectSnapshot.matchResults) && projectSnapshot.matchResults.length > 0) {
-            step5State.setMatchResults(projectSnapshot.matchResults);
+            // ✅ 身份键统一：legacy 匹配结果可能只有 shotId 无 id，于此归一 id=id||shotId，消费端一律只读 id
+            step5State.setMatchResults(projectSnapshot.matchResults.map((m: any) =>
+              m && typeof m.id === 'string' ? m : { ...m, id: m?.shotId }
+            ));
           }
           if (Array.isArray(projectSnapshot.videoChunks) && projectSnapshot.videoChunks.length > 0) {
             step5State.setVideoChunks(projectSnapshot.videoChunks);

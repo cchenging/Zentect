@@ -120,7 +120,8 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
     setDeepError('');
     try {
       const payload = {
-        scriptParagraphs: scriptParagraphs.map((p) => p.text).filter(Boolean),
+        // 判别联合收窄：text 仅存在于解说段，BGM 语义推荐只消费解说词文本
+        scriptParagraphs: scriptParagraphs.flatMap((p) => (p.type === 'narration' && p.text ? [p.text] : [])),
         emotionTone,
         frameEmotions,
         shotTypes,
@@ -207,7 +208,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
 
   /** 当前预览的匹配项、切片、配音音频 */
   const previewMatch = useMemo(
-    () => matchResults.find((m) => m.shotId === previewShotId) || null,
+    () => matchResults.find((m) => m.id === previewShotId) || null,
     [matchResults, previewShotId],
   );
   const previewChunk = (previewMatch?.chunkData as any) || null;
@@ -218,7 +219,8 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   const previewEndMs = previewChunk?.endMs ?? previewMatch?.videoTimelineEndMs ?? 0;
   /** 原声段落不走 TTS：音频来自切片视频自带原声轨，不额外找配音 */
   const isOriginalAudio = previewMatch?.keepOriginalAudio === true;
-  const previewTts = isOriginalAudio ? undefined : ttsResults.find((t) => t.shotId === previewShotId);
+  /** ✅ 身份键统一：TTS 产物 id 与 MatchResult id / 段落主键同源，按 id 对齐 */
+  const previewTts = isOriginalAudio ? undefined : ttsResults.find((t) => t.id === previewShotId);
   const previewAudioUrl = previewTts?.audioUrl || "";
 
   /** 同步播放/暂停：视频从切片起点播放（已超出片段时间窗则回到起点），配音音频从头播放 */
@@ -466,7 +468,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
       </div>
       {matchResults.length > 0 ? (
         <>
-          <DragReorderList items={matchResults} getItemId={(m) => m.shotId} onReorder={onReorder}
+          <DragReorderList items={matchResults} getItemId={(m) => m.id} onReorder={onReorder}
             renderItem={(m, index, isDragging) => (
               <div className={`w-full glass-card-sm p-3 flex flex-col gap-2 transition-all border-l-4 ${isDragging ? "opacity-50" : ""} ${m.confirmed ? "border-l-accent-green" : m.score >= 0.85 ? "border-l-accent-green" : m.score >= 0.6 ? "border-l-warning" : "border-l-accent-rose"}`}>
                 <div className="flex gap-3">
@@ -480,16 +482,16 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                   <div className="flex-1 flex flex-col gap-1.5 min-w-0">
                     {/* 台词（替代技术化 shotId），无台词时回退显示 shotId；原声段落加"原声"标记 */}
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-[13px] font-medium break-words min-w-0 flex items-start gap-1.5" title={m.text || m.shotId}>
-                        {m.text || m.shotId}
+                      <span className="text-[13px] font-medium break-words min-w-0 flex items-start gap-1.5" title={m.id}>
+                        {m.text || m.id}
                         {m.keepOriginalAudio && <Badge variant="warning" className="text-[11px] shrink-0">原声</Badge>}
                       </span>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {m.text && (
-                          <button onClick={() => handleCopyText(m.text, m.shotId)}
+                          <button onClick={() => handleCopyText(m.text, m.id)}
                             className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-accent rounded transition-all cursor-pointer" title="复制文案">
-                            {copiedId === m.shotId ? <Check size={11} /> : <Copy size={11} />}
-                            {copiedId === m.shotId ? "已复制" : "复制"}
+                            {copiedId === m.id ? <Check size={11} /> : <Copy size={11} />}
+                            {copiedId === m.id ? "已复制" : "复制"}
                           </button>
                         )}
                         <Badge variant={m.score > 0.8 ? "success" : m.score > 0.5 ? "warning" : "danger"} className="text-[11px] shrink-0">{Math.round(m.score * 100)}%</Badge>
@@ -505,13 +507,13 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                     </div>
                     <div className="flex items-center gap-2 mt-auto">
                       {/* 预览成品：视频 + 配音 + 台词 */}
-                      <button onClick={() => openPreview(m.shotId)} className="px-2.5 py-1 text-[12px] bg-accent/15 text-accent hover:bg-accent hover:text-accent-foreground rounded transition-all cursor-pointer flex items-center gap-1"><Play size={10} /> 预览</button>
+                      <button onClick={() => openPreview(m.id)} className="px-2.5 py-1 text-[12px] bg-accent/15 text-accent hover:bg-accent hover:text-accent-foreground rounded transition-all cursor-pointer flex items-center gap-1"><Play size={10} /> 预览</button>
                       {m.confirmed ? (
                         <span className="text-[12px] text-accent-green flex items-center gap-0.5"><Check size={12} /> 已确认</span>
                       ) : (
                         <>
-                          <button onClick={() => onConfirm(m.shotId)} className="px-2.5 py-1 text-[12px] bg-accent-green/20 text-accent-green hover:bg-accent-green hover:text-white rounded transition-all cursor-pointer">确认</button>
-                          <button onClick={() => setReplacingShotId(m.shotId)} className="px-2.5 py-1 text-[12px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer">替换</button>
+                          <button onClick={() => onConfirm(m.id)} className="px-2.5 py-1 text-[12px] bg-accent-green/20 text-accent-green hover:bg-accent-green hover:text-white rounded transition-all cursor-pointer">确认</button>
+                          <button onClick={() => setReplacingShotId(m.id)} className="px-2.5 py-1 text-[12px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer">替换</button>
                         </>
                       )}
                     </div>
@@ -564,9 +566,9 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
               {/* 视频画面：切片视频文件；无切片文件时回退封面图 */}
               <div className="w-full aspect-video rounded-lg bg-black overflow-hidden relative shrink-0">
                 {previewVideoUrl ? (
-                  // key=shotId：切换预览目标时强制重建元素，重新触发 onLoadedMetadata 定位到新起点
+                  // key=id：切换预览目标时强制重建元素，重新触发 onLoadedMetadata 定位到新起点
                   <video
-                    key={previewMatch.shotId}
+                    key={previewMatch.id}
                     ref={previewVideoRef}
                     src={previewVideoUrl}
                     className="w-full h-full object-contain"
@@ -614,10 +616,10 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                       <span className="text-accent-rose">变速 {previewMatch.appliedSpeedFactor.toFixed(2)}x</span>
                     )}
                     {previewMatch.text && (
-                      <button onClick={() => handleCopyText(previewMatch.text, previewMatch.shotId)}
+                      <button onClick={() => handleCopyText(previewMatch.text, previewMatch.id)}
                         className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-accent rounded transition-all cursor-pointer" title="复制文案">
-                        {copiedId === previewMatch.shotId ? <Check size={11} /> : <Copy size={11} />}
-                        {copiedId === previewMatch.shotId ? "已复制" : "复制"}
+                        {copiedId === previewMatch.id ? <Check size={11} /> : <Copy size={11} />}
+                        {copiedId === previewMatch.id ? "已复制" : "复制"}
                       </button>
                     )}
                   </div>

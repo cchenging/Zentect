@@ -344,7 +344,11 @@ describe('assembleProjectPayload', () => {
     expect(result.pipelineParams.narrationRatio).toBeCloseTo(0.7225);
     expect(result.extractionConfig).toEqual({ mode: 'fast' });
     expect(result.vlmFrames).toEqual([{ id: 'vf1' }]);
-    expect(result.scriptParagraphs).toEqual([{ id: 'sp1' }]);
+    // Step3 段落经 Normalizer 单点净化（a3）：入参仅 id 的段也会被补齐判别联合必填字段
+    // （type/startMs/durationMs/text）并给出 characters 默认空数组，透传断言按净化后形态校验
+    expect(result.scriptParagraphs).toEqual([
+      { id: 'sp1', startMs: 0, durationMs: 3000, text: '', type: 'narration', characters: [] },
+    ]);
     expect(result.scriptStyle).toBe('formal');
     expect(result.speechRate).toBe(5.0);
     expect(result.ttsResults).toEqual([{ id: 'tts1' }]);

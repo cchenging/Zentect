@@ -31,7 +31,7 @@ export function diffParagraphs(
   oldParagraphs: any[],
   newParagraphs: any[]
 ): ParagraphDiff[] {
-  const oldMap = new Map(oldParagraphs.map(p => [p.id || p.shotId, p]));
+  const oldMap = new Map(oldParagraphs.map(p => [p.id, p]));
 
   const diffs: ParagraphDiff[] = [];
 
@@ -39,7 +39,7 @@ export function diffParagraphs(
   const seenIds = new Set<string>();
 
   for (const newP of newParagraphs) {
-    const id = newP.id || newP.shotId;
+    const id = newP.id;
     seenIds.add(id);
 
     const oldP = oldMap.get(id);
@@ -57,7 +57,7 @@ export function diffParagraphs(
 
   // 检测被删除的段落
   for (const oldP of oldParagraphs) {
-    const id = oldP.id || oldP.shotId;
+    const id = oldP.id;
     if (!seenIds.has(id)) {
       diffs.push({ id, type: 'removed', newData: null, oldData: oldP });
     }
@@ -88,7 +88,7 @@ export function applyDiffUpdate(
   currentParagraphs: any[],
   diffs: ParagraphDiff[]
 ): any[] {
-  const currentMap = new Map(currentParagraphs.map(p => [p.id || p.shotId, p]));
+  const currentMap = new Map(currentParagraphs.map(p => [p.id, p]));
   const result: any[] = [];
 
   // 按新序列顺序构建结果

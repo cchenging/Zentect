@@ -139,21 +139,20 @@ export class ExportService {
         projectId,
         projectName: project.projectName,
         shots: (extras.shots || []) as any[],
-        // S8 范围过滤：matchResults/ttsResults/scriptParagraphs 按装配器已过滤的 shotId 集合二次裁剪
+        // S8 范围过滤：matchResults/ttsResults/scriptParagraphs 按段落唯一主键 id 二次裁剪（生出处已保证 id 必存在）
         matchResults: filterBySelectedShotIds(
           (extras.matchResults || []) as any[],
           project.shots.map((s) => s.id),
-          'shotId',
+          'id',
         ),
         ttsResults: filterBySelectedShotIds(
           (extras.ttsResults || []) as any[],
           project.shots.map((s) => s.id),
-          'shotId',
+          'id',
         ),
         scriptParagraphs: filterBySelectedShotIds(
           (extras.scriptParagraphs || []) as any[],
           project.shots.map((s) => s.id),
-          'shotId',
           'id',
         ),
         bgmPath: project.bgmPath,
@@ -252,8 +251,8 @@ export class ExportService {
  *
  * @param list        原始 extras 数组（matchResults/ttsResults/scriptParagraphs）
  * @param selectedIds 装配器已过滤的选中 shotId 集合（白名单）
- * @param primaryKey  list[i][primaryKey] 与 selectedIds 对齐的主键名（matchResults/ttsResults 用 'shotId'）
- * @param fallbackKey 若 primaryKey 取不到时的回退键（scriptParagraphs 的 'shotId' 可能空，用 'id' 兜底，需传两键）
+ * @param primaryKey  list[i][primaryKey] 与 selectedIds 对齐的主键名（matchResults/ttsResults/scriptParagraphs 一律用唯一真源 'id'）
+ * @param fallbackKey 可选回退键（旧实现为兼容 legacy 缺 id 用 shotId；现已不在调用点使用，仅保留下方过滤能力）
  */
 function filterBySelectedShotIds<T extends Record<string, any>>(
   list: T[],

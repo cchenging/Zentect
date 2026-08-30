@@ -202,8 +202,8 @@ export const API = {
   },
 
   project: {
-    // P1: 增量保存 — 仅更新解说稿修改的段落
-    updateScriptDelta: (projectId: string, deltas: Array<{ shotId: string; text: string }>) =>
+    // P1: 增量保存 — 仅更新解说稿修改的段落（✅ 键统一：deltas 按段落唯一真源 id 对齐）
+    updateScriptDelta: (projectId: string, deltas: Array<{ id: string; text: string }>) =>
       invokeSafe(IPC_CHANNELS.PROJECT_UPDATE_SCRIPT_DELTA, projectId, deltas),
     getById: (id: string) => invokeSafe(IPC_CHANNELS.PROJECT_GET_BY_ID, id),
     getAll: () => invokeSafe(IPC_CHANNELS.PROJECT_GET_LIST),

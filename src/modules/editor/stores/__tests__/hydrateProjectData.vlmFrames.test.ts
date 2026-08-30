@@ -185,7 +185,8 @@ describe('hydrateProjectData - vlmFrames 恢复行为', () => {
       roles: [],
       shots: [],
       aiShots: [],
-      scriptParagraphs: [{ id: 'p1', text: '解说段落1' }],
+      /** 判别联合契约夹具：type/startMs/durationMs 为 NarrationParagraph 必填字段 */
+      scriptParagraphs: [{ id: 'p1', type: 'narration', text: '解说段落1', startMs: 0, durationMs: 3000 }],
     });
     expect(useStep3Store.getState().scriptParagraphs).toHaveLength(1);
 
@@ -195,9 +196,9 @@ describe('hydrateProjectData - vlmFrames 恢复行为', () => {
       roles: [],
     });
 
-    // mergePartialUpdate 不影响未传字段
+    // mergePartialUpdate 不影响未传字段（toMatchObject 规避联合类型的独有字段直接访问）
     expect(useStep3Store.getState().scriptParagraphs).toHaveLength(1);
-    expect(useStep3Store.getState().scriptParagraphs[0].text).toBe('解说段落1');
+    expect(useStep3Store.getState().scriptParagraphs[0]).toMatchObject({ type: 'narration', text: '解说段落1' });
   });
 
   it('partial merge（无 ttsResults）→ step4 store 保持不变', () => {

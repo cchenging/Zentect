@@ -108,7 +108,8 @@ export function breakLongParagraphs(
       // 保留空文本段落：保持与 LLM 输出的 1:1 对齐，下游可识别"占位/无字幕"分镜。
       // 不静默丢弃，避免切分后段落计数与 LLM 输出错位。
       result.push({
-        id: p.id || p.shotId || `para_${idx}`,
+        /** ✅ 身份键统一：段落主键 id 出生处即全局唯一（Normalizer 亦断言），子句在此基础上追加 _sub */
+        id: p.id || `para_${idx}`,
         shotId: p.shotId,
         text: '',
         duration: Math.max(1.2, baseDuration),
@@ -160,9 +161,47 @@ export function breakLongParagraphs(
     const totalChars = rawText.length || 1;
     // 未切分（仅 1 片）时保留父段落原始 id，不追加 _sub 后缀，供下游按 id 对齐；
     // 仅真正拆分出多片时才追加 _sub_N，避免"短句被误标为子句"导致 id 错位。
-    const pieceId = (p.id || p.shotId || `para_${idx}`) ?? '';
+    const pieceId = p.id || `para_${idx}`;
+
+    // ═══ §3.4 毫秒时间轴修正：整数比例分摊 + 前缀和游标 + 尾段 absorb 闭合 ═══
+    // 父级毫秒轴可得性守卫：坐标齐备才做毫秒修正；任一缺失则整组透传入参原值
+    // （undefined 保持缺失），绝不拿假数据虚构时间轴——由下游 Normalizer / 类型契约暴露问题。
+    const parentStartMs =
+      typeof p.startMs === 'number' && Number.isFinite(p.startMs) ? p.startMs : undefined;
+    const parentDurMs =
+      typeof p.durationMs === 'number' && Number.isFinite(p.durationMs) && p.durationMs >= 0
+        ? p.durationMs
+        : undefined;
+    const hasParentTimeline = parentStartMs !== undefined && parentDurMs !== undefined;
+    // 毫秒保底下限：与秒级 1.2s 同口径
+    const MIN_SUB_MS = 1200;
+    // 整数毫秒份额 d_sub,i = ⌊D_parent × len_i / ∑len⌉（四舍五入）。
+    // 各子句字符总和因标点归属/裁剪与 rawText.length 存在微差，累计误差交由尾段 absorb 吸收。
+    const rawSharesMs = hasParentTimeline
+      ? pieces.map((sent) => Math.round(((parentDurMs as number) * sent.length) / totalChars))
+      : [];
+    // 保底抬升检测：存在 <1.2s 的原始份额说明触发过保底，此时以保底为准、
+    // 允许毫秒轴轻微越出父区间顺延（解说过短比时间轴越界致命得多），不再回缩吸收。
+    const hadFloorLift = rawSharesMs.some((v) => v < MIN_SUB_MS);
+    const sharesMs = rawSharesMs.map((v) => Math.max(MIN_SUB_MS, v));
+    // 前缀和游标：顺序铺排每片起点，杜绝旧实现"全体子句同起点 = 父起点"的重叠缺陷
+    let msCursor = parentStartMs ?? 0;
+    const startsMs: number[] = [];
+    const dursMs: number[] = [];
+    if (hasParentTimeline) {
+      for (let i = 0; i < pieces.length; i++) {
+        startsMs.push(msCursor);
+        dursMs.push(sharesMs[i]);
+        msCursor += sharesMs[i];
+      }
+    }
+
     const subParagraphs = pieces.map((sent, sIdx) => {
-      const subDuration = parseFloat(((sent.length / totalChars) * baseDuration).toFixed(1));
+      // ⏱️ 秒级时长单源派生：优先从定案毫秒份额换算（恒满足 ≈durationMs/1000 映射），
+      // 毫秒轴不可得时才退回字数比例×父秒长估算；下限 1.2s 由份额保底天然满足
+      const subDuration = hasParentTimeline
+        ? parseFloat((dursMs[sIdx] / 1000).toFixed(1))
+        : parseFloat(((sent.length / totalChars) * baseDuration).toFixed(1));
       return {
         id: pieces.length > 1 ? `${pieceId}_sub_${sIdx + 1}` : pieceId,
         shotId: p.shotId,
@@ -174,22 +213,18 @@ export function breakLongParagraphs(
         characters: inheritedCharacters,
         // 🎯 P3 画面意图：子句继承父段落的画面意图描述
         visualIntent: p.visualIntent || "",
-        // 🎯 P3 时间轴锚定：子句继承父段落对应 chunk 的时间起点/时长（ms）
-        startMs: p.startMs,
-        durationMs: p.durationMs,
+        // 🎯 P3 时间轴锚定修正：按前缀和铺排子句起点与时长（ms）；父级毫秒轴缺失时透传原值
+        startMs: hasParentTimeline ? startsMs[sIdx] : p.startMs,
+        durationMs: hasParentTimeline ? dursMs[sIdx] : p.durationMs,
         // 子句透传父段落原始序号，供调用方按原始顺序合并
         __order: inheritedOrder,
       };
     });
-    // 归一化缩放：若 1.2s 保底导致子句总时长 > 父时长，按比例缩放回父时长；
-    // ⚠️ 但缩放不得破坏 1.2s 保底（保底优先），否则会出现无法解说/匹配的过短切片
-    const rawTotalDuration = subParagraphs.reduce((sum, s) => sum + s.duration, 0);
-    if (rawTotalDuration > baseDuration) {
-      subParagraphs.forEach((sub) => {
-        sub.duration = parseFloat(
-          Math.max(1.2, (sub.duration / rawTotalDuration) * baseDuration).toFixed(1),
-        );
-      });
+    // 尾段 absorb：仅在未触发 1.2s 保底的常规路径启用——把取整累计误差一次性划给最后一片，
+    // 保证 ∑durationMs ≡ D_parent、子句时间轴右端精确闭合到父末。
+    if (hasParentTimeline && !hadFloorLift) {
+      const lastSub = subParagraphs[subParagraphs.length - 1];
+      lastSub.durationMs = ((parentStartMs as number) + (parentDurMs as number)) - (startsMs[startsMs.length - 1]);
     }
     result.push(...subParagraphs);
   });

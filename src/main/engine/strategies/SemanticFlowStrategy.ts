@@ -30,7 +30,7 @@ export class SemanticFlowStrategy extends BaseNodeStrategy {
       return [];
     }
 
-    onProgress(10, `正在生成时序语义流 (${shots.length} 个镜头)...`);
+    onProgress(5, `正在生成时序语义流 (${shots.length} 个镜头)...`);
 
     try {
       const shotsWithSemantic = await VisionProcessor.generateSemanticFlow(shots);

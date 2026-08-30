@@ -23,6 +23,50 @@ router = APIRouter()
 
 
 # ==========================================
+# 🔧 P0 内存观测（PR-步骤5资源治理）：跨平台 RSS 读取
+#    Windows Python 标准库无 resource 模块，统一用 ctypes/GetProcessMemoryInfo（零新增依赖）；
+#    POSIX 用 resource.ru_maxrss。仅观测，失败返回 -1，不兜底业务。
+# ==========================================
+def _mem_rss_mb() -> float:
+    """跨平台获取当前 Python 进程物理内存 RSS（MB）；失败返回 -1（仅观测，不兜底业务）"""
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            from ctypes import wintypes
+
+            class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                _fields_ = [
+                    ('cb', wintypes.DWORD),
+                    ('PageFaultCount', wintypes.DWORD),
+                    ('PeakWorkingSetSize', ctypes.c_size_t),
+                    ('WorkingSetSize', ctypes.c_size_t),
+                    ('QuotaPeakPagedPoolUsage', ctypes.c_size_t),
+                    ('QuotaPagedPoolUsage', ctypes.c_size_t),
+                    ('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t),
+                    ('QuotaNonPagedPoolUsage', ctypes.c_size_t),
+                    ('PagefileUsage', ctypes.c_size_t),
+                    ('PeakPagefileUsage', ctypes.c_size_t),
+                ]
+
+            counters = _PROCESS_MEMORY_COUNTERS()
+            counters.cb = ctypes.sizeof(_PROCESS_MEMORY_COUNTERS)
+            psapi = ctypes.windll.psapi
+            if not psapi.GetProcessMemoryInfo(
+                ctypes.windll.kernel32.GetCurrentProcess(),
+                ctypes.byref(counters),
+                counters.cb,
+            ):
+                return -1.0
+            return counters.WorkingSetSize / (1024 * 1024)
+        else:
+            import resource
+            # Linux ru_maxrss 单位 KB；macOS 为字节，此处按 KB→MB 换算（Linux 主路径）
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+    except Exception:
+        return -1.0
+
+
+# ==========================================
 # DTOs
 # ==========================================
 class KMMatchQuery(BaseModel):
@@ -137,14 +181,17 @@ async def kuhn_munkres_match(req: KMMatchReq, request: Request):
     🔧 R1 互斥（PR-1）：进入步骤5（KM 匹配）即释放步骤1 的 ASR/TTS 模型，避免跨步骤叠加常驻
     🔧 R3 取消贯通（PR-1）：从 X-Task-Id 请求头取取消标识，求解循环定期检查
     """
-    # R1：进入步骤5 前释放步骤1 的 ASR 模型（步骤1 与步骤5 模型互斥）。
+    # R1：进入步骤5 前释放步骤1 的 ASR + 人脸模型（步骤1 与步骤5 模型互斥）。
     #    TTS（Kokoro）由 tts_kokoro 独立管理且无 release 方法，暂不在此释放（见 PR-1 未做项说明）
+    print(f"[KM] R1 进入步骤5 前 RSS={_mem_rss_mb():.1f}MB（释放 ASR/人脸前）", file=sys.stderr)
     try:
         AIModels.release_faster_whisper()
         AIModels.release_funasr_sensevoice()
         AIModels.release_paraformer()
+        AIModels.release_face_app()   # 新增：人脸模型与 Chinese-CLIP 互斥，进入步骤5 即释放避免共存
     except Exception as e:
-        print(f"[KM] R1 释放 ASR 模型警告: {e}", file=sys.stderr)
+        print(f"[KM] R1 释放 ASR/人脸模型警告: {e}", file=sys.stderr)
+    print(f"[KM] R1 释放 ASR/人脸 后 RSS={_mem_rss_mb():.1f}MB", file=sys.stderr)
 
     # R3：请求头 X-Task-Id → 取消标识（缺失则取消功能静默降级，不影响兼容性）
     task_id = request.headers.get("X-Task-Id", "") or ""
@@ -1098,6 +1145,7 @@ def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
             AIModels.release_face_app()
         except Exception as e:
             print(f"[KM] R1 释放 CLIP/人脸模型警告: {e}", file=sys.stderr)
+        print(f"[KM] finally 释放三件套后 RSS={_mem_rss_mb():.1f}MB（回落观测点）", file=sys.stderr)
 
 
 def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
@@ -1206,6 +1254,7 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
 
     model, processor = AIModels.get_clip()
     zh_model, zh_processor = AIModels.get_chinese_clip()
+    print(f"[KM] CLIP/Chinese-CLIP 加载后 RSS={_mem_rss_mb():.1f}MB（峰值观测点）", file=sys.stderr)
     text_features = None
     # 🔧 R5 矩阵降精度（PR-2）：相似度矩阵 float64 → float32，驻留减半且不影响 0~1 量级精度
     semantic_sim = np.zeros((n_queries, len(valid_chunk_indices)), dtype=np.float32)
@@ -1435,8 +1484,14 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
           file=sys.stderr)
 
     BLOCK_DURATION_MS = 300000
+    # 🎯 方向2（2026-08-30）：跨 query 时间单调约束容差（ms）。
+    #    8/29 事故复现：跨项目缓存命中后"文案时间递增但切片时间倒走"。
+    #    切片允许轻微时间重叠/回退（<2s 视为相邻衔接），超过即判定为时间倒走并触发单调重选。
+    MONOTONIC_TOLERANCE_MS = 2000.0
     results = []
     current_timeline_ms = 0
+    # 🎯 方向2：上一段文案已匹配切片的 endMs（全局单调推进锚点，跨 block 保留）
+    last_chunk_end_ms = None
 
     # 🔧 P2 #11 方案B：每个 query 的候选切片 id 白名单（来自 Node 端 preselectTopK 的 perQueryTopK）。
     #    candidateIds 为 { shotId: [chunkId, ...] }，空 dict → candidate_sets 全空 → 退化为老逻辑全量求解。
@@ -1723,6 +1778,67 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                         best_role = float(role_sim[qi, chunk_rank[best_ci]])
                         combined_score = _compute_combined_score(best_sem, best_dur_pen, best_emotion, best_role, weights=req.weights)
 
+            # 🎯 方向2（2026-08-30）：跨 query 时间单调约束（纵深防御）
+            # 8/29 事故复现：跨项目缓存命中后"文案时间递增但切片时间倒走"（旧切片池时间轴错乱）。
+            # 方向1 已从缓存键隔离根因；此处再加一道硬约束：主匹配/变速重选定稿后，
+            # 若当前切片 startMs 明显早于上一段已匹配切片的 endMs（时间倒走），
+            # 从当前 block 候选池重选一个"时间单调（startMs ≥ 上一 endMs）且语义不劣化"的切片，
+            # 杜绝文案时间推进而画面时间回退的错乱观感。
+            cur_start_ms = float(chunk.get("startMs") or 0)
+            cur_end_ms = float(chunk.get("endMs") or cur_start_ms)
+            if last_chunk_end_ms is not None and cur_start_ms < last_chunk_end_ms - MONOTONIC_TOLERANCE_MS:
+                mono_best_ci = None
+                mono_best_combined = -1.0
+                base_combined = combined_score
+                for cand_idx in block_chunk_idx_list:
+                    cand_ci = valid_chunk_indices[cand_idx]
+                    if cand_ci in global_used_chunks:
+                        continue
+                    cand_chunk = video_chunks[cand_ci]
+                    cand_start = float(cand_chunk.get("startMs") or 0)
+                    # 时间单调：候选切片起点不得早于上一段切片结束（2s 容差内允许轻微重叠衔接）
+                    if cand_start < last_chunk_end_ms - MONOTONIC_TOLERANCE_MS:
+                        continue
+                    cand_dur = cand_chunk.get("durationMs", 0)
+                    if cand_dur <= 0:
+                        continue
+                    # 白名单约束（与主流程/变速重选一致）：禁止被淘汰的弱相关素材走后门入替
+                    cand_set = candidate_sets[qi]
+                    if cand_set is not None:
+                        cand_id_str = str(cand_chunk.get("id") or "")
+                        if cand_id_str and cand_id_str not in cand_set:
+                            continue
+                    cand_sem = max(0.0, min(1.0, (float(semantic_sim[qi, chunk_rank[cand_ci]]) + 1.0) / 2.0))
+                    cand_kw = _keyword_match_boost(
+                        query_text=getattr(query, 'text', '') or '',
+                        query_emotion=getattr(query, 'emotion', '') or '',
+                        query_visual=getattr(query, 'visualIntent', '') or '',
+                        chunk_desc=cand_chunk.get('description') or '',
+                        chunk_emotion=cand_chunk.get('emotion') or '',
+                        chunk_shot_type=cand_chunk.get('shotType') or '',
+                        chunk_characters=cand_chunk.get('characters'),
+                        chunk_keywords=cand_chunk.get('keywords'),
+                    )
+                    if cand_kw > 0:
+                        cand_sem = min(1.0, cand_sem + cand_kw)
+                    # 语义保护门槛：时间单调候选仍须语义达标，避免为了时间顺序牺牲内容正确性
+                    if cand_sem < 0.55:
+                        continue
+                    cand_dur_score = _compute_duration_score(audio_dur_ms, cand_dur)
+                    cand_emotion = float(emotion_sim[qi, chunk_rank[cand_ci]])
+                    cand_role = float(role_sim[qi, chunk_rank[cand_ci]])
+                    cand_combined = _compute_combined_score(cand_sem, cand_dur_score, cand_emotion, cand_role, weights=req.weights)
+                    if cand_combined > mono_best_combined:
+                        mono_best_combined = cand_combined
+                        mono_best_ci = cand_ci
+                # 仅当时间单调候选综合分不劣化（≥ 当前切片 95%）才替换，避免强行换出更贴合内容
+                if mono_best_ci is not None and mono_best_combined >= base_combined * 0.95:
+                    global_used_chunks.add(mono_best_ci)
+                    chunk = video_chunks[mono_best_ci]
+                    video_dur_ms = chunk.get("durationMs", 0)
+                    combined_score = mono_best_combined
+                    print(f"[KM] shotId={query.shotId} 时间倒走（切片 {cur_start_ms}ms 早于上一镜头 {last_chunk_end_ms}ms），重选时间单调切片 {mono_best_ci}", file=sys.stderr)
+
             speed_factor = 1.0
             if final_video_duration_ms > 0 and video_dur_ms > 0:
                 speed_factor = video_dur_ms / final_video_duration_ms
@@ -1742,6 +1858,11 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             })
 
             current_timeline_ms = target_end_time_ms
+
+            # 🎯 方向2：推进全局单调锚点（取当前切片 endMs 与历史锚点的最大值，防止时间轴回退）
+            cur_end_ms = float(chunk.get("endMs") or float(chunk.get("startMs") or 0))
+            if last_chunk_end_ms is None or cur_end_ms > last_chunk_end_ms:
+                last_chunk_end_ms = cur_end_ms
 
     # VLM 二次裁决：对低置信度匹配调用 GPT-4o 重排
     if req.vlmApiKey and req.vlmApiBase and req.vlmApiModel:

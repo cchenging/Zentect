@@ -26,7 +26,7 @@ export class LLMProcessorStrategy extends BaseNodeStrategy {
 
     const userPrompt = task.params?.inputMapping || '请根据以上数据进行分析处理。';
 
-    onProgress(20, `正在呼叫 ${model} 模型...`);
+    onProgress(5, `正在呼叫 ${model} 模型...`);
 
     try {
       const adapter = LLMFactory.create(provider as any, '', baseUrl || '');

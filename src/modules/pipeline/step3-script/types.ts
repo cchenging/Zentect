@@ -2,6 +2,8 @@
 
 // 🔧 修复 TS2304：re-export 不会引入当前作用域，需要同步 import type 才能在 interface 中使用
 import type { VlmFrame, ScriptParagraph, PipelineParams } from '../../../shared/types/entities/editor';
+// 章粒度流式元数据（与 useStep3Store 同源类型，供 View 渲染"正在推演第k/N章"）
+import type { Step3StreamMeta } from '../stores/useStep3Store';
 
 // Re-export shared types
 export type { ScriptParagraph, PipelineParams } from '../../../shared/types/entities/editor';
@@ -41,12 +43,12 @@ export interface Step3Output {
 /** View Props 接口（Container → View） */
 export interface StepScriptGenerationProps {
   scriptParagraphs: ScriptParagraph[];
-  scriptStyle: string;
   speechRate: number;
   pipelineParams: PipelineParams;
   vlmFrames: VlmFrame[];
   isGenerating: boolean;
-  onSetScriptStyle: (style: string) => void;
+  /** 章粒度流式元数据：生成中展示"正在推演第k/N章"与章节进度条（§五 5.3-C） */
+  streamMeta: Step3StreamMeta | null;
   onSetSpeechRate: (rate: number) => void;
   onSetPipelineParams: (params: PipelineParams) => void;
   onUpdateParagraph: (id: string, text: string) => void;

@@ -22,6 +22,8 @@ export interface Step4Output {
 
 /** 单段 TTS 合成结果 */
 export interface TTSResult {
+  /** ✅ 身份键统一：id 为段落唯一主键（出生处全局唯一），消费端一律读 id；shotId 保留同值兼容 */
+  id: string;
   shotId: string;
   audioUrl?: string;
   _failed?: boolean;

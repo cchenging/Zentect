@@ -95,6 +95,11 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
     ps.resetPipeline();
     ps.setStepStatus(step, 'running');
     ps.setPipelineRunning(true);
+    // 🔧 step3 重新生成前清空旧文案：与 Container.handleRegenerate 保持一致，
+    //   避免旧文案残留显示、生成失败时被误认为有效结果（符合"错就错"原则）。
+    if (step === 3) {
+      useStep3Store.getState().setScriptParagraphs([]);
+    }
     editorLogger.trackStep(step, 'start', { projectId: projectState.projectId });
 
     try {
@@ -186,6 +191,10 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
               id: step5State.activeBgm.id,
               filePath: step5State.activeBgm.filePath,
             } : null,
+            // 🎬 方向3（跨项目切片污染纵深防御）：注入本项目已保存的切片池（step5State.videoChunks
+            //  由项目快照 hydrate，来自本项目 metadata.videoChunks），步骤5 优先复用本项目自己的切片，
+            //  避免匹配池回退到 daemon 跨项目缓存（PROJECT_MATERIAL_POOL）导致引用他项目切片。
+            videoChunks: step5State.videoChunks || [],
           } : {}),
         },
       }));

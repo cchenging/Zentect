@@ -101,9 +101,14 @@ export function assembleExportProjectSync(
   const mediaPath = deps.dehydratePath ? deps.dehydratePath(rawMediaPath) : rawMediaPath;
 
   // 3. 装配素材/配音（TTS）索引
-  const matchResults: any[] = Array.isArray(projectData.matchResults) ? projectData.matchResults : [];
-  const ttsResults: any[] = Array.isArray(projectData.ttsResults) ? projectData.ttsResults : [];
-  const ttsByShotId = new Map<string, any>(ttsResults.map((t: any) => [t.shotId, t]));
+  //   ✅ 身份键统一：产物出生处必带 id（=段落主键 seg_N），消费端一律只读 id，
+  //    shotId 仅作同值兼容写入。读库路径对 legacy 缺 id 数据在此归一一次（id=id||shotId），
+  //   之后索引/读取只走 id，不再做双门。
+  const matchResults: any[] = (Array.isArray(projectData.matchResults) ? projectData.matchResults : [])
+    .map((m: any) => (m && typeof m.id === 'string' ? m : { ...m, id: m?.shotId }));
+  const ttsResults: any[] = (Array.isArray(projectData.ttsResults) ? projectData.ttsResults : [])
+    .map((t: any) => (t && typeof t.id === 'string' ? t : { ...t, id: t?.shotId }));
+  const ttsById = new Map<string, any>(ttsResults.map((t: any) => [t.id, t]));
 
   // 4. 逐镜头装配 ExportShot[]：主数据源为 matchResults（镜头匹配结果）
   const shots: ExportShot[] = matchResults.flatMap((m: any) => {
@@ -129,7 +134,7 @@ export function assembleExportProjectSync(
         `装配失败：镜头 ${m?.shotId ?? '?'} 时间窗无效（startMs=${startMs}, endMs=${endMs}）`,
       );
     }
-    const tts = ttsByShotId.get(m.shotId);
+    const tts = ttsById.get(m.id);
     let audioPath: string | undefined;
     if (tts?.audioUrl && !tts._failed) {
       const dehydrated = deps.dehydratePath ? deps.dehydratePath(tts.audioUrl) : tts.audioUrl;
@@ -137,7 +142,7 @@ export function assembleExportProjectSync(
       audioPath = dehydrated.replace('file://', '');
     }
     return {
-      id: m.shotId,
+      id: m.id,
       mediaId: m?.mediaId || '',
       text: m?.text,
       aiText: m?.aiText,

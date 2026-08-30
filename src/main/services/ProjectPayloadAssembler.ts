@@ -1,7 +1,9 @@
 // 路径: src/main/services/ProjectPayloadAssembler.ts
 // 从 ProjectService.assembleFullPayload 提取为独立纯函数
 // 职责：将 DB 原始数据加工为前端可直接消费的结构化数据
-// 纯数据变换，无外部依赖，可独立单测
+// 纯数据变换，仅依赖 shared 层纯函数工具（normalizeScriptParagraph），可独立单测
+
+import { normalizeScriptParagraph } from '../../shared/utils/normalizeScriptParagraph';
 
 /**
  * 组装完整项目载荷：将 DB 原始数据加工为前端可直接消费的结构化数据
@@ -225,7 +227,11 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
     pipelineParams: normalizePipelineParams(rawData.pipelineParams),
     extractionConfig: rawData.extractionConfig,
     vlmFrames: Array.isArray(rawData.vlmFrames) ? rawData.vlmFrames : [],
-    scriptParagraphs: Array.isArray(rawData.scriptParagraphs) ? rawData.scriptParagraphs : [],
+    // 解说段落唯一持久化入口：经 Normalizer 工厂统一净化为判别联合契约
+    // （补齐 type / 毫秒时间轴 / 原声段 audioSource 结构体，历史三代数据形态在此收敛）
+    scriptParagraphs: Array.isArray(rawData.scriptParagraphs)
+      ? rawData.scriptParagraphs.map((p: unknown) => normalizeScriptParagraph(p))
+      : [],
     scriptStyle: rawData.scriptStyle,
     speechRate: rawData.speechRate,
     ttsResults: Array.isArray(rawData.ttsResults) ? rawData.ttsResults : [],

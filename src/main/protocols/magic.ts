@@ -272,7 +272,7 @@ function createTranscodeResponse(filePath: string): Response | null {
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
       '-c:a', 'aac', '-b:a', '128k',
       '-movflags', 'frag_keyframe+empty_moov',
-      '-f', 'mp4', '-pipe:1',
+      '-f', 'mp4', 'pipe:1',
     ], { windowsHide: true });
 
     AppLogger.info(LOG_TAGS.SYSTEM, `[magic://] FFmpeg 流式转码: ${filePath}`);
@@ -314,6 +314,100 @@ function createTranscodeResponse(filePath: string): Response | null {
   }
 }
 
+// ─── 原声试听：按时间窗提取纯音频 ─────────────────────────
+
+/**
+ * 按源视频 [startMs, endMs] 时间窗提取纯音频片段（ffmpeg），返回流式 audio/mp4。
+ *
+ * 触发方式：magic:// URL 追加 `?start=<ms>&end=<ms>` 查询参数（步骤4 原声段试听）。
+ * 与全片直通/转码路径的最大区别：Chromium 直接播源视频文件时只能整片从头 seek，
+ * 无法保证"只播 [start,end] 的原声"，且遇到 HEVC/非标准容器还会触发全片转码；
+ * 此处由 ffmpeg 在服务端按源时间轴精确截取音频轨，返回独立音频流，试听零偏移。
+ *
+ * - `-ss` 前置快速定位：音频轨无关键帧概念，采样级精确；
+ * - `-vn` 丢弃视频轨，只出音频，减小传输体积、加速起播；
+ * - fragmented mp4 + empty_moov：支持边下边播，避免缓冲等待。
+ *
+ * @param filePath 源视频物理路径
+ * @param startMs 截取起点（源时间轴 ms）
+ * @param endMs 截取终点（源时间轴 ms）
+ * @returns 音频流 Response；ffmpeg 缺失/启动失败返回 503，前端据此明示错误而非静默降级
+ */
+function createAudioSegmentResponse(
+  filePath: string,
+  startMs: number,
+  endMs: number,
+): Response {
+  const ffmpegExe = PathManager.getBinPath(
+    process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg',
+  );
+
+  if (!ffmpegExe || !fs.existsSync(ffmpegExe)) {
+    AppLogger.warn(LOG_TAGS.SYSTEM, '[magic://] FFmpeg 未找到，无法提取原声片段');
+    return new Response('FFmpeg 不可用，无法提取原声片段', { status: 503 });
+  }
+
+  // 源文件不存在：明确 404，避免 ffmpeg 空转后前端拿到空流
+  if (!fs.existsSync(filePath)) {
+    AppLogger.warn(LOG_TAGS.SYSTEM, `[magic://] 原声截取源文件不存在: ${filePath}`);
+    return new Response('Not found', { status: 404 });
+  }
+
+  const startSec = (startMs / 1000).toFixed(3);
+  const durSec = Math.max(0.1, (endMs - startMs) / 1000).toFixed(3);
+
+  try {
+    const ffmpegProc = spawn(ffmpegExe, [
+      '-ss', startSec,
+      '-t', durSec,
+      '-i', filePath,
+      '-vn',
+      '-c:a', 'aac',
+      '-b:a', '128k',
+      '-movflags', 'frag_keyframe+empty_moov',
+      '-f', 'mp4',
+      'pipe:1',
+    ], { windowsHide: true });
+
+    AppLogger.info(LOG_TAGS.SYSTEM, `[magic://] 原声试听截取: ${filePath} [${startMs}~${endMs}ms]`);
+
+    let procKilled = false;
+    const webStream = new ReadableStream({
+      start(ctrl) {
+        ffmpegProc.stdout.on('data', (chunk: Buffer) => {
+          if (!procKilled) ctrl.enqueue(new Uint8Array(chunk));
+        });
+        ffmpegProc.stdout.on('end', () => ctrl.close());
+        ffmpegProc.stdout.on('error', (err: Error) => ctrl.error(err));
+      },
+      cancel() {
+        procKilled = true;
+        if (!ffmpegProc.killed) ffmpegProc.kill('SIGTERM');
+      },
+    });
+
+    ffmpegProc.on('error', () => {
+      // spawn 失败时不做额外处理，已由 catch 返回 503
+    });
+    ffmpegProc.on('close', (code: number | null) => {
+      if (code !== 0 && code !== null) {
+        AppLogger.warn(LOG_TAGS.SYSTEM, `[magic://] 原声截取退出: code=${code}`);
+      }
+    });
+
+    return new Response(webStream as any, {
+      headers: {
+        'Content-Type': 'audio/mp4',
+        'Accept-Ranges': 'none',
+        'Cache-Control': 'no-cache',
+      },
+    });
+  } catch (err: any) {
+    AppLogger.warn(LOG_TAGS.SYSTEM, `[magic://] 原声截取异常`, err);
+    return new Response('原声截取失败', { status: 503 });
+  }
+}
+
 // ─── 主处理器 ────────────────────────────────────────────
 
 export async function handleMagicProtocol(request: Request): Promise<Response> {
@@ -338,13 +432,26 @@ export async function handleMagicProtocol(request: Request): Promise<Response> {
     const resolvedPath = resolved.path;
     const ext = path.extname(resolvedPath).toLowerCase();
 
-    // 3. 非原生容器格式：直接转码
+    // 3. 原声试听：URL 携带合法 start/end（ms）时，用 ffmpeg 提取该时间窗的纯音频。
+    //    必须优先于转码/直通路径：原声段试听只关心音频轨，走全片直通会"播整片开头"而非目标台词。
+    const startParam = urlObj.searchParams.get('start');
+    const endParam = urlObj.searchParams.get('end');
+    const startMs = startParam ? Number(startParam) : NaN;
+    const endMs = endParam ? Number(endParam) : NaN;
+    if (
+      Number.isFinite(startMs) && Number.isFinite(endMs) &&
+      startMs >= 0 && endMs > startMs
+    ) {
+      return createAudioSegmentResponse(resolvedPath, startMs, endMs);
+    }
+
+    // 4. 非原生容器格式：直接转码
     if (NON_STANDARD_CONTAINER_EXTS.has(ext)) {
       const response = createTranscodeResponse(resolvedPath);
       if (response) return response;
     }
 
-    // 4. HEVC MP4 检测：异步非阻塞
+    // 5. HEVC MP4 检测：异步非阻塞
     //    首次检测结果缓存到 hevcCodecCache，避免每个 Range 请求都调 ffprobe
     if (ext === '.mp4') {
       const isHevc = await detectHevcCodec(resolvedPath);
@@ -355,7 +462,7 @@ export async function handleMagicProtocol(request: Request): Promise<Response> {
       }
     }
 
-    // 5. 原生格式：直接提供文件（含 Range 支持）
+    // 6. 原生格式：直接提供文件（含 Range 支持）
     const stat = await fs.promises.stat(resolvedPath);
     if (!stat.isFile()) {
       return new Response('Not a file', { status: 400 });

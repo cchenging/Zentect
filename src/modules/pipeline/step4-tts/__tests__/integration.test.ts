@@ -107,9 +107,9 @@ describe('Step4 TTS 端到端集成测试', () => {
   it('案例1：step3 生成3段解说词，step4 应逐段合成并传递正确文案', async () => {
     // 模拟 step3 生成的解说词（含 breakLongParagraphs 切分后的字段）
     const step3Paragraphs = [
-      { id: 'para_1', text: '死死盯住冰鱼！', shotId: 'shot_1', duration: 1.5, emotion: 'tense', editing: false },
-      { id: 'para_2', text: '眼神杀气顿显！', shotId: 'shot_2', duration: 1.8, emotion: 'angry', editing: false },
-      { id: 'para_3', text: '这把刀，他早就握紧了。', shotId: 'shot_3', duration: 2.5, emotion: 'cold', editing: false },
+      { id: 'para_1', type: 'narration' as const, startMs: 0, durationMs: 1500, text: '死死盯住冰鱼！', shotId: 'shot_1', duration: 1.5, emotion: 'tense', editing: false },
+      { id: 'para_2', type: 'narration' as const, startMs: 1500, durationMs: 1800, text: '眼神杀气顿显！', shotId: 'shot_2', duration: 1.8, emotion: 'angry', editing: false },
+      { id: 'para_3', type: 'narration' as const, startMs: 3300, durationMs: 2500, text: '这把刀，他早就握紧了。', shotId: 'shot_3', duration: 2.5, emotion: 'cold', editing: false },
     ];
     useStep3Store.getState().setScriptParagraphs(step3Paragraphs);
     useStep4Store.setState({ ttsEngine: 'edge', ttsVoiceId: 'zh-CN-XiaoxiaoNeural' });
@@ -145,7 +145,7 @@ describe('Step4 TTS 端到端集成测试', () => {
   it('案例2：用户选的音色 voiceId 应原样传递给后端', async () => {
     // 验证 voiceId 不被前端篡改，原样透传给 generateTTS
     useStep3Store.getState().setScriptParagraphs([
-      { id: 'p1', text: '测试文案', shotId: 's1', duration: 2, editing: false },
+      { id: 'p1', type: 'narration', startMs: 0, durationMs: 2000, text: '测试文案', shotId: 's1', duration: 2, editing: false },
     ]);
     useStep4Store.setState({ ttsEngine: 'edge', ttsVoiceId: 'zh-CN-YunxiNeural' });
 
@@ -185,10 +185,10 @@ describe('Step4 TTS 端到端集成测试', () => {
   it('案例4：step3 store 含空 text 段落时，应被过滤不参与合成', async () => {
     // 排查「文案不对」—— 验证空文本段落不会进入合成
     useStep3Store.getState().setScriptParagraphs([
-      { id: 'p1', text: '有效文案', shotId: 's1', duration: 2, editing: false },
-      { id: 'p2', text: '', shotId: 's2', duration: 2, editing: false },
-      { id: 'p3', text: '   ', shotId: 's3', duration: 2, editing: false },
-      { id: 'p4', text: '第二段有效文案', shotId: 's4', duration: 2, editing: false },
+      { id: 'p1', type: 'narration', startMs: 0, durationMs: 2000, text: '有效文案', shotId: 's1', duration: 2, editing: false },
+      { id: 'p2', type: 'narration', startMs: 2000, durationMs: 2000, text: '', shotId: 's2', duration: 2, editing: false },
+      { id: 'p3', type: 'narration', startMs: 4000, durationMs: 2000, text: '   ', shotId: 's3', duration: 2, editing: false },
+      { id: 'p4', type: 'narration', startMs: 6000, durationMs: 2000, text: '第二段有效文案', shotId: 's4', duration: 2, editing: false },
     ]);
     useStep4Store.setState({ ttsEngine: 'edge', ttsVoiceId: 'zh-CN-XiaoxiaoNeural' });
 
@@ -209,7 +209,7 @@ describe('Step4 TTS 端到端集成测试', () => {
   it('案例5：语速参数应正确传递给 generateTTS', async () => {
     // 排查「语速调节不生效」
     useStep3Store.getState().setScriptParagraphs([
-      { id: 'p1', text: '语速测试', shotId: 's1', duration: 2, editing: false },
+      { id: 'p1', type: 'narration', startMs: 0, durationMs: 2000, text: '语速测试', shotId: 's1', duration: 2, editing: false },
     ]);
     useStep4Store.setState({ ttsEngine: 'edge', ttsVoiceId: 'zh-CN-XiaoxiaoNeural' });
 
@@ -228,8 +228,8 @@ describe('Step4 TTS 端到端集成测试', () => {
     // 复现真实场景：step3 将一个长句切分为 2 个子句，共享 shotId='shot_A'，但 id 不同
     // step4 必须为每个子句独立合成，且返回结果能被前端按 id 区分（不能按 shotId 匹配）
     const step3Paragraphs = [
-      { id: 'shot_A_sub_1', text: '死死盯住冰鱼！', shotId: 'shot_A', duration: 1.5, editing: false },
-      { id: 'shot_A_sub_2', text: '眼神杀气顿显！', shotId: 'shot_A', duration: 1.8, editing: false },
+      { id: 'shot_A_sub_1', type: 'narration' as const, startMs: 0, durationMs: 1500, text: '死死盯住冰鱼！', shotId: 'shot_A', duration: 1.5, editing: false },
+      { id: 'shot_A_sub_2', type: 'narration' as const, startMs: 1500, durationMs: 1800, text: '眼神杀气顿显！', shotId: 'shot_A', duration: 1.8, editing: false },
     ];
     useStep3Store.getState().setScriptParagraphs(step3Paragraphs);
     useStep4Store.setState({ ttsEngine: 'edge', ttsVoiceId: 'zh-CN-XiaoxiaoNeural' });
@@ -276,16 +276,16 @@ describe('Step4 TTS 端到端集成测试', () => {
   it('案例7：TTS 合成失败时，应清空旧 ttsResults 避免播放旧音频', async () => {
     // 1. 模拟 step3 有3段正常剧本
     useStep3Store.getState().setScriptParagraphs([
-      { id: 'p1', text: '死死盯住冰鱼！', shotId: 's1', duration: 1.5, editing: false },
-      { id: 'p2', text: '眼神杀气顿显！', shotId: 's2', duration: 1.8, editing: false },
-      { id: 'p3', text: '这把刀，他早就握紧了。', shotId: 's3', duration: 2.5, editing: false },
+      { id: 'p1', type: 'narration', startMs: 0, durationMs: 1500, text: '死死盯住冰鱼！', shotId: 's1', duration: 1.5, editing: false },
+      { id: 'p2', type: 'narration', startMs: 1500, durationMs: 1800, text: '眼神杀气顿显！', shotId: 's2', duration: 1.8, editing: false },
+      { id: 'p3', type: 'narration', startMs: 3300, durationMs: 2500, text: '这把刀，他早就握紧了。', shotId: 's3', duration: 2.5, editing: false },
     ]);
     useStep4Store.setState({ ttsEngine: 'edge', ttsVoiceId: 'zh-CN-XiaoxiaoNeural' });
 
     // 2. 模拟 hydrate 加载的旧 ttsResults（上次试听保存的旧音频）
     const staleTtsResults = [
-      { shotId: 'p1', audioUrl: 'magic://local/old/tts_edge_stale_1.wav', duration: 3, _failed: false, _error: '' },
-      { shotId: 'p2', audioUrl: 'magic://local/old/tts_edge_stale_2.wav', duration: 3, _failed: false, _error: '' },
+      { id: 'p1', shotId: 'p1', audioUrl: 'magic://local/old/tts_edge_stale_1.wav', duration: 3, _failed: false, _error: '' },
+      { id: 'p2', shotId: 'p2', audioUrl: 'magic://local/old/tts_edge_stale_2.wav', duration: 3, _failed: false, _error: '' },
     ];
     useStep4Store.setState({ ttsResults: staleTtsResults });
 
@@ -361,7 +361,7 @@ describe('Step4 TTS 端到端集成测试', () => {
     useStep4Store.setState({
       ttsEngine: 'edge',
       ttsVoiceId: 'zh-CN-XiaoxiaoNeural',
-      ttsResults: [{ shotId: 'old', audioUrl: 'magic://local/old.wav', _failed: false, _error: '' }],
+      ttsResults: [{ id: 'old', shotId: 'old', audioUrl: 'magic://local/old.wav', _failed: false, _error: '' }],
     });
 
     const result = await strategy.performTask(
@@ -405,13 +405,13 @@ describe('Step4 TTS 端到端集成测试', () => {
   // ============================================================
   it('案例8：TTS 合成成功时，应正确填充新 ttsResults（非空）', async () => {
     useStep3Store.getState().setScriptParagraphs([
-      { id: 'p1', text: '死死盯住冰鱼！', shotId: 's1', duration: 1.5, editing: false },
+      { id: 'p1', type: 'narration', startMs: 0, durationMs: 1500, text: '死死盯住冰鱼！', shotId: 's1', duration: 1.5, editing: false },
     ]);
     useStep4Store.setState({ ttsEngine: 'edge', ttsVoiceId: 'zh-CN-XiaoxiaoNeural' });
 
     // 模拟旧数据（应被新结果覆盖）
     useStep4Store.setState({
-      ttsResults: [{ shotId: 'old', audioUrl: 'magic://local/old.wav', _failed: false, _error: '' }],
+      ttsResults: [{ id: 'old', shotId: 'old', audioUrl: 'magic://local/old.wav', _failed: false, _error: '' }],
     });
 
     // 模拟合成成功

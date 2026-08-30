@@ -1,7 +1,7 @@
 // Module: pipeline/step1-material - Pipeline Strategy
 
 import { BaseNodeStrategy } from '../../../../main/engine/strategies/BaseNodeStrategy';
-import type { ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
+import type { ExecutionContext, SubStepProgressMeta } from '../../../../main/engine/strategies/BaseNodeStrategy';
 import { FrameExtractionService, FACE_FRAME_LONG_EDGE } from '@modules/media/frames';
 import { PathManager } from '../../../../main/utils/pathManager';
 import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
@@ -123,7 +123,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     input: any,
     context: ExecutionContext,
     cacheDir: string,
-    onProgress: (p: number, s: string) => void
+    onProgress: (p: number, s: string, results?: any, subStepMeta?: SubStepProgressMeta) => void
   ): Promise<any> {
     const mediaPath = input.mediaPath;
     const config = input.config || {};
@@ -501,21 +501,34 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
 
     let lastProgress = 0;
 
+    /** 统一上报子步骤真实进度：
+     *   - 全局进度按单调前移
+     *   - 附带的 subStepMeta 携带子业务真实局部进度（由子引擎完成量动态计算），前端据此渲染各子业务百分比
+     */
+    const emitSubStep = (subStep: string, localPct: number, targetGlobal: number, message: string) => {
+      const g = Math.max(lastProgress, targetGlobal);
+      lastProgress = g;
+      onProgress(g, message, undefined, {
+        subStep,
+        subStepProgress: Math.max(0, Math.min(100, Math.round(localPct))),
+      });
+    };
+
     if (skipFrames) {
       lastProgress = Math.max(lastProgress, 20);
-      onProgress(lastProgress, `关键帧已存在 (${validFrames.length}帧)，跳过抽帧`);
+      emitSubStep('frames', 100, lastProgress, `关键帧已存在 (${validFrames.length}帧)，跳过抽帧`);
     }
     if (skipAudio) {
       lastProgress = Math.max(lastProgress, 30);
-      onProgress(lastProgress, vocalsIsFallback ? '极速模式：音频已存在，跳过分离' : '音频分离产物已存在，跳过分离');
+      emitSubStep('audio', 100, lastProgress, vocalsIsFallback ? '极速模式：音频已存在，跳过分离' : '音频分离产物已存在，跳过分离');
     }
     if (skipAsr) {
       lastProgress = Math.max(lastProgress, 65);
-      onProgress(lastProgress, `ASR结果已存在 (${asrLines.length}段)，跳过识别`);
+      emitSubStep('whisper', 100, lastProgress, `ASR结果已存在 (${asrLines.length}段)，跳过识别`);
     }
     if (skipFaces) {
       lastProgress = Math.max(lastProgress, 85);
-      onProgress(lastProgress, `角色数据已存在 (${roles.length}个)，跳过人脸检测`);
+      emitSubStep('faces', 100, lastProgress, `角色数据已存在 (${roles.length}个)，跳过人脸检测`);
     }
 
     // 🔧 修复：forceRetryStep模式下，如果依赖产物不存在，即使config中该子步骤被禁用也要自动执行
@@ -529,8 +542,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
 
     if (needRunFrames) {
       tasks.push((async () => {
-        lastProgress = Math.max(lastProgress, 5);
-        onProgress(lastProgress, '正在提取关键帧...');
+        emitSubStep('frames', 1, Math.max(lastProgress, 5), '正在提取关键帧...');
         try {
           // 🎬 P1-1 OP/ED 源头裁剪：抽帧只抽正剧段（body 窗口）。
           //   时间换算唯一来源是策略层（SSOT）：inPoint=offsetSec(源坐标起点)，
@@ -557,6 +569,12 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             // P0 · 系统级黄金参数：VLM 抽帧默认 longEdge=1024，JPEG -q:v 2（后端自动接管）
             timePoint: framesConfig.timePoint,
             abortSignal: signal,
+            // 🆕 真实动态进度：由 FFmpeg 解码 time= 动态计算，映射到 5%~20% 全局区间
+            onProgress: (pct, msg) => {
+              const g = Math.max(lastProgress, 5 + pct * 0.15);
+              lastProgress = g;
+              onProgress(g, msg || '正在提取关键帧...', undefined, { subStep: 'frames', subStepProgress: pct });
+            },
             // 🎬 P1-1 抽帧只覆盖 body 窗口（OP/ED 不抽帧）
             inPoint: frameShouldTrim ? trimForFramesWin.offsetSec : undefined,
             outPoint: frameShouldTrim && trimForFramesWin.durationSec !== undefined ? trimForFramesWin.durationSec : undefined,
@@ -577,6 +595,12 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               strategy: 'UNIFORM_FPS',
               fps: framesConfig.fps || config.frameFps || 2,
               abortSignal: signal,
+              // 🆕 真实动态进度：降级抽帧同样按解码进度上报
+              onProgress: (pct, msg) => {
+                const g = Math.max(lastProgress, 5 + pct * 0.15);
+                lastProgress = g;
+                onProgress(g, msg || '正在提取关键帧...', undefined, { subStep: 'frames', subStepProgress: pct });
+              },
               // 🎬 P1-1 降级抽帧同样只覆盖 body 窗口
               inPoint: frameShouldTrim ? trimForFramesWin.offsetSec : undefined,
               outPoint: frameShouldTrim && trimForFramesWin.durationSec !== undefined ? trimForFramesWin.durationSec : undefined,
@@ -593,7 +617,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             ? (telemetryResult as any).frameDetails.map((d: any) => Math.round(Number(d?.timeMs) || 0))
             : [];
           lastProgress = Math.max(lastProgress, 20);
-          onProgress(lastProgress, `关键帧提取完成 (${validFrames.length}帧)`);
+          emitSubStep('frames', 100, lastProgress, `关键帧提取完成 (${validFrames.length}帧)`);
           return telemetryResult;
         } catch (e: any) {
           AppLogger.error(LOG_TAGS.MEDIA_ENGINE, '[Step1] 抽帧失败', { mediaId, error: e });
@@ -615,9 +639,13 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
         }
 
         const onSubProgress = (pct: number, msg: string) => {
-          const mapped = 15 + Math.floor(pct * 0.15);
-          lastProgress = Math.max(lastProgress, mapped);
-          onProgress(lastProgress, msg || '正在分离人声...');
+          // 🆕 真实动态进度：透传音频分离子引擎的真实完成百分比（0~100），映射到 15%~30% 全局区间
+          const g = Math.max(lastProgress, 15 + pct * 0.15);
+          lastProgress = g;
+          onProgress(g, msg || '正在分离人声...', undefined, {
+            subStep: 'audio',
+            subStepProgress: Math.max(0, Math.min(100, Math.round(pct))),
+          });
         };
 
         // 🎬 P1-2 OP/ED 源头裁剪：音频分离只处理正剧段（body 窗口）。
@@ -657,10 +685,10 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
 
         if (vocalsPath && !result.isFallback) {
           lastProgress = Math.max(lastProgress, 30);
-          onProgress(lastProgress, '人声分离完成');
+          emitSubStep('audio', 100, lastProgress, '人声分离完成');
         } else if (skipSeparation) {
           lastProgress = Math.max(lastProgress, 30);
-          onProgress(lastProgress, '极速模式：跳过人声分离');
+          emitSubStep('audio', 100, lastProgress, '极速模式：跳过人声分离');
         }
         return result;
       })());
@@ -678,7 +706,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
     let asrSourcePath: string = targetAudio ?? ''; // audioPath 参数可为 undefined，但 ASR 分支有 targetAudio 存在性守卫
     let asrTrimOffsetMs = 0; // P0-2 OP/ED 源头裁剪：>0 时 ASR 结果(body坐标)需换算回源坐标
     if (!skipAsr && !audioFailed && runWhisper && targetAudio && fs.existsSync(targetAudio)) {
-      onProgress(Math.max(lastProgress, 50), '正在进行 ASR 识别...');
+      emitSubStep('whisper', 1, Math.max(lastProgress, 50), '正在进行 ASR 识别...');
       if (vocalsIsFallback) {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[Step1] 人声分离降级模式，ASR 使用含 BGM 的原始音轨，识别质量可能下降', { mediaId });
       }
@@ -749,8 +777,13 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           asrEngine = 'faster-whisper';
         }
         const asrOnProgress = (pct: number, msg: string) => {
-          const mapped = 45 + Math.round(pct * 0.2);
-          onProgress(Math.max(lastProgress, mapped), msg || 'ASR 识别中');
+          // 🆕 真实动态进度：透传 ASR 子引擎的真实完成百分比（0~100），映射到 45%~65% 全局区间
+          const g = Math.max(lastProgress, 45 + pct * 0.2);
+          lastProgress = g;
+          onProgress(g, msg || 'ASR 识别中', undefined, {
+            subStep: 'whisper',
+            subStepProgress: Math.max(0, Math.min(100, Math.round(pct))),
+          });
         };
         whisperResult = await whisperStrategy.transcribe(
           asrSourcePath, audioDir, mediaId, resolvedLang, asrEngine, signal, asrOnProgress,
@@ -758,7 +791,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
           (whisperCfg as any)?.modelSize || 'large-v3'
         );
         lastProgress = Math.max(lastProgress, 65);
-        onProgress(lastProgress, 'ASR 识别完成');
+        emitSubStep('whisper', 100, lastProgress, 'ASR 识别完成');
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
           '[Step1] ASR 失败，降级跳过', { mediaId, error: e.message });
@@ -783,8 +816,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, `[Step1] 清理旧人脸文件失败（非致命）: ${e.message}`);
           }
         }
-        lastProgress = Math.max(lastProgress, 72);
-        onProgress(lastProgress, '正在为人脸识别单独抽帧...');
+        emitSubStep('faces', 1, Math.max(lastProgress, 72), '正在为人脸识别单独抽帧...');
 
         /** 💥 关键修复：为人脸识别单独抽帧（不复用 VLM 场景切换帧）
          * 旧版 bug：复用 VLM_OPTIMIZED 抽的帧（场景切换 + 4秒最小间隔），
@@ -811,6 +843,15 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             // P0 · 人脸专用黄金长边 cap=1280（决策点②：源分辨率低于 1280 保持原始，不放大），JPEG 画质由系统托管 -q:v 2
             frameCap: FACE_FRAME_LONG_EDGE,
             abortSignal: signal,
+            // 🆕 真实动态进度：人脸专用抽帧按解码进度上报到 「faces」 子业务（0~40 区间）
+            onProgress: (pct) => {
+              const g = Math.max(lastProgress, 72 + pct * 0.04);
+              lastProgress = g;
+              onProgress(g, `正在为人脸识别单独抽帧 (${Math.round(pct)}%)...`, undefined, {
+                subStep: 'faces',
+                subStepProgress: Math.max(1, Math.min(40, Math.round(pct * 0.4))),
+              });
+            },
             // 🎬 P1-3 只采 body 窗口
             inPoint: faceShouldTrim ? faceTrimWin.offsetSec : undefined,
             outPoint: faceShouldTrim && faceTrimWin.durationSec !== undefined ? faceTrimWin.durationSec : undefined,
@@ -833,13 +874,20 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             `[Step1] 人脸识别专用抽帧异常，回退到 VLM 帧: ${e.message}`, { mediaId });
         }
 
-        lastProgress = Math.max(lastProgress, 75);
-        onProgress(lastProgress, `正在检测人脸 (${faceFrames.length}帧)...`);
+        emitSubStep('faces', 42, Math.max(lastProgress, 75), `正在检测人脸 (${faceFrames.length}帧)...`);
         try {
-          const detectedFaces = await VisionProcessor.scanFaces(faceFrames, facesDir, signal);
+          const detectedFaces = await VisionProcessor.scanFaces(faceFrames, facesDir, signal, undefined, (pct, msg) => {
+            // 🆕 真实动态进度：按已检测帧数/总帧数动态计算，映射到 42%~90% 局部区间
+            const local = 42 + Math.round((pct / 100) * 48);
+            const g = Math.max(lastProgress, 75 + pct * 0.1);
+            lastProgress = g;
+            onProgress(g, msg || `正在检测人脸 (${pct}%)...`, undefined, {
+              subStep: 'faces',
+              subStepProgress: Math.max(42, Math.min(90, local)),
+            });
+          });
           if (detectedFaces.length > 0) {
-            lastProgress = Math.max(lastProgress, 80);
-            onProgress(lastProgress, `人脸检测完成 (${detectedFaces.length}张)，正在聚类...`);
+            emitSubStep('faces', 92, Math.max(lastProgress, 80), `人脸检测完成 (${detectedFaces.length}张)，正在聚类...`);
             const clustersMap = await VisionProcessor.clusterFaces(
               mediaId,
               detectedFaces,
@@ -997,7 +1045,7 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
             AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[Step1] 人脸检测未返回结果', { mediaId });
           }
           lastProgress = Math.max(lastProgress, 85);
-          onProgress(lastProgress, `人脸识别完成 (${roles.length}个角色)`);
+          emitSubStep('faces', 100, lastProgress, `人脸识别完成 (${roles.length}个角色)`);
         } catch (e: any) {
           AppLogger.warn(LOG_TAGS.MEDIA_ENGINE,
             '[Step1] 人脸检测失败，降级跳过', { mediaId, error: e.message });

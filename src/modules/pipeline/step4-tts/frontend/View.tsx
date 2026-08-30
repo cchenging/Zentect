@@ -4,7 +4,7 @@ import React, { useRef, useEffect, useState } from "react";
 import { Play, Square, Volume2, Mic, User, ChevronDown, ChevronRight } from "lucide-react";
 import { Badge, Progress, StatHeader, EmptyState } from "@renderer/components/shared";
 import { VoiceCard } from "@renderer/components/shared/VoiceCard";
-import type { ScriptParagraph } from "../../../../shared/types/entities/editor";
+import type { ScriptParagraph, OriginalAudioParagraph } from "../../../../shared/types/entities/editor";
 import type { TTSResult, TtsVoiceOption } from "../types";
 
 export interface StepTTSSynthesisViewProps {
@@ -33,6 +33,8 @@ export interface StepTTSSynthesisViewProps {
   onVoicePreview: (voiceId: string) => void;
   onSynthesize: () => void;
   onSingleSynthesize: (idx: number) => void;
+  // 原声段试听：播放原片对应时间窗的真实台词（区别于解说段 TTS 试听）
+  onOriginalAudioPreview: (idx: number, audioSource: OriginalAudioParagraph['audioSource']) => void;
   onSequentialPlay: () => void;
   onSequentialStop: () => void;
 }
@@ -46,7 +48,7 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
     voices, speechRate, previewingVoiceId, playingIdx, successCount, failedCount,
     singleSynthIdx, isSequentialPlaying, sequentialIdx, isPaused,
     onSetTtsEngine, onSetTtsVoiceId, onSetSpeechRate, onPreview, onVoicePreview,
-    onSingleSynthesize, onSequentialPlay, onSequentialStop } = props;
+    onSingleSynthesize, onOriginalAudioPreview, onSequentialPlay, onSequentialStop } = props;
 
   const currentVoices = voices;
 
@@ -121,6 +123,16 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
           {failedCount > 0 && <span className="text-accent-rose">{failedCount} 段失败</span>}
         </div>
       )}
+      {/* 原声保留段统计：后端只合成解说段，此处明示不参与配音的段数，避免"总段数-成功数"对不上 */}
+      {(() => {
+        const originalCount = scriptParagraphs.filter((p) => p.type === 'original_audio').length;
+        return originalCount > 0 ? (
+          <div className="flex items-center gap-1.5 text-[12px] text-accent-cyan/90">
+            <Mic size={11} className="text-accent-cyan/70" />
+            <span>{originalCount} 段为原声保留，将直接使用原片音轨，不参与 TTS 配音</span>
+          </div>
+        ) : null;
+      })()}
 
       {/* 结果列表 */}
       {scriptParagraphs.length > 0 ? (
@@ -155,12 +167,12 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
             </div>
           </div>
           {scriptParagraphs.map((p, idx) => {
-            // 严格按 id/shotId 匹配，禁止下标回退：避免 ttsResults 残留旧数据时误播试听文案
-            // 匹配失败即为 null（UI 显示"待合成"），错误必须以原始形态暴露，不兜底
-            const result = ttsResults.find((r) => r.shotId && (r.shotId === p.id || r.shotId === p.shotId)) || null;
+            // ✅ 身份键统一：段落主键 p.id 与产物 id 同源，严格按 id 匹配，删除旧 shotId 双门
+            const result = ttsResults.find((r) => r.id === p.id) || null;
             // 四态状态判断：已完成 / 合成中 / 失败 / 待合成
             // 合成中：isProcessing 期间，该段尚未出现在 ttsResults 中（Strategy 增量推送，已完成段才会出现）
-            const isSynthesizing = isProcessing && !result;
+            // 原声保留段不参与合成：后端已过滤，永远无 TTS 结果，管线运行中也禁止显示"合成中"
+            const isSynthesizing = isProcessing && !result && p.type !== 'original_audio';
             const status = result
               ? (result._failed ? "failed" : result.audioUrl ? "completed" : "failed")
               : (isSynthesizing ? "synthesizing" : "pending");
@@ -179,13 +191,16 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-[12px] text-accent font-mono shrink-0">第 {String(idx + 1).padStart(2, '0')} 段</span>
+                    {/* 原声保留段：独立 info 变体徽标，与解说段的合成状态彻底解耦 */}
                     <Badge variant={
-                      status === "completed" ? "success"
+                      p.type === 'original_audio' ? "info"
+                      : status === "completed" ? "success"
                       : status === "synthesizing" ? "accent"
                       : status === "failed" ? "danger"
                       : "default"
                     }>
-                      {status === "completed" ? "已完成"
+                      {p.type === 'original_audio' ? "原声保留"
+                        : status === "completed" ? "已完成"
                         : status === "synthesizing" ? "合成中"
                         : status === "failed" ? "失败"
                         : "待合成"}
@@ -211,28 +226,45 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
                     isSequentialCurrent ? "text-accent"
                     : isSynthesizing ? "text-accent-cyan"
                     : "text-foreground"
-                  }`}>{p.text}</div>
+                  }`}>
+                    {/* 原声保留段：展示说话人 + 原片台词，明确其来源与不参与配音的原因 */}
+                    {p.type === 'original_audio' ? (
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        {p.audioSource.speaker && (
+                          <span className="shrink-0 text-[11px] text-accent-cyan/90 border border-accent-cyan/20 rounded px-1 py-px leading-tight">
+                            {p.audioSource.speaker}
+                          </span>
+                        )}
+                        <span className="truncate">{p.audioSource.transcript || '(原声保留段)'}</span>
+                      </div>
+                    ) : p.text}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {/* 单段配音按钮：仅合成当前段落（失败/待合成段可单独重试） */}
+                  {/* 单段配音按钮：仅合成当前段落（失败/待合成段可单独重试）；原声保留段无解说词，禁用合成入口 */}
                   <button
                     onClick={() => onSingleSynthesize(idx)}
-                    disabled={isProcessing || isSequentialPlaying || singleSynthIdx !== null}
+                    disabled={isProcessing || isSequentialPlaying || singleSynthIdx !== null || p.type === 'original_audio'}
                     title="仅配音本段"
                     className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer ${
                       singleSynthIdx === idx ? "bg-accent-cyan/20 text-accent-cyan animate-pulse"
                       : "bg-muted/20 text-muted-foreground hover:bg-muted/30 hover:text-foreground disabled:opacity-40"}`}>
                     {singleSynthIdx === idx ? <Mic size={12} className="animate-pulse" /> : <Mic size={12} />}
                   </button>
-                  {/* 播放按钮 */}
-                  <button onClick={() => result?.audioUrl && onPreview(idx, result.audioUrl!)}
-                    disabled={!result?.audioUrl || result._failed || isProcessing || isSequentialPlaying}
+                  {/* 播放/试听按钮：解说段播 TTS 合成结果；原声保留段播原片对应时间窗的真实台词（后端 ffmpeg 截取） */}
+                  <button
+                    onClick={() => p.type === 'original_audio' ? onOriginalAudioPreview(idx, p.audioSource) : (result?.audioUrl && onPreview(idx, result.audioUrl!))}
+                    disabled={isSequentialPlaying || (p.type === 'original_audio'
+                      ? !(p.audioSource?.sourceStartMs && p.audioSource.sourceEndMs > p.audioSource.sourceStartMs)
+                      : (!result?.audioUrl || result._failed || isProcessing))}
+                    title={p.type === 'original_audio' ? "试听原片原声" : "试听配音"}
                     className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all cursor-pointer ${
                       isPlaying ? "bg-accent/15 text-accent"
                       : isSequentialCurrent ? "bg-accent/15 text-accent"
                       : isSynthesizing ? "bg-muted/20 text-muted-foreground/30 cursor-not-allowed"
-                      : result?.audioUrl && !result._failed ? "bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20"
-                      : "bg-muted/20 text-muted-foreground/30 cursor-not-allowed"}`}>
+                      : p.type === 'original_audio' || (result?.audioUrl && !result._failed)
+                        ? "bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20"
+                        : "bg-muted/20 text-muted-foreground/30 cursor-not-allowed"}`}>
                     {isPlaying || isSequentialCurrent ? <Square size={14} /> : isSynthesizing ? <Mic size={12} className="animate-pulse" /> : <Play size={14} />}
                   </button>
                 </div>

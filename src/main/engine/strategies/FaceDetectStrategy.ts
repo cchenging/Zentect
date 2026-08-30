@@ -52,7 +52,7 @@ export class FaceDetectStrategy extends BaseNodeStrategy {
     if (!fs.existsSync(facesDir)) fs.mkdirSync(facesDir, { recursive: true });
 
     // 步骤3：分批调用 /api/vision 检测人脸（VisionProcessor 内部按 100 帧一批）
-    onProgress(30, `正在扫描 ${frames.length} 帧中的人脸...`);
+    onProgress(5, `正在扫描 ${frames.length} 帧中的人脸...`);
     const faces = await VisionProcessor.scanFaces(frames, facesDir, context.signal);
 
     if (faces.length === 0) {
@@ -61,7 +61,7 @@ export class FaceDetectStrategy extends BaseNodeStrategy {
     }
 
     // 步骤4：HDBSCAN 聚类为角色
-    onProgress(70, `检测到 ${faces.length} 张人脸，正在聚类...`);
+    onProgress(40, `检测到 ${faces.length} 张人脸，正在聚类...`);
     const clustersMap = await VisionProcessor.clusterFaces(mediaId, faces, facesDir);
 
     // 步骤5：按 cluster 反向分组为 roles 结构（与 Step1MaterialStrategy 对齐）

@@ -30,9 +30,9 @@ describe('Step5 Types', () => {
   describe('Step5Input', () => {
     it('合法输入应包含所有必填字段', () => {
       const input: Step5Input = {
-        scriptParagraphs: [{ id: 's1', text: '你好世界', editing: false }],
+        scriptParagraphs: [{ id: 's1', type: 'narration', startMs: 0, durationMs: 3000, text: '你好世界', editing: false }],
         vlmFrames: [{ url: '/frame1.jpg', description: '城市夜景', editing: false, confirmed: true }],
-        ttsResults: [{ shotId: 's1', audioUrl: '/audio/1.mp3' }],
+        ttsResults: [{ id: 's1', shotId: 's1', audioUrl: '/audio/1.mp3' }],
         activeBgm: { id: 'bgm-1', filePath: '/bgm/epic.mp3' },
       };
       expect(input.scriptParagraphs).toHaveLength(1);
@@ -65,9 +65,9 @@ describe('Step5 Types', () => {
 
     it('多个 scriptParagraphs 应被接受', () => {
       const paragraphs = [
-        { id: 's1', text: '第一句', editing: false },
-        { id: 's2', text: '第二句', editing: false },
-        { id: 's3', text: '第三句', editing: true },
+        { id: 's1', type: 'narration' as const, startMs: 0, durationMs: 3000, text: '第一句', editing: false },
+        { id: 's2', type: 'narration' as const, startMs: 3000, durationMs: 3000, text: '第二句', editing: false },
+        { id: 's3', type: 'narration' as const, startMs: 6000, durationMs: 3000, text: '第三句', editing: true },
       ];
       const input: Step5Input = {
         scriptParagraphs: paragraphs,
@@ -80,9 +80,9 @@ describe('Step5 Types', () => {
 
     it('TTS 失败结果（_failed=true）应被接受', () => {
       const input: Step5Input = {
-        scriptParagraphs: [{ id: 's1', text: '测试', editing: false }],
+        scriptParagraphs: [{ id: 's1', type: 'narration', startMs: 0, durationMs: 3000, text: '测试', editing: false }],
         vlmFrames: [],
-        ttsResults: [{ shotId: 's1', _failed: true, _error: 'TTS 合成失败' }],
+        ttsResults: [{ id: 's1', shotId: 's1', _failed: true, _error: 'TTS 合成失败' }],
         activeBgm: null,
       };
       expect(input.ttsResults[0]._failed).toBe(true);
@@ -93,7 +93,7 @@ describe('Step5 Types', () => {
     it('应包含 matchResults 数组', () => {
       const output: Step5Output = {
         matchResults: [
-          { shotId: 'shot1', mediaId: 'chunk1', score: 0.95, confirmed: true },
+          { id: 'shot1', shotId: 'shot1', mediaId: 'chunk1', score: 0.95, confirmed: true },
         ],
       };
       expect(output.matchResults).toHaveLength(1);
@@ -109,6 +109,7 @@ describe('Step5 Types', () => {
   describe('MatchResult', () => {
     it('已确认的匹配结果应含所有核心字段', () => {
       const res: MatchResult = {
+        id: 'shot_001',
         shotId: 'shot_001',
         mediaId: 'media_chunk_abc',
         thumbnail: '/thumbs/shot_001.jpg',
@@ -128,22 +129,22 @@ describe('Step5 Types', () => {
     });
 
     it('score 边界值 0 应为合法值', () => {
-      const res: MatchResult = { shotId: 's', mediaId: 'm', score: 0, confirmed: false };
+      const res: MatchResult = { id: 's', shotId: 's', mediaId: 'm', score: 0, confirmed: false };
       expect(res.score).toBe(0);
     });
 
     it('score 边界值 1.0 应为合法值', () => {
-      const res: MatchResult = { shotId: 's', mediaId: 'm', score: 1.0, confirmed: false };
+      const res: MatchResult = { id: 's', shotId: 's', mediaId: 'm', score: 1.0, confirmed: false };
       expect(res.score).toBe(1.0);
     });
 
     it('未确认状态 confirmed=false 应为合法值', () => {
-      const res: MatchResult = { shotId: 's', mediaId: 'm', score: 0.75, confirmed: false };
+      const res: MatchResult = { id: 's', shotId: 's', mediaId: 'm', score: 0.75, confirmed: false };
       expect(res.confirmed).toBe(false);
     });
 
     it('缺少可选字段（thumbnail/chunkData 等）应被类型接受', () => {
-      const res: MatchResult = { shotId: 's1', mediaId: 'm1', score: 0.5, confirmed: false };
+      const res: MatchResult = { id: 's1', shotId: 's1', mediaId: 'm1', score: 0.5, confirmed: false };
       expect(res.thumbnail).toBeUndefined();
       expect(res.appliedSpeedFactor).toBeUndefined();
       expect(res.audioDurationMs).toBeUndefined();
@@ -152,13 +153,13 @@ describe('Step5 Types', () => {
 
     it('appliedSpeedFactor 应为可选字段', () => {
       const withSpeed: MatchResult = {
-        shotId: 's1', mediaId: 'm1', score: 0.8, confirmed: false,
+        id: 's1', shotId: 's1', mediaId: 'm1', score: 0.8, confirmed: false,
         appliedSpeedFactor: 1.5,
       };
       expect(withSpeed.appliedSpeedFactor).toBe(1.5);
 
       const withoutSpeed: MatchResult = {
-        shotId: 's2', mediaId: 'm2', score: 0.7, confirmed: false,
+        id: 's2', shotId: 's2', mediaId: 'm2', score: 0.7, confirmed: false,
       };
       expect(withoutSpeed.appliedSpeedFactor).toBeUndefined();
     });
@@ -196,7 +197,7 @@ describe('Step5 Types', () => {
 
     it('isProcessing=true 时应可传递', () => {
       const props: StepShotMatchingProps = {
-        matchResults: [{ shotId: 's1', mediaId: 'm1', score: 0.9, confirmed: false }],
+        matchResults: [{ id: 's1', shotId: 's1', mediaId: 'm1', score: 0.9, confirmed: false }],
         videoChunks: [],
         mediaItems: [],
         ttsResults: [],
@@ -247,8 +248,8 @@ describe('Step5 Types', () => {
     it('onReorder 应接收 MatchResult 数组', () => {
       let captured: MatchResult[] = [];
       const reordered: MatchResult[] = [
-        { shotId: 's2', mediaId: 'm2', score: 0.9, confirmed: false },
-        { shotId: 's1', mediaId: 'm1', score: 0.8, confirmed: true },
+        { id: 's2', shotId: 's2', mediaId: 'm2', score: 0.9, confirmed: false },
+        { id: 's1', shotId: 's1', mediaId: 'm1', score: 0.8, confirmed: true },
       ];
       const props: StepShotMatchingProps = {
         matchResults: [],
