@@ -449,15 +449,30 @@ export function applyToShots<T extends { start: number; end: number }>(
     });
 }
 
+/** 纯字卡/标题帧特征正则（模块级，供 applyToChunks 保护排除与步骤5 无信息帧剔除共用同一判据）：
+ *  片名/标题/第X集/预告/字幕/出品/演职员/片尾 等字卡特征。 */
+export const TITLE_CARD_REGEX = /片名|剧名|第\s*[0-9一二三四五六七八九十百]+\s*[集话期回]|预告|宣传|首发|字幕|标题|大字|毛笔字|题字|出品|发行|联合出品|领衔主演|主演|演职员|演员表|导演|编剧|监制|制片|联合摄制|摄制|logo|Logo|LOGO|片尾|敬请期待|下集|致敬/;
+
+/** 判定文本是否命中字卡特征（纯文本判据，供 Node 侧多消费方复用，避免多份正则漂移） */
+export function isTitleCardText(allText: string): boolean {
+  return TITLE_CARD_REGEX.test(String(allText || ''));
+}
+
 /**
- * 裁剪 chunks + matchSegments：毫秒级 startMs/endMs 平移，OP/ED 段过滤，
- *   并返回缓存指纹（写入 video_chunks v3 版本中避免缓存与 trim 值错配）。
+ * 裁剪 chunks + matchSegments：**源坐标过滤**（模式 A 契约忠实实现）。
+ * 输入与输出坐标一律为【源坐标】（源时间轴绝对位置），只做 OP/ED 窗外的剔除与跨边界收紧，
+ * **不做任何坐标平移**——使产物坐标与 chunk.filePath（源视频）天然自洽，预览/导出按源坐标直接取窗。
+ *
+ * 行为（opts 全为毫秒级，trim 语义 = trimStartMs=OP 结束点 / trimEndMs=ED 长度）：
+ *   - 全落在 OP 区（endMs <= trimStartMs）→ 丢弃
+ *   - 全落在 ED 区（startMs >= srcDurationMs - trimEndMs）→ 丢弃
+ *   - 跨边界切片 → 收紧到 [trimStartMs, srcDurationMs - trimEndMs]
+ *   - 残留 <50ms → 丢弃
  * 支持任意形状 chunk：只要含 startMs/endMs 数字字段就行（Layer1 chunks / Layer2 matchSegments 都兼容）
  *
- * 🎯 关键词内容保护（ContentGuard）：
- *   对含「牌匾/裂开/老字号」等强视觉关键词的 chunk，即使完全落在 OP 尾部或 ED 头部，
- *   只要与 body 窗口距离 < PROTECT_OP_EDGE_MS（默认 5s），也保留并平移进 body 区，
- *   避免 OP/ED 误判导致关键镜头被批量删除（如牌匾裂开恰好落在 OP 结尾 2s 内）。
+ * 🎯 关键词内容保护（ContentGuard）：对含「牌匾/裂开/老字号」等强视觉关键词的 chunk，
+ *   即使完全落在 OP 尾部或 ED 头部，只要与 body 窗口边界距离 < 保护带，
+ *   也夹回正剧边界保留（保护的是该画面进入候选池，坐标仍是它在源片中的真实位置）。
  */
 export function applyToChunks<C extends { startMs: number | string; endMs: number | string; description?: string; keywords?: string[] | string }>(
   chunks: C[],
@@ -472,9 +487,8 @@ export function applyToChunks<C extends { startMs: number | string; endMs: numbe
     }
     return false;
   });
-  const effectiveMaxMs = typeof srcDurationMs === 'number'
-    ? Math.max(0, srcDurationMs - trimStartMs - trimEndMs)
-    : Infinity;
+  // ED 在源坐标上的起点（源坐标 ED 硬门禁）；srcDurationMs 缺失时退化为仅 OP
+  const edStartSrcMs = typeof srcDurationMs === 'number' ? Math.max(0, srcDurationMs - trimEndMs) : Infinity;
 
   /** 关键词内容保护：OP 结尾 PROTECT_OP_EDGE_MS 内的关键 chunk 不删，ED 开头同理
    *  🎯 2026-08-23 从 5s → 15s：实测项目「26年8月21日(1)」OP=77.77s，
@@ -496,35 +510,47 @@ export function applyToChunks<C extends { startMs: number | string; endMs: numbe
     return KEYWORD_REGEX.test(allText);
   };
 
-  const shifted = chunks
+  /** 🎬 纯字卡/标题帧判定（2026-09-04 阶段1-防线 E）：描述命中 片名/标题/第X集/预告/字幕/出品/演职员/片尾 等
+   *  字卡特征时，判为"无信息字卡画面"。这类画面即使混有剧情关键词，也**跳过 ContentGuard 拉回保护**、
+   *  按 OP/ED 窗口正常滤除——片头字卡/出品 logo 帧绝不允许被"软拉回"进正剧候选池。
+   *  注意：仅用于排除保护判定，不改变正剧窗内画面的常规保留（正剧内部的中标板属观察项 1.3）。
+   *  判据复用模块级 isTitleCardText（与步骤5 无信息帧剔除同源，避免正则漂移）。 */
+  const isTitleCard = (c: C): boolean => {
+    const desc = String(c.description || '').trim();
+    let kws: string[] = [];
+    if (Array.isArray(c.keywords)) kws = c.keywords as string[];
+    else if (typeof c.keywords === 'string') kws = [c.keywords];
+    return isTitleCardText(desc + ' ' + kws.join(' '));
+  };
+
+  const clamped = chunks
     .map((c) => {
       const s = Number(c.startMs) || 0;
       const e = Number(c.endMs) || s;
-      // 先平移到 body 坐标系
-      let ns = Math.max(0, s - trimStartMs);
-      let ne = Math.max(0, e - trimStartMs);
-      if (effectiveMaxMs !== Infinity && ne > effectiveMaxMs) ne = effectiveMaxMs;
-
-      // 🎯 关键词内容保护逻辑
-      const isProtected = hasKeyContent(c);
-      if (isProtected) {
-        // 情形 A：原始 chunk 与 OP 结束点距离 < PROTECT_OP_EDGE_MS 且原本会被判定为全落在 OP 区
-        // （原始 endMs 靠近 trimStartMs，但在其左边，平移后 ne<=0）→ 强行把它拉进 body 区，
-        // 保留原始时长，起点设为 0（相当于把 OP 末尾这段"视为正剧开头"）
-        if (ne <= 0 && e >= (trimStartMs - PROTECT_OP_EDGE_MS)) {
-          const dur = e - s;
-          ns = 0;
-          ne = Math.max(dur, 50); // 至少保留 50ms，防止被后续 50ms 门限过滤
-          if (effectiveMaxMs !== Infinity && ne > effectiveMaxMs) ne = effectiveMaxMs;
-        }
-        // 情形 B：原始 chunk 与 ED 开始点距离 < PROTECT_ED_EDGE_MS 且原本会被判定为全落在 ED 区
-        // （s - trimStartMs >= effectiveMaxMs）→ 类似处理，终点设为 effectiveMaxMs
-        if (effectiveMaxMs !== Infinity && ns >= effectiveMaxMs) {
-          const edStartSrc = (typeof srcDurationMs === 'number' ? srcDurationMs : 0) - trimEndMs;
-          if (s <= edStartSrc + PROTECT_ED_EDGE_MS) {
+      // 保持源坐标，仅做跨边界收紧
+      let ns = s;
+      let ne = e;
+      // 🎯 关键词内容保护逻辑（⚠️ 字卡画面跳过保护：标题/预告/字幕/出品帧不得被拉回正剧）
+      const isProtected = hasKeyContent(c) && !isTitleCard(c);
+      const opCrossing = s < trimStartMs && e > trimStartMs;           // 跨 OP 边界 → 收紧起点
+      const edCrossing = edStartSrcMs !== Infinity && s < edStartSrcMs && e > edStartSrcMs; // 跨 ED 边界 → 收紧终点
+      if (opCrossing) ns = trimStartMs;
+      if (edCrossing) ne = edStartSrcMs;
+      if (!opCrossing && !edCrossing) {
+        // 完全落在某一边：落在 OP/ED 区的关键词段按保护带夹回正剧边界
+        if (e <= trimStartMs) {
+          // 全落 OP 区：距 OP 结束点 < 保护带 → 夹到正剧起点（画面并入正剧开头）
+          if (isProtected && e >= (trimStartMs - PROTECT_OP_EDGE_MS)) {
+            ns = trimStartMs;
+            ne = Math.max(trimStartMs + (e - s), trimStartMs + 50); // 保留原始时长（≥50ms 防被门限滤除）
+            if (edStartSrcMs !== Infinity && ne > edStartSrcMs) ne = edStartSrcMs;
+          }
+        } else if (edStartSrcMs !== Infinity && s >= edStartSrcMs) {
+          // 全落 ED 区：距 ED 起点 < 保护带 → 夹回正剧结尾
+          if (isProtected && s <= edStartSrcMs + PROTECT_ED_EDGE_MS) {
             const dur = e - s;
-            ne = effectiveMaxMs;
-            ns = Math.max(0, ne - dur);
+            ne = edStartSrcMs;
+            ns = Math.max(trimStartMs, edStartSrcMs - dur);
           }
         }
       }
@@ -534,11 +560,11 @@ export function applyToChunks<C extends { startMs: number | string; endMs: numbe
     .filter((c: any) => {
       const s = Number(c.startMs) || 0;
       const e = Number(c.endMs) || 0;
-      if (e <= 0) return false;
-      if (s >= effectiveMaxMs) return false;
+      if (e <= trimStartMs) return false;                             // 仍全落在 OP 区
+      if (edStartSrcMs !== Infinity && s >= edStartSrcMs) return false; // 仍全落在 ED 区
       return e - s > 50; // 残留 <50ms 丢弃
     }) as C[];
-  return { chunks: shifted, trimFingerprint: fingerprint };
+  return { chunks: clamped, trimFingerprint: fingerprint };
 }
 
 /** 构建 trim 指纹（外部调用，不用跑 applyToChunks([])） */

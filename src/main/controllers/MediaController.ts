@@ -14,13 +14,79 @@ import { PathManager } from '../utils/pathManager';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 import { VideoProcessor } from '../engine/media/VideoProcessor';
+// magic:// 协议路径脱水为物理绝对路径（封面 data URL 通道输入可能是 magic 形态）
+import { dehydrateMagicPath } from '../engine/utils/pathUtils';
 // P0 · 抽帧契约唯一真源（含兼容映射）
 import { normalizeFrameStrategy, type DensityPreset } from '../../modules/media/frames';
 
 export class MediaController {
   private mediaService = new MediaService();
 
+  /** 图片扩展名 → MIME（仅放行图片，防任意文件读取） */
+  private static readonly IMAGE_MIME: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.bmp': 'image/bmp',
+  };
+
+  /** 🔍 诊断一次性日志标记（定位封面显示问题后移除） */
+  private static diagLogged = false;
+
+  /**
+   * 封面 data URL 通道（2026-09-05）：绕过 magic:// 协议图片上屏黑。
+   * 读本地图片文件 → base64 data URL；失败返回空串（前端显示文字占位）。
+   * 输入兼容三种形态：绝对路径 / magic://local/跨盘符 / magic://{projectId}/相对，
+   * 统一经 dehydrateMagicPath 脱水为物理绝对路径后 fs.stat/readFile。
+   * 每个空串分支均打日志，便于从主进程日志直接判定根因。
+   */
+  private async readImageAsDataUrl(rawPath: unknown): Promise<string> {
+    if (typeof rawPath !== 'string' || !rawPath) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[MediaController] 封面 data URL 空输入', { rawPath });
+      return '';
+    }
+    const absPath = dehydrateMagicPath(rawPath);
+    if (!absPath || !path.isAbsolute(absPath)) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[MediaController] 封面路径脱水后非绝对路径', { rawPath, absPath });
+      return '';
+    }
+    const ext = path.extname(absPath).toLowerCase();
+    const mime = MediaController.IMAGE_MIME[ext];
+    if (!mime) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[MediaController] 封面扩展名不在白名单', { rawPath, absPath, ext });
+      return '';
+    }
+    try {
+      const stat = await fs.promises.stat(absPath);
+      // 仅文件 + 尺寸上限（8MB）防大图 base64 内存爆炸
+      if (!stat.isFile()) {
+        AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[MediaController] 封面路径非文件', { rawPath, absPath });
+        return '';
+      }
+      if (stat.size <= 0 || stat.size > 8 * 1024 * 1024) {
+        AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[MediaController] 封面尺寸越界', { rawPath, absPath, size: stat.size });
+        return '';
+      }
+      const buf = await fs.promises.readFile(absPath);
+      const url = `data:${mime};base64,${buf.toString('base64')}`;
+      // 🔍 诊断埋点（定位后移除）：确认 IPC 确实被调用并成功返回
+      if (!MediaController.diagLogged) {
+        MediaController.diagLogged = true;
+        AppLogger.info(LOG_TAGS.MEDIA_ENGINE, `[MediaController] 封面 data URL 通道成功: ${rawPath} → ${absPath} bytes=${stat.size} urlLen=${url.length}`);
+      }
+      return url;
+    } catch (err) {
+      AppLogger.warn(LOG_TAGS.MEDIA_ENGINE, '[MediaController] 封面 data URL 读取失败', { rawPath, absPath, err: (err as Error)?.message });
+      return '';
+    }
+  }
+
   public register() {
+    IpcRouter.handle(IPC_CHANNELS.MEDIA_GET_IMAGE_DATA_URL, async (_e, absoluteFilePath: unknown) => {
+      return this.readImageAsDataUrl(absoluteFilePath);
+    });
     IpcRouter.handle(IPC_CHANNELS.MEDIA_IMPORT, async (_, projectId: string, filePaths: string[]) => {
       if (!projectId) {
         throw new AppError(ErrorCode.FS_PATH_INVALID, 'Project ID is required');

@@ -8,6 +8,7 @@ import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 import { useStep2Store } from '@modules/pipeline/stores/useStep2Store';
 import { useStep3Store } from '@modules/pipeline/stores/useStep3Store';
 import { useStep4Store } from '@modules/pipeline/stores/useStep4Store';
+import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
 import { API } from '@renderer/api';
 import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 import { AppNotifier } from '@renderer/core/AppNotifier';
@@ -45,13 +46,12 @@ export const usePipelineExecutor = () => {
   const handlePipelineProgress = useCallback((payload: any) => {
     if (!payload) return;
 
-    console.log('====== [RENDERER RECEIVE 核心大包] ======', JSON.stringify(payload));
-
     const { progress, globalProgress, status, results, error, nodeName } = payload;
     const storeState = useProjectStore.getState();
     const pipelineState = usePipelineStore.getState();
 
-    console.log(`[工作台大总线] 捕获长连接信号 -> 进度: ${progress}% | 状态: ${status}`);
+    // 🔧 刷屏修复：移除两处每 500ms 频繁触发的 debug console 日志——
+    //   KM 进度轮询已加"变化才推送"守卫，但这一步本就每收到广播必打，日志量仍过大。
 
     if (typeof pipelineState.setPipelineProgress === 'function') {
       // 🔧 L2 全局归一化进度优先（缺失时回退节点内部进度）；Math.max 防回退兜底（双保险）
@@ -117,7 +117,7 @@ export const usePipelineExecutor = () => {
           const s3 = useStep3Store.getState();
           /** ✅ 身份键统一：段落主键 id 出生处(ScriptGenStrategy)已强制 seg_{idx} 全局唯一，此层仅透传、
            *  不再做任何去重/追加后缀（删除了旧 idMap 兜底，防线收敛到唯一权威源头）。 */
-          const paragraphs = results.partialParagraphs.map((p: any) => {
+          const paragraphs = results.partialParagraphs.map((p: any, idx: number) => {
             return {
               /** ✅ 身份键统一：id 出生处即段落唯一主键，前端编辑/时间轴定位按此对齐 */
               id: p.id,
@@ -129,9 +129,21 @@ export const usePipelineExecutor = () => {
               visualIntent: p.visualIntent,
               startMs: p.startMs,
               durationMs: p.durationMs,
+              /** 🎙️ 原声保留段判别信息透传：缺失时 Normalizer 会把原声段误判为解说段，
+               *  写后显示成带引号的普通文案且无「原声保留」标签（须重进才恢复）。 */
+              type: p.type,
+              keepOriginalAudio: p.keepOriginalAudio === true,
+              audioSource: p.audioSource,
+              /** 原始顺序号：非原声段断句后与原声段按此合并，保持与生成顺序一致 */
+              __order: idx,
             };
           });
-          const newParagraphs = breakLongParagraphs(paragraphs).map((x) => normalizeScriptParagraph({ ...x, editing: false }));
+          // 🎙️ 分离原声段：原声段整段保留（断句会破坏原台词定位），仅解说段走断句器，再按 __order 合并
+          const originalAudio = paragraphs.filter((p) => p.type === 'original_audio' || p.keepOriginalAudio || p.audioSource);
+          const narrationOnly = paragraphs.filter((p) => !(p.type === 'original_audio' || p.keepOriginalAudio || p.audioSource));
+          const merged = [...breakLongParagraphs(narrationOnly), ...originalAudio]
+            .sort((a, b) => (a.__order ?? 0) - (b.__order ?? 0));
+          const newParagraphs = merged.map((x) => normalizeScriptParagraph({ ...x, editing: false }));
           s3.appendParagraphs(newParagraphs);
           // 🔧 章粒度流式元数据：驱动前端"正在推演第k/N章"进度显示（§五 5.3-C）
           if (results.streamMeta && typeof results.streamMeta.chapterIndex === 'number') {
@@ -170,6 +182,43 @@ export const usePipelineExecutor = () => {
           s4.setTtsResults(mapped);
           // 实时更新 ttsProgress，避免 0→100 跳变
           s4.setTtsProgress(progress);
+        }
+      }
+
+      // 🔧 步骤5 卡片流式：后端 SemanticAnalyzeStrategy 在 KM 逐块求解完时，
+      // 通过 onProgress 第三参推送 partialMatches（原声段先推首批 + 语义匹配逐块补）。
+      // 前端据此每匹配一段就增量渲染一张卡片，避免长视频空等数分钟无卡片。
+      // 增量 merge 以段落唯一主键 id 去重；最终全量由 mapPipelineResultToState 覆写收敛。
+      if (Array.isArray(results.partialMatches) && results.partialMatches.length > 0) {
+        const nodeId: string = payload.nodeId || '';
+        console.log('[STEP5-STREAM-executor] partialMatches 到达 | nodeId=', nodeId, '| count=', results.partialMatches.length, '| nodeId含match=', nodeId.includes('match'));
+        if (nodeId.includes('match')) {
+          const s5 = useStep5Store.getState();
+          const byId = new Map<string, any>();
+          for (const m of s5.matchResults) {
+            const key = String(m.id || '').trim();
+            if (key) byId.set(key, m);
+          }
+          /** 🛑 id 卫生校验：段落唯一主键 id（出生处 seg_N 全局唯一）必须存在且非空。
+           *  空 id 会导致 DragReorderList 的 React key 为空，触发 "Each child in a list should have a unique key prop" 告警。
+           *  非法项在此过滤并打印诊断，便于定位是哪一路（原声首批 / KM 增量）构造出了无 id 卡片。 */
+          const invalidItems: any[] = [];
+          for (const pm of results.partialMatches) {
+            if (!pm) continue;
+            const rawId = pm.id ?? pm.shotId;
+            const key = String(rawId || '').trim();
+            if (!key) {
+              invalidItems.push(pm);
+              continue;
+            }
+            byId.set(key, { ...pm, id: key });
+          }
+          if (invalidItems.length > 0) {
+            console.warn('[STEP5-STREAM-executor] 过滤掉无唯一主键id的partialMatches共', invalidItems.length, '项：', invalidItems);
+          }
+          const merged = Array.from(byId.values());
+          console.log('[STEP5-STREAM-executor] merge完成 | matchResults总数=', merged.length);
+          s5.setMatchResults(merged);
         }
       }
     }

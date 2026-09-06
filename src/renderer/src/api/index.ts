@@ -136,6 +136,8 @@ export const API = {
     cancelProcess: (mediaId: string) => invokeSafe(IPC_CHANNELS.MEDIA_CANCEL, mediaId),
     delete: (projectId: string, mediaId: string) => invokeSafe(IPC_CHANNELS.MEDIA_DELETE, projectId, mediaId),
     getByProject: (projectId: string) => invokeSafe<any[]>(IPC_CHANNELS.MEDIA_GET_BY_PROJECT, projectId),
+    /** 本地封面 data URL 通道：主进程读文件转 base64（绕过 magic:// 协议图片上屏黑） */
+    getImageDataUrl: (absoluteFilePath: string) => invokeSafe<string>(IPC_CHANNELS.MEDIA_GET_IMAGE_DATA_URL, absoluteFilePath),
   },
 
   ai: {
@@ -234,6 +236,10 @@ export const API = {
     extractFrames: (videoPath: string, config: any) => invokeSafe(IPC_CHANNELS.AI_EXTRACT_FRAMES, videoPath, config),
     searchBroll: (query: string, projectId: string) => invokeSafe(IPC_CHANNELS.AI_SEARCH_BROLL, query, projectId),
     runPipeline: (payload: any) => invokeSafe(IPC_CHANNELS.ENGINE_RUN_PIPELINE, payload),
+
+    // 🔧 2026-09-05: 清空当前视频的切片缓存（步骤5「清空切片缓存」按钮；清后重跑强制重切）
+    clearChunkCache: (projectId: string, mediaPath: string) =>
+      invokeSafe<{ success: boolean; deleted: number; message: string }>(IPC_CHANNELS.ENGINE_CLEAR_CHUNK_CACHE, { projectId, mediaPath }),
 
     // V1.0: SimplePipelineRunner — 固定管线
     runV1Pipeline: (projectId: string, mediaId: string, mediaPath: string) =>

@@ -43,9 +43,58 @@ export interface RenderJob {
   resolution?: string;
   /** 画幅比例（16:9 / 9:16），缺省 16:9 */
   ratio?: string;
-  /** 预览模式：低码率快速导出 */
+  /** 预览模式：低码率快速导出（preview=true 时覆盖 crf/preset 为 28/ultrafast） */
   preview?: boolean;
+  /** 🔧 x264 CRF 值（0-51，越小画质越高码率越大）。缺省档：preview=false → 23，preview=true → 28 */
+  crf?: number | string;
+  /** 🔧 x264 preset（ultrafast / superfast / veryfast / faster / fast / medium / slow / slower / veryslow）。
+   *   缺省档：preview=false → fast，preview=true → ultrafast */
+  preset?: string;
   onProgress?: (progress: RenderProgress) => void;
+}
+
+/**
+ * 🔧 x264 编码参数档位解析：遵循"显式 job 字段 > 预览模式覆盖 > 模块默认档"的优先级。
+ *   - D1 核心改动：原硬编码 crf 18 / preset fast 的"视觉无损存档档"改为默认 23 / fast
+ *     （x264 官方出厂默认档，画质肉眼不可察，体积减少约 50%）。
+ *   - preview=true 时强制 (28, ultrafast)：快出看节奏，体积约为默认档的 50%。
+ *   - 若调用方显式传了 crf/preset（未来 D2 加 UI 控件时），优先按显式值。
+ *
+ *   值域合法校验：crf 限 [14, 32]（低于 14 码率爆炸 / 高于 32 可见马赛克），preset 限白名单。
+ *   非法值 fail-fast（项目准则：错就错、不兜底不降级），避免静默吃成"默认档"导致体积不预期。
+ */
+export function resolveX264Params(job: RenderJob): { crf: string; preset: string } {
+  const PRESET_WHITELIST = new Set([
+    'ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
+    'medium', 'slow', 'slower', 'veryslow', 'placebo',
+  ]);
+  // 1. preview 强制档（优先于显式 job 字段的部分覆盖：preview 是模式开关，开了就统一快出）
+  if (job.preview === true) return { crf: '28', preset: 'ultrafast' };
+  // 2. 显式传参 + 合法校验
+  let crfStr: string | undefined;
+  if (job.crf !== undefined && job.crf !== null) {
+    const n = Number(job.crf);
+    if (!Number.isFinite(n) || n < 14 || n > 32) {
+      throw new Error(
+        `[FFmpegRenderer] crf 超出合法值域 [14,32]：实际 ${String(job.crf)}，请修正后再导出`,
+      );
+    }
+    crfStr = String(Math.round(n));
+  }
+  let presetStr: string | undefined;
+  if (job.preset !== undefined && job.preset !== null) {
+    if (!PRESET_WHITELIST.has(job.preset)) {
+      throw new Error(
+        `[FFmpegRenderer] preset 不在白名单：实际 "${job.preset}"，允许值：${Array.from(PRESET_WHITELIST).join('/')}`,
+      );
+    }
+    presetStr = job.preset;
+  }
+  // 3. 模块默认档（对齐 x264 出厂默认：crf 23 / preset medium；这里保持 preset=fast 以权衡导出速度）
+  return {
+    crf: crfStr ?? '23',
+    preset: presetStr ?? 'fast',
+  };
 }
 
 /** 单个镜头的数据 */
@@ -71,6 +120,12 @@ export interface RenderShot {
    * 组内其余兄弟段配音在此依次列出。
    */
   ttsAudioTracks?: Array<{ path: string; offsetSec: number }>;
+  /**
+   * 🎬 原声段标记：true 表示该镜头保留原片原声（keepOriginalAudio），不配 TTS 配音。
+   * 渲染时音频轨应从源视频的 [startTime, endTime] 窗口提取原声混入，
+   * 而非走 ttsAudioPath（原声段无声，走了就整段静音）。
+   */
+  keepOriginalAudio?: boolean;
 }
 
 /** 渲染进度回调 */
@@ -144,7 +199,7 @@ export class FFmpegRenderer {
 
       // 步骤 2: 串联视频片段
       this.reportProgress(job, 20, '串联视频片段', 0);
-      const videoOnlyPath = await this.concatSegments(segments, workDir);
+      const videoOnlyPath = await this.concatSegments(segments, workDir, job);
       if (this.isAborted) return this.fail(outputPath, '用户中止');
 
       // 步骤 3: 处理音频轨（TTS 配音 + BGM）
@@ -180,13 +235,15 @@ export class FFmpegRenderer {
    * @param outputVideoPath 最终成品视频导出物理路径
    * @param bgmPath 可选 BGM 音频路径
    * @param ttsAudioPaths 可选 TTS 配音路径数组（与 matchResults 一一对应）
+   * @param options 🔧 可选编码选项：previewMode 强制快出档(crf28+ultrafast)；显式 crf/preset 覆盖默认档
    */
   async renderCinematicVideo(
     matchResults: any[],
     sourceVideoPath: string,
     outputVideoPath: string,
     bgmPath?: string,
-    _ttsAudioPaths?: string[]
+    _ttsAudioPaths?: string[],
+    options?: { previewMode?: boolean; crf?: number | string; preset?: string },
   ): Promise<RenderResult> {
     this.isAborted = false;
     const startTime = Date.now();
@@ -198,6 +255,18 @@ export class FFmpegRenderer {
     if (matchResults.length === 0) {
       return { success: false, outputPath: '', duration: 0, error: '无匹配结果' };
     }
+
+    /** 🔧 合成一条虚拟 RenderJob 传给 resolveX264Params，保持与普通 render() 相同的档位解析。
+     *   用最小字段集满足接口必填项（其它字段仅在 cutSegments/concat 等其它方法中使用）。 */
+    const virtualJob: RenderJob = {
+      projectId: '',
+      mediaPath: sourceVideoPath,
+      shots: [],
+      outputDir: '',
+      preview: options?.previewMode,
+      crf: options?.crf,
+      preset: options?.preset,
+    };
 
     try {
       AppLogger.info(LOG_TAGS.EXPORT, `[FFmpeg物理混剪线] 开始拼装高级命令网络，共 ${matchResults.length} 个镜头`);
@@ -266,10 +335,11 @@ export class FFmpegRenderer {
       }
 
       /** 6. 视频编码参数 */
-      cmdArgs.push('-c:v', 'libx264', '-preset', 'fast', '-crf', '18');
+      const { crf: mainCrf, preset: mainPreset } = resolveX264Params(virtualJob);
+      cmdArgs.push('-c:v', 'libx264', '-preset', mainPreset, '-crf', mainCrf);
       cmdArgs.push(outputVideoPath);
 
-      AppLogger.info(LOG_TAGS.EXPORT, `[FFmpeg物理混剪线] 执行渲染命令，${filterParts.length} 个镜头`);
+      AppLogger.info(LOG_TAGS.EXPORT, `[FFmpeg物理混剪线] 执行渲染命令，${filterParts.length} 个镜头，crf=${mainCrf} preset=${mainPreset}`);
 
       /** 7. 执行渲染 */
       await this.execFfmpeg(cmdArgs);
@@ -336,13 +406,14 @@ export class FFmpegRenderer {
             videoFilter.push('minterpolate=fps=60:mi_mode=mci:mc_mode=aobmc:me_mode=bidir');
           }
 
+          const { crf: segCrf, preset: segPreset } = resolveX264Params(job);
           await this.execFfmpeg([
             '-y', '-ss', startSec.toString(),
             '-i', job.mediaPath,
             '-t', duration.toString(),
             '-vf', videoFilter.join(','),
             '-af', audioFilter.join(','),
-            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-c:v', 'libx264', '-preset', segPreset, '-crf', segCrf,
             '-c:a', 'aac', '-b:a', '128k',
             '-avoid_negative_ts', 'make_zero',
             segPath,
@@ -370,7 +441,7 @@ export class FFmpegRenderer {
   }
 
   /** 步骤 2: 使用 concat 协议串联所有片段（兼容混合 ts/mp4 格式） */
-  private async concatSegments(segments: string[], workDir: string): Promise<string> {
+  private async concatSegments(segments: string[], workDir: string, job: RenderJob): Promise<string> {
     const concatFile = path.join(workDir, 'concat_list.txt');
     const concatContent = segments.map(s => `file '${s.replace(/\\/g, '/')}'`).join('\n');
     fs.writeFileSync(concatFile, concatContent, 'utf-8');
@@ -381,10 +452,11 @@ export class FFmpegRenderer {
 
     if (hasReencoded) {
       /** 混合格式：必须重编码 concat */
+      const { crf, preset } = resolveX264Params(job);
       await this.execFfmpeg([
         '-y', '-f', 'concat', '-safe', '0',
         '-i', concatFile,
-        '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+        '-c:v', 'libx264', '-preset', preset, '-crf', crf,
         '-c:a', 'aac', '-b:a', '128k',
         outputPath,
       ]);
@@ -400,26 +472,64 @@ export class FFmpegRenderer {
     return outputPath;
   }
 
-  /** 步骤 3: 混合 TTS 配音轨道（及可选 BGM 降音至 30%） */
+  /** 步骤 3: 混合音频轨道（TTS 配音 + 原声段源音频 + BGM 降音至 30%） */
   private async mixAudio(job: RenderJob, workDir: string): Promise<string | null> {
-    // 收集所有有配音的镜头音频
+    // 收集所有音频输入：TTS 配音路径 + 原声段从源视频提取的原声
     const audioInputs: string[] = [];
     const audioDelays: number[] = [];
     let cumulativeTime = 0;
+    /** 临时提取的原声音频文件序号 */
+    let originalIdx = 0;
 
     for (const shot of job.shots) {
-      if (shot.ttsAudioPath && fs.existsSync(shot.ttsAudioPath)) {
+      const shotDur = shot.endTime - shot.startTime;
+      const isOriginal = shot.keepOriginalAudio === true;
+
+      if (isOriginal) {
+        // 🎬 原声段：不配 TTS，须从源视频对应时间窗 [start, end] 提取原声
+        if (job.mediaPath && shotDur > 0) {
+          const origPath = path.join(workDir, `original_${originalIdx++}.wav`);
+          // 变速原声段：音频同样需变速（speedFactor 与视频一致），否则音画时长不符
+          const spd = shot.speedFactor && shot.speedFactor !== 1.0 ? shot.speedFactor : null;
+          const vfArgs: string[] = [];
+          if (spd) {
+            // atempo 链式组合（限制 [0.5, 2.0]），与视频 setpts 语义一致（spd>1 快进 → 音频加速）
+            let atempo = spd;
+            const chain: string[] = [];
+            while (atempo > 2.0) { chain.push('atempo=2.0'); atempo /= 2.0; }
+            while (atempo < 0.5) { chain.push('atempo=0.5'); atempo /= 0.5; }
+            chain.push(`atempo=${atempo.toFixed(4)}`);
+            vfArgs.push('-af', chain.join(','));
+          }
+          try {
+            await this.execFfmpeg([
+              '-y', '-ss', shot.startTime.toString(),
+              '-i', job.mediaPath,
+              '-t', shotDur.toString(),
+              ...vfArgs,
+              '-vn', '-c:a', 'pcm_s16le',
+              origPath,
+            ]);
+            if (fs.existsSync(origPath) && fs.statSync(origPath).size > 0) {
+              audioInputs.push(origPath);
+              audioDelays.push(cumulativeTime * 1000); // 延迟到镜头时间线起点
+            }
+          } catch (err: any) {
+            AppLogger.warn(LOG_TAGS.EXPORT, `[FFmpegRenderer] 原声段 ${shot.id} 提取原声失败:`, err.message);
+          }
+        }
+      } else if (shot.ttsAudioPath && fs.existsSync(shot.ttsAudioPath)) {
         audioInputs.push(shot.ttsAudioPath);
         audioDelays.push(cumulativeTime * 1000); // FFmpeg 延迟单位是毫秒
-      }
-      // 🎬 阶段 A：合并组内兄弟段的子配音（相对镜头起点偏移，秒）
-      for (const t of shot.ttsAudioTracks || []) {
-        if (t.path && fs.existsSync(t.path)) {
-          audioInputs.push(t.path);
-          audioDelays.push((cumulativeTime + t.offsetSec) * 1000);
+        // 🎬 阶段 A：合并组内兄弟段的子配音（相对镜头起点偏移，秒）
+        for (const t of shot.ttsAudioTracks || []) {
+          if (t.path && fs.existsSync(t.path)) {
+            audioInputs.push(t.path);
+            audioDelays.push((cumulativeTime + t.offsetSec) * 1000);
+          }
         }
       }
-      cumulativeTime += (shot.endTime - shot.startTime);
+      cumulativeTime += shotDur;
     }
 
     if (audioInputs.length === 0) return null;

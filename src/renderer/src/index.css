@@ -572,3 +572,37 @@ div[class*="sash-module"]::before, div[class*="sash-module"]::after { background
     box-shadow: none !important;
   }
 }
+
+/* =========================================
+   BGM 推荐面板 · 原型还原（step5-bgm-prototype）
+========================================= */
+/* 均衡器：4 根跳动竖条（播放中的曲名旁 / 播放条内显示） */
+.eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+}
+.eq i {
+  width: 3px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent-cyan);
+  animation: eqbar 1s ease-in-out infinite;
+}
+.eq i:nth-child(2) { animation-delay: 0.18s; }
+.eq i:nth-child(3) { animation-delay: 0.36s; }
+.eq i:nth-child(4) { animation-delay: 0.1s; }
+@keyframes eqbar {
+  0%, 100% { height: 4px; }
+  50% { height: 14px; }
+}
+
+/* AI 推荐卡片底色：对齐原型 .track 的深空渐变（浅色模式降级为淡紫渐变） */
+.bgm-track-card {
+  background: linear-gradient(180deg, rgba(26, 26, 53, 0.7), rgba(20, 20, 40, 0.7));
+}
+.light .bgm-track-card,
+body[theme-mode='light'] .bgm-track-card {
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.07), rgba(139, 92, 246, 0.05));
+}

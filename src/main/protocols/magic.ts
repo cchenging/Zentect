@@ -502,12 +502,15 @@ export async function handleMagicProtocol(request: Request): Promise<Response> {
     // 5.2 完整文件请求
     const fullStream = fs.createReadStream(resolvedPath, { highWaterMark: 256 * 1024 });
 
+    // 🔧 图片不走 immutable 长缓存：自定义协议 + `max-age=31536000, immutable` 在 Chromium 下有
+    // 已知问题——能读到图片头（naturalWidth>0）但位图上屏为黑。图片改 no-cache（与 206 视频一致）。
+    const isImage = contentType.startsWith('image/');
     return new Response(wrapNodeStream(fullStream) as any, {
       headers: {
         'Content-Type': contentType,
         'Content-Length': stat.size.toString(),
         'Accept-Ranges': 'bytes',
-        'Cache-Control': 'public, max-age=31536000, immutable',
+        'Cache-Control': isImage ? 'no-cache' : 'public, max-age=31536000, immutable',
       },
     });
   } catch (err: any) {

@@ -122,6 +122,17 @@ export interface NarrationParagraph extends BaseScriptParagraph {
    * 用户手动修改本段解说后，前端更新此字段，步骤5 重新匹配即可实时感知。
    */
   characters?: string[];
+  /**
+   * 🎬 决策 #6（ADR-003）：抽象文案路由标记。True 表示本段解说词为"岁月流转/时光荏苒"类
+   * 无具体画面语义的抽象旁白，步骤5 匹配时以景别先验（空镜 > 近/特写 > 中景）替代 CLIP 文本语义，
+   * 并跳过关键词 boost 与情绪路由加权（避免情绪双计）。缺省 false = 常规语义匹配。
+   */
+  isAbstractNarration?: boolean;
+  /**
+   * 🎬 决策 #2 契约化（ADR-003）：显式闪回/回忆标记。True 时步骤5 豁免时间锚定惩罚
+   * （画面本为异时序内容），优先级高于求解器内部的时间豁免关键词猜测。缺省 false = 常规时间惩罚。
+   */
+  isFlashback?: boolean;
 }
 
 /** 原声穿插段：播放以原片切片硬绑定为准，正文概念由 audioSource.transcript 承载（不参与 TTS 合成） */

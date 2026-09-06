@@ -12,7 +12,7 @@ import * as path from 'path';
 import type { CompileShot, SubtitleStyle } from '../../../types';
 import { DEFAULT_SUBTITLE_STYLE } from '../../../types';
 import { genHexId } from '../utils/IdUtils';
-import { formatTextContent } from '../utils/TextContentFormatter';
+import { formatTextContent, sanitizeSubtitleText } from '../utils/TextContentFormatter';
 import type { VideoProbeResult } from '../utils/FfprobeProber';
 
 /** 单个镜头的素材装配结果（供 TracksAssembler 消费，解耦素材与轨道） */
@@ -39,6 +39,8 @@ export interface ShotMaterialRef {
   speedRefId?: string;
   /** 🎬 阶段 A：所属合并组 id（同一物理镜头内源时间连续的兄弟段共享，轨道层据此合并为单 clip） */
   sceneGroupId?: string;
+  /** 未匹配镜头：视频轨用源视频末帧定格（sourceStartUs=末帧位置、sourceDurationUs=0） */
+  unmatched?: boolean;
 }
 
 /** BGM 素材装配结果 */
@@ -77,6 +79,16 @@ export interface MaterialsResult {
 const MICRO_SECOND = 1_000_000;
 
 /**
+ * 末帧定格：计算源视频"末帧"的源时间起点（微秒）。
+ * 剪映 source_timerange.duration=0 时定格 start 处那一帧；start 应落在源视频最后一帧的可显示位置，
+ * 即总时长前移一帧时长，避免正好压在视频末尾（末尾余帧可能空帧）。
+ */
+function lastFrameStartUs(probe: VideoProbeResult): number {
+  const oneFrameUs = probe.fps > 0 ? Math.round(MICRO_SECOND / probe.fps) : 33_333;
+  return Math.max(0, Math.round(probe.durationSec * MICRO_SECOND) - oneFrameUs);
+}
+
+/**
  * 计算单个镜头的目标时长（微秒）：优先配音时长，其次段落时长，最后 end-start。
  */
 function resolveDurationUs(shot: CompileShot): number {
@@ -88,8 +100,18 @@ function resolveDurationUs(shot: CompileShot): number {
 /**
  * 计算单个镜头的源切片时长（微秒）：优先 chunkData 的 endMs-startMs（源时间轴真实长度），
  * 无切片数据时退化为目标时长。
+ * 🎙️ 原声段（第五轮）：源时长 = ASR 精确台词窗时长（videoTimelineEndMs - videoTimelineStartMs），
+ * 与 source in/out、轨道槽三窗同长，保证 speeds 素材与 segment.speed=1 自洽（组内 speed 一致性）。
  */
 function resolveSourceDurationUs(shot: CompileShot): number {
+  if (
+    shot.keepOriginalAudio === true &&
+    typeof shot.videoTimelineStartMs === 'number' &&
+    typeof shot.videoTimelineEndMs === 'number' &&
+    shot.videoTimelineEndMs > shot.videoTimelineStartMs
+  ) {
+    return Math.round((shot.videoTimelineEndMs - shot.videoTimelineStartMs) * 1000);
+  }
   const chunk = shot.chunkData as Record<string, unknown> | null | undefined;
   if (
     chunk &&
@@ -152,9 +174,12 @@ function buildSceneGroups(
       shotGids[i] = gid;
     } else {
       const chunk = shot.chunkData as Record<string, unknown> | null | undefined;
-      const videoPath = chunk?.filePath
-        ? String(chunk.filePath).replace(/\\/g, '/')
-        : safeMediaPath;
+      /** 🎙️ 原声段素材强制源视频（2026-09-04 阶段1-防线 F）：原声段视频窗=ASR 精确台词窗（源坐标），
+       *  可能落在任意源位置、常跨多个 3s 切片或 body 裁剪文件边界——只有源视频整片能保证任意窗可裁；
+       *  若沿用承载切片 filePath（body 文件/短切片），源坐标窗口会超素材边界。 */
+      const videoPath = shot.keepOriginalAudio === true
+        ? safeMediaPath
+        : (chunk?.filePath ? String(chunk.filePath).replace(/\\/g, '/') : safeMediaPath);
       // ffprobe 严格 fail-fast：找不到则抛错（probeMap 必须覆盖所有用到的视频文件）
       const probe = probeMap.get(videoPath);
       if (!probe) {
@@ -171,7 +196,8 @@ function buildSceneGroups(
         memberIndices: [i],
         totalTargetUs: resolveDurationUs(shot),
         totalSourceUs: resolveSourceDurationUs(shot),
-        leadSpeed: shot.appliedSpeedFactor || 1.0,
+        /** 🎙️ 原声段恒原速（第五轮）：leadSpeed 兜底路径与主循环 speed 同口径，原声段强制 1.0 */
+        leadSpeed: shot.keepOriginalAudio === true ? 1.0 : (shot.appliedSpeedFactor || 1.0),
         videoPath,
         probe,
       });
@@ -198,7 +224,10 @@ function buildVideoMaterial(
   probe: VideoProbeResult,
 ): unknown {
   const chunk = shot.chunkData as Record<string, unknown> | null | undefined;
-  const videoPath = chunk?.filePath ? String(chunk.filePath).replace(/\\/g, '/') : safeMediaPath;
+  /** 🎙️ 原声段素材强制源视频（2026-09-04 阶段1-防线 F）：与 group 创建同规则（见上），保证原声段 video 素材=源整片 */
+  const videoPath = shot.keepOriginalAudio === true
+    ? safeMediaPath
+    : (chunk?.filePath ? String(chunk.filePath).replace(/\\/g, '/') : safeMediaPath);
 
   return {
     id: videoId,
@@ -611,9 +640,15 @@ export function assembleMaterials(
   const groupVideoId = new Map<string, string>();
   const groupSpeedId = new Map<string, string>();
   for (const [gid, g] of groups) {
-    // A. 组视频素材（54 字段）：整组一个素材，duration = 整组目标时长
+    // 末帧定格（未匹配镜头）整组独占源视频：素材时长用源视频真实时长（源坐标末帧定位落在其内），
+    // 否则素材时长 = 目标时长会让 source 末帧起点越界被剪映钳制到错误帧。
+    const groupAssetDurationUs = g.leadShot.unmatched
+      ? Math.round(g.probe.durationSec * MICRO_SECOND)
+      : g.totalTargetUs;
+
+    // A. 组视频素材（54 字段）：整组一个素材，duration = 素材时长（未匹配=源视频真实时长）
     const vMatId = genHexId();
-    videos.push(buildVideoMaterial(g.leadShot, vMatId, safeMediaPath, g.totalTargetUs, g.probe));
+    videos.push(buildVideoMaterial(g.leadShot, vMatId, safeMediaPath, groupAssetDurationUs, g.probe));
 
     // B. 组变速：整组一条（即便 speed=1.0 也要填充，保证 speeds 非空）。
     // 🎬 阶段 A：speed 用「源总时长 / 目标总时长」整体换算，与轨道层合并 clip 的 segment.speed 保持一致，
@@ -621,11 +656,11 @@ export function assembleMaterials(
     const groupSpeed =
       g.totalTargetUs > 0 && g.totalSourceUs > 0 ? g.totalSourceUs / g.totalTargetUs : g.leadSpeed;
     const speedId = genHexId();
-    speeds.push(buildSpeedMaterial(speedId, vMatId, groupSpeed, g.totalTargetUs));
+    speeds.push(buildSpeedMaterial(speedId, vMatId, groupSpeed, groupAssetDurationUs));
 
     // C. 组视频声道映射 + 人声分离占位（视频原声已静音，但容器非空）
-    soundChannelMappings.push(buildSoundChannelMapping(genHexId(), vMatId, g.totalTargetUs));
-    vocalSeparations.push(buildVocalSeparation(genHexId(), vMatId, g.totalTargetUs));
+    soundChannelMappings.push(buildSoundChannelMapping(genHexId(), vMatId, groupAssetDurationUs));
+    vocalSeparations.push(buildVocalSeparation(genHexId(), vMatId, groupAssetDurationUs));
 
     groupVideoId.set(gid, vMatId);
     groupSpeedId.set(gid, speedId);
@@ -634,25 +669,52 @@ export function assembleMaterials(
   for (let i = 0; i < shots.length; i++) {
     const shot = shots[i];
     const gid = shotGids[i];
+    const g = groups.get(gid)!;
     const durationUs = resolveDurationUs(shot);
     const chunk = shot.chunkData as Record<string, unknown> | null | undefined;
     const vMatId = groupVideoId.get(gid)!;
-    const speed = shot.appliedSpeedFactor || 1.0;
+    /** 🎙️ 原声段恒原速（第五轮）：原声段时长=ASR 台词真实时间窗，套用 KM/组变速会破坏台词听感
+     *  （用户反馈：原声有的变速过快、有的太慢）。此处双保险——旧项目落库的变速值也在消费端拦下。 */
+    const speed = shot.keepOriginalAudio === true ? 1.0 : (shot.appliedSpeedFactor || 1.0);
+
+    /** 🎙️ 原声段源窗（第五轮）：直用 ASR 精确台词窗 videoTimelineStartMs/EndMs（与 chunk 同坐标系，
+     *  素材=源视频完整文件可直接取窗）。此前用 chunk.startMs（3s 切片头）导致：
+     *  ① 台词头部被切（实测 seg_7：ASR 窗 679000~681000ms，切片头 679640ms，头 640ms 台词丢失）；
+     *  ② ASR 窗跨切片时（10.5s 窗 > 3s chunk）画面被截成 3s 后定格。
+     *  解说段维持 chunk 窗口 + 变速（KM 语义不变）。 */
+    let sourceStartUs: number;
+    if (shot.keepOriginalAudio === true
+      && typeof shot.videoTimelineStartMs === 'number'
+      && typeof shot.videoTimelineEndMs === 'number'
+      && shot.videoTimelineEndMs > shot.videoTimelineStartMs) {
+      sourceStartUs = Math.round(shot.videoTimelineStartMs * 1000);
+    } else {
+      // 素材同源直取（2026-09-05 模式 A）：普通段素材 = chunk.filePath（schema v2 数据恒=源视频+源坐标；
+      //  兼容遗留 body 文件产物 body 坐标——两种均与各自素材同参照），取窗 = chunk.startMs 直接可用，
+      //  无需任何 body/源 坐标换算。chunk 缺失/无起点时回退 videoTimelineStartMs（源），杜绝取到 0。
+      const ckStart = Number(chunk?.startMs ?? NaN);
+      sourceStartUs = Number.isFinite(ckStart) && ckStart >= 0
+        ? Math.round(ckStart * 1000)
+        : Math.round((Number(shot.videoTimelineStartMs) || 0) * 1000);
+    }
+    let sourceDurationUs = resolveSourceDurationUs(shot);
+    if (shot.unmatched === true) {
+      // 末帧定格：源 = 源视频末帧，source 时长 0 → 剪映定格该帧（配合素材时长=源视频真实时长）
+      sourceStartUs = lastFrameStartUs(g.probe);
+      sourceDurationUs = 0;
+    }
 
     const ref: ShotMaterialRef = {
       shotId: shot.id,
       videoId: vMatId,
       durationUs,
-      // 素材同系坐标：素材=body 切片（有 filePath）时用 chunk.startMs（body 坐标）；
-      // 素材=源视频（无 filePath）时用 videoTimelineStartMs（源坐标，OP/ED 裁剪后与 body 相差 offset，缺陷 D1 同源修正）
-      sourceStartUs: chunk?.filePath && chunk?.startMs != null
-        ? Math.round(Number(chunk.startMs) * 1000)
-        : Math.round((shot.videoTimelineStartMs ?? Number(chunk?.startMs ?? 0)) * 1000),
-      sourceDurationUs: resolveSourceDurationUs(shot),
+      sourceStartUs,
+      sourceDurationUs,
       speed,
       keepOriginalAudio: shot.keepOriginalAudio === true,
       // 组内非首段共享首段视频素材；轨道层依据 sceneGroupId 合并为单 clip
       sceneGroupId: shot.sceneGroupId || undefined,
+      unmatched: shot.unmatched === true,
     };
     ref.speedRefId = groupSpeedId.get(gid)!;
 
@@ -670,7 +732,13 @@ export function assembleMaterials(
     }
 
     // E. AI 字幕（80+ 字段）
-    const contentText = shot.aiText || shot.originalText || '';
+    // 原声段（keepOriginalAudio）：字幕只显示原声台词（originalText=段落文本，分析阶段已剥"原声："前缀），
+    //   不显示 AI 解说词；解说段维持 AI 文案优先（aiText）。
+    // 统一按行业规范清洗标点（sanitizeSubtitleText），素材 name 与 content 同步干净。
+    const rawSubtitleText = shot.keepOriginalAudio === true
+      ? (shot.originalText || shot.text || '')
+      : (shot.aiText || shot.originalText || '');
+    const contentText = rawSubtitleText ? sanitizeSubtitleText(rawSubtitleText) : '';
     if (contentText) {
       const tMatId = genHexId();
       texts.push(buildTextMaterial(tMatId, contentText, subtitleStyle, durationUs));

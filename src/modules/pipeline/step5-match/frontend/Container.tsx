@@ -15,6 +15,7 @@ import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/u
 import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
 import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
 import { persistProjectSnapshot } from "@modules/editor/shell/utils/persistSnapshot";
+import { AppNotifier } from "@renderer/core/AppNotifier";
 import { StepShotMatchingView } from "./View";
 
 export const StepShotMatching: React.FC = () => {
@@ -66,6 +67,20 @@ export const StepShotMatching: React.FC = () => {
     return typeof d === 'number' && d > 0 ? Math.round(d * 1000) : 0;
   }, [mediaItems]);
 
+  /** 🔧 替换/确认等手动改动后立即落盘：步骤5 结果改动不入 useEditorAutoSave 的 dirty 监听，
+   *  且不触发重匹配的显式落盘——若不即时写库，重开项目/导出（读 DB metadata）都会读到旧结果。 */
+  const persistStep5Now = useCallback(() => {
+    const pid = useProjectStore.getState().projectId;
+    if (!pid) return;
+    persistProjectSnapshot(pid).catch((e) => console.error("[步骤5] 手动改动落盘失败:", e));
+  }, []);
+
+  /** 确认匹配后同样立即落盘（store.confirmMatch 只改内存态） */
+  const handleConfirm = useCallback((shotId: string) => {
+    confirmMatch(shotId);
+    persistStep5Now();
+  }, [confirmMatch, persistStep5Now]);
+
   const handleReplace = useCallback((shotId: string, chunkItem: any) => {
     const coverPath = chunkItem.coverPath || chunkItem.filePath || chunkItem.thumbnail;
     const step5State = useStep5Store.getState();
@@ -77,7 +92,8 @@ export const StepShotMatching: React.FC = () => {
         : m
     );
     setMatchResults(updated);
-  }, [setMatchResults]);
+    persistStep5Now();
+  }, [setMatchResults, persistStep5Now]);
 
   const handleRematch = useCallback(async () => {
     const projectState = useProjectStore.getState();
@@ -92,6 +108,8 @@ export const StepShotMatching: React.FC = () => {
     pipelineState.setStepStatus(5, "running");
     pipelineState.setPipelineRunning(true);
     pipelineState.resetPipeline();
+    /** 🔧 新匹配开始：清空上一次匹配诊断（避免旧 warning 残留，等新结果返回再写入） */
+    step5State.setMatchDiagnostics(null);
     try {
       const sequence = STEP_SEQUENCES[5];
       const enriched = sequence.map((node: any) => ({
@@ -99,6 +117,14 @@ export const StepShotMatching: React.FC = () => {
         params: {
           ...(node.params || {}),
           mediaPath: projectState.mediaItems?.[0]?.filePath || "",
+          /** 🎬 素材 id 必传（2026-09-04）：OP/ED 裁剪配置按素材 id 存于 projects.extraction_config.mediaTrim.perMedia，
+           *  缺 mediaId → resolveForMedia 解析不到 trim → needTrim=false → 方向3 直接复用历史"全片含片头"切片池，
+           *  导致片头/出品帧始终进匹配与导出（"改了没变"的根因）。补齐后走正剧(body)切片。 */
+          mediaId: projectState.mediaItems?.[0]?.id || (projectState.mediaItems?.[0] as any)?.assetId || "",
+          /** 🎬 切片池复用（方向3）：回传本店已保存的本项目切片池（step5State.videoChunks ← 上次步骤5 结果），
+           *  后端 SemanticAnalyzeStrategy 优先复用免重切；漏传会导致 ownPool 为空 → 依赖 DB 缓存
+           *  （旧缓存 key 不兼容时强制重切片 80s+，极端环境失败即"匹配不到任何切片"）。 */
+          videoChunks: step5State.videoChunks || [],
           scriptShots: step3State.scriptParagraphs || [],
           ttsDurations: step4State.ttsResults || [],
           /** ASR 原声时间轴：原声段落（keepOriginalAudio）按原声文本定位原片时间段 */
@@ -142,6 +168,36 @@ export const StepShotMatching: React.FC = () => {
     }
   }, []);
 
+  /** 🔧 2026-09-05：清空当前视频切片缓存（SQLite video_chunk_parts/video_chunks + 前端复用池），
+   *  再触发一次完整 rematch。只清当前项目+当前媒体相关的 key（其它项目前缀不受影响）。 */
+  const handleClearCacheAndRematch = useCallback(async () => {
+    const projectState = useProjectStore.getState();
+    const step5State = useStep5Store.getState();
+    const projectId = projectState.projectId;
+    const mediaPath = projectState.mediaItems?.[0]?.filePath || "";
+    if (!projectId || !mediaPath) {
+      AppNotifier.error("缺少项目或视频信息，无法清空切片缓存");
+      return;
+    }
+    try {
+      const res = await API.engine.clearChunkCache(projectId, mediaPath);
+      if (!res?.success) {
+        AppNotifier.error(res?.message || "清空切片缓存失败");
+        return;
+      }
+      /** 前端同步清空复用池与旧匹配结果：方向3 ownPool 优先级高于 DB 缓存，
+       *  不清空会继续"利用旧切片"（needTrim 项目不启 ownPool，但无 trim 项目会）；
+       *  旧结果清空后由 rematch 的全新结果覆盖，不落盘空态。 */
+      step5State.setMatchResults([]);
+      step5State.setVideoChunks([]);
+      step5State.setMatchDiagnostics(null);
+      AppNotifier.success(res.message || "已清空切片缓存", 2200);
+      await handleRematch();
+    } catch (err: any) {
+      AppNotifier.error(`清空切片缓存失败: ${err?.message || err}`);
+    }
+  }, [handleRematch]);
+
   /** 设置 BGM（从已分离伴奏选择或本地导入共用入口），选中后自动重匹配以应用节拍吸附 */
   const handleSetBgm = useCallback((bgm: { id: string; filePath: string; name?: string; bpm?: number }) => {
     useStep5Store.getState().setActiveBgm(bgm);
@@ -182,9 +238,10 @@ export const StepShotMatching: React.FC = () => {
       onSetBgm={handleSetBgm}
       onRemoveBgm={handleRemoveBgm}
       onUploadBgm={handleUploadBgm}
-      onConfirm={confirmMatch}
+      onConfirm={handleConfirm}
       onReplace={handleReplace}
       onRematch={handleRematch}
+      onClearCacheAndRematch={handleClearCacheAndRematch}
       onReorder={setMatchResults}
     />
   );

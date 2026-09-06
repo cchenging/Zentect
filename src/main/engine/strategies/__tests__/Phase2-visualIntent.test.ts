@@ -115,7 +115,10 @@ describe('Phase 2：visualIntent 100% 覆盖率兜底（query 端）', () => {
     });
     // eslint-disable-next-line no-console
     console.log('');
-    expect(emptyCnt).toBe(0);
+    // 🛑 2026-09-05 B5：删除"极端兜底造假句"后，允许极少数脏文本（含 �/emoji/纯数字）产出的
+    //   visualIntent 短于 8 字甚至为空——不编造固定句式掩盖脏数据；KM 侧 query_texts 会回退解说词文本匹配。
+    //   契约改为：≥8 覆盖率 ≥98% + 前缀 ≥4 种（句式多样性仍保证）。
+    expect(emptyCnt).toBeLessThan(Math.max(1, Math.ceil(queries.length * 0.02)));
     expect(prefixes.size).toBeGreaterThanOrEqual(4);
     // 不破坏原始数组（返回的是新对象？对同一个 shot 做浅拷贝，不修改原输入）
     for (let i = 0; i < queries.length; i++) {

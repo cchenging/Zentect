@@ -191,8 +191,13 @@ export const useEditorHydration = (id: string | undefined) => {
                 useStep1Store.getState().setAudioSeparated?.(draftData.audioSeparated);
               }
               // 步骤5 崩溃恢复：从 PENDING 草稿恢复匹配结果/切片池/BGM 节拍
+              // ✅ 与上方 DB 快照恢复(109行)同口径归一 id=id||shotId，避免旧草稿 legacy 项（仅 shotId 无 id）污染渲染层 React key
               if (Array.isArray(draftData.matchResults) && draftData.matchResults.length > 0) {
-                useStep5Store.getState().setMatchResults(draftData.matchResults);
+                useStep5Store.getState().setMatchResults(
+                  draftData.matchResults.map((m: any) =>
+                    m && typeof m.id === 'string' ? m : { ...m, id: m?.shotId }
+                  )
+                );
               }
               if (Array.isArray(draftData.videoChunks) && draftData.videoChunks.length > 0) {
                 useStep5Store.getState().setVideoChunks(draftData.videoChunks);

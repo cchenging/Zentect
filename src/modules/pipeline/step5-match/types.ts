@@ -56,5 +56,7 @@ export interface StepShotMatchingProps {
   onConfirm: (shotId: string) => void;
   onReplace: (shotId: string, chunkItem: any) => void;
   onRematch: () => void;
+  /** 🔧 2026-09-05：清空当前视频切片缓存并强制重切重匹配（步骤5「清空切片缓存」按钮；可选，容器注入） */
+  onClearCacheAndRematch?: () => void;
   onReorder: (reordered: MatchResult[]) => void;
 }

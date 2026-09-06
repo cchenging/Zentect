@@ -68,6 +68,8 @@ function collectVideoPaths(shots: CompileShot[], fallbackMediaPath: string): str
     .replace('file://', '')
     .replace(/\\/g, '/');
   const paths = new Set<string>();
+  if (safeMedia) paths.add(safeMedia); // 🎬 源视频恒入 probe：原声段素材强制源视频（2026-09-04 阶段1-F），
+  //   缺源 probe 会在 buildSceneGroups 抛"缺少视频探针结果"导致导出崩溃
   for (const sh of shots) {
     const chunk = sh.chunkData as Record<string, unknown> | null | undefined;
     const raw = chunk?.filePath ? String(chunk.filePath) : safeMedia;
@@ -134,6 +136,8 @@ export class JianyingExportService {
         videoTimelineStartMs: m?.videoTimelineStartMs,
         videoTimelineEndMs: m?.videoTimelineEndMs,
         keepOriginalAudio: p.keepOriginalAudio === true || m?.keepOriginalAudio === true,
+        // 未匹配且有配音：与统一装配器保持同语义（无媒体/无切片/有 TTS → 末帧定格导出）
+        unmatched: (!!t && !!t.audioUrl && !t._failed && !m?.mediaId && !m?.chunkData) === true,
       } as CompileShot;
     });
     // 🎬 阶段 A：三件套路径未经过装配器，在此对 CompileShot 统一做相邻关系增强，
@@ -193,6 +197,7 @@ export class JianyingExportService {
           videoTimelineStartMs: Math.round(s.start * 1000),
           videoTimelineEndMs: Math.round(s.end * 1000),
           keepOriginalAudio: s.keepOriginalAudio === true,
+          unmatched: s.unmatched === true,
           // 🎬 阶段 A：透传装配器已算好的合并组关系（project.shots 已 enrich）
           parentChunkId: s.parentChunkId,
           prevRelation: s.prevRelation,
@@ -242,6 +247,7 @@ export class JianyingExportService {
         videoTimelineStartMs: Math.round(shot.start * 1000),
         videoTimelineEndMs: Math.round(shot.end * 1000),
         keepOriginalAudio: shot.keepOriginalAudio === true || p.keepOriginalAudio === true,
+        unmatched: shot.unmatched === true,
         // 🎬 阶段 A：透传装配器已算好的合并组关系（project.shots 已 enrich）
         parentChunkId: shot.parentChunkId,
         prevRelation: shot.prevRelation,

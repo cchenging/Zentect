@@ -54,6 +54,7 @@ export const buildMappers = (): PipelineResultMappers => ({
   setMatchResults: useStep5Store.getState().setMatchResults,
   setVideoChunks: useStep5Store.getState().setVideoChunks,
   setBeatTimestamps: useStep5Store.getState().setBeatTimestamps,
+  setMatchDiagnostics: useStep5Store.getState().setMatchDiagnostics,
 });
 
 export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {

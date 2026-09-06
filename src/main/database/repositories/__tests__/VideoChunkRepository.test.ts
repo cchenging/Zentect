@@ -66,7 +66,7 @@ function buildChunks() {
   return [
     { id: 'chunk_001', parentChunkId: 'scene_001', parentStartMs: 0, startMs: 0, endMs: 2999, durationMs: 2999, description: '开场', emotion: '平静', shotType: 'wide', characters: ['A'], keywords: ['开场'] },
     { id: 'chunk_002', parentChunkId: 'scene_002', parentStartMs: 3000, startMs: 3000, endMs: 5999, durationMs: 2999, description: '对话', emotion: '中性', shotType: 'medium', characters: ['B'], keywords: ['对话'] },
-    { id: 'chunk_003', parentChunkId: 'scene_003', parentStartMs: 6000, startMs: 6000, endMs: 15999, durationMs: 9999, description: '长镜头', emotion: '激昂', shotType: 'tracking', characters: ['C'], keywords: ['长镜头'] },
+    { id: 'chunk_003', parentChunkId: 'scene_003', parentStartMs: 6000, startMs: 6000, endMs: 15999, durationMs: 9999, description: '长镜头', emotion: '激昂', shotType: 'tracking', characters: ['C'], keywords: ['长镜头'], coverPath: 'C:/covers/chunk_003_cover.jpg' },
   ];
 }
 
@@ -152,6 +152,54 @@ describe('VideoChunkRepository 阶段 B 缓存契约', () => {
   });
 });
 
+describe('VideoChunkRepository.deleteForMedia 清空切片缓存', () => {
+  beforeEach(() => {
+    memDB = setupInMemoryDB();
+  });
+
+  it('删除当前项目前缀 + 历史裸形态的全部切片缓存，保留其它项目前缀', () => {
+    const repo = new VideoChunkRepository();
+    const chunks = buildChunks();
+    const mediaPath = 'C:/videos/my clip.mp4';
+    // 当前项目：raw / trimAware / bare schema / 裸路径 四形态
+    repo.save(`proj_1:${mediaPath}#scene_chunk_v2#f100_123`, chunks, []);
+    repo.save(`proj_1:${mediaPath}#scene_chunk_v2#f100_123#trim_s1_e2`, chunks, []);
+    repo.save(`${mediaPath}#scene_chunk_v2`, chunks, []);
+    repo.save(`${mediaPath}`, chunks, []);
+    // 其它项目同路径缓存（应保留）
+    repo.save(`proj_other:${mediaPath}#scene_chunk_v2#f1`, chunks, []);
+
+    const deleted = repo.deleteForMedia('proj_1', mediaPath);
+    expect(deleted).toBeGreaterThanOrEqual(4);
+    expect(repo.getByMediaId(`proj_1:${mediaPath}#scene_chunk_v2#f100_123`)).toBeNull();
+    expect(repo.getByMediaId(`proj_1:${mediaPath}#scene_chunk_v2#f100_123#trim_s1_e2`)).toBeNull();
+    expect(repo.getByMediaId(`${mediaPath}#scene_chunk_v2`)).toBeNull();
+    expect(repo.getByMediaId(`${mediaPath}`)).toBeNull();
+    expect(repo.getByMediaId(`proj_other:${mediaPath}#scene_chunk_v2#f1`)).not.toBeNull();
+  });
+
+  it('路径含 LIKE 通配符(%/_/\)时精确匹配删除，不误删相似路径', () => {
+    const repo = new VideoChunkRepository();
+    const chunks = buildChunks();
+    const target = 'C:/v/a_100%.mp4';
+    const sibling = 'C:/v/a_100%X.mp4';
+    repo.save(`${target}#schema`, chunks, []);
+    repo.save(`${sibling}#schema`, chunks, []);
+
+    const deleted = repo.deleteForMedia('', target);
+    expect(deleted).toBeGreaterThanOrEqual(1);
+    expect(repo.getByMediaId(`${target}#schema`)).toBeNull();
+    expect(repo.getByMediaId(`${sibling}#schema`)).not.toBeNull();
+  });
+
+  it('无缓存 / 空路径返回 0 且不抛错', () => {
+    const repo = new VideoChunkRepository();
+    expect(repo.deleteForMedia('proj_1', 'C:/nothing.mp4')).toBe(0);
+    expect(repo.deleteForMedia('proj_1', '')).toBe(0);
+    expect(repo.deleteForMedia('', '')).toBe(0);
+  });
+});
+
 describe('SemanticAnalyzeStrategy.buildMatchSegmentsFromChunks 兜底', () => {
   it('短镜头(≤6s)原样保留为 seg0, parentChunkId 指向物理镜头', () => {
     const chunks = buildChunks();
@@ -185,5 +233,11 @@ describe('SemanticAnalyzeStrategy.buildMatchSegmentsFromChunks 兜底', () => {
     // 语义字段从物理镜头继承(展开 {...c} 保留)
     expect(long[0].description).toBe('长镜头');
     expect(long[0].characters).toEqual(['C']);
+    // 🎞️ 2026-09-05 封面口径：仅镜头首段(seg0)继承镜头封面（镜头起点帧≈seg0 起点帧），
+    //   非首段 coverPath 必须为空（不继承镜头封面），防"封面=镜头起点帧、预览从段起点播"错位
+    expect(long[0].coverPath).toBe('C:/covers/chunk_003_cover.jpg');
+    for (let i = 1; i < long.length; i++) {
+      expect(long[i].coverPath).toBe('');
+    }
   });
 });

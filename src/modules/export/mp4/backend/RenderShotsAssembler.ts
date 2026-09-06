@@ -23,7 +23,10 @@ function mapOne(shot: ExportShot): RenderShot {
     endTime: shot.end,
     ttsAudioPath: shot.audioPath,
     chunkData: (shot.chunkData as any) || null,
-    speedFactor: shot.appliedSpeedFactor,
+    /** 🎙️ 原声段恒原速（第五轮）：原声段时长=ASR 台词真实时间窗（start/end 即该窗），
+     *  变速会破坏台词听感；消费端双保险，旧项目落库的变速值也在此拦下 */
+    speedFactor: shot.keepOriginalAudio === true ? 1.0 : shot.appliedSpeedFactor,
+    keepOriginalAudio: shot.keepOriginalAudio === true,
   };
 }
 
@@ -37,7 +40,10 @@ function mapOne(shot: ExportShot): RenderShot {
  * @returns 渲染镜头数组
  */
 export function assembleRenderShots(project: ExportProject): RenderShot[] {
-  const shots = project.shots;
+  // 未匹配镜头（unmatched=true）是配音可导出但无切片/时间窗的段：成片渲染需真实源区间，
+  // 缺画面区间无法 ffmpeg 切片，暂按装配前的旧行为过滤（剪映出口已做末帧定格）。
+  // TODO(成片末帧定格)：后续在 FFmpeg 渲染层为 unmatched 插入源视频末帧定格，与剪映出口对齐后移除此处过滤。
+  const shots = (project.shots || []).filter((s) => !s.unmatched);
   const result: RenderShot[] = [];
   let i = 0;
 
@@ -70,7 +76,8 @@ export function assembleRenderShots(project: ExportProject): RenderShot[] {
     const last = members[members.length - 1];
 
     // ExportShot.start/end 已由装配器统一为【源视频坐标】（秒），源区间取组首~组尾源坐标（毫秒）。
-    // 不读 chunkData.startMs/endMs：那是 body 切片内坐标，与源视频变速因子计算不同系（缺陷 D1 同源）。
+    // 🔧 2026-09-05 模式 A：候选切片坐标恒为源坐标（净池=源坐标过滤），chunkData 与 ExportShot 同源，
+    //   组内源区间用 ExportShot.start/end 计算（与素材同参照，正确）。
     const srcStartMs = first.start * 1000;
     const srcEndMs = last.end * 1000;
 
@@ -93,7 +100,7 @@ export function assembleRenderShots(project: ExportProject): RenderShot[] {
       chunkData: first.chunkData
         ? {
             ...(first.chunkData as Record<string, unknown>),
-            // 合并后切片素材沿用组首切片（body 切片 + body 坐标）；startMs/endMs 记录源区间（源坐标）
+            // 合并后切片素材沿用组首切片；startMs/endMs 记录源区间（源坐标，2026-09-05 模式 A）
             filePath: (first.chunkData as { filePath?: string } | undefined)?.filePath ?? '',
             startMs: srcStartMs,
             endMs: srcEndMs,
@@ -101,6 +108,7 @@ export function assembleRenderShots(project: ExportProject): RenderShot[] {
           } as RenderShot['chunkData']
         : null,
       speedFactor,
+      keepOriginalAudio: members.some((m) => m.keepOriginalAudio === true),
     };
     if (subTts.length > 0) {
       merged.ttsAudioTracks = subTts;

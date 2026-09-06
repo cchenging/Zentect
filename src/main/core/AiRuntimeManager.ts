@@ -127,9 +127,14 @@ export class AiRuntimeManager {
       ProcessManager.register(proc, 'AI_Daemon_Master')
       this.supervisor.supervise(proc, 'ai-daemon', 3, this.createRestartCallback())
 
+      // 转发期 stdout 防刷屏：CLIP 高维特征数组（visionEmbedding/colorHistogram/clipZhEmbedding，可达 512 维）整行
+      // 被 daemon 打印到 stdout 后原样转发，单行超长且含特征字段即判定为刷屏 dump，跳过全文打印
+      // （此类特征已由落库层剥离，无终端诊断价值；仍保留 checkStartupSignal 解析启动信号不受影响）
       proc.stdout?.on('data', (data: Buffer) => {
         const output = data.toString().trim()
-        if (output) AppLogger.info(LOG_TAGS.AI_DAEMON, `[Python Daemon] ${output}`)
+        if (output && !(output.length > 800 && (output.includes('visionEmbedding') || output.includes('colorHistogram') || output.includes('clipZhEmbedding')))) {
+          AppLogger.info(LOG_TAGS.AI_DAEMON, `[Python Daemon] ${output}`)
+        }
         this.checkStartupSignal(output)
       })
 

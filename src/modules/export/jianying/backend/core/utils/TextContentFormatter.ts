@@ -42,3 +42,22 @@ export function formatTextContent(text: string, style: SubtitleStyle = DEFAULT_S
   };
   return JSON.stringify(textObj);
 }
+
+/**
+ * 字幕文本清洗：去除中英文标点与符号（视频剪辑行业规范：字幕不出现标点符号）。
+ *
+ * 规则：
+ *  - 移除全部 Unicode 标点（\p{P}：，。！？；：""''《》（）…— , . ! ? ; : " ' ( ) 等）
+ *    与符号（\p{S}：￥$%&+<=>~ 等）；
+ *  - 换行/制表等空白折叠为单个空格（保留英文单词间隔）；
+ *  - 保留文字、数字、字母与空格。
+ *
+ * @param text 原始字幕文案
+ * @returns 清洗后的文案（无标点）
+ */
+export function sanitizeSubtitleText(text: string): string {
+  return (text || '')
+    .replace(/\s+/g, ' ')
+    .replace(/[\p{P}\p{S}]/gu, '')
+    .trim();
+}

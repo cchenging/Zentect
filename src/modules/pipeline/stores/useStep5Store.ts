@@ -31,6 +31,18 @@ export interface BgmRecommendation {
   tracks: BgmTrack[];
 }
 
+/** 步骤5 匹配诊断（后端随节点结果返回的根因提示：切片池空 / KM 全未命中 / 原声定位失败等） */
+export interface Step5MatchDiagnostics {
+  /** 用户可读的根因提示（空数组 = 无异常） */
+  warnings: string[];
+  totalQueries?: number;
+  matchedCount?: number;
+  chunkCount?: number;
+  matchSegmentCount?: number;
+  originalQueryCount?: number;
+  originalMatchedCount?: number;
+}
+
 export interface Step5Store {
   // 步骤5专属数据
   matchResults: MatchResult[];
@@ -39,6 +51,8 @@ export interface Step5Store {
   videoChunks: any[];
   /** AI 深度 BGM 推荐结果：提升到 store 并随快照落盘，刷新/切步/重开项目不丢失 */
   deepRecommendation: BgmRecommendation | null;
+  /** 最近一次匹配的诊断信息（新一次匹配开始/完成时更新；无异常为 warnings:[]） */
+  matchDiagnostics: Step5MatchDiagnostics | null;
 
   // 匹配操作
   setMatchResults: (results: MatchResult[]) => void;
@@ -48,6 +62,7 @@ export interface Step5Store {
   setBeatTimestamps: (beats: number[]) => void;
   setVideoChunks: (chunks: any[]) => void;
   setDeepRecommendation: (recommendation: BgmRecommendation | null) => void;
+  setMatchDiagnostics: (diag: Step5MatchDiagnostics | null) => void;
 
   /** 重置步骤5状态 */
   reset: () => void;
@@ -59,6 +74,7 @@ export const useStep5Store = create<Step5Store>()((set) => ({
   beatTimestamps: [],
   videoChunks: [],
   deepRecommendation: null,
+  matchDiagnostics: null,
 
   setMatchResults: (results) => set({ matchResults: results }),
   confirmMatch: (shotId: string) =>
@@ -78,6 +94,7 @@ export const useStep5Store = create<Step5Store>()((set) => ({
   setBeatTimestamps: (beats) => set({ beatTimestamps: beats }),
   setVideoChunks: (chunks) => set({ videoChunks: chunks }),
   setDeepRecommendation: (recommendation) => set({ deepRecommendation: recommendation }),
+  setMatchDiagnostics: (diag) => set({ matchDiagnostics: diag }),
 
   reset: () => set({
     matchResults: [],
@@ -85,5 +102,6 @@ export const useStep5Store = create<Step5Store>()((set) => ({
     beatTimestamps: [],
     videoChunks: [],
     deepRecommendation: null,
+    matchDiagnostics: null,
   }),
 }));

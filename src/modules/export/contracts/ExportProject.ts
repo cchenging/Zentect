@@ -39,6 +39,12 @@ export interface ExportShot {
   /** 🎬 阶段 A：同物理镜头连续兄弟段的合并组 id（命中 SAME_SCENE_CONTINUOUS 且形成组时设置），
    *  导出层据此把组内兄弟段合并为单个 clip/截取段，消除假转场与物理接缝 */
   sceneGroupId?: string;
+  /**
+   * 未匹配镜头标记：该段文案有 TTS 配音但无切片/时间窗（KM 求解未命中画面）。
+   * 有配音仍需导出（配音+字幕），视频轨用源视频末帧定格兜底。
+   * true 时 start=0、end=duration，无 videoTimeline 坐标，消费端不得按真实时间轴切片。
+   */
+  unmatched?: boolean;
 }
 
 /**

@@ -4,10 +4,11 @@
 import { genHexId } from '../utils/IdUtils';
 
 /**
- * 原声段音量：保留原片原声并适当放大（0.9），避免"听不清"。
- * 原声段（keepOriginalAudio）不配 TTS 配音，原声完全由视频段自身承载，故可开足音量。
+ * 原声段音量：单独放大原声（1.5 = 原片音量的 150%）。
+ * 剪映 volume 基准 1.0 = 原片音量；历史值 0.9 比原片还轻（用户反馈"太小"），
+ * 现提升至 1.5 保证原声听感清晰；解说段仍静音（MUTED_VOLUME=0，配音由 TTS 承载）。
  */
-const ORIGINAL_AUDIO_VOLUME = 0.9;
+const ORIGINAL_AUDIO_VOLUME = 1.5;
 
 /**
  * 普通解说段视频音量：静音（配音由 TTS 独立音轨承载，避免与原片原声叠加）。
@@ -18,7 +19,7 @@ const MUTED_VOLUME = 0;
  * 构建视频轨 segment（含 source_timerange 切片 + clip/uniform_scale/hdr_settings/render_index）。
  *
  * 说明：普通解说段视频原声静音（volume=0），配音由 TTS 独立音轨承载；
- * 原声段落（keepOriginalAudio=true）视频原声保留并放大（volume=0.9），该段不配 TTS。
+ * 原声段落（keepOriginalAudio=true）视频原声单独放大（volume=1.5），该段不配 TTS。
  *
  * @param materialId 素材 id
  * @param targetStart 时间线起始（微秒）

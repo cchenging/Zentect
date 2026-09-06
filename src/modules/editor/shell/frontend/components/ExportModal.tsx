@@ -41,6 +41,9 @@ export const ExportModal: React.FC = () => {
   const [afterOpen, setAfterOpen] = useState<'none' | 'folder' | 'player'>('none');
   /** 导出范围：'all'=全部片段 / 'selected'=仅导出当前选中的片段 */
   const [exportRange, setExportRange] = useState<'all' | 'selected'>('all');
+  /** 🛡️ 未匹配段拦截：装配层发现"有配音无画面切片"段时抛错，此处弹二次确认让用户选「忽略并继续」 */
+  const [skipUnmatchedOpen, setSkipUnmatchedOpen] = useState(false);
+  const [skipBlockMessage, setSkipBlockMessage] = useState('');
 
   const { coverUrl, currentDuration, exactResolutionStr, estimatedSizeMB } = useMemo(() => {
     if (!open) return { coverUrl: '', currentDuration: 0, exactResolutionStr: '1920x1080', estimatedSizeMB: '0.0 MB' };
@@ -64,7 +67,18 @@ export const ExportModal: React.FC = () => {
     const baseRes = resMap[videoRes];
     const width = exportRatio === '9:16' ? baseRes.h : baseRes.w;
     const height = exportRatio === '9:16' ? baseRes.w : baseRes.h;
-    const videoBitrate = { '4k': 35000, '2k': 16000, '1080p': 8000, '720p': 5000 }[videoRes] || 8000;
+
+    /** 🔧 体积估算码率（kbps）：按 CRF 档位 + 分辨率对齐 x264 实测典型码率，
+     *   不再用旧"固定 8000 kbps"硬编码（旧码率对应 crf 18 的 1/2，估算比实际小 2 倍）。
+     *   - preview=true  → CRF 28 / preset ultrafast：~30% 码率 × 超快速编码
+     *   - preview=false → CRF 23 / preset fast：x264 出厂默认档（D1 新默认）
+     *   （历史默认 CRF 18 对应 1080p≈14000kbps，现已不作为默认档）
+     *   音频码率统一 192kbps（直出线）/ BGM 128kbps 混合；这里粗估 +192kbps。
+     *   公式：MB = (kbps_video + kbps_audio) × 秒 ÷ 8192 × 封装冗余 1.02
+     */
+    const baseKbps = { '4k': 26000, '2k': 12000, '1080p': 6200, '720p': 3800 }[videoRes] || 6200;
+    const previewFactor = previewMode ? 0.32 : 1.0; // CRF 28 vs 23 码率约 32%
+    const videoBitrate = Math.round(baseKbps * previewFactor);
     const sizeMB = ((videoBitrate + 192) * dur) / 8192 * 1.02;
     return {
       coverUrl: url,
@@ -72,7 +86,7 @@ export const ExportModal: React.FC = () => {
       exactResolutionStr: `${width}x${height}`,
       estimatedSizeMB: sizeMB > 0 ? sizeMB.toFixed(1) + ' MB' : '0.0 MB'
     };
-  }, [open, videoRes, exportRatio]);
+  }, [open, videoRes, exportRatio, previewMode]);
 
   const handleOpen = async () => {
     const state = useProjectStore.getState();
@@ -154,7 +168,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       .join('\n\n');
   };
 
-  const executeExport = async () => {
+  const executeExport = async (skipUnmatched = false) => {
     if (!exportVideo && !exportJianying && !exportAudio && !exportSubtitle && !exportTxt) {
       AppNotifier.warn('请勾选输出管线');
       return;
@@ -206,6 +220,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         // 导出范围参数：后端按 selectedShotIds 过滤待渲染镜头
         exportRange,
         selectedShotIds,
+        // 🛡️ 未匹配段策略：false=拦截报错（默认）；true=跳过未匹配段继续导出
+        skipUnmatched,
       };
 
       const tasks: Promise<any>[] = [];
@@ -266,11 +282,25 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         unsubscribe();
       }
     } catch (e: any) {
-      AppNotifier.error(e.message);
+      const msg = e?.message || '导出失败';
+      // 🛡️ 未匹配段拦截：引导用户选择「忽略未匹配段」二次确认后再继续（不清空勾选与进度）
+      if (!skipUnmatched && msg.includes('未匹配到画面切片')) {
+        setSkipBlockMessage(msg);
+        setSkipUnmatchedOpen(true);
+        return;
+      }
+      AppNotifier.error(msg);
     } finally {
       setIsExporting(false);
       setExportProgress(0);
     }
+  };
+
+  /** 二次确认后：按「忽略未匹配段（不导出其配音/字幕）」重新发起导出 */
+  const continueExportIgnoringUnmatched = async () => {
+    setSkipUnmatchedOpen(false);
+    setSkipBlockMessage('');
+    await executeExport(true);
   };
 
   const dialogOpenChange = (next: boolean) => {
@@ -561,13 +591,39 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
               >
                 {t.common.cancel}
               </Button>
-              <Button disabled={isExporting} size="sm" onClick={executeExport} className="h-8 shadow-sm">
+              <Button disabled={isExporting} size="sm" onClick={() => executeExport(false)} className="h-8 shadow-sm">
                 {isExporting ? t.export.btn_rendering : t.export.btn_submit}
               </Button>
               </div>
             </div>
           </DialogPrimitive.Content>
         </DialogPrimitive.Portal>
+
+        {/* 🛡️ 未匹配段拦截二次确认：存在有配音但无画面切片的段落时，明确告知并让用户选择是否忽略后继续 */}
+        {skipUnmatchedOpen && (
+          <DialogPrimitive.Root open onOpenChange={(o) => { if (!o) setSkipUnmatchedOpen(false); }}>
+            <DialogPrimitive.Portal>
+              <DialogPrimitive.Overlay className="fixed inset-0 z-[200] bg-black/70" />
+              <DialogPrimitive.Content className="fixed left-[50%] top-[50%] z-[200] w-[480px] translate-x-[-50%] translate-y-[-50%] bg-background border border-border rounded-lg shadow-xl p-5 flex flex-col gap-4 outline-none">
+                <DialogPrimitive.Title className="m-0 text-body font-semibold text-foreground">
+                  存在未匹配到画面的段落
+                </DialogPrimitive.Title>
+                <div className="text-[13px] leading-relaxed text-muted-foreground whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+                  {skipBlockMessage}
+                  {'\n\n勾选继续将跳过这些段落的配音与字幕（不出现在成片里）；不忽略则请返回步骤5 为这些段落重跑匹配。'}
+                </div>
+                <div className="flex justify-end gap-3">
+                  <Button variant="outline" size="sm" onClick={() => setSkipUnmatchedOpen(false)} className="h-8">
+                    {t.common.cancel}
+                  </Button>
+                  <Button size="sm" onClick={continueExportIgnoringUnmatched} className="h-8 shadow-sm">
+                    忽略未匹配段并继续
+                  </Button>
+                </div>
+              </DialogPrimitive.Content>
+            </DialogPrimitive.Portal>
+          </DialogPrimitive.Root>
+        )}
       </DialogPrimitive.Root>
     </>
   );

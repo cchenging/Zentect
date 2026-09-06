@@ -28,6 +28,14 @@ vi.mock('lucide-react', () => ({
   Sparkles: (props: any) => React.createElement('span', { 'data-testid': 'icon-sparkles', ...props }),
   Loader2: (props: any) => React.createElement('span', { 'data-testid': 'icon-loader2', ...props }),
   Copy: (props: any) => React.createElement('span', { 'data-testid': 'icon-copy', ...props }),
+  Search: (props: any) => React.createElement('span', { 'data-testid': 'icon-search', ...props }),
+  Clock: (props: any) => React.createElement('span', { 'data-testid': 'icon-clock', ...props }),
+  FileText: (props: any) => React.createElement('span', { 'data-testid': 'icon-filetext', ...props }),
+  Heart: (props: any) => React.createElement('span', { 'data-testid': 'icon-heart', ...props }),
+  ListMusic: (props: any) => React.createElement('span', { 'data-testid': 'icon-listmusic', ...props }),
+  Download: (props: any) => React.createElement('span', { 'data-testid': 'icon-download', ...props }),
+  ListPlus: (props: any) => React.createElement('span', { 'data-testid': 'icon-listplus', ...props }),
+  AlertTriangle: (props: any) => React.createElement('span', { 'data-testid': 'icon-alerttriangle', ...props }),
 }));
 
 vi.mock('@renderer/api', () => ({
@@ -263,7 +271,11 @@ describe('StepShotMatchingView', () => {
 
     it('无配音音频时应显示"无配音音频"', () => {
       renderView({
-        matchResults: [makeMatchResult({ shotId: 's1', text: '预览台词' })],
+        // 🔧 真实命中段必有 chunkData（filePath 指向切片素材/源视频）；仅配音音频缺失
+        matchResults: [makeMatchResult({
+          shotId: 's1', text: '预览台词',
+          chunkData: { id: 'scene_1_seg0', startMs: 10000, endMs: 13000, filePath: 'C:/v.mp4' } as any,
+        })],
         ttsResults: [],
       });
       const item = screen.getByTestId('drag-item-s1');
@@ -298,7 +310,12 @@ describe('StepShotMatchingView', () => {
 
     it('原声段落预览应显示"原声播放（切片自带音轨）"而非配音', () => {
       renderView({
-        matchResults: [makeMatchResult({ shotId: 's1', text: '原声台词', keepOriginalAudio: true })],
+        // 🔧 原声段素材恒为源视频（mediaItems[0]），命中段必有 chunkData
+        matchResults: [makeMatchResult({
+          shotId: 's1', text: '原声台词', keepOriginalAudio: true,
+          chunkData: { id: 'scene_9_seg2', startMs: 80000, endMs: 84000, filePath: 'C:/src.mp4' } as any,
+        })],
+        mediaItems: [{ id: 'm1', filePath: 'C:/src.mp4' } as any],
         ttsResults: [{ id: 's1', shotId: 's1', audioUrl: 'magic://local/audio.wav' }],
       });
       const item = screen.getByTestId('drag-item-s1');

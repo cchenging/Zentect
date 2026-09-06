@@ -105,6 +105,9 @@ export function normalizeScriptParagraph(raw: unknown): ScriptParagraph {
       characters: Array.isArray(src.characters)
         ? src.characters.filter((c): c is string => typeof c === 'string')
         : [],
+      // 🎬 决策 #6/#2（ADR-003）：仅显式 true 落字段（缺省即 false 语义），老数据零迁移
+      ...(src.isAbstractNarration === true ? { isAbstractNarration: true } : {}),
+      ...(src.isFlashback === true ? { isFlashback: true } : {}),
     };
     return paragraph;
   }

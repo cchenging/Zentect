@@ -22,6 +22,7 @@ import { PublishService } from '../services/PublishService';
 import { PathManager } from '../utils/pathManager';
 import { ExceptionHub } from '../core/ExceptionHub';
 import { ProjectRepository } from '../database/repositories/ProjectRepository';
+import { VideoChunkRepository } from '../database/repositories/VideoChunkRepository';
 import { JobScheduler } from '../core/JobScheduler';
 import { AiRuntimeManager } from '../core/AiRuntimeManager';
 import * as path from 'path';
@@ -149,6 +150,15 @@ export class EngineController {
       } finally {
         this.engines.delete(pid);
       }
+    });
+
+    // 🔧 2026-09-05: 清空当前视频的切片缓存（video_chunk_parts/video_chunks），
+    //   步骤5 UI「清空切片缓存」按钮调用；清后下一次检测强制重切（不再命中旧缓存）
+    IpcRouter.handle(IPC_CHANNELS.ENGINE_CLEAR_CHUNK_CACHE, async (_, payload: { projectId?: string; mediaPath?: string }) => {
+      const { projectId, mediaPath } = payload || {};
+      if (!mediaPath) return { success: false, message: '缺少 mediaPath，无法定位要清空的切片缓存', deleted: 0 };
+      const deleted = new VideoChunkRepository().deleteForMedia(projectId || '', mediaPath);
+      return { success: true, deleted, message: deleted > 0 ? `已清空 ${deleted} 条切片缓存` : '未发现该视频的切片缓存' };
     });
 
     // 中止 — 同时处理 PipelineEngine 和 SimpleRunner，并清理挂起状态

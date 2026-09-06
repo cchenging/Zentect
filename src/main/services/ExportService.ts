@@ -54,6 +54,8 @@ export class ExportService {
         exportRange: exportRange || 'all',
         selectedShotIds,
         includeSubtitleStyle: true,
+        /** 🛡️ 未匹配段默认拦截；前端勾选「忽略未匹配段」→ skip（不导出这些段的配音/字幕） */
+        unmatchedPolicy: payload.skipUnmatched === true ? 'skip' : 'block',
       };
       const assembled = assembleExportProjectSync(projectId, assemblerOptions, {
         projectRepo: this.projectRepo,
@@ -117,6 +119,8 @@ export class ExportService {
         selectedShotIds,
         includeSubtitleStyle: true,
         extraPayloadFields: ['scriptParagraphs', 'shots', 'matchResults', 'ttsResults'],
+        /** 🛡️ 未匹配段默认拦截；前端勾选「忽略未匹配段」→ skip（不导出这些段的配音/字幕） */
+        unmatchedPolicy: payload.skipUnmatched === true ? 'skip' : 'block',
       };
       const assembled = assembleExportProjectSync(projectId, assemblerOptions, {
         projectRepo: this.projectRepo,

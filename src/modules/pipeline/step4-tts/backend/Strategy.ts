@@ -2,6 +2,7 @@
 
 import { spawn } from 'child_process';
 import * as fs from 'fs';
+import * as path from 'path';
 import { BaseNodeStrategy } from '../../../../main/engine/strategies/BaseNodeStrategy';
 import type { ExecutionContext } from '../../../../main/engine/strategies/BaseNodeStrategy';
 import { AppLogger } from '../../../../main/core/AppLogger';
@@ -9,6 +10,7 @@ import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { ttsEngine } from '../../../../main/engine/TTSEngine';
 import { ProviderManager } from '../../../../main/engine/config/ProviderManager';
 import { PathManager } from '../../../../main/utils/pathManager';
+import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
 
 /**
  * 🎵 P2 声画同步：ffprobe 读取配音音频真实时长（秒）
@@ -209,11 +211,17 @@ export class TTSStrategy extends BaseNodeStrategy {
       // 单段合成执行器
       async (shot, _idx) => {
         const audioPath = await ttsEngine.generateTTS(shot.text, provider, cacheDir, voiceId, speechRate);
+        // 🎬 素材修剪：裁掉 TTS 首尾静音/气口（吸气口、句尾拖音），回填"真实有效发音时长"，
+        //   替代"含前导停顿的整段时长"，让步骤5 不必为了凑虚高时长去强拉/拉伸视频（消除一顿一顿）。
+        //   修剪产物写入 cacheDir 旁的 trim 目录，避免污染 TTS 缓存；ffmpeg 缺失或源文件缺失时返回源状态。
+        const trimOutPath = path.join(cacheDir, 'trim', `trim_${path.basename(audioPath)}`);
+        const trimmed = await AudioProcessor.trimAudioEdges(audioPath, trimOutPath);
+        const effectiveAudioPath = trimmed.outputPath; // 有静音则修剪版，无静音则原文件
         // 🎵 P2 声画同步：合成后立即用 ffprobe 读真实音频时长回填（秒），
-        // 替代步骤3 的"字数/语速"估算值，让步骤5 的时长惩罚与变速基于真实声画时长
-        const realDuration = await probeAudioDurationSec(audioPath);
-        AppLogger.info(LOG_TAGS.AI_AGENT, `[TTS] ${shot.shotId} 真实时长 ${realDuration.toFixed(2)}s（预估 ${shot.duration}s，偏差 ${((realDuration - (shot.duration || 0)) / Math.max(realDuration, 0.1) * 100).toFixed(0)}%）`);
-        return { id: shot.id, shotId: shot.shotId, text: shot.text, audioPath, duration: realDuration } as TTSItemResult;
+        //   替代步骤3 的"字数/语速"估算值，让步骤5 的时长惩罚与变速基于真实声画时长
+        const realDuration = trimmed.trimmed ? trimmed.durationSec : await probeAudioDurationSec(effectiveAudioPath);
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[TTS] ${shot.shotId} 真实时长 ${realDuration.toFixed(2)}s 修剪=${trimmed.trimmed}（预估 ${shot.duration}s，偏差 ${((realDuration - (shot.duration || 0)) / Math.max(realDuration, 0.1) * 100).toFixed(0)}%）`);
+        return { id: shot.id, shotId: shot.shotId, text: shot.text, audioPath: effectiveAudioPath, duration: realDuration } as TTSItemResult;
       },
       // 进度回调：每完成一段更新进度 + 推送增量结果（settled 是本段结果，直接累计到 completedSoFar）
       (completed, total, idx, settled) => {

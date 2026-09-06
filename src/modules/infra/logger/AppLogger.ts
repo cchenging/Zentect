@@ -35,6 +35,15 @@ log.transports.file.level = false;
   }).join(' ');
 
   const line = `[${timestamp}] [${level}] ${text}`;
+
+  // 🔧 统一防刷屏：CLIP 高维特征数组 dump（visionEmbedding/colorHistogram/clipZhEmbedding 可达 512 维）
+  // 无论来自 daemon stdout/stderr 转发还是前端 console 转发，最终都汇聚到此 console transport。
+  // 单行超长且含特征字段即判定为无诊断价值的刷屏 dump（此类特征已由落库层剥离），整行丢弃；
+  // 不影响正常短日志（含 [镜头匹配] 等诊断行）的输出。
+  const FEATURE_DUMP_KEYS = ['visionEmbedding', 'colorHistogram', 'clipZhEmbedding'];
+  const isFeatureDump = line.length > 800 && FEATURE_DUMP_KEYS.some((k) => line.includes(k));
+  if (isFeatureDump) return;
+
   if (level === 'error') {
     console.error(line);
   } else if (level === 'warn') {

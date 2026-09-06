@@ -236,13 +236,14 @@ function ensureVisualIntentFilled(
   if (kw.length > 0) parts.push(`关键词：${kw.join('、')}`);
 
   let result = parts.filter(Boolean).join('，');
-  // 控制上限 40 字，避免 CLIP 512 token 截断浪费算力；保留前缀保证镜头语言锚点
-  if (result.length > 40) {
-    // 先尝试保留【景别】前缀，其余部分 36 字截断
+  // 控制上限 64 字：给匹配 query 保留更完整的关键道具/动作/角色语义（40 字过短易截断强视觉信号），
+  // 同时仍在 CLIP 512-token 安全范围内不浪费算力；【景别】前缀仅作定位锚点、不占正文额度。
+  if (result.length > 64) {
+    // 先尝试保留【景别】前缀，其余部分 60 字截断
     if (prefix && result.startsWith(prefix)) {
-      result = prefix + result.slice(prefix.length).slice(0, 40 - prefix.length);
+      result = prefix + result.slice(prefix.length).slice(0, 64 - prefix.length);
     } else {
-      result = result.slice(0, 40);
+      result = result.slice(0, 64);
     }
   }
 
@@ -252,6 +253,30 @@ function ensureVisualIntentFilled(
     result = t ? `【兜底】${t.slice(0, 20)}` : '【兜底】通用画面';
   }
   return result;
+}
+
+/** 🎭 五幕张力曲线（步骤3 爆款文案升级）：按归一化章节进度分配戏剧任务，映射到 chapterGroups 索引。
+ * 与「语义切章」互补：切章保证边界对（场景/冲突转折处落刀），五幕保证每一章知道自己在哪一幕、该干什么。 */
+const ACT_DEFS: Array<{ start: number; end: number; label: string; directive: string }> = [
+  { start: 0.00, end: 0.10, label: '第一幕·黄金钩子', directive: '开篇三秒定生死：必须用后期高光做逆向反差，抛出致命悬念/反常反差，让观众必须看下去，严禁平铺直叙"今天讲…"式报幕。' },
+  { start: 0.10, end: 0.40, label: '第二幕·困境升级', directive: '主角入局，小试牛刀却遭规则反噬，筹码不断加注；张力逐段抬升，切忌一次性宣泄。' },
+  { start: 0.40, end: 0.70, label: '第三幕·绝望反转', directive: '信任崩塌、跌入谷底、付出惨痛代价，是本片情绪最低点；如遇强冲突原声对白，此处是释放高光的最佳区间。' },
+  { start: 0.70, end: 0.90, label: '第四幕·巅峰破局', directive: '极速快切、视听张力拉满，完成复仇/揭秘/终极对决，是全片视听高潮。' },
+  { start: 0.90, end: 1.00, label: '第五幕·余韵隐喻', directive: '留白与哲理收尾，点破人性代价或社会寓意，制造余韵与评论区讨论欲。' },
+];
+
+/** 函数级中文注释：按归一化章节进度把章节归入五幕之一（p < end 即落入该幕，半边开区间 [start, end)）。
+ * 边界纪律：首章 k=0 恒入第一幕（钩子位）；末章恒入第五幕（余韵隐喻收尾）——否则 K≤9 时末章 p=(K-1)/K<0.90，
+ * 第五幕区间 [0.90,1.00) 永远无人命中，结尾将误判为"破局"而丢失"留白哲理收尾"指令（戏剧弧线断在第四幕）。
+ * 其余章节按进度归幕：[0,1) 全分区覆盖，每章恰属一幕、无漏章。 */
+function actIndexForChapter(chapterIdx: number, chapterCount: number): number {
+  /** 末章兜底：无论 K 多大，最后一章必须在第五幕做余韵隐喻收尾 */
+  if (chapterCount > 0 && chapterIdx === chapterCount - 1) return ACT_DEFS.length - 1;
+  const p = chapterCount > 0 ? chapterIdx / chapterCount : 0;
+  for (let i = 0; i < ACT_DEFS.length; i++) {
+    if (p < ACT_DEFS[i].end) return i;
+  }
+  return ACT_DEFS.length - 1;
 }
 
 export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, GeneratedShot[]> {
@@ -281,6 +306,90 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
           ? Math.round(line.end * 1000)
           : (defaultEndMs != null ? Math.round(defaultEndMs) : startMs + 4000);
     return { startMs, endMs };
+  }
+
+  /** 函数级中文注释：由一组 ASR 行计算该片段的台词时间范围 {asrStartMs, asrEndMs}（源毫秒）。
+   * 供语义切章的「ASR 空白期加分」使用：相邻 chunk 间存在 >3s 无对白空白即视为天然剪辑呼吸点。
+   * 任一行时间戳非法（缺 start/end，仅能靠 default 兜底）→ 返回空对象（无真实范围不给加分，防假信号）。 */
+  private static _asrRangeMs(lines: any[]): { asrStartMs?: number; asrEndMs?: number } {
+    const linesArr = Array.isArray(lines) ? lines : [];
+    if (linesArr.length === 0) return {};
+    const hasRealTiming = (l: any) =>
+      (typeof l?.startMs === 'number') || (typeof l?.start === 'number') ||
+      (typeof l?.endMs === 'number') || (typeof l?.end === 'number');
+    if (!linesArr.every(hasRealTiming)) return {};
+    let min = Infinity;
+    let max = -Infinity;
+    for (const l of linesArr) {
+      const { startMs, endMs } = ScriptGenStrategy._asrLineToMs(l, 0);
+      if (startMs < min) min = startMs;
+      if (endMs > max) max = endMs;
+    }
+    const out: { asrStartMs?: number; asrEndMs?: number } = {};
+    if (Number.isFinite(min)) out.asrStartMs = min;
+    if (Number.isFinite(max)) out.asrEndMs = max;
+    return out;
+  }
+
+  /** 函数级中文注释：文本变化判定——归一化后 Jaccard token 相似度 < 0.5 且双方非空且不同 → 视为剧情信号变化。
+   * 防缺失字段给假强度：任一为空直接判不变（不给边界加分）。 */
+  private static _textShifted(a: unknown, b: unknown): boolean {
+    const sa = typeof a === 'string' ? a.trim().replace(/\s+/g, '') : '';
+    const sb = typeof b === 'string' ? b.trim().replace(/\s+/g, '') : '';
+    if (!sa || !sb) return false;
+    if (sa === sb) return false;
+    const tokensA = new Set(sa);
+    const tokensB = new Set(sb);
+    let inter = 0;
+    tokensA.forEach((t) => { if (tokensB.has(t)) inter += 1; });
+    const union = tokensA.size + tokensB.size - inter;
+    if (union === 0) return false;
+    return inter / union < 0.5;
+  }
+
+  /** 函数级中文注释：角色集合 Jaccard 距离 = 1 − |∩|/|∪|，用于多人/群戏时主体切换的鲁棒判定。
+   * 单值字符串也归一为单元素集合；任一侧为空集返 0（不给强度，防假信号）。 */
+  private static _charShiftScore(aArr: unknown, bArr: unknown): number {
+    const toSet = (v: unknown): Set<string> => {
+      const out = new Set<string>();
+      if (Array.isArray(v)) {
+        for (const x of v) { const s = String(x).trim(); if (s) out.add(s); }
+      } else if (typeof v === 'string' && v.trim()) {
+        out.add(v.trim());
+      }
+      return out;
+    };
+    const A = toSet(aArr);
+    const B = toSet(bArr);
+    if (A.size === 0 || B.size === 0) return 0;
+    let inter = 0;
+    A.forEach((x) => { if (B.has(x)) inter += 1; });
+    const union = new Set([...A, ...B]).size;
+    if (union === 0) return 0;
+    return 1 - inter / union;
+  }
+
+  /** 函数级中文注释：相邻 chunk 间的无对白空白秒数（剪辑天然呼吸点）。ASR 时间戳缺失返 0（不给加分）。 */
+  private static _asrGapSec(cur: any, nxt: any): number {
+    const curEnd = typeof cur?.asrEndMs === 'number' ? cur.asrEndMs : undefined;
+    const nxtStart = typeof nxt?.asrStartMs === 'number' ? nxt.asrStartMs : undefined;
+    if (curEnd === undefined || nxtStart === undefined) return 0;
+    return Math.max(0, (nxtStart - curEnd) / 1000);
+  }
+
+  /** 函数级中文注释：剧情语义边界强度 core[i]（相邻 cur→nxt），∈[0,1]，越高越该在此切章。
+   * 信号权重：场景 0.50 / 情绪 0.20 / 氛围 0.15 / 主体(集合Jaccard≥0.5) 0.10 / 张力 0.05 / ASR空白>3s +0.10。 */
+  private static _boundaryStrength(cur: any, nxt: any): number {
+    const vc = (cur?.visualContext) || {};
+    const vn = (nxt?.visualContext) || {};
+    let s = 0;
+    if (ScriptGenStrategy._textShifted(vc.shotStyle, vn.shotStyle)) s += 0.50; // 场景切换（最强转折）
+    if (ScriptGenStrategy._textShifted(vc.emotion, vn.emotion)) s += 0.20; // 情绪骤变
+    if (ScriptGenStrategy._textShifted(vc.atmosphere, vn.atmosphere)) s += 0.15; // 氛围切换
+    if (ScriptGenStrategy._charShiftScore(vc.characters, vn.characters) >= 0.5) s += 0.10; // 主体移位
+    if (ScriptGenStrategy._textShifted(vc.dramaticConflict, vn.dramaticConflict)) s += 0.05; // 张力出现
+    if (ScriptGenStrategy._asrGapSec(cur, nxt) > 3.0) s += 0.10; // ASR 空白呼吸点
+    return Math.min(1.0, s);
   }
 
   /**
@@ -536,6 +645,10 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
             : asrLines.slice(i * Math.max(1, Math.floor(asrLines.length / totalShots)), (i + 1) * Math.max(1, Math.floor(asrLines.length / totalShots))));
       const asrContext = shotAsrText || chunkAsrLines.map(l => l.text || l.content || '').filter(Boolean).join(' ') || '';
 
+      // 🎬 语义切章 ASR 呼吸点前置：记录本 chunk 覆盖台词的真实时间范围（源毫秒）。
+      // shotAsrText 路径（步骤2 已按真实时间匹配）无行级时间戳 → _asrRangeMs 返回 {}，不给加分。
+      const { asrStartMs, asrEndMs } = ScriptGenStrategy._asrRangeMs(chunkAsrLines);
+
       // 🎬 视觉噪点过滤与 Key-Action 提纯：剔除"背景是一面墙"等静态水文
       // 仅保留戏剧动作（带【特写】镜头前缀）+ 微表情 + 噑点过滤后的 keywords
       // 让 LLM 注意力聚焦于戏剧冲突，而非环境描写
@@ -548,6 +661,9 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
         durationMs: chunkDurationMs,
         durationSec: parseFloat((chunkDurationMs / 1000).toFixed(1)),
         anchoredCharacters,
+        /** 🎬 语义切章 ASR 呼吸点：本 chunk 覆盖台词的真实时间范围（源毫秒，便于相邻 chunk 算无对白空白期加分） */
+        asrStartMs,
+        asrEndMs,
         asrContext: asrContext ? `原声：${asrContext}` : '',
         visualContext: {
           keyAction: purifiedVisual.keyAction,           // 蒸馏后的动作（如：【特写/推】死死盯住冰鱼）
@@ -598,6 +714,8 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
             })
           : [];
         const subAsrContext = subAsrLines.map(l => l.text || l.content || '').filter(Boolean).join(' ') || '';
+        // 🎬 语义切章 ASR 呼吸点：子 chunk 用筛选到的 subAsrLines 行级时间戳重算台词范围
+        const { asrStartMs: subAsrStartMs, asrEndMs: subAsrEndMs } = ScriptGenStrategy._asrRangeMs(subAsrLines);
         microChunks.push({
           chunkId: `${baseChunkId}_${s + 1}`,
           timeRange: `${formatMsToTime(subStartMs)} -> ${formatMsToTime(subEndMs)}`,
@@ -605,6 +723,8 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
           durationMs: subDurationMsActual,
           durationSec: parseFloat((subDurationMsActual / 1000).toFixed(1)),
           anchoredCharacters: chunk.anchoredCharacters,
+          asrStartMs: subAsrStartMs,
+          asrEndMs: subAsrEndMs,
           asrContext: subAsrContext ? `原声：${subAsrContext}` : '',
           visualContext: chunk.visualContext,
         });
@@ -637,6 +757,9 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
           unit.durationSec = parseFloat((unit.durationMs / 1000).toFixed(1));
           unit.timeRange = `${unit.timeRange.split(' -> ')[0]} -> ${chunk.timeRange.split(' -> ')[1]}`;
           if (chunk.asrContext) unit.asrContext = [unit.asrContext, chunk.asrContext].filter(Boolean).join(' ');
+          // 语义切章 ASR 呼吸点：合并时 ASR 台词范围取并集（min 起点 / max 终点），空白期判定对合并后单元仍正确
+          if (chunk.asrStartMs !== undefined && (unit.asrStartMs === undefined || chunk.asrStartMs < unit.asrStartMs)) unit.asrStartMs = chunk.asrStartMs;
+          if (chunk.asrEndMs !== undefined && (unit.asrEndMs === undefined || chunk.asrEndMs > unit.asrEndMs)) unit.asrEndMs = chunk.asrEndMs;
           const prevKey = unit.visualContext?.keyAction || '';
           const curKey = chunk.visualContext?.keyAction || '';
           if (curKey) unit.visualContext = { ...unit.visualContext, keyAction: [prevKey, curKey].filter(Boolean).join('；') };
@@ -654,6 +777,9 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
         prev.durationSec = parseFloat((prev.durationMs / 1000).toFixed(1));
         prev.timeRange = `${prev.timeRange.split(' -> ')[0]} -> ${tail.timeRange.split(' -> ')[1]}`;
         if (tail.asrContext) prev.asrContext = [prev.asrContext, tail.asrContext].filter(Boolean).join(' ');
+        // 语义切章 ASR 呼吸点：尾部并入同样取并集
+        if (tail.asrStartMs !== undefined && (prev.asrStartMs === undefined || tail.asrStartMs < prev.asrStartMs)) prev.asrStartMs = tail.asrStartMs;
+        if (tail.asrEndMs !== undefined && (prev.asrEndMs === undefined || tail.asrEndMs > prev.asrEndMs)) prev.asrEndMs = tail.asrEndMs;
         const pk = prev.visualContext?.keyAction || '';
         const ck = tail.visualContext?.keyAction || '';
         if (ck) prev.visualContext = { ...prev.visualContext, keyAction: [pk, ck].filter(Boolean).join('；') };
@@ -714,31 +840,97 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     const TWO_PHASE_TRIGGER_SEC = 900;
 
     /**
-     * 章节时序装箱（本地代码层，非 LLM）：先按 §3.5 密度公式折算目标章节数
-     * N_beats = clamp(⌈T_source(min) × 1.6⌉, 12, 18)，且不超过实际 chunk 数以防空章；
-     * 再按时间轴均值贪心装箱为若干连续章节。实际章数允许与目标少量偏差——
-     * 配额按实际章数组运行时分摊，Σquota ≡ N_total 不受影响。
+     * 章节时序装箱（本地启发式，非 LLM）：
+     * 用相邻 chunk 间的「剧情语义边界强度」core[i]（见 _boundaryStrength：场景 0.50 / 情绪 0.20 /
+     * 氛围 0.15 / 主体 0.10 / 张力 0.05 / ASR 空白>3s +0.10）做峰值筛选，把原本「时间均值硬切」变为
+     * 「按视听语义转折自然划章」，让长视频章节边界落在场景切换/冲突爆发点上，消除机械均分的割裂感。
+     *
+     * 方案三处微调已纳入：
+     *  ① 主体移位用 role 集合 Jaccard 距离（_charShiftScore ≥ 0.5）判定，多人对话小幅漂移不误切；
+     *  ② 目标章数自适应：BaselineSec = clamp(T_total/15, 60, 180)，
+     *     n_target = clamp(round(T_total / BaselineSec), 6, 24)，长片自然拉长到 2~3 分钟/章，避免撞 softMax=24 过度裁撤；
+     *  ③ ASR 无对白空白期(>3s) +0.10，落在剪辑天然呼吸点上。
+     *
+     * 选择策略：候选峰值按强度降序贪心选中，服从「每章至少 minSpan 个 chunk」的跨度约束；
+     * 峰值不足以达目标章数时，再按全边界强度降序补选，仍守跨度约束。
+     * 若步骤2 视觉上下文全缺失（所有 core[i]=0），峰值集为空，退化为按跨度均分装箱，
+     * 与原「时间均值切章」行为等价的兜底，保持长视频仍可出基本的均匀章节。
+     * 配额守恒不依赖章数恒定：分章后 computeChapterQuotas 按各章实际时长占比分摊，Σquota ≡ N_total。
      * @param chunks 微切分+合并后的时序 ContextChunk 数组（有序）
      * @returns 连续章节二维数组（每章至少 1 个 chunk）
      */
     const splitIntoChapters = (chunks: any[]): any[][] => {
-      if (chunks.length <= 1) return [chunks];
-      const targetCount = Math.min(
-        Math.max(12, Math.min(18, Math.ceil((totalDurationSec / 60) * 1.6))),
-        chunks.length,
-      );
-      const avgSec = totalDurationSec / targetCount;
+      const n = chunks.length;
+      if (n <= 1) return [chunks];
+
+      // ② 自适应目标章数（§2 微调）：基准时长随总时长拉长，避免长片撞 softMax 过度裁撤
+      const baselineSec = Math.max(60, Math.min(180, totalDurationSec / 15));
+      const targetCount = Math.max(6, Math.min(24, Math.round(totalDurationSec / baselineSec)));
+      const targetCuts = Math.max(0, Math.min(targetCount - 1, n - 1));
+      // 每章至少约"半均宽"个 chunk（下限 2），防止语义切分出碎片空章
+      const minSpan = Math.max(2, Math.floor(n / Math.max(1, targetCount) / 2));
+
+      // 边界强度序列 core[i]：相邻 chunk 间剧情语义转折强度（越高越该在此切章）
+      const core: number[] = [];
+      for (let i = 0; i < n - 1; i++) {
+        core.push(ScriptGenStrategy._boundaryStrength(chunks[i], chunks[i + 1]));
+      }
+
+      // 候选峰值：局部极大（含等值平台起点）+ 强度达阈值才计，滤除噪声边界
+      const cands: Array<{ idx: number; strength: number }> = [];
+      for (let i = 0; i < n - 1; i++) {
+        const leftOk = i === 0 || core[i] >= core[i - 1];
+        const rightOk = i === n - 2 || core[i] > core[i + 1];
+        if (leftOk && rightOk && core[i] >= 0.2) {
+          cands.push({ idx: i, strength: core[i] });
+        }
+      }
+      cands.sort((a, b) => b.strength - a.strength);
+
+      // 跨度约束判定：切点 cx 与已选切点、以及首尾都须保持 ≥ minSpan 个 chunk 间距
+      const cuts: number[] = []; // 升序维护已选切点（切在第 i 与 i+1 个 chunk 之间）
+      const canAdd = (cx: number): boolean => {
+        if (cx < minSpan - 1) return false;            // 首章宽度不足
+        if (n - 1 - cx < minSpan) return false;        // 末章宽度不足
+        for (const x of cuts) {
+          if (Math.abs(x - cx) < minSpan) return false; // 两切点间距不足
+        }
+        return true;
+      };
+      const insertCut = (cx: number): void => {
+        let pos = 0;
+        while (pos < cuts.length && cuts[pos] < cx) pos++;
+        cuts.splice(pos, 0, cx);
+      };
+
+      // 阶段1：峰值按强度降序优先选中（最强语义转折优先成为章节边界）
+      for (const c of cands) {
+        if (cuts.length >= targetCuts) break;
+        if (canAdd(c.idx)) insertCut(c.idx);
+      }
+      // 阶段2：峰值不足以达目标章数时，按全边界强度降序补选（仍守跨度约束）
+      if (cuts.length < targetCuts) {
+        const allSorted: Array<{ idx: number; strength: number }> = core
+          .map((strength, idx) => ({ idx, strength }))
+          .sort((a, b) => b.strength - a.strength);
+        for (const c of allSorted) {
+          if (cuts.length >= targetCuts) break;
+          if (cuts.includes(c.idx)) continue;
+          if (canAdd(c.idx)) insertCut(c.idx);
+        }
+      }
+
+      // 按切点升序顺序装箱
       const groups: any[][] = [];
       let cur: any[] = [];
-      let acc = 0;
-      for (const c of chunks) {
-        // 当前章达到时间窗均值即封章；封章动作最多执行 targetCount-1 次，剩余全部归入末章
-        if (cur.length > 0 && acc >= avgSec && groups.length < targetCount - 1) {
+      let cutPtr = 0;
+      for (let i = 0; i < n; i++) {
+        cur.push(chunks[i]);
+        if (cutPtr < cuts.length && i === cuts[cutPtr]) {
           groups.push(cur);
           cur = [];
+          cutPtr++;
         }
-        cur.push(c);
-        acc += c.durationSec;
       }
       if (cur.length > 0) groups.push(cur);
       return groups;
@@ -1110,7 +1302,7 @@ ${roleMapLines.join('\n')}
     };
 
     /** 主产物容器：rawShots 为各章/全量分镜顺次拼接的中间形态 */
-    let rawShots: Array<{ shotId: string; text: string; duration: number; emotion?: string; visualIntent?: string; keepOriginalAudio?: boolean }> = [];
+    let rawShots: Array<{ shotId: string; text: string; duration: number; emotion?: string; visualIntent?: string; keepOriginalAudio?: boolean; isAbstractNarration?: boolean; isFlashback?: boolean }> = [];
     /** 每个 shot 对应 contextChunks 的全局下标（单阶段恒等；两阶段=本章基址+段内序号钳制） */
     const chunkIndexByShot: number[] = [];
 
@@ -1163,6 +1355,32 @@ ${roleMapLines.join('\n')}
       });
     } else {
       // —— 两阶段滑窗：逐章 Stage2 请求 + 内联重试一次 + ±20% 配额兑现 ——
+      /** 黄金3秒高光素材（Step2）：从后半程高潮区章节概要提取冲突，作为第 1 章开篇的逆向反差钩子素材。
+       * 数据源唯一取 chapterMetaList（Stage1 产物），禁止 LLM 凭空编造高光，契合"错就错不造假"。
+       * 不用硬编码幕索引（actIdx===2||3）：小 K 时幕索引会漂移/取空，改用归一化进度百分比切片（全剧约 45%~85% 为第三/四幕高潮区，与 actIndexForChapter 同用 kk/K 作除数保持一致），
+       * 极端筛空时兜底取倒数第 2~3 章概要（仍属后半程，非虚构），保证首章必有高光素材可反推。 */
+      const climaxMaterial = (() => {
+        const parts: string[] = [];
+        for (let kk = 0; kk < chapterGroups.length; kk++) {
+          const ratio = chapterGroups.length > 0 ? kk / chapterGroups.length : 0;
+          if (ratio >= 0.45 && ratio <= 0.85) {
+            const m = chapterMetaList[kk];
+            const t = m?.title || '';
+            const s = m?.summary || '';
+            if (t || s) parts.push(`${t}${s ? `：${s}` : ''}`);
+          }
+        }
+        // 兜底：极端小章数致归一化区间全空时，取末尾倒数第 2~3 章（高潮区，非编造）
+        if (parts.length === 0) {
+          for (let kk = Math.max(1, chapterGroups.length - 3); kk < chapterGroups.length - 1; kk++) {
+            const m = chapterMetaList[kk];
+            const t = m?.title || '';
+            const s = m?.summary || '';
+            if (t || s) parts.push(`${t}${s ? `：${s}` : ''}`);
+          }
+        }
+        return parts.join('\n').slice(0, 300);
+      })();
       let chapterPrevTail = '';
       for (let k = 0; k < chapterGroups.length; k++) {
         const group: any[] = chapterGroups[k];
@@ -1172,12 +1390,22 @@ ${roleMapLines.join('\n')}
         /** 本章累计时长：喂给 System Prompt 作"总时长行"的本章口径 */
         const chapterTotalSec = group.reduce((s: number, c: any) => s + c.durationSec, 0);
 
+        /** 🎭 五幕戏剧任务（Step1）：按 k/K 归一化进度归入五幕，注入本章 System Prompt */
+        const actIdx = actIndexForChapter(k, chapterGroups.length);
+        const actDef = ACT_DEFS[actIdx];
+        let actDirective = `【${actDef.label}】${actDef.directive}`;
+        // Step2 黄金3秒高光反推：仅首章（第一幕）注入后期高潮素材，把结局反拍成开局
+        if (k === 0 && climaxMaterial) {
+          actDirective += `\n\n【本剧高光素材 · 用于黄金3秒逆向反推】：\n${climaxMaterial}\n—— 第一幕开篇的悬念/反差钩子必须从上述后期高光中取材（把结局反拍成开局），严禁凭空编造高光、严禁平铺直叙报幕。`;
+        }
+
         const systemPromptK = this.buildSystemPrompt({
           ...promptBaseArgs,
           targetSec: null,
           targetBudgetChars: null,
           totalDurationSec: chapterTotalSec,
           chapterQuotaWords: quotaWords,
+          actDirective,
         });
 
         const parts: string[] = [
@@ -1198,7 +1426,7 @@ ${roleMapLines.join('\n')}
         ];
 
         /** 本章原始分镜数组；连续两次解析失败则带章号硬抛（错就错，不降级） */
-        let chapterRaw: Array<{ shotId: string; text: string; duration: number; emotion?: string; visualIntent?: string; keepOriginalAudio?: boolean }> | null = null;
+        let chapterRaw: Array<{ shotId: string; text: string; duration: number; emotion?: string; visualIntent?: string; keepOriginalAudio?: boolean; isAbstractNarration?: boolean; isFlashback?: boolean }> | null = null;
         let lastErr = '';
         for (let attempt = 1; attempt <= 2 && !chapterRaw; attempt++) {
           try {
@@ -1439,6 +1667,8 @@ ${roleMapLines.join('\n')}
     narrativePerspective: string;
     /** 非 null 表示两阶段第 N 章调用（全局总量块被屏蔽，由 quota 行接管） */
     chapterQuotaWords: number | null;
+    /** 🎭 五幕戏剧任务指令（两阶段逐章注入第 k/K 幕的任务与张力要求；单阶段/null 不注入） */
+    actDirective?: string;
   }): string {
     // 风格词库：用户未选风格时回退默认
     const styleInstruction = STYLE_PROMPTS[args.styleName] || STYLE_PROMPTS['爆款短视频'];
@@ -1476,7 +1706,9 @@ ${roleMapLines.join('\n')}
     };
     // 钩子强度 → 开头指令
     const hookInstruction = args.hookIntensity >= 0.7
-      ? `【黄金3秒钩子（强度${(args.hookIntensity * 100).toFixed(0)}%）】：第一句必须制造极大悬念或冲突！示例："谁能想到，这个在菜市场被按在地上摩擦的卖鱼佬，三年后竟然成了全省最大的黑老大！"`
+      ? `【黄金3秒双钩（强度${(args.hookIntensity * 100).toFixed(0)}%）】：开头第 1~3 段必须同时埋【悬念钩】+【冲突钩】双重钩子——
+  悬念钩制造"这个人/这件事即将失控"的未知感，冲突钩抛出人物当下的剧烈矛盾，让观众既好奇结局又揪心当下。
+  示例："谁能想到，这个在菜市场被按在地上摩擦的卖鱼佬，三年后竟成了全省最大的黑老大！可他第一次拿刀，不是为自己，而是为了一个刚认识的女人。"第一段用一个爆点颠覆预期，紧接一段揭示（尚未引爆的）新冲突，把观众钉在原地。`
       : args.hookIntensity >= 0.4
       ? `【开头钩子（强度${(args.hookIntensity * 100).toFixed(0)}%）】：第一句设置适度悬念吸引观众。示例："这个故事，要从一杯水说起。"`
       : `【开头风格（强度${(args.hookIntensity * 100).toFixed(0)}%）】：平铺直叙开场，适合纪录片。示例："今天给大家讲讲高启强的故事。"`;
@@ -1489,7 +1721,11 @@ ${roleMapLines.join('\n')}
 
 ## 🎬 剧情思维（最高优先级，先于一切形式规则）
 1. **贴剧情，不贴画面**：解说不是画面翻译！每一段解说必须回答"这段在剧情中推进了什么"（因果/转折/人物弧线），段与段之间承上启下、逻辑连贯。
-2. **合理解读**：每 3~5 段至少 1 段是解读——剖析人物动机、前后呼应、主题升华或现实隐喻。解读必须基于已确认的剧情事实，严禁编造剧情。
+2. **深层解读（三段式结构，非浅层复述）**：每 3~5 段至少 1 段是有深度的解读——剖析人物动机、前后呼应、主题升华或现实隐喻。解读须按"**观点句→画面/台词证据→上升寓意**"三段结构展开：
+   - 观点句：直接点出你想让观众接收的判断（如"这一瞬，崔哥才真正决定赌上全部"）；
+   - 证据：从已确认的画面/台词事实勾连（严禁编造剧情，证据必须本段之前出现过）；
+   - 上升：把个人命运连到普遍人性或主题（如"多少人的满盘皆输，都是从犹豫着押上全副身家开始"）。
+   仅停留在"画面复述/泛泛感叹"（如"这一幕很感人""画面十分震撼"）不算解读，必须给出观点与逻辑链条。
 3. **剧情优先于形式**：所有短句/卡点/句式规则都是表达手段，不得以牺牲剧情逻辑为代价。宁可放弃一个"金句"，也要保证剧情链条完整。
 
 ${args.plotOutline ? `## 📖 全局剧情大纲（必须首先通读，解说严格贴合以下主线）
@@ -1500,12 +1736,15 @@ ${args.styleName}：${styleInstruction}
 
 ${hookInstruction}
 
+${args.actDirective ? `## 🎭 本幕戏剧任务（Five-Act Directive）
+${args.actDirective}` : ''}
+
 ${args.chapterQuotaWords !== null ? `## 📏 本章硬性字数配额（Hard Quota）
 本请求只负责撰写整片中的其中一个章节解说：解说词净字数必须控制在 **≤ ${args.chapterQuotaWords} 字**（keepOriginalAudio 原声段不计入）。这是全局预算分摊到你这一章的硬性配额，宁可稍少、严禁超发。` : args.targetSec !== null ? `## 📏 目标解说总时长（总量约束，与"解说占比"独立）
 本片目标解说总时长约 ${args.targetSec} 秒（约 ${args.targetBudgetChars} 字）。片段流中存在过渡/次要段落时：优先为关键剧情/冲突/转折段落撰写**丰满**解说（每段按字数上限写满，保留解读）；过渡/次要段落应${args.allowOriginalMark ? '标记 "keepOriginalAudio": true 留白给原声' : '精简字数'}，使全部解说总量贴近目标时长。` : ''}
 
 ## ⚡ 爆款短句与卡点硬性规则 (Core Short-Sentence Rules)
-1. **单句字数硬限制**：每个单句（两个标点之间的文字）绝对不能超过 ${maxSentenceChars} 字！多用动词、感叹号与极速短句（如："死死盯住！"、"眼神杀气顿显！"）。
+1. **叙事为主、短句为手段（去矛盾）**：每个单句（两个标点之间的文字）为叙事通顺可略超 ${maxSentenceChars} 字，但**优先保证剧情表达完整、承前启后**，绝不为了让句子变短而打断叙事（与规则2 的连贯叙事、规则6 的完结收尾一致）。真正的"短句卡点感"靠**内容密度**（动词、意象）而非机械截断长度。仅当本段时长极短（画面撑不住长句）时才拆分短句并保持收尾完结。多用动词、感叹号与短促有力的表达（如："死死盯住！"）点缀节奏。
 2. **镜头级连贯叙事**：每个分镜的解说词应写成通顺完整的句子或短句群，字数尽量贴近单段字数上限（不要刻意压短成碎片）；相邻分镜之间善用衔接词（接着／没想到／于是／然而／下一秒）承上启下，形成连贯的剧情流，避免每段都是孤立无关联的短句。长句交给断句器按字幕安全框自动拆分。
 3. **角色名称绝对统一**：严格使用【全局已知角色列表】中的姓名，严禁混淆人名或凭空创造角色列表之外的人名。
 4. **消除视觉幻觉**：若 ASR 旁白与画面物理描述不一致，以【画面物理描述】为准描绘现场动作，以 ASR 为补充。
@@ -1547,6 +1786,8 @@ ${args.allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking
 每个分镜除解说词外，必须输出两个辅助字段，供下游画面匹配使用：
 1. \`"emotion"\`：本段解说词的情绪基调，从以下类别中选择一个：紧张悬疑 / 悲伤沉重 / 愤怒激昂 / 欢快轻松 / 平静舒缓 / 中性。
 2. \`"visualIntent"\`（【必填】禁止空字符串/缺字段/写"无"/写"不需要"）：本段解说词"应该配什么画面"的画面意图描述，用画面语言（非文学语言）概括主体、动作、场景、景别、氛围，20~40 字。必须基于【多模态上下文片段流】中对应 chunk 的画面描述（对应位置的 visualContext.keyAction/shotType/emotion/atmosphere），不得凭空编造画面。✅ 正例：\`"男子面部特写，眼神凌厉，室内昏暗，紧张氛围"\`；❌ 反例：\`""\`、\`"无"\`、整个 JSON 对象缺 visualIntent 字段。
+3. \`"isAbstractNarration"\`（可选布尔）：仅当本段解说词是纯粹的时间流逝/岁月更迭类抽象抒情（如"岁月流转""时光荏苒""白驹过隙"），不指代任何具体人物/动作/场景时，才输出 \`"isAbstractNarration": true\`。此类段落下游按景别节奏先验（优先空镜）配画面；常规解说段【严禁】标记。
+4. \`"isFlashback"\`（可选布尔）：仅当本段解说词描述的画面是闪回/回忆/倒叙（与当前叙事时间线不同步的历史画面）时，才输出 \`"isFlashback": true\`。此类段落下游将豁免时间轴锚定约束；常规解说段【严禁】标记。
 
 ## Output Format
 ### 必填字段声明（缺任何一项视为无效输出）

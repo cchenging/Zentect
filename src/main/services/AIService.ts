@@ -738,7 +738,10 @@ export class AIService {
       });
       const videoChunks = chunkResponse?.data || chunkResponse || [];
       if (!Array.isArray(videoChunks) || videoChunks.length === 0) {
-        AppLogger.warn(LOG_TAGS.AI_AGENT, `[AIService] 动态视频切片池为空，回退到帧匹配`);
+        /** 🛑 2026-09-05 B1：切片池为空即抛错暴露（此前仅 warn 后继续发空池给 KM → 静默全空结果）。
+         *  空池属于上游/daemon 异常，宁可失败也让根因浮出，不产出"全部未匹配"假象。 */
+        AppLogger.error(LOG_TAGS.AI_AGENT, `[AIService] 动态视频切片池为空（media=${mediaPath}），终止匹配并暴露根因`);
+        throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, '视频切片池为空：场景检测未产出切片，请先确认视频可读/切片参数');
       }
 
       /** 步3：组装多维约束负载并调起 KM 求解器
@@ -779,6 +782,17 @@ export class AIService {
       const matches = rawMatches.map((r: any) => {
         const chunkId = r.chunkId || r.mediaId || '';
         const fullChunk = originalChunksByIdAIS.get(String(chunkId));
+        /** 🛡️ timeline 有效性防御（同 buildMatchResult.resolveTimelineWindow）：daemon 坏 timeline
+         *  （两端相等/逆序）挡在回传前，无效时回退切片自身窗口（合法时），再无效回退 0。 */
+        const srcChunk = r.chunkData || fullChunk;
+        const timeline = SemanticAnalyzeStrategy.resolveTimelineWindow(
+          r.videoTimelineStartMs, r.videoTimelineEndMs, srcChunk?.startMs, srcChunk?.endMs,
+        );
+        /** 🛑 B3：timeline 与切片窗口均无效 → 数据污染 fail-fast，不再伪装 (0,0) 静默落库 */
+        if (!timeline) {
+          throw new AppError(ErrorCode.AI_SERVICE_OFFLINE,
+            `镜头匹配数据异常：切片 ${chunkId} 的 videoTimeline 与切片窗口均无效，请清空切片缓存后重跑`);
+        }
         return {
           /** ✅ 身份键统一：id 出生处取段落唯一主键（r.shotId 由 buildMatchQueries 收敛为 s.id），
            *  消费端一律读 id；shotId 保留同值兼容 */
@@ -790,8 +804,8 @@ export class AIService {
           thumbnail: r.coverPath || (fullChunk?.coverPath || ''),
           chunkData: r.chunkData || fullChunk || null,
           audioDurationMs: r.audioDurationMs || 0,
-          videoTimelineStartMs: (r.videoTimelineStartMs || (fullChunk?.startMs ?? 0)) + chunkOffsetMs,
-          videoTimelineEndMs: (r.videoTimelineEndMs || (fullChunk?.endMs ?? 0)) + chunkOffsetMs,
+          videoTimelineStartMs: timeline.startMs + chunkOffsetMs,
+          videoTimelineEndMs: timeline.endMs + chunkOffsetMs,
           appliedSpeedFactor: r.appliedSpeedFactor || 1.0,
           confirmed: (r.confidence || 0) >= 0.88,
         };

@@ -108,4 +108,48 @@ export class VideoChunkRepository {
       AppLogger.warn(LOG_TAGS.DATABASE, `[VideoChunkRepository] 写入切片缓存失败: ${e.message}`);
     }
   }
+
+  /**
+   * 🔧 清空指定视频的切片缓存（2026-09-05 用户需求：切片异常时可手动清缓存强制重切）。
+   * @param projectId 当前项目 id（可空：仅清裸路径形态缓存）
+   * @param mediaPath 视频物理绝对路径
+   * @returns 删除的记录条数（video_chunk_parts + video_chunks 合计）
+   * 删除范围（四类 key 形态，全部以 mediaPath 定界匹配，避免 ab.mp4 误伤 ab.mp4b.mp4）：
+   *   ① `${projectId}:${mediaPath}`                 —— 当前项目裸 key
+   *   ② `${projectId}:${mediaPath}#...`             —— 当前项目 schema/trim/指纹变体
+   *   ③ `${mediaPath}`                              —— 历史无项目前缀裸 key（v1 早期写入）
+   *   ④ `${mediaPath}#...`                          —— 历史无项目前缀 schema 变体
+   * 其它项目前缀（`其它proj:...`）不受影响；同视频仅重切 80s，不破坏正确性。 */
+  public deleteForMedia(projectId: string, mediaPath: string): number {
+    if (!mediaPath) return 0;
+    const conditions: string[] = [];
+    const args: string[] = [];
+    if (projectId) {
+      const projKey = `${projectId}:${mediaPath}`;
+      conditions.push('media_id = ?');
+      args.push(projKey);
+      conditions.push(`media_id LIKE ? ESCAPE '\\'`);
+      args.push(`${VideoChunkRepository.escapeLike(projKey)}#%`);
+    }
+    conditions.push('media_id = ?');
+    args.push(mediaPath);
+    conditions.push(`media_id LIKE ? ESCAPE '\\'`);
+    args.push(`${VideoChunkRepository.escapeLike(mediaPath)}#%`);
+    const where = conditions.join(' OR ');
+    try {
+      const parts = this.db.prepare(`DELETE FROM video_chunk_parts WHERE ${where}`).run(...args);
+      const legacy = this.db.prepare(`DELETE FROM video_chunks WHERE ${where}`).run(...args);
+      AppLogger.info(LOG_TAGS.DATABASE,
+        `[VideoChunkRepository] 切片缓存已清空(media=${mediaPath}) 删除 ${parts.changes + legacy.changes} 条`);
+      return parts.changes + legacy.changes;
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.DATABASE, `[VideoChunkRepository] 清空切片缓存失败: ${e.message}`);
+      return 0;
+    }
+  }
+
+  /** LIKE 通配符转义（配合 ESCAPE '\'，防止路径中的 %/_ 被当作通配符） */
+  private static escapeLike(v: string): string {
+    return v.replace(/[\\%_]/g, (m) => `\\${m}`);
+  }
 }

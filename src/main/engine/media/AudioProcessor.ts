@@ -345,6 +345,139 @@ export class AudioProcessor {
     return outputPath;
   }
 
+  /** 正则：匹配 ffmpeg silencedetect 输出的静音起止时刻（秒） */
+  private static readonly SILENCE_START_REGEX = /silence_start:\s*([\d.]+)/g;
+  private static readonly SILENCE_END_REGEX = /silence_end:\s*([\d.]+)/g;
+
+  /**
+   * 🎬 素材修剪：检测并裁掉 TTS 配音/原声段首尾的静音与气口（吸气口、句尾拖音、空白），
+   * 返回修剪后的音频路径与有效时长。
+   *
+   * 目的：让步骤4 回填的 audioDurationMs 反映"真实有效发音时长"，而非含前导停顿的整段时长，
+   * 从而让步骤5 不再为了"凑"虚高时长去把视频强制拉伸（setpts/atempo），从根上消除画面/配音一顿一顿。
+   *
+   * 实现：
+   *  1. 用 ffmpeg silencedetect 解析首尾静音边界（noise=-40dB:d=0.15）；
+   *  2. 仅当开头/结尾确实存在冗余静音时才修剪（评估时间与真实气口无关的中间停顿不受影响）；
+   *  3. 首尾各保留 padMs 安全边距，避免把辅音起音/尾音一刀切掉；
+   *  4. 修剪后无缝重编码回原容器（WAV→pcm_s16le，MP3→libmp3lame），保证下游渲染兼容。
+   *
+   * @param inputPath   源音频物理路径
+   * @param outputPath  修剪产物输出路径（扩展名应与源一致，决定重编码格式）
+   * @param options     可选：noiseDb 静音阈值（默认 -40）、padMs 安全边距（默认 80）
+   * @returns 修剪后的有效音频路径；若无首尾静音则原样返回源路径（并给出原时长）
+   */
+  public static async trimAudioEdges(
+    inputPath: string,
+    outputPath: string,
+    options?: { noiseDb?: number; padMs?: number }
+  ): Promise<{ outputPath: string; durationSec: number; trimmed: boolean }> {
+    const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
+    const ffprobeExe = PathManager.getBinPath('ffprobe.exe');
+    if (!ffmpegExe || !ffprobeExe || !fs.existsSync(inputPath)) {
+      // 工具或源文件缺失视为不可修剪：保持源状态，交由上层决定是否报错
+      const rawSec = await AudioProcessor._probeSec(inputPath, ffprobeExe);
+      return { outputPath: inputPath, durationSec: rawSec, trimmed: false };
+    }
+
+    const noiseDb = options?.noiseDb ?? -40;
+    const padSec = (options?.padMs ?? 80) / 1000;
+
+    // 1. silencedetect 探测首尾静音
+    const detectArgs = ['-y', '-i', inputPath, '-af', `silencedetect=noise=${noiseDb}dB:d=0.15`, '-f', 'null', '-'];
+    const stderr = await AudioProcessor._runFfmpegCapture(ffmpegExe, detectArgs);
+    const totalSec = await AudioProcessor._probeSec(inputPath, ffprobeExe);
+
+    const silences: Array<{ start: number; end: number }> = [];
+    const starts = [...stderr.matchAll(AudioProcessor.SILENCE_START_REGEX)].map((m) => parseFloat(m[1]));
+    const ends = [...stderr.matchAll(AudioProcessor.SILENCE_END_REGEX)].map((m) => parseFloat(m[1]));
+    const n = Math.min(starts.length, ends.length);
+    for (let i = 0; i < n; i++) silences.push({ start: starts[i], end: ends[i] });
+
+    // 仅处理"首段开头静音"与"末段结尾静音"
+    let startSec = 0;
+    let endSec = totalSec;
+    if (silences.length > 0) {
+      const first = silences[0];
+      if (first.start <= 0.2) startSec = first.end;      // 开头存在冗余静音 → 从首个语音起点切入
+      const last = silences[silences.length - 1];
+      if (last.end >= totalSec - 0.2) endSec = last.start; // 结尾存在冗余静音 → 到末段语音终点截止
+    }
+
+    // 2. 加安全边距（避免切断辅音起音/尾音），并夹取到合法区间
+    startSec = Math.max(0, startSec - padSec);
+    endSec = Math.min(totalSec, endSec + padSec);
+
+    // 3. 无需修剪（首尾本就是语音，或检测失效）：原样返回
+    if (startSec <= 0.05 && endSec >= totalSec - 0.05) {
+      return { outputPath: inputPath, durationSec: totalSec, trimmed: false };
+    }
+    if (startSec >= endSec) {
+      return { outputPath: inputPath, durationSec: totalSec, trimmed: false };
+    }
+
+    // 4. 按有效边界重编码回原容器
+    const args: string[] = ['-y', '-i', inputPath, '-ss', startSec.toFixed(3), '-to', endSec.toFixed(3)];
+    AudioProcessor._pushTrimEncoder(args, outputPath);
+    const outDir = path.dirname(outputPath);
+    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+    const code = await AudioProcessor._runFfmpegExit(ffmpegExe, args);
+    if (code !== 0 || !fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+      // 重编码裁剪失败 → 抛错暴露根因（错就错，不静默回退源文件掩盖 ffmpeg 异常）
+      throw new Error(`TTS 音频修剪失败（ffmpeg 退出码 ${code}），源文件未覆盖: ${inputPath}`);
+    }
+    const trimmedSec = await AudioProcessor._probeSec(outputPath, ffprobeExe);
+    return { outputPath, durationSec: trimmedSec, trimmed: true };
+  }
+
+  /** 按源扩展名选择修剪重编码的音频编码器（容量与下游渲染兼容） */
+  private static _pushTrimEncoder(args: string[], outputPath: string): void {
+    if (path.extname(outputPath).toLowerCase() === '.wav') {
+      args.push('-vn', '-acodec', 'pcm_s16le'); // WAV 保留无损 PCM，避免二次有损
+    } else {
+      args.push('-vn', '-c:a', 'libmp3lame', '-q:a', '2'); // MP3 高品质有损（q2≈192k）
+    }
+    args.push(outputPath);
+  }
+
+  /** ffprobe 读取音频有效时长（秒），失败返回 0 */
+  private static _probeSec(audioPath: string, ffprobeExe: string): Promise<number> {
+    return new Promise((resolve) => {
+      if (!audioPath || !fs.existsSync(audioPath)) { resolve(0); return; }
+      const child = spawn(ffprobeExe, ['-v', 'quiet', '-show_entries', 'format=duration', '-of', 'csv=p=0', audioPath], { windowsHide: true });
+      let out = '';
+      child.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+      child.on('close', () => {
+        const sec = parseFloat(out.trim());
+        resolve(Number.isFinite(sec) && sec > 0 ? sec : 0);
+      });
+      child.on('error', () => resolve(0));
+    });
+  }
+
+  /** 运行 ffmpeg 并捕获 stderr 文本（用于 silencedetect 解析），返回 stderr 全文 */
+  private static _runFfmpegCapture(ffmpegExe: string, args: string[]): Promise<string> {
+    return new Promise((resolve) => {
+      const child = spawn(ffmpegExe, args, { windowsHide: true });
+      let err = '';
+      child.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+      child.on('close', () => resolve(err));
+      child.on('error', () => resolve(err));
+      ProcessManager.register(child, 'FFmpeg-静音探测');
+    });
+  }
+
+  /** 运行 ffmpeg 并返回退出码（用于重编码裁剪） */
+  private static _runFfmpegExit(ffmpegExe: string, args: string[]): Promise<number> {
+    return new Promise((resolve) => {
+      const child = spawn(ffmpegExe, args, { windowsHide: true });
+      child.on('close', (code) => resolve(code === null ? 1 : code));
+      child.on('error', () => resolve(1));
+      ProcessManager.register(child, 'FFmpeg-音轨修剪');
+    });
+  }
+
   /** 调用 Spleeter 分离人声和背景音 */
   public static async separateVocals(
     inputAudioPath: string,

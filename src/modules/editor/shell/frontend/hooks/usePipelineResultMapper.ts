@@ -1,6 +1,7 @@
 import { classifyNodeId, PipelineNodeType } from '../../utils/pipelineConstants';
 // 归一化工厂单源：引擎结果落库前统一净化为判别联合契约（补 type / 毫秒时间轴，剥离废弃键）
 import { normalizeScriptParagraph } from '../../../../../shared/utils/normalizeScriptParagraph';
+import type { Step5MatchDiagnostics } from '../../../../pipeline/stores/useStep5Store';
 
 /**
  * 管线结果映射器所需的 Setter 对象（阶段四：从依赖 useStore.getState() 改为各模块 Store 的 Setter 桥接对象）
@@ -17,6 +18,8 @@ export interface PipelineResultMappers {
   setMatchResults: (results: any[]) => void;
   setVideoChunks: (chunks: any[]) => void;
   setBeatTimestamps: (beats: number[]) => void;
+  /** 步骤5 匹配诊断写入（可选：旧调用方未提供时跳过，不阻断结果映射） */
+  setMatchDiagnostics?: (diag: Step5MatchDiagnostics | null) => void;
 }
 
 /**
@@ -197,10 +200,13 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
          *  此即前端 DragReorderList 的 React key，无需在此再做去重/追加后缀。 */
         if (matches.length > 0) {
           mappers.setMatchResults(matches.map((m: any) => {
+            /** ✅ 身份键统一：全量覆写收敛入口与 executor 流式 merge 同口径——id 缺省回退 shotId
+             *  （daemon 原始 results/segments 形态可能只有 shotId 无 id，漏归一会在渲染层产出空 React key） */
+            const resolvedId = String(m.id ?? m.shotId ?? '').trim() ? (m.id ?? m.shotId) : undefined;
             return {
               /** ✅ 身份键统一：id 出生处即段落唯一主键（后端保证必存在），此即前端 React key，消费端一律读 id */
-              id: m.id,
-              shotId: m.id,
+              id: resolvedId,
+              shotId: resolvedId,
               text: m.text || m.narration || '',
               keepOriginalAudio: m.keepOriginalAudio === true,
               mediaType: m.mediaType || 'frame',
@@ -217,10 +223,12 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
           }));
         } else if (nodeResult.segments && nodeResult.segments.length > 0) {
           mappers.setMatchResults(nodeResult.segments.map((seg: any) => {
+            /** ✅ 身份键统一：与上方 matches 分支同口径（segments=daemon 匹配原始，可能只有 shotId 无 id） */
+            const resolvedId = String(seg.id ?? seg.shotId ?? '').trim() ? (seg.id ?? seg.shotId) : undefined;
             return {
               /** ✅ 身份键统一：id 出生处即段落唯一主键（后端保证必存在），此即前端 React key，消费端一律读 id */
-              id: seg.id,
-              shotId: seg.id,
+              id: resolvedId,
+              shotId: resolvedId,
               text: seg.text || seg.narration || '',
               keepOriginalAudio: seg.keepOriginalAudio === true,
               mediaType: seg.mediaType || 'frame',
@@ -242,6 +250,11 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
         }
         if (nodeResult.bgmBeats) {
           mappers.setBeatTimestamps(nodeResult.bgmBeats.map((b: number) => Math.round(b * 1000)));
+        }
+        /** 🔧 匹配诊断透出：后端 SemanticAnalyzeStrategy 返回 diagnostics（切片池空/KM 全未命中/原声定位失败），
+         *  mapper 转存 step5 store，View 据此显示用户可读警告条，杜绝"静默空卡"无从排查。 */
+        if (nodeResult.diagnostics && typeof mappers.setMatchDiagnostics === 'function') {
+          mappers.setMatchDiagnostics(nodeResult.diagnostics);
         }
         break;
       }

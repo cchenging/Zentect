@@ -30,12 +30,16 @@ export const IPC_CHANNELS = {
   MEDIA_CANCEL: 'media:cancelProcess',
   MEDIA_DELETE: 'media:delete',
   MEDIA_GET_BY_PROJECT: 'media:getByProject',
+  /** 本地封面 data URL 通道（绕过 magic:// 协议图片合成黑：主进程读文件转 base64） */
+  MEDIA_GET_IMAGE_DATA_URL: 'media:getImageDataUrl',
 
   // --- 管线引擎 ---
   ENGINE_RUN_PIPELINE: 'engine:run-pipeline',
   ENGINE_RUN_V1_PIPELINE: 'engine:run-v1-pipeline',
   ENGINE_PIPELINE_PROGRESS: 'engine:pipeline-progress',
   ENGINE_ABORT_PIPELINE: 'engine:abort-pipeline',
+  /** 🔧 2026-09-05：清空当前视频切片缓存（步骤5 UI"清空切片缓存"按钮，强制重切） */
+  ENGINE_CLEAR_CHUNK_CACHE: 'engine:clear-chunk-cache',
   ENGINE_PREFLIGHT: 'engine:preflight',
   ENGINE_REQUIRE_USER_ACTION: 'engine:require-user-action',
   ENGINE_RESUME_PIPELINE: 'engine:resume-pipeline',

@@ -51,17 +51,30 @@ async def detect_scene_chunks(req: SceneChunkReq):
             return {"success": False, "error": f"Video file not found: {req.file_path}"}
 
         # 🚀 缓存命中：如果该 media_id 已切片，直接返回缓存结果，秒级响应
-        # 阶段 B：PROJECT_MATERIAL_POOL 缓存结构升级为 {"chunks","matchSegments"}，命中时同样双写 data=chunks
+        # 🔧 2026-09-05 缓存准入收紧：只放行「阶段 B 完整结构（chunks + 非空 matchSegments）」的缓存。
+        #    - 阶段 A 旧数组缓存（无 matchSegments）→ 视为脏池删除，强制真重切，杜绝 Node 侧
+        #      用镜头级 chunks 兜底重建候选段（重建段无独立封面，coverPath 继承镜头级 → 封面与段起点错位）；
+        #    - dict 但 matchSegments 为空/缺失 → 同上视为脏，重切产出 Python 独立候选段封面。
         # 🔧 缓存隔离：projectId 参与 key（"<projectId>:<mediaId>"），同源视频跨项目不命中旧切片池/封面
         media_id = f"{req.projectId}:{req.mediaId}" if req.projectId else (req.mediaId or "default")
         cached = PROJECT_MATERIAL_POOL.get(media_id)
         if cached is not None:
-            if isinstance(cached, dict) and "chunks" in cached:
+            valid_cache = False
+            if isinstance(cached, dict):
+                cached_chunks = cached.get("chunks")
+                cached_segs = cached.get("matchSegments")
+                valid_cache = (
+                    isinstance(cached_chunks, list) and len(cached_chunks) > 0
+                    and isinstance(cached_segs, list) and len(cached_segs) > 0
+                )
+            # 仅完整阶段 B 缓存可直接复用
+            if valid_cache:
                 cached_chunks = cached.get("chunks") or []
                 cached_segs = cached.get("matchSegments") or []
-                return {"success": True, "data": cached_chunks, "chunks": cached_chunks, "matchSegments": cached_segs, "fromCache": True}
-            # 兼容旧结构：缓存为数组（阶段 A 及更早），直接双写返回
-            return {"success": True, "data": cached, "chunks": cached, "matchSegments": cached, "fromCache": True}
+                return {"success": True, "data": cached_chunks, "chunks": cached_chunks,
+                        "matchSegments": cached_segs, "fromCache": True}
+            # 不满足阶段 B 契约（阶段 A 数组 / 空 matchSegments）：删除脏池，落回下方真重切
+            PROJECT_MATERIAL_POOL.pop(media_id, None)
 
         os.makedirs(req.output_dir, exist_ok=True)
 
@@ -411,22 +424,30 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
     # 镜头级 chunk.motionScore 取覆盖段得分均值。
     seg_motion_scores = _compute_chunk_motion_scores(file_path, seg_boundaries_sec, min_chunk_duration_sec)
 
-    # 封面采集：chunks（镜头级）+ matchSegments（候选级）各自独立中间帧，
-    # 解决阶段 A 残留问题"兄弟段共享同一张封面导致预览无法区分"。
+    # 封面采集：chunks（镜头级）+ matchSegments（候选级）各自独立抽帧。
+    # 🎞️ 2026-09-05 封面口径修正：抽帧时刻由「切片中帧」改为「切片起点附近 ~0.35s」（≤20% 时长内），
+    #    与预览 seek 起点（chunk/seg.startMs）同帧画面，杜绝"封面是镜头中帧、预览从段起点播"的错位观感。
     cover_times = []
     for i in range(len(boundaries_sec) - 1):
-        if (boundaries_sec[i + 1] - boundaries_sec[i]) * 1000.0 < min_chunk_duration_sec * 1000.0:
+        c_start = boundaries_sec[i]
+        c_end = boundaries_sec[i + 1]
+        if (c_end - c_start) * 1000.0 < min_chunk_duration_sec * 1000.0:
             continue
-        cover_times.append(('chunk', i, (boundaries_sec[i] + boundaries_sec[i + 1]) / 2.0))
+        cover_times.append(('chunk', i, c_start + min(0.35, (c_end - c_start) * 0.15)))
     for i in range(len(seg_boundaries_sec) - 1):
-        if (seg_boundaries_sec[i + 1] - seg_boundaries_sec[i]) * 1000.0 < min_chunk_duration_sec * 1000.0:
+        s_start = seg_boundaries_sec[i]
+        s_end = seg_boundaries_sec[i + 1]
+        if (s_end - s_start) * 1000.0 < min_chunk_duration_sec * 1000.0:
             continue
-        cover_times.append(('seg', i, (seg_boundaries_sec[i] + seg_boundaries_sec[i + 1]) / 2.0))
+        cover_times.append(('seg', i, s_start + min(0.35, (s_end - s_start) * 0.15)))
     cover_times.sort(key=lambda x: x[2])
 
     cover_paths = {}
     cover_frames_for_clip = []
     color_histograms = {}
+    cover_failed = 0
+    hist_failed = 0
+    cover_source_open_failed = False
     if cover_times:
         try:
             with INFERENCE_LOCK:
@@ -461,15 +482,31 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
                                 hist = cv2.calcHist([hsv], [0], None, [16], [0, 180]).flatten()
                                 total = float(np.sum(hist)) or 1.0
                                 color_histograms[(kind, idx)] = (hist / total).tolist()
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                hist_failed += 1
+                                print(f"[cover] 切片 {kind}_{idx} 色相直方图失败(不影响封面): {e}", file=sys.stderr)
                             # 🔧 R10（PR-3）：帧编码 + 直方图均完成后释放帧引用（流式化不持全量副本）
                             del frame
-                    except Exception:
-                        pass
+                        else:
+                            cover_failed += 1
+                            print(f"[cover] 切片 {kind}_{idx} 读帧失败(ret=False) time={mid_sec:.3f}s", file=sys.stderr)
+                    except Exception as e:
+                        cover_failed += 1
+                        print(f"[cover] 切片 {kind}_{idx} 封面抽帧失败: {e}", file=sys.stderr)
                 cap.release()
-        except Exception:
-            pass
+        except Exception as e:
+            cover_source_open_failed = True
+            print(f"[cover] 视频封面抽帧源打开/读取失败: {e}", file=sys.stderr)
+        # 🛑 2026-09-05 B2：封面是全链路面面基石，失败不再静默——源打不开或一张都没抽到即抛错暴露；
+        #   部分失败也打印汇总，杜绝"切片无封面"悄悄流到 UI。
+        if cover_source_open_failed or (cover_times and len(cover_paths) == 0):
+            raise RuntimeError(
+                f"封面抽帧全部失败（需抽 {len(cover_times)} 张，成功 0 张，源打开失败={cover_source_open_failed}）："
+                f"视频文件可能不可解码，请检查 mediaPath={file_path}"
+            )
+        if cover_failed > 0 or hist_failed > 0:
+            print(f"[cover] 封面抽帧汇总：成功 {len(cover_paths)}/{len(cover_times)}，帧失败 {cover_failed}，直方图失败 {hist_failed}",
+                  file=sys.stderr)
 
     vision_embeddings = {}
     if cover_frames_for_clip:
@@ -483,12 +520,17 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
 
                 pil_images = []
                 clip_keys = []
+                embed_convert_failed = 0
                 for ckey, frame_rgb in cover_frames_for_clip:
                     try:
                         pil_images.append(Image.fromarray(frame_rgb))
                         clip_keys.append(ckey)
-                    except Exception:
-                        continue
+                    except Exception as e:
+                        embed_convert_failed += 1
+                        print(f"[CLIP] 封面 {ckey} 转 PIL 失败: {e}", file=sys.stderr)
+                if embed_convert_failed:
+                    print(f"[CLIP] 共 {embed_convert_failed}/{len(cover_frames_for_clip)} 张封面转 PIL 失败（跳过特征提取，不影响封面）",
+                          file=sys.stderr)
 
                 if pil_images:
                     IMAGE_BATCH = 32

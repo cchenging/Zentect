@@ -20,6 +20,8 @@ export type ShotRelation = 'FIRST' | 'SCENE_SWITCH' | 'SAME_SCENE_CONTINUOUS';
 export interface RelationEnrichable {
   id: string;
   chunkData?: Record<string, unknown> | null;
+  /** 原声段标记：原声段自带 ASR 精确台词窗且恒 speed=1，禁入合并组（组变速会破坏原声原速播放） */
+  keepOriginalAudio?: boolean;
   /** 解析后写入的父 ID */
   parentChunkId?: string;
   /** 解析后写入的相邻关系 */
@@ -62,9 +64,12 @@ export function enrichMatchRelations<T extends RelationEnrichable>(shots: T[]): 
     const parentId = resolveParentId(shot);
     shot.parentChunkId = parentId;
 
-    if (i === 0 || parentId === undefined) {
-      // 首段 / 父解析失败（无切片或异常兜底）：不合并，重置组
-      shot.prevRelation = 'FIRST';
+    if (i === 0 || parentId === undefined || shot.keepOriginalAudio === true) {
+      // 首段 / 父解析失败（无切片或异常兜底）/ 原声段：不合并，重置组。
+      // 🎙️ 原声段禁入合并组（第五轮）：组 speed = Σ源/Σ目标 会给原声段套上解说段变速，
+      //    原声必须按 ASR 台词窗原速播放（用户反馈：原声有的变速过快、有的太慢）。
+      //    sceneGroupId 由本函数运行时计算（不落库），旧项目重新导出即生效。
+      shot.prevRelation = i === 0 ? 'FIRST' : 'SCENE_SWITCH';
       currentGroupId = undefined;
       continue;
     }

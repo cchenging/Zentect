@@ -12,6 +12,8 @@ import asyncio
 import concurrent.futures
 
 import gc
+import datetime
+import tempfile
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import List
@@ -20,6 +22,53 @@ from ai_config import (AIModels, PROJECT_MATERIAL_POOL, INFERENCE_LOCK,
                        _load_and_resize_thumb)
 
 router = APIRouter()
+
+
+# ==========================================
+# 🔬 KM 空匹配诊断落盘：把 [KM-DIAG] 关键定位行镜像写到一个独立文件，
+#    避免与海量过程数字在 dev 终端刷屏混叠导致看不清根因（仅空结果/异常时写，不刷主日志）。
+#    路径经 tempfile 定位到系统临时目录，跨 daemon 重启累积；写失败仅 stderr 警告、不阻断匹配。
+# ==========================================
+_KM_DIAG_FILE = None
+def _km_diag(msg: str) -> None:
+    """把空匹配诊断行同时输出到 stderr 与临时文件，供重跑后直接读文件定位根因（免翻刷屏）"""
+    line = f"[{datetime.datetime.now().isoformat(timespec='seconds')}] {msg}"
+    print(line, file=sys.stderr)
+    try:
+        global _KM_DIAG_FILE
+        if _KM_DIAG_FILE is None:
+            _KM_DIAG_FILE = os.path.join(tempfile.gettempdir(), "zentect-km-diag.log")
+        os.makedirs(os.path.dirname(_KM_DIAG_FILE), exist_ok=True)
+        with open(_KM_DIAG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as _e:
+        print(f"[KM-DIAG] 诊断落盘失败（不影响匹配）: {_e}", file=sys.stderr)
+
+
+# ==========================================
+# 🔬 KM 阶段耗时观测：唯一计时起点，配合 _km_tick() 打印各子阶段耗时，
+#    下次步骤5"卡死"时能一眼定位停在哪个子阶段（纯观测，不改业务逻辑）。
+# ==========================================
+_KM_T0 = None
+def _km_now():
+    """函数级中文注释：返回单调时钟秒（time.monotonic 不受系统时间跳变影响，仅观测用）"""
+    import time
+    return time.monotonic()
+
+
+def _km_t0():
+    """函数级中文注释：记录 KM 求解的总起点（monotonic 时钟，不受系统时间跳变影响）"""
+    global _KM_T0
+    if _KM_T0 is None:
+        _KM_T0 = _km_now()
+    return _KM_T0
+
+
+def _km_tick(tag: str):
+    """函数级中文注释：打印自 KM 起点到当前 tag 的累计耗时(秒)，用于精确定位卡死子阶段"""
+    _km_t0()
+    elapsed = _km_now() - _KM_T0
+    print(f"[KM-DUR] {tag} elapsed={elapsed:.1f}s", file=sys.stderr)
 
 
 # ==========================================
@@ -67,6 +116,44 @@ def _mem_rss_mb() -> float:
 
 
 # ==========================================
+# 🔧 KM 真实进度（长任务在途期间，Node 轮询此进度，避免进度条卡死在锚点后突跳 100%）
+#    daemon 侧按阶段写进度到 _KM_PROGRESS，Node 通过 /api/solver/km_progress?task_id= 轮询，
+#    映射到前端 60~80 细分区间的相对刻度。
+# ==========================================
+_KM_PROGRESS: dict = {}
+
+
+def _report_km_progress(task_id: str, progress: float, stage: str):
+    """写入 KM 进度（GIL 下 dict 赋值原子）；task_id 为空则忽略，进度钳制在 [0,1]"""
+    if not task_id:
+        return
+    _KM_PROGRESS[task_id] = {"progress": max(0.0, min(1.0, progress)), "stage": stage}
+
+
+# ==========================================
+# 🃏 步骤5 卡片流式：逐时序块实时推送已匹配结果
+#    长视频 KM 是数分钟长任务，若等全部归一再整批渲染，
+#    前端全程只有进度条、空等无卡片。故每个时序块求解完毕立即把
+#    该块新增的匹配结果累积进 _KM_STREAM[task_id].pending，
+#    Node 通过 /api/solver/km_progress 轮询时把 pending 作为增量 results 弹出，
+#    前端据此"每匹配一段就渲染一张卡片"，肉眼看到卡片逐个跳出。
+#    与 _KM_PROGRESS 同哲学：GIL 下 dict/list 操作原子；因 None 引用被替换，
+#    端点与求解线程的窗口极小竞态后果仅是"某次轮询少一段"，下一轮仍能取到，
+#    最终全量返回由 Node 覆写收敛，流式只做即时渲染，不影响最终一致性。
+# ==========================================
+_KM_STREAM: dict = {}
+
+
+def _report_km_blocks(task_id: str, partial_results: list) -> None:
+    """把某时序块新产出的匹配结果追加进该 task 的流式缓冲（卡片流式用）。
+    函数级中文注释：task_id 为空或空增量直接忽略；pending 列表按块累积，直到 Node 轮询弹出。"""
+    if not task_id or not partial_results:
+        return
+    entry = _KM_STREAM.setdefault(task_id, {"pending": []})
+    entry["pending"].extend(partial_results)
+
+
+# ==========================================
 # DTOs
 # ==========================================
 class KMMatchQuery(BaseModel):
@@ -85,6 +172,81 @@ class KMMatchQuery(BaseModel):
     """🎯 P3 时间轴锚定：本段解说词对应的画面时间起点/时长（ms），覆盖该时间点的切片获得锚定加成"""
     startMs: float = 0
     durationMs: float = 0
+    """🔬 Step1 Layer1 段落级时间窗（ms）：解说画面窗口 [windowStartMs, windowEndMs]。
+    Node 侧按 startMs−30s / startMs+durationMs+60s 显式透传；为 0 时 daemon 用源锚派生（_query_window）。"""
+    windowStartMs: float = 0
+    windowEndMs: float = 0
+    """🎬 决策 #6：抽象文案路由标记。True 表示本段为"岁月流转/时光荏苒"类无具体画面语义的抽象旁白，
+    匹配时语义主分由景别分级抽象分（_abstract_semantic_score）取代——空镜优先、近特写次之；
+    同时跳过关键词 boost 与情绪路由（抽象文本无具体实体，情绪分已计入避免双计）。
+    这是决策 #3"命中即加权、绝不硬否决语义"的唯一显式例外：抽象文案的文字语义本身就是噪声，
+    其"语义"由路由意图取代。缺省 False，老工程数据行为与旧版完全一致。"""
+    isAbstractNarration: bool = False
+    """🎬 决策 #6：显式闪回/回忆标记（决策 #2 豁免条款的契约化）。
+    True 直接豁免时序软罚——跨场景是剪辑意图（画面回溯）而非时序倒流错误；
+    优先级高于 _is_temporal_exempt 的关键词猜测（后者保留作为缺省兜底）。"""
+    isFlashback: bool = False
+
+
+# ============================================================
+# 🎬 阶段2（2026-09-04）语义混合权重与描述截断
+# IMG_WEIGHT / TXT_WEIGHT：有描述切片的语义分 = IMG×图文 + TXT×文本。
+#   背景：中文 CLIP 跨模态图文对齐天然低（0.5~0.7 到顶），把强文本对齐(0.9+)拉到 ~0.75，
+#   压低 combined 天花板 → 强相关段上不了 0.9。文本主导后（0.65）强文本对齐主导分数。
+#   无描述切片 has_desc=0 仍纯图像（保底），不因漏标被过度歧视。
+# _smart_truncate_desc：描述超长时"保头300字(动作/景别) + 尾200字(角色/场景补全)"，
+#   避免直接截前 512 丢尾丢关键可匹配信息。
+# ============================================================
+IMG_WEIGHT = 0.35
+TXT_WEIGHT = 0.65
+
+
+def _smart_truncate_desc(text: str, head_chars: int = 300, tail_chars: int = 200) -> str:
+    text = (text or '').strip()
+    if len(text) <= head_chars + tail_chars:
+        return text
+    return text[:head_chars] + '……' + text[-tail_chars:]
+
+
+# ============================================================
+# 🎬 方案 2.3（2026-09-04 批准版）强相关带门槛温和归一
+#   · 防虚高硬门槛：仅当某 query 候选池原始最大相似度 S_max ≥ MATCH_GATE_MIN_SMAX 才触发
+#       S_norm = S_orig + (1 − S_orig) × λ（λ = MATCH_GATE_LAMBDA）
+#   · S_max < 0.70（弱相关/抽象过渡段）坚决不拉伸，保持低分真实性；
+#   · 环境开关 ZENTECT_KM_NORM_GATE：默认 1（启用），置 0/false 回退纯原始分便于 A/B 复测；
+#   · 原始语义矩阵 raw 保留供 [MATCH_DIAG] 审计（RawSem/Gate/Smax），不丢审计基准。
+# ============================================================
+MATCH_GATE_LAMBDA = 0.35
+MATCH_GATE_MIN_SMAX = 0.70
+MATCH_NORM_GATE_DISABLED = os.environ.get('ZENTECT_KM_NORM_GATE', '1') in ('0', 'false', 'False')
+
+
+def _apply_2_3_gentle_normalization(semantic_sim):
+    """方案 2.3 强相关带门槛温和归一（评审公式落地）。
+
+    - 仅当某 query 候选池**原始**最大相似度 S_max ≥ MATCH_GATE_MIN_SMAX(0.70) 时触发：
+        S_norm = S_orig + (1 − S_orig) × λ（λ = MATCH_GATE_LAMBDA=0.35）
+    - S_max < 0.70（弱相关/抽象过渡段）坚决不拉伸，保持低分真实性；
+    - 拉伸为行内单调仿射（sim → λ + (1−λ)·sim），不改 query 内部候选排序，只抬分位；
+    - env ZENTECT_KM_NORM_GATE=0/false → 整体关闭，原样返回（A/B 复测用）。
+    - 返回 (norm, raw)：raw=归一前副本仅供 [MATCH_DIAG] 审计（Gate/Smax），不参与任何打分。
+
+    :param semantic_sim: (n_queries, n_chunks) 余弦相似度矩阵（含 anchor 加成后的定稿值）
+    """
+    import numpy as _np
+    raw = semantic_sim.copy()
+    if MATCH_NORM_GATE_DISABLED:
+        print("[KM] 方案2.3 温和归一: 环境 ZENTECT_KM_NORM_GATE=0 已关闭（使用原始语义分）", file=sys.stderr)
+        return semantic_sim, raw
+    row_smax = semantic_sim.max(axis=1)
+    gated = row_smax >= MATCH_GATE_MIN_SMAX
+    norm = semantic_sim
+    if bool(gated.any()):
+        norm = semantic_sim.copy()
+        norm[gated] = semantic_sim[gated] + (1.0 - semantic_sim[gated]) * MATCH_GATE_LAMBDA
+    print(f"[KM] 方案2.3 温和归一: S_max≥{MATCH_GATE_MIN_SMAX} 拉伸 {int(gated.sum())}/{semantic_sim.shape[0]} 行 "
+          f"(λ={MATCH_GATE_LAMBDA})", file=sys.stderr)
+    return norm, raw
 
 
 class KMMatchReq(BaseModel):
@@ -93,9 +255,16 @@ class KMMatchReq(BaseModel):
     videoChunks: List[dict]
     bgmBeats: List[float] = []
     mediaId: str = 'default'
+    """🔧 缓存隔离：与 detect_scene_chunks 写入一致的项目 id，参与 PROJECT_MATERIAL_POOL 兜底 key，
+    保证同项目复用、跨项目绝不串（写入端 key 为 <projectId>:<mediaId>，读取端必须同构）。"""
+    projectId: str = ''
     vlmApiKey: str = ''
     vlmApiBase: str = ''
     vlmApiModel: str = ''
+    """🔬 决策 #4：VLM 二次裁决为 opt-in 能力，默认关闭。
+    False 时不触发云端 VLM 重排（即使配置了 API/KM 低置信度也不校验）；
+    True 且配置了 vlmApiKey/vlmApiBase/vlmApiModel 时，才对 confidence<VLM_CONFIDENCE_THRESHOLD 的结果调用 VLM 裁决。"""
+    useVlmRerank: bool = False
     """🎵 P2 BPM 对齐卡点：BGM 曲目 BPM（librosa tempo 检测），>0 时启用整拍网格磁吸，<=0 回退单点鼓点吸附"""
     bpm: float = 0
     """🎵 P2 权重可配置：四项打分权重字典，键为 sem/emotion/duration/role，缺省回退并归一化"""
@@ -109,6 +278,46 @@ class KMMatchReq(BaseModel):
     """🔧 R3 取消贯通（PR-1）：Node 侧在 abort 时通过 /cancel/{task_id} 置位的取消标记；
     KM 求解循环定期检查，命中后提前返回，避免 CPU 空烧。由端点从请求头 X-Task-Id 填充。"""
     taskId: str = ''
+
+
+# ==========================================
+# 🔬 Step1 Layer1 段落级时间窗（决策 #1 冻结值）
+#   解说单章通常覆盖原片 1~2 分钟剧情：前探 30s 覆盖铺垫，后延 60s 覆盖冲突发酵；
+#   单向扩张 120s 兜底候选稀缺而不跨幕次跳变。
+# ==========================================
+WINDOW_LEAD_MS = 30000       # 前探：覆盖章节铺垫
+WINDOW_TAIL_MS = 60000       # 后延：覆盖冲突发酵
+WINDOW_EXPAND_MS = 120000    # 候选不足单向扩张步长
+WINDOW_MIN_CANDIDATES = 5    # 窗内候选不足阈值
+WINDOW_PENALTY = 5.0         # 窗外强惩罚（与 candidateIds 同通道量级，远超 combined 的 [0,1]）
+
+
+def _query_window(query, universe_indices, video_chunks):
+    """段落级时间窗 [w0, w1]。
+    - 优先取 Node 显式透传的 windowStartMs/windowEndMs（决策 #1：Node 侧算好直接给）；
+    - 未透传时由源锚派生：w0=max(0,startMs−30s)，w1=startMs+durationMs+60s（与 Node 口径一致）；
+    - 候选不足（窗内切片数 < WINDOW_MIN_CANDIDATES）时单向扩张：先 +120s 后延，仍不足再 −120s 前探。
+    返回 (w0, w1)；源锚也无效（startMs 与 durationMs 均 ≤0）返回 None，调用方走旧 ±3 块兜底。"""
+    w0 = float(getattr(query, 'windowStartMs', 0) or 0)
+    w1 = float(getattr(query, 'windowEndMs', 0) or 0)
+    if not (w1 > w0):
+        # 派生窗口：Node 未显式透传时用源锚
+        start = float(query.startMs or 0)
+        dur = float(query.durationMs or 0)
+        if start <= 0 and dur <= 0:
+            return None
+        w0 = max(0.0, start - WINDOW_LEAD_MS)
+        w1 = start + dur + WINDOW_TAIL_MS
+    # 候选不足自适应扩张（决策 #1：单向 +120s，先顺时序推进）
+    if universe_indices:
+        def _in_win(_w0, _w1):
+            return sum(1 for i in universe_indices
+                       if _w0 <= float(video_chunks[i].get('startMs') or 0) <= _w1)
+        if _in_win(w0, w1) < WINDOW_MIN_CANDIDATES:
+            w1 += WINDOW_EXPAND_MS
+            if _in_win(w0, w1) < WINDOW_MIN_CANDIDATES:
+                w0 = max(0.0, w0 - WINDOW_EXPAND_MS)
+    return (w0, w1)
 
 
 # ==========================================
@@ -172,6 +381,13 @@ def _emotion_compatibility(q_emotion: str, c_emotion: str) -> float:
     return _EMOTION_COMPAT_SYMMETRIC.get((q_norm, c_norm), 0.15)
 
 
+# 🛑 2026-09-05 并发防护闸：KM 是 CPU/内存重型任务（CLIP 预提取 + 94×694 多维矩阵），
+#   且全局模型 release/load 非线程安全——若"失败残留任务"与"用户立刻重试"两个 KM 并发，
+#   会在同一 daemon 里叠加抢模型/CPU/内存 → 整机卡死（实测现象）。
+#   全部 KM 请求经此闸**串行**：后到请求 await 排队，前一个完成自动接续（Node 侧 900s 超时足够覆盖排队）。
+_KM_RUN_GATE = asyncio.Semaphore(1)
+
+
 @router.post("/api/solver/kuhn_munkres_match")
 async def kuhn_munkres_match(req: KMMatchReq, request: Request):
     """
@@ -180,38 +396,63 @@ async def kuhn_munkres_match(req: KMMatchReq, request: Request):
     🚀 关键修复：CPU 密集型计算放入线程池，避免阻塞 uvicorn 事件循环
     🔧 R1 互斥（PR-1）：进入步骤5（KM 匹配）即释放步骤1 的 ASR/TTS 模型，避免跨步骤叠加常驻
     🔧 R3 取消贯通（PR-1）：从 X-Task-Id 请求头取取消标识，求解循环定期检查
+    🛑 2026-09-05：经 _KM_RUN_GATE 全局限流串行（见上），杜绝并发 KM 叠加抢资源卡死
     """
-    # R1：进入步骤5 前释放步骤1 的 ASR + 人脸模型（步骤1 与步骤5 模型互斥）。
-    #    TTS（Kokoro）由 tts_kokoro 独立管理且无 release 方法，暂不在此释放（见 PR-1 未做项说明）
-    print(f"[KM] R1 进入步骤5 前 RSS={_mem_rss_mb():.1f}MB（释放 ASR/人脸前）", file=sys.stderr)
-    try:
-        AIModels.release_faster_whisper()
-        AIModels.release_funasr_sensevoice()
-        AIModels.release_paraformer()
-        AIModels.release_face_app()   # 新增：人脸模型与 Chinese-CLIP 互斥，进入步骤5 即释放避免共存
-    except Exception as e:
-        print(f"[KM] R1 释放 ASR/人脸模型警告: {e}", file=sys.stderr)
-    print(f"[KM] R1 释放 ASR/人脸 后 RSS={_mem_rss_mb():.1f}MB", file=sys.stderr)
-
-    # R3：请求头 X-Task-Id → 取消标识（缺失则取消功能静默降级，不影响兼容性）
-    task_id = request.headers.get("X-Task-Id", "") or ""
-    req.taskId = task_id
-
-    loop = asyncio.get_running_loop()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+    async with _KM_RUN_GATE:
+        # R1：进入步骤5 前释放步骤1 的 ASR + 人脸模型（步骤1 与步骤5 模型互斥）。
+        #    TTS（Kokoro）由 tts_kokoro 独立管理且无 release 方法，暂不在此释放（见 PR-1 未做项说明）
+        print(f"[KM] R1 进入步骤5 前 RSS={_mem_rss_mb():.1f}MB（释放 ASR/人脸前）", file=sys.stderr)
         try:
-            result = await loop.run_in_executor(executor, _kuhn_munkres_match_sync, req)
-            return result
-        except ImportError:
-            raise HTTPException(status_code=500, detail="scipy not installed. Run: pip install scipy")
+            AIModels.release_faster_whisper()
+            AIModels.release_funasr_sensevoice()
+            AIModels.release_paraformer()
+            AIModels.release_face_app()   # 新增：人脸模型与 Chinese-CLIP 互斥，进入步骤5 即释放避免共存
         except Exception as e:
-            print(f"ERROR: KM 匹配算法崩溃 - {str(e)}", file=sys.stderr)
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
-        finally:
-            # 🔧 R3 兜底（PR-1）：请求结束（成功/异常）清理取消标记，避免标记泄漏影响后续同名任务。
-            #   正常完成路径本无标记，此调用幂等无害。
-            clear_task_cancel(task_id)
+            print(f"[KM] R1 释放 ASR/人脸模型警告: {e}", file=sys.stderr)
+        print(f"[KM] R1 释放 ASR/人脸 后 RSS={_mem_rss_mb():.1f}MB", file=sys.stderr)
+
+        # R3：请求头 X-Task-Id → 取消标识（缺失则取消功能静默降级，不影响兼容性）
+        task_id = request.headers.get("X-Task-Id", "") or ""
+        req.taskId = task_id
+
+        loop = asyncio.get_running_loop()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            try:
+                result = await loop.run_in_executor(executor, _kuhn_munkres_match_sync, req)
+                return result
+            except ImportError:
+                raise HTTPException(status_code=500, detail="scipy not installed. Run: pip install scipy")
+            except Exception as e:
+                print(f"ERROR: KM 匹配算法崩溃 - {str(e)}", file=sys.stderr)
+                traceback.print_exc()
+                raise HTTPException(status_code=500, detail=str(e))
+            finally:
+                # 🔧 R3 兜底（PR-1）：请求结束（成功/异常）清理取消标记，避免标记泄漏影响后续同名任务。
+                #   正常完成路径本无标记，此调用幂等无害。
+                clear_task_cancel(task_id)
+
+
+@router.get("/api/solver/km_progress")
+async def km_progress(task_id: str = ""):
+    """
+    🔧 KM 真实进度查询（长任务在途期间供 Node 轮询）：
+    返回 `_report_km_progress` 写入的 {progress[0,1], stage}。
+    daemon 的长耗时 KM 匀速推进该值，Node 侧把它映射到前端 60~80 细分区间的相对刻度，
+    避免进度条卡死在锚点 60% 后突跳 100%（进度造假）。
+    🃏 卡片流式：额外的 `results` 字段携带 `_report_km_blocks` 累积的本批待推结果，
+    Node 轮询取走即弹出（增量语义），前端据此"每匹配一段渲染一张卡片"。
+    无任务或查不到时返回 None，Node 轮询视为"尚未开始"，保持当前进度。
+    """
+    data = _KM_PROGRESS.get(task_id)
+    if data is None:
+        return {"task_id": task_id, "found": False, "progress": None, "stage": None}
+    # 🃏 卡片流式：弹出本批待推结果作为增量（引用替换 pending，取走即消费，下一批不重复）
+    pending: list = []
+    stream = _KM_STREAM.get(task_id)
+    if stream and stream.get("pending"):
+        pending = stream["pending"]
+        stream["pending"] = []
+    return {"task_id": task_id, "found": True, "progress": data["progress"], "stage": data["stage"], "results": pending}
 
 
 def _extract_pooler(features):
@@ -448,7 +689,7 @@ def _compute_combined_score(sem_score: float, duration_penalty: float,
                             emotion_score: float = 0.5, role_score: float = 0.5,
                             weights: dict = None) -> float:
     """
-    多因子综合打分：0.62 画面意图语义 + 0.20 时长契合 + 0.08 情绪意境 + 0.10 角色契合
+    多因子综合打分：0.68 画面意图语义 + 0.15 时长契合 + 0.08 情绪意境 + 0.09 角色契合
     - 语义：画面意图（visualIntent）与切片描述的文本↔文本语义相似度归一化到 0~1
       （无 visualIntent 时回退解说词文本；时间轴锚定加成+关键词实体 boost 已并入语义分）
     - 时长：语音与切片时长契合度（非对称裁剪友好型评分，0~1）
@@ -459,11 +700,14 @@ def _compute_combined_score(sem_score: float, duration_penalty: float,
       - 语义权重升到 0.62 并改为第一主依据（包含关键词实体 boost）
       - 情绪权重从 0.15 降到 0.08，避免"同类情绪=1.0 + 时长契合=0.95"这种弱相关性
         组合总分超越"语义精确匹配但情绪异类"的强信号组合
+    🎯 2026-08-31 匹配贴切度再平衡（用户反馈"画面不够贴切文案"）：
+      - 语义权重再升到 0.68、时长权重降到 0.15、角色微降到 0.09，语义第一主依据更强，
+        降低"时长恰好但画面泛泛"的切片反超语义精确匹配的概率（仍受变速安全框钳制，不会强拉怪画面）
     🎵 P2 权重可配置：从 weights 读取四项权重（缺省回退默认值），并对四项权重做归一化，
     让前端调参真正生效，不再依赖硬编码。
     """
     _default_weights = {
-        'sem': 0.62, 'emotion': 0.08, 'duration': 0.20, 'role': 0.10,
+        'sem': 0.68, 'emotion': 0.08, 'duration': 0.15, 'role': 0.09,
     }
     w = {key: float(weights.get(key, _default_weights[key]))
          for key in _default_weights} if isinstance(weights, dict) else dict(_default_weights)
@@ -476,13 +720,102 @@ def _compute_combined_score(sem_score: float, duration_penalty: float,
         + w['duration'] * duration_penalty + w['role'] * role_score
 
 
+def _temporal_penalty(delta_ms: float) -> float:
+    """三段式时序软罚（决策 #2 冻结值），作用于最大化目标 combined，越优越正：
+    Δ<0          → −0.12  反时/铺垫，软压（硬倒走由既有 reselect 承担，避免叠加冲突）
+    0≤Δ≤15000    → +0.04  完美顺承，仅作 tiebreak（量级≈0.5×emotion，不压 0.68 语义主依据）
+    Δ>15000      → −0.04×(Δ−15000)/60000，封顶 −0.15（顺时序但大跨距，轻微距离惩罚）
+    """
+    if delta_ms < 0:
+        return -0.12
+    if delta_ms <= 15000:
+        return 0.04
+    return max(-0.04 * (delta_ms - 15000) / 60000, -0.15)
+
+
+def _shot_routing_boost(chunk_shot_type, chunk_characters, query_characters, query_emotion) -> float:
+    """Layer2 情绪路由（决策 #3 冻结值），作用于最大化目标 combined，命中即加权、绝不硬否决语义：
+    - 仅当 query 带非空情绪时生效（情绪/内心戏才讲空镜·特写路由）；
+    - 空镜优先：shotType 文本含"空镜" → +0.03（景物抒情托底）；
+    - 主角特写：_shot_type_level≤2（特写/大特写/近景）且 chunk.characters ∩ query.characters 非空 → +0.02。
+    空镜与特写不叠加（取更高 0.03）。未命中返回 0。
+    """
+    if not (query_emotion or '').strip():
+        return 0.0
+    stype = (chunk_shot_type or '')
+    if '空镜' in stype:
+        return 0.03
+    level = _shot_type_level(stype)
+    if level is not None and level <= 2:
+        qc = set(str(x) for x in (query_characters or []) if x and str(x).strip())
+        cc = set(str(x) for x in (chunk_characters or []) if x and str(x).strip())
+        if qc and cc and (qc & cc):
+            return 0.02
+    return 0.0
+
+
+def _abstract_semantic_score(chunk_shot_type) -> float:
+    """🎬 决策 #6：抽象文案的景别分级语义分（与 _shot_routing_boost 同域，专供 isAbstractNarration 查询）。
+    抽象旁白（"岁月流转"类）文字与任何具体画面均低相关，语义主分即路由意图：
+    空镜 0.90（景物抒情托底，抽象旁白的第一画面语言）＞ 近景/特写 0.80（情绪脸谱可承接抽象抒情）
+    ＞ 中景 0.55 ＞ 全景/远景/未识别 0.45（远景除非标注空镜，否则信息量不足以承接抽象叙事）。
+    未识别景别兜底 0.45，与"其余"同档，不因元数据缺失而惩罚。"""
+    stype = (chunk_shot_type or '')
+    if '空镜' in stype:
+        return 0.90
+    level = _shot_type_level(stype)
+    if level is None:
+        return 0.45
+    if level <= 2:
+        return 0.80
+    if level == 3:
+        return 0.55
+    return 0.45
+
+
+def _is_temporal_exempt(query) -> bool:
+    """flashback/montage 段语义豁免（决策 #2 豁免条款）：
+    query 文本/画面意图/情绪命中"回忆/闪回/倒叙/蒙太奇/回溯"等关键词时返回 True，
+    解除时序软罚——此时跨场景是剪辑意图（画面回溯），而非时序倒流错误。
+    🎬 决策 #6：显式 isFlashback 字段优先于关键词猜测（契约化豁免入口，免受文案措辞影响）。
+    """
+    if query is None:
+        return False
+    if getattr(query, 'isFlashback', False):
+        return True
+    hay = ' '.join(str(_f) for _f in [
+        getattr(query, 'text', None),
+        getattr(query, 'visualIntent', None),
+        getattr(query, 'emotion', None),
+    ] if _f).lower()
+    for _k in ('回忆', '闪回', '回想', '当年', '曾经', '过去', '以前',
+               '回溯', '倒叙', '蒙太奇', 'flashback', 'montage', '回闪'):
+        if _k in hay:
+            return True
+    return False
+
+
+# 🎬 决策 #8：单次拼接最多额外桥接的跨镜头数（0 = 关闭桥接，回退纯同父链，独立回滚开关）
+# 🎬 2026-09-05 档1+档2（剪辑师原速时长窗）：
+#   - MAX_EXTRA_SHOTS：素材偏短时向后桥接物理相邻镜头的最大个数（2→3，让长解说有更多镜头可级联）；
+#   - WINDOWIZE_COVER_MIN：拼接/裁剪覆盖目标时长的达标比（0.97≈原速窗口，变速≈1.0）；
+#   - WINDOWIZE_TAIL_MAX_RATIO：素材比目标长超过该比例才"截尾定窗"（丢弃尾部多余物理帧，避免字幕尾帧闪入）。
+MAX_EXTRA_SHOTS = 3
+WINDOWIZE_COVER_MIN = 0.97
+WINDOWIZE_TAIL_MAX_RATIO = 1.03
+
+
 def _try_merge_contiguous_segs(ci, video_chunks, used_chunks, target_dur_ms):
     """
     🔧 P2：变速超限（素材偏短需放慢）时，尝试把切片 ci 与其同 parentChunk 的连续兄弟 seg
     按段序索引递增拼接补时长（语义不变，仅补物理时长），规避单切片变速超限重选。
     - 物理连续性断言：|seg_{k+1}.startMs - seg_k.endMs| <= 100ms（与导出层 TIME_CONTINUITY_MS 口径一致），
       且按 segmentIndexInParent 段序递增拼接（seg0→seg1→seg2），从源头杜绝"挑段拼"的跨段瞬移。
-    - 拼接验收：合并变速比落入 [0.80, 1.20] 即视为补足时长（轻微越界交由 speed clamp 0.85~1.15 兜底；
+    - 🎬 决策 #8：同父链自然耗尽（父镜头末尾）且从未达标时，向物理相邻的下一镜头桥接扩容：
+      仅向后（|next.startMs − merged_end| ≤ 100ms）、未占用、链式连续，最多额外桥接
+      MAX_EXTRA_SHOTS 个镜头；物理相邻段若已被占用则立即停桥（不可跳过——跳过会造成时间轴重叠）。
+      因"占用/断言失败/拼过头"退出的不桥接（时间轴对不上），仅"父镜头耗尽"才桥接。
+    - 拼接验收：合并变速比落入 [0.80, 1.20] 即视为补足时长（轻微越界交由 speed clamp 0.93~1.08 兜底；
       dur score 公式对 ratio>1.0 本就宽松保底 0.70；真实牌匾 seg0+seg1=6000ms vs 语音 5125ms ≈1.17 可验收）。
     - 拼接占用：参与拼接的兄弟 seg 索引由调用方写入 global_used_chunks，防止后续 query 重复抢占造成时间轴重叠。
     返回 None 表示无可用拼接；否则返回 {seg_indices, seg_ids, total_dur, chunk}
@@ -504,6 +837,7 @@ def _try_merge_contiguous_segs(ci, video_chunks, used_chunks, target_dur_ms):
     seg_ids = [seg.get("id") or f"chunk_{ci}"]
     next_idx = seg_idx + 1
     best_merge = None  # 最近一次落入验收区间的组合
+    chain_exhausted = False  # 🎬 决策 #8：True=同父链自然耗尽（允许桥接），False=因占用/断言/拼过头退出
     while True:
         nxt = None
         for ci2, s in enumerate(video_chunks):
@@ -514,6 +848,7 @@ def _try_merge_contiguous_segs(ci, video_chunks, used_chunks, target_dur_ms):
             nxt = (ci2, s)
             break
         if nxt is None:
+            chain_exhausted = True
             break
         ci2, s2 = nxt
         if ci2 in used_chunks:
@@ -525,12 +860,55 @@ def _try_merge_contiguous_segs(ci, video_chunks, used_chunks, target_dur_ms):
         merged_end = s2_end
         seg_indices.append(ci2)
         seg_ids.append(s2.get("id") or f"chunk_{ci2}")
-        speed = (merged_end - merged_start) / target_dur_ms
-        if 0.80 <= speed <= 1.20:
+        total_ms = merged_end - merged_start
+        speed = total_ms / target_dur_ms
+        if total_ms >= target_dur_ms * WINDOWIZE_COVER_MIN:
+            # 🎬 2026-09-05 覆盖目标时长即收：调用方把窗口截为 target → 变速 1.0 原速
             best_merge = (list(seg_indices), list(seg_ids), merged_end)
-        if speed > 1.20:
-            break  # 拼过头：采用最近一次达标组合或放弃
+            break
+        if 0.80 <= speed < WINDOWIZE_COVER_MIN:
+            # 轻微放慢仍可（变速 clamp 0.93~1.08 补差），记录为后备但继续拼到覆盖
+            best_merge = (list(seg_indices), list(seg_ids), merged_end)
+        if speed > 1.35:
+            break  # 严重拼过头：采用最近后备或放弃
         next_idx += 1
+    # 🎬 决策 #8：物理相邻镜头桥接（仅同父链自然耗尽且从未达标时启用）
+    if best_merge is None and chain_exhausted:
+        extra_shots = 0
+        while extra_shots < MAX_EXTRA_SHOTS:
+            bridge = None
+            blocked = False
+            for ci2, s in enumerate(video_chunks):
+                if s.get("parentChunkId") == parent_id:
+                    continue  # 同父兄弟已由阶段 1 链尽，桥接只找异父段
+                if ci2 in seg_indices:
+                    continue  # 已参与拼接
+                s2_start = float(s.get("startMs") or 0)
+                s2_end = float(s.get("endMs") or 0)
+                if s2_end <= s2_start:
+                    continue
+                if abs(s2_start - merged_end) <= 100:
+                    if ci2 in used_chunks:
+                        blocked = True  # 物理相邻段已被占用：不可跳过（跳过即时间轴重叠），立即停桥
+                        break
+                    bridge = (ci2, s)
+                    break
+            if blocked or bridge is None:
+                break
+            ci2, s2 = bridge
+            merged_end = float(s2.get("endMs") or 0)
+            seg_indices.append(ci2)
+            seg_ids.append(s2.get("id") or f"chunk_{ci2}")
+            total_ms = merged_end - merged_start
+            speed = total_ms / target_dur_ms
+            if total_ms >= target_dur_ms * WINDOWIZE_COVER_MIN:
+                best_merge = (list(seg_indices), list(seg_ids), merged_end)
+                break  # 覆盖达标即止，不贪多（桥接越少视觉跳变风险越小）
+            if 0.80 <= speed < WINDOWIZE_COVER_MIN:
+                best_merge = (list(seg_indices), list(seg_ids), merged_end)
+            if speed > 1.35:
+                break  # 拼过头：采用最近后备或放弃
+            extra_shots += 1
     if best_merge is None:
         return None
     seg_indices, seg_ids, merged_end = best_merge
@@ -1004,7 +1382,20 @@ def _apply_continuity_rerank(results: list, queries, video_chunks: list,
 
     CONTINUITY_TRIGGER = 0.55  # 惩罚超过该阈值才触发替换尝试（避免过度调整）
     MIN_SCORE_KEEP = 0.9       # 替代切片综合分不得低于原切片 90%（内容不劣化）
+    # 🎬 决策 #7：景别律动破格——同一景别连续 CADENCE_RUN_LIMIT 段即尝试换景别（设 9999 可独立禁用）
+    CADENCE_RUN_LIMIT = 3
+    # 🔧 决策 #7 性能修复：id→chunk 索引，替代主循环内 next() 线性扫描（整体 O(N²)→O(N)）
+    chunk_by_id = {}
+    for _c in video_chunks:
+        _cid = str(_c.get("id") or "")
+        if _cid:
+            chunk_by_id[_cid] = _c
     reranked = 0
+    # 🎬 决策 #7：景别游程状态（基于相邻 prev/cur level 对推进；替换后在轮末重置，
+    #   防止旧基准残留把 C C D C 序列误判为游程 4 而误触发破格）
+    prev_level = None
+    run_level = None
+    run_len = 0
 
     # 3. 逐相邻对检查连续性
     for i in range(1, len(results)):
@@ -1012,12 +1403,25 @@ def _apply_continuity_rerank(results: list, queries, video_chunks: list,
         prev_cid, cur_cid = prev_r.get("chunkId") or "", cur_r.get("chunkId") or ""
         if not prev_cid or not cur_cid:
             continue
-        prev_chunk = next((c for c in video_chunks if c.get("id") == prev_cid), None)
-        cur_chunk = next((c for c in video_chunks if c.get("id") == cur_cid), None)
+        # 🔧 决策 #7 性能修复：用预建 id→chunk 索引替代 next() 线性扫描（O(N²)→O(N)）
+        prev_chunk = chunk_by_id.get(prev_cid)
+        cur_chunk = chunk_by_id.get(cur_cid)
         if prev_chunk is None or cur_chunk is None:
             continue
+        # 🎬 决策 #7：景别游程推进——基于相邻 prev/cur 对而非陈旧基准，
+        #   防止原地替换后 C C D C 被误判为同景别游程 4（D≠C 自然断链）
+        cur_level = _shot_type_level(cur_chunk.get('shotType'))
+        if cur_level is not None and cur_level == prev_level and cur_level == run_level:
+            run_len += 1
+        elif cur_level is not None and cur_level == prev_level:
+            run_level, run_len = cur_level, 2
+        else:
+            run_level, run_len = cur_level, 1
+        prev_level = cur_level
+        cadence_break = run_len >= CADENCE_RUN_LIMIT
         penalty = _continuity_penalty(prev_chunk, cur_chunk)
-        if penalty < CONTINUITY_TRIGGER:
+        # cadence_break 时不因衔接分低而跳过——仍需进入候选筛选为当前段寻找换景别替身
+        if penalty < CONTINUITY_TRIGGER and not cadence_break:
             continue
 
         # 找到该 result 对应的 query 索引及其时间块候选池
@@ -1103,14 +1507,23 @@ def _apply_continuity_rerank(results: list, queries, video_chunks: list,
         cur_r["chunkData"] = best_cand_chunk
         new_score, _ = _score(best_cand_ci)
         cur_r["confidence"] = round(new_score, 4)
-        # 变速参考：切片时长 / 成品时间段（保持 KM 的 0.85~1.15 限制）
+        # 变速参考：切片时长 / 成品时间段（保持 KM 的 0.93~1.08 限制，剪辑师 ±8% 准则）
         final_dur = (cur_r.get("videoTimelineEndMs") or 0) - (cur_r.get("videoTimelineStartMs") or 0)
         cand_vdur = best_cand_chunk.get("durationMs", 0)
         if final_dur > 0 and cand_vdur > 0:
             spd = cand_vdur / final_dur
-            cur_r["appliedSpeedFactor"] = round(max(0.85, min(1.15, spd)), 3)
+            cur_r["appliedSpeedFactor"] = round(max(0.93, min(1.08, spd)), 3)
         reranked += 1
-        print(f"[衔接重排] shotId={cur_r.get('shotId')} 连续性差({penalty:.2f}) → 替换为切片 "
+        # 🎬 决策 #7：替换后重置游程——新切片与前段若仍同景别则游程从 2 起算（相邻对口径），
+        #   否则从 1 起算；与循环头推进共用同一口径，防止陈旧基准误触发
+        new_level = _shot_type_level(best_cand_chunk.get('shotType'))
+        if new_level is not None and new_level == prev_level:
+            run_level, run_len = new_level, 2
+        else:
+            run_level, run_len = new_level, 1
+        prev_level = new_level
+        _rr_reason = '景别律动破格' if cadence_break else '衔接流畅性'
+        print(f"[衔接重排] shotId={cur_r.get('shotId')} {_rr_reason}({penalty:.2f}) → 替换为切片 "
               f"{best_cand_chunk.get('id')}（衔接 {best_penalty:.2f}）", file=sys.stderr)
 
     if reranked > 0:
@@ -1158,15 +1571,18 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
     n_queries = len(req.queries)
 
     video_chunks = req.videoChunks
-    if (not video_chunks or len(video_chunks) == 0) and req.mediaId in PROJECT_MATERIAL_POOL:
+    # 🔧 缓存隔离：与写入端（video_analyzer detect_scene_chunks）同构的兜底 key（<projectId>:<mediaId>），
+    #   读取端必须脚手架一致，否则跨项目复用旧切片池/封面。无 projectId 时回退 bare mediaId（兼容单项目/老请求）。
+    pool_key = f"{req.projectId}:{req.mediaId}" if req.projectId else (req.mediaId or "default")
+    if (not video_chunks or len(video_chunks) == 0) and pool_key in PROJECT_MATERIAL_POOL:
         # 阶段 B：素材池缓存结构升级为 {"chunks","matchSegments"}，KM 消费的是匹配候选级 matchSegments
-        pool_val = PROJECT_MATERIAL_POOL[req.mediaId]
+        pool_val = PROJECT_MATERIAL_POOL[pool_key]
         if isinstance(pool_val, dict) and "matchSegments" in pool_val:
             video_chunks = pool_val.get("matchSegments") or []
         else:
             # 兼容旧结构（缓存为数组，阶段 A 及更早）
             video_chunks = pool_val
-        print(f"[KM] 命中 PROJECT_MATERIAL_POOL 缓存 (mediaId={req.mediaId})，切片数: {len(video_chunks)}", file=sys.stderr)
+        print(f"[KM] 命中 PROJECT_MATERIAL_POOL 缓存 (key={pool_key})，切片数: {len(video_chunks)}", file=sys.stderr)
 
     n_chunks = len(video_chunks)
     # 打印本次请求规模（卡死排查关键指标：长切片数量 × seek 次数）
@@ -1177,6 +1593,13 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
     )
     print(f"[KM] 请求规模：{n_queries} queries × {n_chunks} chunks（其中 >{MULTI_FRAME_THRESHOLD_MS//1000}s 长切片={n_long_chunks}，"
           f"多帧采样限流上限={MULTI_FRAME_MAX_CHUNKS}，全局禁用={_MULTI_FRAME_DISABLED}）", file=sys.stderr)
+
+    # 🔬 KM 耗时观测：请求规模确定后初始化总起点，后续各子阶段用 _km_tick 打点
+    _km_t0()
+    _km_tick("入口(规模确定后)")
+
+    # 🔧 KM 真实进度：算法开始（Node 轮询映射到前端 60% 附近）
+    _report_km_progress(req.taskId, 0.03, "开始求解全局最优组合...")
 
     if n_queries == 0 or n_chunks == 0:
         return {"success": True, "results": []}
@@ -1197,6 +1620,9 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             valid_chunk_indices.append(i)
 
     if not valid_chunk_indices:
+        # ===== [KM-DIAG] 空结果定位:切片池非空但无 valid(startMs 全缺),直接返回空 =====
+        _km_diag(f"★★★ 空匹配结果根因1: valid_chunk_indices 为空(raw chunks={n_chunks}). "
+                 f"首个 chunk 键={list(video_chunks[0].keys()) if video_chunks else 'EMPTY_POOL'}")
         return {"success": True, "results": [], "warning": "No valid chunks for matching"}
 
     pre_embeddings = []
@@ -1286,14 +1712,34 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             zh_text_features = F.normalize(zh_text_features, p=2, dim=-1).cpu().numpy()
 
             IMAGE_ENCODE_BATCH = 64
-            all_image_features = []
-            for batch_start in range(0, len(valid_chunk_indices), IMAGE_ENCODE_BATCH):
+            # 🃏 P2 缓存读取（本次改造核心）：命中 clipZhEmbedding 的切片直接还原特征张量，
+            #   只对缺失/维度不符的切片做图像重编码。此前该缓存"只写不读"——Node 每次回写 DB、
+            #   请求也带着字段过来，但本循环无条件重编全部切片（901 段 ≈ 500s），流式卡片因此
+            #   没有任何可推送窗口（99.9% 耗时在编码，全部块 0.1s 内解完）。
+            #   维度校验：缓存向量长度必须等于中文 CLIP 文本特征维（模型输出维），
+            #   不符视为缓存失效重编（错就错：失效数据不静默参与相似度矩阵）。
+            expected_dim = int(zh_text_features.shape[1])
+            cached_feat = {}
+            need_encode = []
+            for ci in valid_chunk_indices:
+                emb = video_chunks[ci].get("clipZhEmbedding")
+                if isinstance(emb, list) and len(emb) == expected_dim:
+                    cached_feat[ci] = torch.tensor(emb, dtype=torch.float32).unsqueeze(0)
+                else:
+                    need_encode.append(ci)
+            if cached_feat:
+                print(f"[KM] clipZhEmbedding 缓存命中：{len(cached_feat)}/{len(valid_chunk_indices)} 切片免重编码"
+                      f"（缺失重编 {len(need_encode)} 段）", file=sys.stderr)
+
+            encoded_feat = {}
+            total_need_batches = (len(need_encode) + IMAGE_ENCODE_BATCH - 1) // IMAGE_ENCODE_BATCH
+            _enc_batch_no = 0
+            for batch_start in range(0, len(need_encode), IMAGE_ENCODE_BATCH):
+                batch_ci = need_encode[batch_start:batch_start + IMAGE_ENCODE_BATCH]
                 batch_imgs = []
                 batch_frame_counts = []  # 每个切片的帧数（>6s 多点采样为 3，其余为 1），用于平均池化
-                batch_chunk_indices = []  # 与 batch_imgs 一一对应的 video_chunks 索引，用于写回 clipZhEmbedding
-                for ci in valid_chunk_indices[batch_start:batch_start + IMAGE_ENCODE_BATCH]:
+                for ci in batch_ci:
                     chunk = video_chunks[ci]
-                    batch_chunk_indices.append(ci)
                     cover = chunk.get("coverPath", "")
                     # 🎬 P0.5 封面多点采样：命中多帧预取池 → 直接使用锁外抽好的 PIL 帧列表
                     if ci in multi_frame_pool:
@@ -1313,6 +1759,9 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                         batch_imgs.append(Image.new('RGB', (224, 224), color=(128, 128, 128)))
                     batch_frame_counts.append(1)
 
+                if not batch_imgs:
+                    _enc_batch_no += 1
+                    continue
                 image_inputs = zh_processor(images=batch_imgs, return_tensors="pt", padding=True).to(AIModels.device)
                 with torch.no_grad():
                     batch_features = _extract_pooler(zh_model.get_image_features(
@@ -1321,10 +1770,10 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 batch_features = F.normalize(batch_features, p=2, dim=-1)
                 # 按切片平均池化（>6s 多帧取均值后归一化）
                 feat_idx = 0
-                for n_frames, ci in zip(batch_frame_counts, batch_chunk_indices):
+                for n_frames, ci in zip(batch_frame_counts, batch_ci):
                     pooled = batch_features[feat_idx:feat_idx + n_frames].mean(dim=0, keepdim=True)
                     pooled = F.normalize(pooled, p=2, dim=-1)
-                    all_image_features.append(pooled)
+                    encoded_feat[ci] = pooled
                     # 🔧 P2 缓存落库：把中文 CLIP 图像特征写回 chunk，Node 侧按 id 合并回写 DB，
                     #   下次匹配命中 DB 缓存时免去图像重编码（性能优化，不改变匹配结果）
                     # 🔧 R6 embedding 瘦身（PR-2）：写回前降 float16 半精度，驻留与落库 JSON 体积减半
@@ -1333,6 +1782,22 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 del image_inputs, batch_features, batch_imgs
                 # 🔧 R13：批处理完立即触发 GC，及时回收 batch tensor / PIL 帧，避免峰值内存叠加
                 gc.collect()
+                # 🃏 真流式进度：封面重编码阶段按批进度插值到 0.03→0.32，
+                #   杜绝"61% 钉死数分钟"的假死观感；N=0/1 时跳过除零，阶段尾再统一锚定 0.32。
+                _enc_batch_no += 1
+                if total_need_batches > 1 and req.taskId:
+                    _enc_ratio = min(1.0, _enc_batch_no / total_need_batches)
+                    _enc_progress = 0.03 + (0.32 - 0.03) * _enc_ratio
+                    _report_km_progress(
+                        req.taskId, _enc_progress,
+                        f"正在重新编码封面图为语义向量（{len(encoded_feat)}/{len(need_encode)}）..."
+                    )
+
+            # 按 valid_chunk_indices 原顺序组装特征（缓存命中 + 本轮新编码），供相似度矩阵对位
+            all_image_features = [
+                cached_feat[ci] if ci in cached_feat else encoded_feat[ci]
+                for ci in valid_chunk_indices
+            ]
 
             image_features = torch.cat(all_image_features, dim=0).cpu().numpy()
             del all_image_features
@@ -1340,9 +1805,10 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             image_sim = zh_text_features @ image_features.T  # (n_queries, n_chunks) 画面意图↔封面图像
 
             # 🎯 切片描述文本语义：画面意图 ↔ 切片描述（步骤2 逐帧 VLM 描述按时间轴聚合而来）
-            #    有描述切片：语义 = 0.5*图像 + 0.5*描述文本（描述含动作/情绪/景别/台词，信息量远超单帧封面）
+            #    有描述切片：语义 = TXT_WEIGHT×描述文本 + IMG_WEIGHT×图像（描述含动作/情绪/景别/台词，信息量远超单帧封面）
             #    无描述切片：语义 = 纯图像（空文本编码结果不可预测，必须掩码归零，不能参与混合）
-            chunk_desc_texts = [(video_chunks[ci].get("description") or "").strip() for ci in valid_chunk_indices]
+            # 🎬 阶段2 2.2：长描述先"保头300字+保尾200字"智能截断再入编码器，避免 512 截断丢尾部角色/场景
+            chunk_desc_texts = [_smart_truncate_desc(video_chunks[ci].get("description")) for ci in valid_chunk_indices]
             # 🔧 R5 矩阵降精度（PR-2）：描述掩码 float64 → float32
             has_desc = np.array([1.0 if t else 0.0 for t in chunk_desc_texts], dtype=np.float32)
             if has_desc.sum() > 0:
@@ -1357,8 +1823,13 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 text_sim = zh_text_features @ desc_features.T
                 del desc_features
                 text_sim *= has_desc[None, :]  # 无描述切片文本语义归零
-                semantic_sim = np.where(has_desc[None, :] > 0, 0.5 * image_sim + 0.5 * text_sim, image_sim)
-                print(f"[KM] 中文 CLIP + 切片描述文本语义，{int(has_desc.sum())}/{len(valid_chunk_indices)} 切片带描述",
+                # 🎬 阶段2 2.1：文本主导（0.65）+ 图像托底（0.35），无描述切片保持纯图像
+                semantic_sim = np.where(
+                    has_desc[None, :] > 0,
+                    IMG_WEIGHT * image_sim + TXT_WEIGHT * text_sim,
+                    image_sim,
+                )
+                print(f"[KM] 中文 CLIP + 切片描述文本语义(TXT {TXT_WEIGHT}/IMG {IMG_WEIGHT})，{int(has_desc.sum())}/{len(valid_chunk_indices)} 切片带描述",
                       file=sys.stderr)
             else:
                 semantic_sim = image_sim
@@ -1436,6 +1907,10 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
         print("[KM] CLIP 不可用，降级为时长匹配模式", file=sys.stderr)
         # 🔧 R5 矩阵降精度（PR-2）：降级矩阵 float64 → float32
         semantic_sim = np.ones((n_queries, len(valid_chunk_indices)), dtype=np.float32) * 0.3
+    # 🔧 KM 真实进度：CLIP/中文CLIP 特征提取与语义相似度矩阵计算完成
+    _report_km_progress(req.taskId, 0.32, "视觉语义特征提取完成，正在聚合多维匹配矩阵...")
+    # 🔬 KM 耗时观测：封面图编码/语义矩阵阶段结束（此阶段是"卡死"头号嫌疑，打点定位）
+    _km_tick("中文CLIP封面重编码+语义矩阵")
 
     # 🎯 P3 时间轴锚定加成：query 携带画面时间起点（startMs）时，覆盖该时间点的切片获得语义加成。
     #    步骤3 的 microChunk 与步骤5 的场景切片同源于原片时间轴，锚定是"写词时已看过画面"的强信号；
@@ -1453,6 +1928,11 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             if c_start <= q_start < c_end:
                 semantic_sim[qi, ci_idx] = min(1.0, semantic_sim[qi, ci_idx] + ANCHOR_BONUS)
                 break  # 时间轴不重叠，命中首个覆盖切片即可
+
+    # 🎬 方案 2.3 温和归一（作用点：semantic_sim → combined 之间，评审要求"原始分保留审计"）。
+    #   仅 S_max≥0.70 的行仿射拉伸（行内单调、不影响 KM 排序，只抬分位）；<0.70 坚决不动；
+    #   env ZENTECT_KM_NORM_GATE=0 可整体关闭（A/B）。raw_semantic_sim 仅供 [MATCH_DIAG] 审计，不参与打分。
+    semantic_sim, raw_semantic_sim = _apply_2_3_gentle_normalization(semantic_sim)
 
     # 🎭 P0 意境维度：构建文案情绪 ↔ 切片情绪相容度矩阵 (n_queries, n_chunks)
     #    切片情绪由步骤2 帧情绪按时间轴聚合而来（chunk.emotion），文案情绪来自步骤3 生成（query.emotion）
@@ -1482,6 +1962,10 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
     c_with_role = sum(1 for r in chunk_roles if r)
     print(f"[KM] 角色匹配就绪：{q_with_role}/{n_queries} 段文案带角色，{c_with_role}/{len(valid_chunk_indices)} 切片带角色",
           file=sys.stderr)
+    # 🔧 KM 真实进度：语义/情绪/角色矩阵全部就绪（进入分块求解前）
+    _report_km_progress(req.taskId, 0.42, "语义·情绪·角色多维矩阵就绪，开始时序分块求解...")
+    # 🔬 KM 耗时观测：锚定加成+情绪/角色矩阵就绪
+    _km_tick("情绪/角色矩阵就绪")
 
     BLOCK_DURATION_MS = 300000
     # 🎯 方向2（2026-08-30）：跨 query 时间单调约束容差（ms）。
@@ -1509,15 +1993,23 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
 
     query_blocks = {}
     chunk_blocks = {}
-    accumulated_ms = 0
+    accumulated_ms = 0   # 🛡 仅供"无有效 startMs 的 query"退化分组兜底
 
     for qi in range(n_queries):
-        audio_dur = req.queries[qi].audioDurationMs or 0
-        block_idx = int(accumulated_ms / BLOCK_DURATION_MS)
+        # 🎛 Step2 删除"分块降级"根因：query 分组键从"累计音频时长"改为"源 startMs"。
+        #   旧逻辑用 audioDurationMs 累计归块，会把 0 时长段落全部聚簇到 block0 → 与切片 startMs 时间块错位 → 全空
+        #   （即 [KM-DIAG] 结论1 的"query最大块 < 切片最小块 必断"）。
+        #   BLOCK 常量仍保留：作为 chunk 索引网格 + 进度 + 候选兜底，但 query 不再按累计音频归块。
+        q_start_ms = float(req.queries[qi].startMs or 0)
+        if q_start_ms > 0:
+            block_idx = int(q_start_ms / BLOCK_DURATION_MS)
+        else:
+            # 无锚 query(源时间缺失)：退化按累计音频就近归块，避免与其它无锚段落无限挤压同块
+            block_idx = int(accumulated_ms / BLOCK_DURATION_MS)
         if block_idx not in query_blocks:
             query_blocks[block_idx] = []
         query_blocks[block_idx].append(qi)
-        accumulated_ms += audio_dur
+        accumulated_ms += req.queries[qi].audioDurationMs or 0
 
     for ci_idx, ci in enumerate(valid_chunk_indices):
         chunk = video_chunks[ci]
@@ -1532,20 +2024,63 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
     # video_chunks 全局索引 → semantic_sim 列索引 的映射，供变速超限重选后重算语义分
     chunk_rank = {ci: idx for idx, ci in enumerate(valid_chunk_indices)}
 
+    # 🔬 Step1 Layer1：预计算每段窗口（Node 显式窗口优先，未透传用源锚派生，候选不足自适应扩张）
+    _qw = {}
+    for _qi in range(n_queries):
+        _w = _query_window(req.queries[_qi], valid_chunk_indices, video_chunks)
+        if _w is not None:
+            _qw[_qi] = _w
+
+    # ===== [KM-DIAG] 空结果定位计数(分块循环累计,仅在 results 为空时打印) =====
+    dbg_zero_dur_queries = sum(1 for qi in range(n_queries) if not (req.queries[qi].audioDurationMs or 0))
+    dbg_block_gap_query = 0   # 有 query 但 ±3 窗口空候选的块(时序错位症结)
+    dbg_block_gap_chunk = 0   # 无 query 的块
+    dbg_block_attempted = 0   # 有 query+候选、真正进入求解的块
+
     for block_idx in range(max_block + 1):
         # 🔧 R3 取消贯通（PR-1）：每处理一个时序块检查取消标记，命中立即提前返回，
         #   避免取消请求继续空烧 CPU / 重复重试
         if req.taskId and is_task_cancelled(req.taskId):
             print(f"[KM] R3 收到取消标记（taskId={req.taskId}），KM 求解提前终止", file=sys.stderr)
             return {"success": True, "cancelled": True, "results": [], "videoChunks": video_chunks}
+        # 🔧 KM 真实进度（块入口）：块级锚定 0.42→0.80 的起点，段级在块内继续插值细化，
+        #   避免大视频单块跑很久时进度外观长时间不动的"假死"。
+        block_base_progress = 0.42 + 0.36 * block_idx / (max_block + 1)
+        block_end_progress = 0.42 + 0.36 * (block_idx + 1) / (max_block + 1)
+        _report_km_progress(req.taskId, min(block_base_progress, 0.80),
+                            f"正在求解时序块 {block_idx + 1}/{max_block + 1} 的全局最优画面归属...")
+        # 🃏 卡片流式：记录本块求解前的结果条数，据此切出本块新增的增量（块末推送）
+        pre_results_len = len(results)
         block_queries = query_blocks.get(block_idx, [])
         block_chunk_indices = set()
         for offset in [-3, -2, -1, 0, 1, 2, 3]:
             block_chunk_indices.update(chunk_blocks.get(block_idx + offset, []))
+        # 🔬 Step1 Layer1：若本块所有 query 都有有效窗口，块候选收窄到"成员窗口并集"，
+        #   让候选池从全片降到段内 30~50（决策 #1 验收）；任一无窗口则退回旧 ±3 块并集兜底。
+        if block_queries and all(_qi in _qw for _qi in block_queries):
+            _narrowed = set()
+            for _qi in block_queries:
+                _w0, _w1 = _qw[_qi]
+                for _ci_idx in block_chunk_indices:
+                    _ci = valid_chunk_indices[_ci_idx]
+                    _cs = float(video_chunks[_ci].get("startMs") or 0)
+                    if _w0 <= _cs <= _w1:
+                        _narrowed.add(_ci_idx)
+            if _narrowed:
+                block_chunk_indices = _narrowed
         block_chunk_idx_list = sorted(block_chunk_indices)
 
         if not block_queries or not block_chunk_idx_list:
+            if not block_queries:
+                dbg_block_gap_chunk += 1   # 有切片候选但无 query(多为尾部无词块)
+            elif not block_chunk_idx_list:
+                dbg_block_gap_query += 1   # 有 query 但 ±3 窗口兜不到切片(时序错位)
             continue
+
+        # 🔬 KM 耗时观测：真正进入求解的块，块号+规模打点（若长时间停在同一块，即卡点）
+        _km_tick(f"进入块{block_idx}(q={len(block_queries)}×c={len(block_chunk_idx_list)})")
+
+        dbg_block_attempted += 1   # 进入真正的 KM 求解,若 attempted>0 但 results=0 → 块内选片被 continue 吃掉
 
         local_n_queries = len(block_queries)
         local_n_chunks = len(block_chunk_idx_list)
@@ -1584,23 +2119,45 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                         local_cost[lqi, lci] = 5.0  # 强惩罚：绝不优先，但保留兜底可分配
                         continue
 
-                sem_score = float(semantic_sim[qi, ci_idx])
-                sem_score = max(0.0, min(1.0, (sem_score + 1.0) / 2.0))
+                # 🔬 Step1 Layer1：窗外强惩罚（决策 #1 硬边界）。与 candidateIds 同通道量级，
+                #   保证 KM 绝不跨段落所属窗口去做全局退让，杜绝"跨幕次乱跳"。无有效窗口(qi 不在 _qw)不加。
+                _wq = _qw.get(qi)
+                if _wq is not None:
+                    _w0, _w1 = _wq
+                    _cstart = float(chunk.get("startMs") or 0)
+                    if not (_w0 <= _cstart <= _w1):
+                        local_cost[lqi, lci] = WINDOW_PENALTY
+                        continue
 
-                # 🎯 修复：关键词精确匹配 boost（强视觉实体/动作），解决 TF-IDF/CLIP 文本低词频信号不足
+                # 🔧 决策 #5：排他前移——跨块已消耗的切片在矩阵构造时直接置强惩罚（与 WINDOW_PENALTY
+                #   同通道量级），KM 求解期自动为该查询选次优，取代消费时静默丢弃；
+                #   消费时检查保留作双保险（同块合并/变速重选路径会在矩阵求解之后继续修改 global_used_chunks）。
+                if ci in global_used_chunks:
+                    local_cost[lqi, lci] = 5.0
+                    continue
+
                 q = req.queries[qi]
-                kw_boost = _keyword_match_boost(
-                    query_text=getattr(q, 'text', '') or '',
-                    query_emotion=getattr(q, 'emotion', '') or '',
-                    query_visual=getattr(q, 'visualIntent', '') or '',
-                    chunk_desc=chunk.get('description') or '',
-                    chunk_emotion=chunk.get('emotion') or '',
-                    chunk_shot_type=chunk.get('shotType') or '',
-                    chunk_characters=chunk.get('characters'),
-                    chunk_keywords=chunk.get('keywords'),
-                )
-                if kw_boost > 0:
-                    sem_score = min(1.0, sem_score + kw_boost)
+                if getattr(q, 'isAbstractNarration', False):
+                    # 🎬 决策 #6：抽象旁白路由——文字语义即噪声（与任何具体画面低相关），
+                    #   语义主分由景别分级抽象分取代（空镜优先）；跳过关键词 boost（抽象文本无具体实体可命中）
+                    sem_score = _abstract_semantic_score(chunk.get('shotType'))
+                else:
+                    sem_score = float(semantic_sim[qi, ci_idx])
+                    sem_score = max(0.0, min(1.0, (sem_score + 1.0) / 2.0))
+
+                    # 🎯 修复：关键词精确匹配 boost（强视觉实体/动作），解决 TF-IDF/CLIP 文本低词频信号不足
+                    kw_boost = _keyword_match_boost(
+                        query_text=getattr(q, 'text', '') or '',
+                        query_emotion=getattr(q, 'emotion', '') or '',
+                        query_visual=getattr(q, 'visualIntent', '') or '',
+                        chunk_desc=chunk.get('description') or '',
+                        chunk_emotion=chunk.get('emotion') or '',
+                        chunk_shot_type=chunk.get('shotType') or '',
+                        chunk_characters=chunk.get('characters'),
+                        chunk_keywords=chunk.get('keywords'),
+                    )
+                    if kw_boost > 0:
+                        sem_score = min(1.0, sem_score + kw_boost)
 
                 duration_penalty = _compute_duration_score(audio_dur_ms, video_dur_ms)
 
@@ -1610,7 +2167,21 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 # 🎭 P1 角色契合度：解说期望角色与切片出现角色的命中率（软加成）
                 role_score = float(role_sim[qi, ci_idx])
 
-                combined_score = _compute_combined_score(sem_score, duration_penalty, emotion_score, role_score, weights=req.weights)
+                # 🔬 Step3 Layer3：时序软罚 + 情绪路由加权 入矩阵（决策 #2/#3 冻结值）。
+                #   - 时序软罚基准：Δ = chunk.startMs − query.source startMs
+                #     （反时 −0.12 / 顺承 +0.04 / 大跨距线性衰减封顶 −0.15），flashback/montage 段语义豁免；
+                #   - 情绪路由加权：query 带非中性情绪时，空镜 +0.03 / 主角特写 +0.02；
+                #   均为加性微调，绝不压过 0.68 语义主依据（断层 B 软罚原则）。
+                _delta = float(chunk.get("startMs") or 0) - float(getattr(q, 'startMs', 0) or 0)
+                _adjust = 0.0 if _is_temporal_exempt(q) else _temporal_penalty(_delta)
+                if not getattr(q, 'isAbstractNarration', False):
+                    # 🎬 决策 #6：抽象旁白跳过情绪路由加权——情绪已由 emotion_score 计入综合分，再路由即双计
+                    _adjust += _shot_routing_boost(
+                        chunk.get('shotType'), chunk.get('characters'),
+                        getattr(q, 'characters', None),
+                        getattr(q, 'emotion', None) or '',
+                    )
+                combined_score = _compute_combined_score(sem_score, duration_penalty, emotion_score, role_score, weights=req.weights) + _adjust
                 local_cost[lqi, lci] = -combined_score
 
         if local_n_queries > local_n_chunks:
@@ -1621,6 +2192,11 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
         with INFERENCE_LOCK:
             row_ind, col_ind = linear_sum_assignment(local_cost)
 
+        # 🃏 真流式：块内按匈牙利返回顺序逐段推送卡片，
+        #   段级进度在 block_base→block_end 内插值，单块再大也能看到进度连续推进。
+        #   local_n_queries==0 时除零保护（与下方 if not block_queries 的 continue 呼应）。
+        _seg_local_total = max(1, int(local_n_queries))
+        _seg_local_idx = 0
         for ri, ci in zip(row_ind, col_ind):
             if ri >= local_n_queries or ci >= local_n_chunks:
                 continue
@@ -1662,11 +2238,25 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             if final_video_duration_ms > 0 and video_dur_ms > 0:
                 raw_speed_factor = video_dur_ms / final_video_duration_ms
 
-            # 变速超限重选：语音与素材时长严重不匹配（超出 0.85~1.15 变速能力）时，
+            # 🎬 档1（2026-09-05）剪辑师原速窗口【素材≥目标】：素材不比目标短 → 直接截尾到目标（变速 1.0）。
+            #    专业剪辑是"裁到正好长度"：素材长于目标一律裁剪（多余尾部还常是下一动作/字幕帧，弃之更干净），
+            #    绝不为了"对齐"去变速快进素材。轻微超出(≤3%)由下方 speed clamp 微调，无感。
+            if final_video_duration_ms > 0 and raw_speed_factor > 1.0 \
+                    and video_dur_ms >= final_video_duration_ms * WINDOWIZE_COVER_MIN:
+                _fs = float(chunk.get("startMs") or 0)
+                if float(chunk.get("endMs") or 0) - _fs > final_video_duration_ms * WINDOWIZE_TAIL_MAX_RATIO:
+                    chunk = dict(chunk)
+                    chunk["endMs"] = round(_fs + final_video_duration_ms, 1)
+                    chunk["durationMs"] = round(final_video_duration_ms, 1)
+                    video_dur_ms = float(chunk["durationMs"] or 0)
+                    print(f"[KM] shotId={query.shotId} 素材≥目标 → 原速截尾定窗（{video_dur_ms:.0f}ms，变速 1.0，弃长尾防字幕帧）", file=sys.stderr)
+
+            # 变速超限重选（⚠️ 2026-09-05 起仅剩【放慢方向】入口；放快方向已被上方"原速截尾"吸收）：
+            # 语音与素材时长不匹配（超出 0.93~1.08 变速能力，剪辑师 ±8% 准则）时，
             # 从当前时序块候选池中重选一个"语义0.6+时长0.4联合分"最高的未使用切片，
             # 以当前切片联合分为保底基准，只有候选联合分超过当前切片才重选，
             # 避免为了时长丢弃语义更贴合的切片（纯时长贴近会牺牲画面内容）。
-            if raw_speed_factor < 0.85 or raw_speed_factor > 1.15:
+            if raw_speed_factor < 0.93:
                 cur_sem = max(0.0, min(1.0, (float(semantic_sim[qi, chunk_rank[real_ci]]) + 1.0) / 2.0))
                 cur_chunk = video_chunks[real_ci]
                 # 🎯 修复：变速重选同样计入关键词 boost
@@ -1694,7 +2284,7 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 # 🔧 P2（2026-08-22）：素材偏短（放慢方向）时，优先尝试拼接同父连续 seg 补时长，
                 # 从根源规避变速超限，而非直接换成语义无关的"时长完美"镜头
                 merged = None
-                if raw_speed_factor < 0.85:
+                if raw_speed_factor < 0.93:
                     merged = _try_merge_contiguous_segs(real_ci, video_chunks, global_used_chunks, final_video_duration_ms)
                 if merged is not None:
                     # 拼接成功：占用全部参与 seg（含兄弟），采用拼接切片；语义同父不变，取当前切片分
@@ -1702,12 +2292,20 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                         global_used_chunks.add(_ci)
                     chunk = merged["chunk"]
                     video_dur_ms = merged["total_dur"]
+                    # 🎬 档1 原速定窗：拼接覆盖≥目标 → 截尾到目标时长（变速 1.0）；仅轻微放慢(<1.03×)留给 clamp 补差
+                    if final_video_duration_ms > 0 and video_dur_ms > final_video_duration_ms * WINDOWIZE_TAIL_MAX_RATIO:
+                        _mcs = float(chunk.get("startMs") or 0)
+                        chunk = dict(chunk)
+                        chunk["endMs"] = round(_mcs + final_video_duration_ms, 1)
+                        chunk["durationMs"] = round(final_video_duration_ms, 1)
+                        video_dur_ms = float(chunk["durationMs"] or 0)
                     best_sem = cur_sem
                     best_dur_pen = _compute_duration_score(audio_dur_ms, video_dur_ms)
                     best_emotion = cur_emotion
                     best_role = cur_role
                     combined_score = _compute_combined_score(best_sem, best_dur_pen, best_emotion, best_role, weights=req.weights)
-                    print(f"[KM] shotId={query.shotId} 变速 {raw_speed_factor:.2f} 超限，拼接同父连续 seg（{'+'.join(merged['seg_ids'])}={video_dur_ms}ms）规避变速", file=sys.stderr)
+                    _spd = (video_dur_ms / final_video_duration_ms) if final_video_duration_ms > 0 else 1.0
+                    print(f"[KM] shotId={query.shotId} 变速 {raw_speed_factor:.2f} 超限 → 拼接级联定窗（{'+'.join(merged['seg_ids'])}={video_dur_ms}ms，变速 {_spd:.2f}）", file=sys.stderr)
                 else:
                     # 拼接不满足 → 回退单切片重选（P1 白名单 + P0 同权 + P3 语义门槛）
                     for cand_idx in block_chunk_idx_list:
@@ -1842,8 +2440,21 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             speed_factor = 1.0
             if final_video_duration_ms > 0 and video_dur_ms > 0:
                 speed_factor = video_dur_ms / final_video_duration_ms
-                # 变速区间收紧到 0.85~1.15，防止强拉慢放导致的鬼畜/变相
-                speed_factor = max(0.85, min(1.15, speed_factor))
+                # 变速区间收紧到 0.93~1.08（专业剪辑师不超过 ±8%），防止强拉慢放导致的鬼畜/变相
+                speed_factor = max(0.93, min(1.08, speed_factor))
+
+            # 🎬 阶段2 2.4 匹配诊断：Q(段落) 命中切片，肉眼核对 VI↔desc 是否名副其实（防分高但画面不贴）。
+            #    字段：RawSem=combined（2.3 启用后为归一后综合分）、Gate=该 query 是否被 2.3 温和归一拉伸(1/0)、
+            #          Smax=该 query 候选池原始最大相似度（审计基准）、has_desc(0/1)、VI/ChunkDesc 截断样本
+            try:
+                _vi = str(getattr(query, 'visualIntent', '') or '')[:20]
+                _desc = str(chunk.get('description') or '')[:24]
+                _has_desc = 1 if str(chunk.get('description') or '').strip() else 0
+                _smax = float(np.max(raw_semantic_sim[qi])) if raw_semantic_sim is not None else float('nan')
+                _gate = 1 if (not MATCH_NORM_GATE_DISABLED and _smax >= MATCH_GATE_MIN_SMAX) else 0
+                print(f"[MATCH_DIAG] Q:{query.shotId} | RawSem:{float(combined_score):.2f} | Gate:{_gate} | Smax:{_smax:.2f} | has_desc:{_has_desc} | VI:\"{_vi}\" <-> ChunkDesc:\"{_desc}\"", file=sys.stderr)
+            except Exception:
+                pass
 
             results.append({
                 "shotId": query.shotId,
@@ -1864,8 +2475,53 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             if last_chunk_end_ms is None or cur_end_ms > last_chunk_end_ms:
                 last_chunk_end_ms = cur_end_ms
 
+            # 🃏 真流式（段级推送）：解完这一段就立刻把它推到前端，
+            #   用户感知是"卡片一张一张跳出来"，而不是等整块解完才整批蹦出。
+            #   进度同步在块区间内插值（段级），外观上百分比是连续推进的。
+            _seg_local_idx += 1
+            if req.taskId:
+                # 段级进度：在当前块的 block_base→block_end 区间内按已处理段数比例线性插值
+                _seg_ratio = min(1.0, _seg_local_idx / _seg_local_total)
+                _seg_progress = block_base_progress + (block_end_progress - block_base_progress) * _seg_ratio
+                _report_km_progress(
+                    req.taskId, min(_seg_progress, 0.80),
+                    f"正在求解时序块 {block_idx + 1}/{max_block + 1}（已解 {_seg_local_idx}/{_seg_local_total} 段）..."
+                )
+                _report_km_blocks(req.taskId, [results[-1]])
+
+        # 🔬 KM 耗时观测：本块求解耗时（与"进入块"打点对比，可算出单块耗时；某块耗时异常高即求解卡点）
+        _km_tick(f"块{block_idx}求解完毕")
+        # 🃏 卡片流式：本块新增的匹配结果（results[pre_results_len:]）立即推入流式缓冲，
+        #   Node 轮询 km_progress 时作为增量 results 弹出，前端据此逐个渲染卡片。
+        #   （continue 跳过的空块不会到达此处，results 无新增时 _report_km_blocks 自动忽略。）
+        _report_km_blocks(req.taskId, results[pre_results_len:])
+
+    # ===== [KM-DIAG] 空结果定位:分块循环刚结束,若 results 为空打印根因统计 =====
+    if len(results) == 0:
+        sorted_q_blocks = sorted(query_blocks.keys())
+        sorted_c_blocks = sorted(chunk_blocks.keys())
+        _km_diag("★★★ 空匹配结果根因2/3(有 valid 但分块后无选中)! "
+                 f"queries={n_queries} | raw_chunks={n_chunks} | valid_chunks={len(valid_chunk_indices)} | "
+                 f"max_block={max_block} | zero_dur_queries={dbg_zero_dur_queries}(audioDurationMs=0 的数量) | "
+                 f"gap_chunk块(无词)={dbg_block_gap_chunk} | gap_query块(有词兜不到片)={dbg_block_gap_query} | "
+                 f"attempted求解块(有词+候选)={dbg_block_attempted}")
+        _km_diag(f"错位线索: query块分布={sorted_q_blocks} | 切片块分布={sorted_c_blocks}")
+        if dbg_block_attempted == 0 and sorted_q_blocks and sorted_c_blocks:
+            _km_diag("结论1: 无任一快同时有 query+±3候选 → 时序错位/audioDurationMs 聚簇。"
+                     f"query最大块={sorted_q_blocks[-1]} ≥ 切片最小块={sorted_c_blocks[0]}+3 时必断")
+        elif dbg_block_attempted > 0:
+            _km_diag(f"结论2: 有 {dbg_block_attempted} 块进入求解但仍 0 结果 → 块内选片全被 continue 跳过"
+                     "(变速超限无候选/global_used_chunks 冲突/候选被强惩罚)。需看上方 [KM] shotId= 日志")
+
+    # 🔬 KM 耗时观测：分块求解主体结束（对比"入口"打点可算出 KM 求解总耗时）
+    _km_tick("分块求解主体完成")
+
     # VLM 二次裁决：对低置信度匹配调用 GPT-4o 重排
-    if req.vlmApiKey and req.vlmApiBase and req.vlmApiModel:
+    # 🔧 KM 真实进度：分块求解结束，进入 VLM 内容裁决
+    # 🔬 决策 #4：opt-in 双条件门控——需显式开启 req.useVlmRerank 且配齐 API 三件套，
+    #   否则完全跳过云端 VLM 重排（默认关闭，不产生额外调用与耗时）。
+    _report_km_progress(req.taskId, 0.86, "分块求解完成，正在进行云端 VLM 内容裁决...")
+    if req.useVlmRerank and req.vlmApiKey and req.vlmApiBase and req.vlmApiModel:
         results = _apply_vlm_rerank(
             results, req.queries, video_chunks, valid_chunk_indices,
             semantic_sim, emotion_sim, role_sim, n_queries,
@@ -1874,6 +2530,8 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
 
     # 🎬 P1 衔接流畅性重排：相邻切片色调/景别/情绪连续性优化。
     #    放在 VLM 内容裁决之后：先保证单点内容正确，再优化序列衔接，避免为了衔接牺牲内容。
+    # 🔧 KM 真实进度：VLM 裁决完成，进行画面连续性优化
+    _report_km_progress(req.taskId, 0.94, "VLM 内容裁决完成，正在优化相邻画面衔接...")
     if len(results) > 1:
         results = _apply_continuity_rerank(
             results, req.queries, video_chunks, valid_chunk_indices,
@@ -1897,5 +2555,8 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             print("[KM-DUMP] semantic_sim dumped", file=sys.stderr)
         except Exception as _e:
             print(f"[KM-DUMP] failed: {_e}", file=sys.stderr)
+
+    # 🔧 KM 真实进度：全部结束（Node 轮询在 KM resolve 后置 80 收尾）
+    _report_km_progress(req.taskId, 1.0, "全局最优组合求解完成")
 
     return {"success": True, "results": results, "videoChunks": video_chunks}

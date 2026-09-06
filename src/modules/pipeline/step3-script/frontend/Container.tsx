@@ -84,7 +84,7 @@ export const StepScriptGeneration: React.FC = () => {
         if (nodeResult) {
           /** ✅ 身份键统一：段落主键 id 出生处(ScriptGenStrategy)已强制全局唯一，此层仅透传、
            *  不再做任何去重/追加后缀（删除了旧 idCountMap 兜底）。 */
-          const rawParagraphs = (nodeResult.paragraphs || nodeResult.shots || []).map((p: any) => {
+          const rawParagraphs = (nodeResult.paragraphs || nodeResult.shots || []).map((p: any, idx: number) => {
             return {
               id: p.id,
               text: p.text || p.content || p.narration || "",
@@ -99,11 +99,27 @@ export const StepScriptGeneration: React.FC = () => {
               /** 🎯 P3 时间轴锚定：透传对应 chunk 的时间起点/时长（ms），供步骤5 锚定切片 */
               startMs: p.startMs,
               durationMs: p.durationMs,
+              /** 🎙️ 原声保留段判别信息透传：缺失时 Normalizer 会把原声段误判为解说段，
+               *  写后显示成带引号的普通文案且无「原声保留」标签（须重进才恢复）。 */
+              type: p.type,
+              keepOriginalAudio: p.keepOriginalAudio === true,
+              audioSource: p.audioSource,
+              /** 原始顺序号：非原声段断句后与原声段按此合并，保持与生成顺序一致 */
+              __order: idx,
             };
           });
+          // 🎙️ 分离原声段：原声段整段保留（断句会破坏原台词定位），仅解说段走断句器，再按 __order 合并
+          const originalAudioPara = rawParagraphs.filter(
+            (p: any) => p.type === 'original_audio' || p.keepOriginalAudio || p.audioSource,
+          );
+          const narrationOnlyPara = rawParagraphs.filter(
+            (p: any) => !(p.type === 'original_audio' || p.keepOriginalAudio || p.audioSource),
+          );
+          const mergedPara = [...breakLongParagraphs(narrationOnlyPara), ...originalAudioPara]
+            .sort((a: any, b: any) => (a.__order ?? 0) - (b.__order ?? 0));
           // 爆破切分器拆分超长段落后，统一过 Normalizer 净化为判别联合契约
           // （补齐 type / 毫秒时间轴，editing 布尔由 Normalizer narration 分支透传保留）
-          const newParagraphs = breakLongParagraphs(rawParagraphs).map(
+          const newParagraphs = mergedPara.map(
             (p) => normalizeScriptParagraph({ ...p, editing: false })
           );
           const diffs = diffParagraphs(step3State.scriptParagraphs, newParagraphs);

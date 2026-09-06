@@ -234,10 +234,8 @@ export class ProjectRepository {
     }
 
     const rawMediaRows = this.db.prepare(PROJECT_SQL.GET_ALL_MEDIA).all({ projectId });
-    console.log(`[DEBUG][Repo] projectId=${projectId}, rawMediaRows count=${rawMediaRows.length}`);
-    if (rawMediaRows.length > 0) {
-      console.log(`[DEBUG][Repo] first raw row:`, JSON.stringify(rawMediaRows[0]));
-    }
+    // 🔧 只记条数，不整行 dump 媒体行（rawMediaRows[0] 含 frames/embedding 高维数组，刷屏无诊断价值）
+    AppLogger.debug('Repo', `[DEBUG][Repo] projectId=${projectId}, rawMediaRows count=${rawMediaRows.length}`);
 
     let mediaItems = rawMediaRows.map((m: any) => ({
       id: m.id, name: m.name, type: m.type, filePath: m.file_path, coverPath: m.cover_path,
@@ -249,7 +247,7 @@ export class ProjectRepository {
       // 🎬 帧真实时间戳（源坐标，与 frames 顺序对齐）：step2 优先读取真实时间轴，避免 estimatedInterval 估算错位
       framesTimeMs: m.frames_time_ms ? JSON.parse(m.frames_time_ms) : undefined
     }));
-    console.log(`[DEBUG][Repo] mapped mediaItems count=${mediaItems.length}`);
+    AppLogger.debug('Repo', `[DEBUG][Repo] mapped mediaItems count=${mediaItems.length}`);
 
     // 💥 关键修复：DB 中的数据（管线最新结果）优先于 metadata 中的旧数据
     // metadata 中的 mediaItems 可能包含过时的 frames（如旧策略的 211 帧），

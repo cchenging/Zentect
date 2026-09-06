@@ -408,6 +408,42 @@ export class AIDaemon {
     }
   }
 
+  /** 🔧 KM 真实进度轮询（长任务在途期间读取）：daemon 侧 KM 求解循环用 _report_km_progress
+   *  按阶段写入 {progress[0,1], stage}，Node 轮询本端点，把相对刻度映射到前端 60~80 UI 区间，
+   *  避免进度条卡死在 60% 后突跳 100%（进度造假）。
+   *  纯 GET、2 秒超时、不走并发信号量（轮询频率低，不参与 GIL 竞争）。
+   *  轮询失败返回 null，SemanticAnalyzeStrategy 侧视为"暂未推进"，保持当前进度即可——这是
+   *  体验辅助路径，失败静默不影响主 KM 求解（正向干扰总线信号，而非防御性兜底掩盖求解错误）。 */
+  public async getKmProgress(taskId: string): Promise<{ progress: number; stage: string; results?: any[] } | null> {
+    if (!taskId) return null;
+    try {
+      const controller = new AbortController();
+      /** 🔧 超时 2s→5s：daemon 在 CLIP 重编码等重计算期间，HTTP handler 受 GIL 争用响应变慢，
+       *  2s 超时会频繁 abort（日志中 ConnectionAbortedError 即此），5s 显著降低误杀率。 */
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(
+        `http://127.0.0.1:${this.port}/api/solver/km_progress?task_id=${encodeURIComponent(taskId)}`,
+        { method: 'GET', signal: controller.signal },
+      );
+      clearTimeout(timeoutId);
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data?.found && typeof data.progress === 'number') {
+        /** 🃏 步骤5 卡片流式：daemon 每求解完一个时序块把该块新增的匹配结果累积进 pending，
+         *  Node 轮询时作为增量 results 返回（取走即弹出），前端据此逐个渲染卡片。 */
+        const streamResults = Array.isArray(data.results) ? data.results : [];
+        return {
+          progress: data.progress,
+          stage: data.stage || '',
+          ...(streamResults.length > 0 ? { results: streamResults } : {}),
+        };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   /** 快速健康检查 (3秒超时)，用于重试前确认 daemon 存活。
    *  函数级中文注释：使用 healthPort 优先 URL；若 /health 返回 loading 视为"存活"（正在加载权重），
    *  仅 HTTP 层失败（超时/ECONNREFUSED）才返回 false，避免 loading 期间触发不必要重启。 */
