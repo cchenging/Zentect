@@ -400,11 +400,35 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
    *     角色锚定、原声台词、视觉上下文（keyAction/情绪/氛围/运镜/冲突/主体/交互/场景分类）
    * 纯数据变换，不改变语义信息完整性；阶段A/B 共用，防两处 prompt 漂移。
    */
-  private static slimContextChunks(chunks: any[]): any[] {
+  private static slimContextChunks(chunks: any[], keyTurns?: Array<{ chunkId?: string; turn?: string }>): any[] {
+    // 🎯 剧情坐标注入（2026-09-06）：把阶段A 产出的 keyTurns（转折点）按 chunkId 建立映射，
+    //   按时间序遍历 chunks，维护"最近的前置转折点"，给每个 chunk 附加 plotBeat 字段。
+    //   LLM 写每段解说时能直接看到"这段在推进哪个转折"，不用自己猜剧情坐标（贴合剧情主线的实质优化）。
+    //   容错：chunkId 精确匹配 + 前缀匹配（microChunks 会把 chunk_001 拆成 chunk_001_1，前缀命中父 chunk 的转折点）。
+    const turnByChunkId = new Map<string, string>();
+    for (const t of (Array.isArray(keyTurns) ? keyTurns : [])) {
+      const cid = String(t?.chunkId || '').trim();
+      const turn = String(t?.turn || '').trim();
+      if (cid && turn) turnByChunkId.set(cid, turn);
+    }
+    let currentBeat = '';
     return (chunks || []).map((c: any) => {
+      const cid = String(c?.chunkId || '');
+      if (cid) {
+        if (turnByChunkId.has(cid)) {
+          currentBeat = turnByChunkId.get(cid)!;
+        } else {
+          // 前缀匹配容错：chunk_001_1 → 命中 chunk_001 的转折点
+          for (const [k, v] of turnByChunkId) {
+            if (cid.startsWith(k)) { currentBeat = v; break; }
+          }
+        }
+      }
       const v = c?.visualContext || {};
       return {
         chunkId: c.chunkId,
+        // 🎯 剧情坐标：该 chunk 最近的剧情转折点（无转折点时为 undefined，不占 token）
+        plotBeat: currentBeat || undefined,
         timeRange: c.timeRange,
         durationSec: c.durationSec,
         anchoredCharacters: Array.isArray(c.anchoredCharacters) && c.anchoredCharacters.length > 0 ? c.anchoredCharacters : undefined,
@@ -1027,7 +1051,8 @@ ${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}
   "logline": "一句话故事梗概（谁 + 想做什么 + 阻碍 + 结果）",
   "arc": ["开场钩子", "铺垫", "冲突升级", "高潮", "结局"],
   "characterMotives": { "角色名": "该角色的目标与动机（无角色则空对象）" },
-  "keyTurns": [{ "chunkId": "片段流中的 chunkId", "turn": "剧情转折点描述" }]${isTwoPhase ? `,
+  "keyTurns": [{ "chunkId": "片段流中的 chunkId", "turn": "剧情转折点描述" }],
+  "hasClearEnding": true/false（本片剧情是否有明确结局：主角目标是否达成或彻底失败、核心冲突是否解决；开放式/留白/悬念结尾填 false）${isTwoPhase ? `,
   "chapters": [
     { "index": 1, "title": "本幕标题（10字内）", "summary": "本幕剧情概要（60字内：发生了什么+人物目标/转折）" }
     // ……逐章列出，chapters 数组长度必须等于 ${chapterGroups.length}，index 从 1 开始连续编号
@@ -1103,6 +1128,11 @@ ${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}
       narrativePerspective: params.narrativePerspective,
       /** 两阶段每章注入的本章配额字数；null 表示单阶段全局模式 */
       chapterQuotaWords: null as number | null,
+      /** 🎬 结尾收束：仅单阶段 + 剧情理解判定"有明确结局"时注入（两阶段由第五幕 actDirective 承担收尾，不重复；
+       * 开放式/留白/悬念结尾不注入，避免强行升华变尬） */
+      endingDirective: !isTwoPhase && plotOutline?.hasClearEnding === true
+        ? '本片剧情有明确结局。最后 1~2 段解说须完成结局收束：点破结局的因果/代价/主题升华，让观众看到"故事讲完了"的完整闭环；严禁以悬念留白、开放式收尾作结。'
+        : undefined,
     };
     const systemPrompt = this.buildSystemPrompt(promptBaseArgs);
 
@@ -1311,7 +1341,7 @@ ${roleMapLines.join('\n')}
       const userPrompt =
         `【多模态上下文片段流（ContextChunk）】：` +
         '\n\n' +
-        `${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}` +
+        `${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks, plotOutline?.keyTurns), null, 2)}` +
         (roleBlock ? '\n\n' + roleBlock : '') +
         `\n\n【附加指令】：${input.customPrompt || '自由发挥'}` +
         '\n\n请直接输出 JSON 数组：';
@@ -1414,7 +1444,7 @@ ${roleMapLines.join('\n')}
         if (chapterPrevTail) {
           parts.push(`【上一章结尾衔接】：上一章最后一句为「…${chapterPrevTail}」。本章第一段解说须自然承接上述剧情与语气。`);
         }
-        parts.push(`【多模态上下文片段流（ContextChunk）——仅限本章 chunk ${group[0]?.chunkId ?? ''} ~ ${group[group.length - 1]?.chunkId ?? ''}】：\n\n${JSON.stringify(ScriptGenStrategy.slimContextChunks(group), null, 2)}`);
+        parts.push(`【多模态上下文片段流（ContextChunk）——仅限本章 chunk ${group[0]?.chunkId ?? ''} ~ ${group[group.length - 1]?.chunkId ?? ''}】：\n\n${JSON.stringify(ScriptGenStrategy.slimContextChunks(group, plotOutline?.keyTurns), null, 2)}`);
         if (roleBlock) parts.push(roleBlock);
         parts.push(`【附加指令】：${input.customPrompt || '自由发挥'}\n\n请直接输出 JSON 数组：`);
         /** 段间以双换行拼合 */
@@ -1669,6 +1699,8 @@ ${roleMapLines.join('\n')}
     chapterQuotaWords: number | null;
     /** 🎭 五幕戏剧任务指令（两阶段逐章注入第 k/K 幕的任务与张力要求；单阶段/null 不注入） */
     actDirective?: string;
+    /** 🎬 结尾收束指令（仅当剧情有明确结局时注入：结尾段完成因果闭环/主题升华，不做悬念留白） */
+    endingDirective?: string;
   }): string {
     // 风格词库：用户未选风格时回退默认
     const styleInstruction = STYLE_PROMPTS[args.styleName] || STYLE_PROMPTS['爆款短视频'];
@@ -1720,7 +1752,7 @@ ${roleMapLines.join('\n')}
 请据此撰写一份"贴合剧情主线、在关键节点给出合理解读"的高吸引力解说文案。
 
 ## 🎬 剧情思维（最高优先级，先于一切形式规则）
-1. **贴剧情，不贴画面**：解说不是画面翻译！每一段解说必须回答"这段在剧情中推进了什么"（因果/转折/人物弧线），段与段之间承上启下、逻辑连贯。
+1. **贴剧情，不贴画面**：解说不是画面翻译！每一段解说必须回答"这段在剧情中推进了什么"（因果/转折/人物弧线），段与段之间承上启下、逻辑连贯。撰写前先对照下方【全局剧情大纲】的 arc（剧情弧线）与 keyTurns（转折点），明确本段处于弧线哪一阶段、在推进哪个转折——解说须紧扣该阶段剧情任务，不得脱离主线自说自话。
 2. **深层解读（三段式结构，非浅层复述）**：每 3~5 段至少 1 段是有深度的解读——剖析人物动机、前后呼应、主题升华或现实隐喻。解读须按"**观点句→画面/台词证据→上升寓意**"三段结构展开：
    - 观点句：直接点出你想让观众接收的判断（如"这一瞬，崔哥才真正决定赌上全部"）；
    - 证据：从已确认的画面/台词事实勾连（严禁编造剧情，证据必须本段之前出现过）；
@@ -1738,6 +1770,9 @@ ${hookInstruction}
 
 ${args.actDirective ? `## 🎭 本幕戏剧任务（Five-Act Directive）
 ${args.actDirective}` : ''}
+
+${args.endingDirective ? `## 🎬 结尾收束（Ending Closure）
+${args.endingDirective}` : ''}
 
 ${args.chapterQuotaWords !== null ? `## 📏 本章硬性字数配额（Hard Quota）
 本请求只负责撰写整片中的其中一个章节解说：解说词净字数必须控制在 **≤ ${args.chapterQuotaWords} 字**（keepOriginalAudio 原声段不计入）。这是全局预算分摊到你这一章的硬性配额，宁可稍少、严禁超发。` : args.targetSec !== null ? `## 📏 目标解说总时长（总量约束，与"解说占比"独立）

@@ -131,6 +131,7 @@ const bgmBadgeSuccess = `${bgmBadgeBase} bg-accent-green/15 text-accent-green bo
 const bgmBadgeWarm = `${bgmBadgeBase} bg-amber-500/15 text-amber-400 border border-amber-500/30`;
 const bgmBadgeCyan = `${bgmBadgeBase} bg-cyan-500/10 text-[#00e5ff] border border-cyan-500/30`;
 const bgmBadgeMuted = `${bgmBadgeBase} bg-bg-secondary/70 text-muted-foreground border border-border`;
+
 /** 情绪基调枚举 → 中文徽章文案（hero 横幅情绪徽章） */
 const EMOTION_TONE_ZH: Record<string, string> = {
   neutral: "中性", emotional: "情感", suspense: "悬疑", epic: "史诗",
@@ -569,7 +570,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   }, [clearCacheArmed, onClearCacheAndRematch]);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-4 flex-1 min-h-0">
       {/* 🎵 BGM 设置面板 · 按 step5-bgm-prototype 原型 1:1 还原 */}
       <div className="glass-card-sm p-4 flex flex-col gap-4">
         {/* 面板顶部：标题 + 视频信息 */}
@@ -959,10 +960,10 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
         </div>
       )}
       {matchResults.length > 0 ? (
-        <>
+        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2">
           <DragReorderList items={matchResults} getItemId={(m) => m.id} onReorder={onReorder}
             renderItem={(m, index, isDragging) => (
-              <div className={`w-full glass-card-sm p-3 flex flex-col gap-2 transition-all border-l-4 ${isDragging ? "opacity-50" : ""} ${m.confirmed ? "border-l-accent-green" : m.score >= 0.85 ? "border-l-accent-green" : m.score >= 0.6 ? "border-l-warning" : "border-l-accent-rose"}`}>
+              <div className={`w-full glass-card-sm p-3 flex flex-col gap-2 transition-all border-l-4 ${isDragging ? "opacity-50" : ""} ${m.confirmed ? "border-l-accent-green" : m.degraded ? "border-l-warning" : m.score >= 0.8 ? "border-l-accent-green" : m.score >= 0.5 ? "border-l-warning" : "border-l-accent-rose"}`}>
                 <div className="flex gap-3">
                   {/* 排列序号：取自 DragReorderList 实时 index（拖拽重排即更新），独立列不随内容伸缩 */}
                   <div className="w-7 h-[90px] flex items-center justify-center shrink-0 text-muted-foreground/70 font-mono text-sm select-none">{index + 1}</div>
@@ -977,6 +978,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                       <span className="text-[13px] font-medium break-words min-w-0 flex items-start gap-1.5" title={m.id}>
                         {m.text || m.id}
                         {m.keepOriginalAudio && <Badge variant="warning" className="text-[11px] shrink-0">原声</Badge>}
+                        {m.degraded && <Badge variant="warning" className="text-[11px] shrink-0" title="该段候选不足，已自动选最相关镜头，建议人工确认或替换">待确认</Badge>}
                       </span>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {m.text && (
@@ -986,7 +988,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                             {copiedId === m.id ? "已复制" : "复制"}
                           </button>
                         )}
-                        <Badge variant={m.score > 0.8 ? "success" : m.score > 0.5 ? "warning" : "danger"} className="text-[11px] shrink-0">{Math.round(m.score * 100)}%</Badge>
+                        <Badge variant={m.score > 0.8 ? "success" : m.score > 0.5 ? "warning" : "danger"} className="text-[11px] shrink-0" title="匹配度">{Math.round((m.score ?? 0) * 100)}%</Badge>
                       </div>
                     </div>
                     <div className="text-[12px] text-muted-foreground flex items-center gap-2">
@@ -1015,7 +1017,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
             )}
           />
           <div className="text-[12px] text-muted-foreground text-center">拖拽卡片可调整顺序，点击预览可同步播放画面与配音</div>
-        </>
+        </div>
       ) : (
         <EmptyState title="智能匹配待生成" description="算法将自动结合 BGM 节奏、台词时长、通过全局搜索匹配算法获取动态视频片段" iconType="media" size="md" className="glass-card-sm" />
       )}
@@ -1065,7 +1067,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
               <span className="text-[14px] font-semibold flex items-center gap-2">
                 成品预览
                 <Badge variant={previewMatch.score > 0.8 ? "success" : previewMatch.score > 0.5 ? "warning" : "danger"} className="text-[12px]">
-                  匹配度 {Math.round(previewMatch.score * 100)}%
+                  匹配度 {Math.round((previewMatch.score ?? 0) * 100)}%
                 </Badge>
               </span>
               <button onClick={closePreview} className="text-muted-foreground hover:text-foreground cursor-pointer"><X size={18} /></button>

@@ -573,7 +573,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  供 daemon 做"文案情绪↔画面情绪"匹配（文案段落 emotion 来自步骤3 LLM 生成，帧 emotion 来自步骤2 VLM 结构化输出）。
      *  🎬 P0 OP/ED：先平移 frameDescs.timeMs -= trimStartMs，再删除 OP/ED 区间外的帧描述，
      *     保证帧时间轴与 chunks（已平移）完全对齐，避免双指针聚合空归。 */
-    const frameDescsRaw: { timeMs: number; description: string; emotion?: string; shotType?: string; characters?: string[] }[] = collectFrameDescriptions(task).map((f: any) => {
+    const frameDescsRaw: { timeMs: number; description: string; emotion?: string; shotType?: string; cameraMovement?: string; characters?: string[] }[] = collectFrameDescriptions(task).map((f: any) => {
       /** 合并角色名：VLM downstream.characters（画面中实际看到的） ∪ 人脸识别帧级锚定 f.characters
        *  双重来源取并集去重，避免任何一方缺失导致角色维度漏数据。
        *  无效占位值（"无/路人/群众"等）在步骤2 normalizeDownstreamFields 中已转 undefined，
@@ -603,6 +603,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
          *  （VisionExtractStrategy.normalizeDownstreamFields 从 jsonItem.shotType 提取）。
          *  兜底 f.shotType 以防万一有外部直接注入的老数据结构。 */
         shotType: f?.downstream?.shotType || f.shotType,
+        /** 🎥 运镜方式（固定/推/拉/摇/移）：downstream.cameraMovement，兜底顶层 cameraMovement（P1 运镜衔接） */
+        cameraMovement: f?.downstream?.cameraMovement || f.cameraMovement,
         characters: mergedRoles.size > 0 ? Array.from(mergedRoles) : undefined,
       };
     });
@@ -633,6 +635,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       const descOrder: string[] = [];
       const emotionCounts = new Map<string, number>();
       const shotTypeCounts = new Map<string, number>();
+      const cameraMovementCounts = new Map<string, number>();
       const roleCounts = new Map<string, number>();
 
       /** 将一段 VLM 帧加入时间窗聚合（引用计数 +1，首次出现时写入顺序表） */
@@ -647,6 +650,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (emo) emotionCounts.set(emo, (emotionCounts.get(emo) || 0) + 1);
         const st = (f.shotType || '').trim();
         if (st) shotTypeCounts.set(st, (shotTypeCounts.get(st) || 0) + 1);
+        const cm = (f.cameraMovement || '').trim();
+        if (cm) cameraMovementCounts.set(cm, (cameraMovementCounts.get(cm) || 0) + 1);
         for (const r of (f.characters || [])) {
           if (typeof r === 'string' && r.trim()) {
             const key = r.trim();
@@ -677,6 +682,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (st) {
           const c = (shotTypeCounts.get(st) || 0) - 1;
           if (c <= 0) shotTypeCounts.delete(st); else shotTypeCounts.set(st, c);
+        }
+        const cm = (f.cameraMovement || '').trim();
+        if (cm) {
+          const c = (cameraMovementCounts.get(cm) || 0) - 1;
+          if (c <= 0) cameraMovementCounts.delete(cm); else cameraMovementCounts.set(cm, c);
         }
         for (const r of (f.characters || [])) {
           if (typeof r === 'string' && r.trim()) {
@@ -726,6 +736,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (shotTypeCounts.size > 0) {
           chunk.shotType = [...shotTypeCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
         }
+        if (cameraMovementCounts.size > 0) {
+          chunk.cameraMovement = [...cameraMovementCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        }
         if (roleCounts.size > 0) chunk.characters = [...roleCounts.keys()];
         /** 🔧 Phase 0 终极兜底（聚合级，对老数据也生效）：
          *  若经过 frames 聚合后，chunk.shotType/emotion/characters 还是空（典型 8月12日项目诊断），
@@ -741,6 +754,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       const withDesc = chunks.filter((c) => (c.description || '').trim().length > 0).length;
       const withEmotion = chunks.filter((c) => (c.emotion || '').trim().length > 0).length;
       const withShotType = chunks.filter((c) => (c.shotType || '').trim().length > 0).length;
+      const withCameraMovement = chunks.filter((c) => (c.cameraMovement || '').trim().length > 0).length;
       const withCharacters = chunks.filter((c) => Array.isArray(c.characters) && c.characters.length > 0).length;
       const withKeywords = chunks.filter((c) => Array.isArray(c.keywords) && c.keywords.length > 0).length;
       AppLogger.info(LOG_TAGS.AI_AGENT,
@@ -748,6 +762,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         `${withDesc}/${chunks.length} 带画面描述，` +
         `${withEmotion}/${chunks.length} 带情绪，` +
         `${withShotType}/${chunks.length} 带景别shotType，` +
+        `${withCameraMovement}/${chunks.length} 带运镜cameraMovement，` +
         `${withCharacters}/${chunks.length} 带角色characters，` +
         `${withKeywords}/${chunks.length} 带关键词keywords`);
       /** 🎬 阶段 B：把镜头级语义字段 inherit 到匹配候选级 matchSegments。
@@ -765,6 +780,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           if (parent.description) seg.description = parent.description;
           if (parent.emotion) seg.emotion = parent.emotion;
           if (parent.shotType) seg.shotType = parent.shotType;
+          if (parent.cameraMovement) seg.cameraMovement = parent.cameraMovement;
           if (Array.isArray(parent.characters) && parent.characters.length > 0) seg.characters = parent.characters;
           if (Array.isArray(parent.keywords) && parent.keywords.length > 0) seg.keywords = parent.keywords;
         }
@@ -2207,6 +2223,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
          *  ASR 锚定+文本定位均失败而回退混入 KM 的原声段同样强制 1.0（用户反馈：原声为什么还要变速） */
         appliedSpeedFactor: isOriginal ? 1.0 : (matched.appliedSpeedFactor || 1.0),
         confirmed: isOriginal ? true : (matched.confidence || 0) >= 0.88,
+        /** 🎯 候选不足降级警示（2026-09-06）：daemon 候选不足降级到全池时透出，前端据此显示"兜底匹配"警示 */
+        degraded: matched.degraded === true,
       };
     }
     return {
@@ -2225,6 +2243,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       videoTimelineEndMs: 0,
       appliedSpeedFactor: 1.0,
       confirmed: false,
+      /** 未匹配（非降级）不标警示 */
+      degraded: false,
     };
   }
 }

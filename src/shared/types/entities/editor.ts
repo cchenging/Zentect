@@ -260,6 +260,8 @@ export interface MatchResult {
   videoTimelineStartMs?: number;
   /** 该镜头在最终合成时间线上的绝对终点（ms），用于预览定位画面 */
   videoTimelineEndMs?: number;
+  /** 🎯 候选不足降级警示（2026-09-06）：daemon 候选不足降级到全池时置 true，前端显示"兜底匹配"警示 */
+  degraded?: boolean;
 }
 
 /** 媒体项 */

@@ -707,7 +707,7 @@ def _compute_combined_score(sem_score: float, duration_penalty: float,
     让前端调参真正生效，不再依赖硬编码。
     """
     _default_weights = {
-        'sem': 0.68, 'emotion': 0.08, 'duration': 0.15, 'role': 0.09,
+        'sem': 0.71, 'emotion': 0.05, 'duration': 0.15, 'role': 0.09,
     }
     w = {key: float(weights.get(key, _default_weights[key]))
          for key in _default_weights} if isinstance(weights, dict) else dict(_default_weights)
@@ -716,6 +716,17 @@ def _compute_combined_score(sem_score: float, duration_penalty: float,
         w = {key: value / total for key, value in w.items()}
     else:
         w = dict(_default_weights)
+    # 🎯 动态权重归一（2026-09-06 根治匹配度天花板 83~87%）：
+    #   情绪/角色维度为中性 0.5（该维度无信息：文案或切片缺失情绪/角色名单）时，
+    #   不再让中性分 0.5 硬性拉低总分，而是把该维度权重让渡给语义主依据。
+    #   让渡仅做权重搬运（sem += emotion/role，总和恒为 1.0），不改候选排序、不伪造信息；
+    #   真正"有情绪/角色信号"（≠0.5）的维度保留原权重参与打分，信号仍在。
+    if abs(emotion_score - 0.5) < 1e-6:
+        w['sem'] += w['emotion']
+        w['emotion'] = 0.0
+    if abs(role_score - 0.5) < 1e-6:
+        w['sem'] += w['role']
+        w['role'] = 0.0
     return w['sem'] * sem_score + w['emotion'] * emotion_score \
         + w['duration'] * duration_penalty + w['role'] * role_score
 
@@ -815,7 +826,7 @@ def _try_merge_contiguous_segs(ci, video_chunks, used_chunks, target_dur_ms):
       仅向后（|next.startMs − merged_end| ≤ 100ms）、未占用、链式连续，最多额外桥接
       MAX_EXTRA_SHOTS 个镜头；物理相邻段若已被占用则立即停桥（不可跳过——跳过会造成时间轴重叠）。
       因"占用/断言失败/拼过头"退出的不桥接（时间轴对不上），仅"父镜头耗尽"才桥接。
-    - 拼接验收：合并变速比落入 [0.80, 1.20] 即视为补足时长（轻微越界交由 speed clamp 0.93~1.08 兜底；
+    - 拼接验收：合并变速比落入 [0.80, 1.20] 即视为补足时长（轻微越界交由 speed clamp 0.97~1.03 兜底；
       dur score 公式对 ratio>1.0 本就宽松保底 0.70；真实牌匾 seg0+seg1=6000ms vs 语音 5125ms ≈1.17 可验收）。
     - 拼接占用：参与拼接的兄弟 seg 索引由调用方写入 global_used_chunks，防止后续 query 重复抢占造成时间轴重叠。
     返回 None 表示无可用拼接；否则返回 {seg_indices, seg_ids, total_dur, chunk}
@@ -867,7 +878,7 @@ def _try_merge_contiguous_segs(ci, video_chunks, used_chunks, target_dur_ms):
             best_merge = (list(seg_indices), list(seg_ids), merged_end)
             break
         if 0.80 <= speed < WINDOWIZE_COVER_MIN:
-            # 轻微放慢仍可（变速 clamp 0.93~1.08 补差），记录为后备但继续拼到覆盖
+            # 轻微放慢仍可（变速 clamp 0.97~1.03 补差），记录为后备但继续拼到覆盖
             best_merge = (list(seg_indices), list(seg_ids), merged_end)
         if speed > 1.35:
             break  # 严重拼过头：采用最近后备或放弃
@@ -954,9 +965,6 @@ _KEYWORD_BOOST_RULES = [
     # —— 人物主体类
     (r'人物|老人|女子|男子|小孩|角色|身影|掌柜|伙计',
      r'人物|老人|女子|男子|小孩|身影|掌柜|伙计|佣人|书生',              0.06),
-    # —— 景别类
-    (r'特写|近景|中景|全景|远景|航拍',
-     r'特写|近景|中景|全景|远景|航拍|大特写|极特写|大远景|推镜|拉镜',   0.06),
 ]
 # 预编译正则，避免循环里反复编译
 import re as _re
@@ -1315,6 +1323,19 @@ def _shot_type_level(shot_type: str):
     return None
 
 
+def _is_reusable_broll(chunk: dict) -> bool:
+    """🎬 空镜/意境镜头可复用判定（2026-09-06）：远景/大远景/空镜/航拍等无具体叙事主体的镜头，
+    允许多段文案复用——抒情/哲思/情绪过渡段落共用同一代表性空镜是剪辑常规手法（B-Roll）。
+    判定：shotType 景别等级=5（远景/大远景/空镜/航拍）或文本含"空镜"。
+    叙事动作/对话镜头（含具体角色/人脸/明确动作）严格排他，不在此列，防"动作复读"回归。"""
+    st = (chunk.get('shotType') or '').strip()
+    if not st:
+        return False
+    if '空镜' in st:
+        return True
+    return _shot_type_level(st) == 5
+
+
 def _color_histogram_distance(hist_a, hist_b) -> float:
     """两切片 HSV 色相直方图 L1 距离归一化到 0~1（0 完全一致，1 完全不同）。
     缺色调特征时给中性 0.5（与 P0 情绪掩码同哲学：缺失不参与惩罚也不加分）。"""
@@ -1325,16 +1346,83 @@ def _color_histogram_distance(hist_a, hist_b) -> float:
         np.array(hist_a, dtype=np.float64) - np.array(hist_b, dtype=np.float64)))) / 2.0)
 
 
+def _motion_score_distance(prev_chunk: dict, next_chunk: dict) -> float:
+    """🎬 P1 动静衔接：相邻切片运动强度差异归一化到 0~1（0 同动/同静，1 剧烈动静跳变）。
+    缺 motionScore 时给中性 0.5（缺失不参与惩罚也不加分）。"""
+    mp = prev_chunk.get('motionScore')
+    mn = next_chunk.get('motionScore')
+    if mp is None or mn is None:
+        return 0.5
+    try:
+        return min(1.0, abs(float(mp) - float(mn)))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _camera_movement_distance(prev_chunk: dict, next_chunk: dict) -> float:
+    """🎬 P1 运镜衔接：相邻切片运镜突变惩罚（0 同向顺承 / 0.7 异向突变 / 0.5 缺失中性）。
+    运镜枚举固定/推/拉/摇/移，同向=顺承自然衔接，异向=视觉跳跃突兀。"""
+    cp = (prev_chunk.get('cameraMovement') or '').strip()
+    cn = (next_chunk.get('cameraMovement') or '').strip()
+    if not cp or not cn:
+        return 0.5
+    return 0.0 if cp == cn else 0.7
+
+
+# 🎬 P1 运镜匹配关键词表：query 画面意图(visualIntent)中「运镜词+镜」或「/运镜」形式 → 运镜枚举
+_CAMERA_MOVEMENT_QUERY_HINTS = (
+    ('推', '推'), ('拉', '拉'), ('摇', '摇'), ('移', '移'),
+)
+
+
+def _camera_movement_match_boost(query_visual: str, chunk_camera_movement: str) -> float:
+    """🎬 P1 运镜匹配加成：query 画面意图明确要求某运镜时，切片运镜命中则 +0.03（轻量结构化加分）。
+    检测 query 侧「运镜词+镜」或「/运镜」形式（如「推镜头」「/推」），避免单字误伤；绝不压过语义主依据。"""
+    if not query_visual or not chunk_camera_movement:
+        return 0.0
+    qv = (query_visual or '').strip()
+    cc = (chunk_camera_movement or '').strip()
+    if not qv or not cc:
+        return 0.0
+    for hint, cam in _CAMERA_MOVEMENT_QUERY_HINTS:
+        if (hint + '镜') in qv or ('/' + hint) in qv:
+            if cc == cam:
+                return 0.03
+    return 0.0
+
+
+def _structured_shot_type_match_boost(query_visual: str, chunk_shot_type: str) -> float:
+    """🎬 P3 景别精确匹配（2026-09-06）：query 画面意图要求的景别层级 == 切片 shotType 层级 → +0.06。
+    突破 CLIP 对景别词不敏感的天花板；不同层级不加分（避免粗匹配虚高）。
+    层级复用 SHOT_TYPE_LEVELS / _shot_type_level（1特写~5远景），同层级词互认。"""
+    if not query_visual or not chunk_shot_type:
+        return 0.0
+    qv = query_visual or ''
+    q_level = None
+    for kw, lv in SHOT_TYPE_LEVELS.items():
+        if kw in qv:
+            q_level = lv
+            break
+    c_level = _shot_type_level(chunk_shot_type)
+    if q_level is not None and c_level is not None and q_level == c_level:
+        return 0.06
+    return 0.0
+
+
 def _continuity_penalty(prev_chunk: dict, next_chunk: dict) -> float:
     """
     🎬 P1 衔接流畅性惩罚（0~1，越大越突兀）：
-    - 色调：相邻切片 HSV 色相直方图差异（权重 0.4）
-    - 景别：特写↔全景 大跨级跳跃（权重 0.3）
-    - 情绪：相邻切片情绪突变（权重 0.3，复用 P0 情绪相容度）
+    - 色调：相邻切片 HSV 色相直方图差异（权重 0.25）
+    - 动静：相邻切片运动强度差异（权重 0.25，P1 动接动/静接静）
+    - 运镜：相邻切片运镜突变（权重 0.20，P1 运镜衔接）
+    - 景别：特写↔全景 大跨级跳跃（权重 0.15）
+    - 情绪：相邻切片情绪突变（权重 0.15，复用 P0 情绪相容度）
     缺某项特征时该项给 0.5 中性，不参与惩罚也不加分。
     """
     hist_dist = _color_histogram_distance(
         prev_chunk.get('colorHistogram'), next_chunk.get('colorHistogram'))
+    motion_dist = _motion_score_distance(prev_chunk, next_chunk)
+    camera_dist = _camera_movement_distance(prev_chunk, next_chunk)
     level_prev = _shot_type_level(prev_chunk.get('shotType'))
     level_next = _shot_type_level(next_chunk.get('shotType'))
     if level_prev is not None and level_next is not None:
@@ -1343,7 +1431,8 @@ def _continuity_penalty(prev_chunk: dict, next_chunk: dict) -> float:
         shot_dist = 0.5
     emotion_dist = 1.0 - _emotion_compatibility(
         prev_chunk.get('emotion'), next_chunk.get('emotion'))
-    return 0.4 * hist_dist + 0.3 * shot_dist + 0.3 * emotion_dist
+    return (0.25 * hist_dist + 0.25 * motion_dist + 0.20 * camera_dist
+            + 0.15 * shot_dist + 0.15 * emotion_dist)
 
 
 def _apply_continuity_rerank(results: list, queries, video_chunks: list,
@@ -1507,12 +1596,12 @@ def _apply_continuity_rerank(results: list, queries, video_chunks: list,
         cur_r["chunkData"] = best_cand_chunk
         new_score, _ = _score(best_cand_ci)
         cur_r["confidence"] = round(new_score, 4)
-        # 变速参考：切片时长 / 成品时间段（保持 KM 的 0.93~1.08 限制，剪辑师 ±8% 准则）
+        # 变速参考：切片时长 / 成品时间段（保持 KM 的 0.97~1.03 限制，剪辑师 ±3% 准则）
         final_dur = (cur_r.get("videoTimelineEndMs") or 0) - (cur_r.get("videoTimelineStartMs") or 0)
         cand_vdur = best_cand_chunk.get("durationMs", 0)
         if final_dur > 0 and cand_vdur > 0:
             spd = cand_vdur / final_dur
-            cur_r["appliedSpeedFactor"] = round(max(0.93, min(1.08, spd)), 3)
+            cur_r["appliedSpeedFactor"] = round(max(0.97, min(1.03, spd)), 3)
         reranked += 1
         # 🎬 决策 #7：替换后重置游程——新切片与前段若仍同景别则游程从 2 起算（相邻对口径），
         #   否则从 1 起算；与循环头推进共用同一口径，防止陈旧基准误触发
@@ -1609,10 +1698,19 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
 
     original_texts = [q.text for q in req.queries]
     texts = list(original_texts)
-    # 🎯 P3 画面意图优先：查询侧语义文本用 visualIntent（画面语言），无则回退解说词文本。
-    # 解说词是抽象解读、画面是具体视觉，跨空间 CLIP 图文匹配天然错位；
-    # visualIntent 与切片描述同属"画面语言"，文本↔文本匹配更准。
-    query_texts = [q.visualIntent or q.text for q in req.queries]
+    # 🎯 2026-09-06 贴解说词：语义文本融合「解说词 text」+「画面意图 visualIntent」双通道。
+    # 旧版仅用 visualIntent（画面语言）匹配，解说词 text（文学语言）完全不参与，
+    # → 匹配偶发"画面对、文案不贴"。现拼接 text + visualIntent 一起编码：
+    #   text 匹配切片描述的情绪/意境/台词（文学语义），visualIntent 匹配画面（画面语义），
+    #   二者互补，让"匹配结果更贴解说词内容"。缺失任一侧时回退另一侧，保持旧行为。
+    query_texts = []
+    for q in req.queries:
+        vi = (q.visualIntent or '').strip()
+        t = (q.text or '').strip()
+        if vi and t and vi != t:
+            query_texts.append(f"{t} {vi}")
+        else:
+            query_texts.append(vi or t)
 
     valid_chunk_indices = []
     for i, chunk in enumerate(video_chunks):
@@ -2070,11 +2168,15 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 block_chunk_indices = _narrowed
         block_chunk_idx_list = sorted(block_chunk_indices)
 
-        if not block_queries or not block_chunk_idx_list:
-            if not block_queries:
-                dbg_block_gap_chunk += 1   # 有切片候选但无 query(多为尾部无词块)
-            elif not block_chunk_idx_list:
-                dbg_block_gap_query += 1   # 有 query 但 ±3 窗口兜不到切片(时序错位)
+        if not block_queries:
+            dbg_block_gap_chunk += 1   # 有切片候选但无 query(多为尾部无词块)
+            continue
+
+        # 🛑 回退"候选不足降级全池"（2026-09-06）：降级全池会强制匹配语义不相关的切片，
+        #    导致"4~9 段同镜头来回倒腾 + 喧闹教室配到户外"的回归。恢复"候选空 → 整块跳过"（错就错），
+        #    候选非空但不足时继续求解（padding 补零），多余 query 保持未匹配。
+        if not block_chunk_idx_list:
+            dbg_block_gap_query += 1   # 有 query 但 ±3 窗口兜不到切片(时序错位)
             continue
 
         # 🔬 KM 耗时观测：真正进入求解的块，块号+规模打点（若长时间停在同一块，即卡点）
@@ -2088,12 +2190,14 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
         # 🔧 R5 矩阵降精度 + 拒方阵（PR-2）：从源头避免 1000×1000 级别 O(n³) 超时
         #   ① 绝对规模过大（>1200）直接拒绝：KM 求解为 O(n³)，超过即认为请求不可解；
         #   ② "近全连接方阵"拒绝：短视频全落 block0 时 ±3 窗口候选≈全部切片，
-        #      local_cost 退化为 1000×1000 方阵，是既有超时主因——候选数 >512 且占全量 90% 以上即拒绝。
+        #      local_cost 退化为大矩阵，是既有超时主因。匈牙利算法复杂度 O(min(q,c)³)，
+        #      故仅当「短维也 >512」且候选占全量 90% 以上才拒绝；候选不足降级全池是「瘦长矩阵」
+        #      （query 少、候选多，min=q 小），不触发此处，避免误伤兜底路径。
         if local_n_queries > 1200 or local_n_chunks > 1200:
             raise ValueError(
                 f"[KM] R5 拒绝求解：本时序块规模过大（{local_n_queries} 段文案 × {local_n_chunks} 个候选切片，"
                 "上限 1200）。请减小输入规模或精简切片粒度后重试")
-        if local_n_chunks > 512 and local_n_chunks >= len(valid_chunk_indices) * 0.9:
+        if min(local_n_queries, local_n_chunks) > 512 and local_n_chunks >= len(valid_chunk_indices) * 0.9:
             raise ValueError(
                 f"[KM] R5 拒绝求解：代价矩阵接近全连接方阵（本块候选 {local_n_chunks}/{len(valid_chunk_indices)} "
                 "几乎等于全部切片），会退化为 O(n³) 大矩阵求解导致超时。"
@@ -2132,7 +2236,8 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 # 🔧 决策 #5：排他前移——跨块已消耗的切片在矩阵构造时直接置强惩罚（与 WINDOW_PENALTY
                 #   同通道量级），KM 求解期自动为该查询选次优，取代消费时静默丢弃；
                 #   消费时检查保留作双保险（同块合并/变速重选路径会在矩阵求解之后继续修改 global_used_chunks）。
-                if ci in global_used_chunks:
+                # 🎬 空镜/意境镜头豁免排他：抒情/过渡段可跨块复用同一空镜，不置惩罚（叙事镜头仍严格排他）。
+                if ci in global_used_chunks and not _is_reusable_broll(chunk):
                     local_cost[lqi, lci] = 5.0
                     continue
 
@@ -2159,6 +2264,15 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                     if kw_boost > 0:
                         sem_score = min(1.0, sem_score + kw_boost)
 
+                    # 🎬 P3 景别精确匹配（2026-09-06）：query 画面意图要求景别 == 切片 shotType → 加分，
+                    #    突破 CLIP 对景别词不敏感的天花板（抽象旁白分支不叠加，其语义已由景别分级抽象分取代）
+                    _shot_boost = _structured_shot_type_match_boost(
+                        getattr(q, 'visualIntent', '') or '',
+                        chunk.get('shotType') or '',
+                    )
+                    if _shot_boost > 0:
+                        sem_score = min(1.0, sem_score + _shot_boost)
+
                 duration_penalty = _compute_duration_score(audio_dur_ms, video_dur_ms)
 
                 # 🎭 P0 意境维度：文案情绪与切片情绪相容度
@@ -2180,6 +2294,11 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                         chunk.get('shotType'), chunk.get('characters'),
                         getattr(q, 'characters', None),
                         getattr(q, 'emotion', None) or '',
+                    )
+                    # 🎬 P1 运镜匹配加成：query 画面意图要求某运镜时，切片运镜命中 +0.03（轻量结构化加分）
+                    _adjust += _camera_movement_match_boost(
+                        getattr(q, 'visualIntent', '') or '',
+                        chunk.get('cameraMovement') or '',
                     )
                 combined_score = _compute_combined_score(sem_score, duration_penalty, emotion_score, role_score, weights=req.weights) + _adjust
                 local_cost[lqi, lci] = -combined_score
@@ -2204,7 +2323,7 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             ci_idx = block_chunk_idx_list[ci]
             real_ci = valid_chunk_indices[ci_idx]
 
-            if real_ci in global_used_chunks:
+            if real_ci in global_used_chunks and not _is_reusable_broll(video_chunks[real_ci]):
                 continue
             global_used_chunks.add(real_ci)
 
@@ -2252,11 +2371,11 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                     print(f"[KM] shotId={query.shotId} 素材≥目标 → 原速截尾定窗（{video_dur_ms:.0f}ms，变速 1.0，弃长尾防字幕帧）", file=sys.stderr)
 
             # 变速超限重选（⚠️ 2026-09-05 起仅剩【放慢方向】入口；放快方向已被上方"原速截尾"吸收）：
-            # 语音与素材时长不匹配（超出 0.93~1.08 变速能力，剪辑师 ±8% 准则）时，
+            # 语音与素材时长不匹配（超出 0.97~1.03 变速能力，剪辑师 ±3% 准则）时，
             # 从当前时序块候选池中重选一个"语义0.6+时长0.4联合分"最高的未使用切片，
             # 以当前切片联合分为保底基准，只有候选联合分超过当前切片才重选，
             # 避免为了时长丢弃语义更贴合的切片（纯时长贴近会牺牲画面内容）。
-            if raw_speed_factor < 0.93:
+            if raw_speed_factor < 0.97:
                 cur_sem = max(0.0, min(1.0, (float(semantic_sim[qi, chunk_rank[real_ci]]) + 1.0) / 2.0))
                 cur_chunk = video_chunks[real_ci]
                 # 🎯 修复：变速重选同样计入关键词 boost
@@ -2284,7 +2403,7 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 # 🔧 P2（2026-08-22）：素材偏短（放慢方向）时，优先尝试拼接同父连续 seg 补时长，
                 # 从根源规避变速超限，而非直接换成语义无关的"时长完美"镜头
                 merged = None
-                if raw_speed_factor < 0.93:
+                if raw_speed_factor < 0.97:
                     merged = _try_merge_contiguous_segs(real_ci, video_chunks, global_used_chunks, final_video_duration_ms)
                 if merged is not None:
                     # 拼接成功：占用全部参与 seg（含兄弟），采用拼接切片；语义同父不变，取当前切片分
@@ -2440,8 +2559,8 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             speed_factor = 1.0
             if final_video_duration_ms > 0 and video_dur_ms > 0:
                 speed_factor = video_dur_ms / final_video_duration_ms
-                # 变速区间收紧到 0.93~1.08（专业剪辑师不超过 ±8%），防止强拉慢放导致的鬼畜/变相
-                speed_factor = max(0.93, min(1.08, speed_factor))
+                # 变速区间收紧到 0.97~1.03（专业剪辑师 ±3% 近无感），彻底消除相邻镜头速度跳变与加速破坏动作真实感
+                speed_factor = max(0.97, min(1.03, speed_factor))
 
             # 🎬 阶段2 2.4 匹配诊断：Q(段落) 命中切片，肉眼核对 VI↔desc 是否名副其实（防分高但画面不贴）。
             #    字段：RawSem=combined（2.3 启用后为归一后综合分）、Gate=该 query 是否被 2.3 温和归一拉伸(1/0)、
@@ -2465,7 +2584,9 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 "audioDurationMs": audio_dur_ms,
                 "videoTimelineStartMs": round(current_timeline_ms, 1),
                 "videoTimelineEndMs": round(target_end_time_ms, 1),
-                "appliedSpeedFactor": round(speed_factor, 3)
+                "appliedSpeedFactor": round(speed_factor, 3),
+                # 🛑 回退降级兜底后无降级段，degraded 恒 False（保留字段供前端兼容）
+                "degraded": False
             })
 
             current_timeline_ms = target_end_time_ms
