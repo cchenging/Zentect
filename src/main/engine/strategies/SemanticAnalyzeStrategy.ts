@@ -191,6 +191,92 @@ function collectFrameDescriptions(task: any): any[] {
   return merged;
 }
 
+/** ================================================
+ *  🎬 批1（2026-09-06）语义翻译层：SCENE_GROUPS 场景组词表 + 场景/情绪状态提取工具
+ *  ⚠️ 词表须与 daemon resources/scripts/timeline_solver.py 的 SCENE_GROUPS 保持一致（改词须两端同步）
+ *   - 切片侧：chunk.scene（帧场景众数 / desc「场景:」正则回捞）→ matchSceneGroup 映射到组
+ *   - query 侧：buildMatchQueries 用同一 matchSceneGroup 从 visualIntent → 正文 推导 sceneGroup
+ *   - 仅组等值命中（query.sceneGroup == chunk.sceneGroup）才在 daemon 触发加成 / 窗口豁免
+ *     （R2-1 防裸子串假阳性：'车'不伤'工厂车间'、'室'不伤'室外操场'，只做完整组词包含）
+ * ================================================ */
+const SCENE_GROUPS: Record<string, string[]> = {
+  教室系: ['教室内', '教室一角', '教室过道', '教室后排', '明亮教室', '教室课桌', '讲台', '黑板前', '课堂', '教室'],
+  医院系: ['医院', '病房', '医院走廊', '病床前', '诊室', '候诊区'],
+  居室系: ['卧室', '客厅', '房间', '宿舍', '昏暗卧室'],
+  办公系: ['办公室', '办公桌', '会议室', '办公桌前', '办公桌后'],
+  车间系: ['车间', '工厂', '流水线', '厂房'],
+  餐饮系: ['餐桌', '饭店', '食堂', '厨房', '宴席', '室内餐桌'],
+  户外系: ['街道', '马路', '街头', '广场', '操场', '室外', '户外街道'],
+  场馆系: ['大厅', '会场', '舞台', '教室大厅', '复古大厅', '昏暗大厅', '大厅空镜'],
+  其他室内: ['昏暗室内', '室内', '室内近景', '室内特写'],
+};
+
+/** 「场景:值」正则回捞（与 daemon 端 _map_scene_group 前处理口径一致）：
+ *  值域截止到下一字段名（主体/情绪/光影/空间/看点/道具/关键词）/ 分号 / 换行 / 串尾；
+ *  排除 ，,；;\n —— 情绪值内含逗号不得吞进场景值（R2-5 正则防空）。
+ *  适用于 desc 的 `…动作 场景:昏暗室内 主体:老人…` 与帧描述同构形态。 */
+const SCENE_VALUE_RE = /(?:场景|地点)[:：]\s*([^，,；;\n]+?)(?=\s*(?:主体|情绪|光影|空间|看点|道具|关键词)[:：]|[；;]|\n|$)/u;
+
+/** 从 VLM 结构化文本中正则回捞「场景」值；未命中返回空串（不编造假场景）。 */
+function extractSceneFromDescription(desc: string | null | undefined): string {
+  if (!desc) return '';
+  const m = String(desc).match(SCENE_VALUE_RE);
+  if (!m || !m[1]) return '';
+  return m[1].trim();
+}
+
+/** 场景文本 → 场景组（R2-1 防假阳性核心）：
+ *  - 只做「完整组词包含」匹配，绝不做单字/过短子串匹配；
+ *  - 命中多个组时取【最长组词】所属组（'教室大厅' 同时含 教室/大厅 → 归词更长的 场馆系）；
+ *  - 无任何组词命中返回 ''（中性，场景维度不加不减，不影响正确性）。 */
+function matchSceneGroup(sceneText: string | null | undefined): string {
+  const text = String(sceneText || '').trim();
+  if (!text) return '';
+  let bestGroup = '';
+  let bestLen = -1;
+  for (const [group, tokens] of Object.entries(SCENE_GROUPS)) {
+    for (const tok of tokens) {
+      if (tok && tok.length > bestLen && text.includes(tok)) {
+        bestGroup = group;
+        bestLen = tok.length;
+      }
+    }
+  }
+  return bestGroup;
+}
+
+/** 🎭 批1 情绪状态词表（输出=既有情绪类别名，Node 把类别名直发 daemon 的 moodIntent 字段）：
+ *  类别名与 daemon EMOTION_CATEGORIES 完全同源（'紧张悬疑'含'紧张'等，_normalize_emotion 归一恒等），
+ *  因此无需在两端维护第二套情绪词表——复用既有 5+中性 分类与 EMOTION_COMPAT 冲突抑制（R2-4）。 */
+const MOOD_WORDS: Record<string, string[]> = {
+  紧张悬疑: ['紧张', '不安', '害怕', '恐惧', '惊悚', '惊恐', '焦虑', '忐忑', '压迫', '屏息', '诡异', '惊险', '揪心', '惶恐', '阴森', '诡秘'],
+  悲伤沉重: ['悲伤', '难过', '压抑', '沉重', '哀伤', '凄凉', '绝望', '心碎', '落寞', '沮丧', '忧郁', '怅然', '阴沉', '阴郁', '悲痛', '无奈', '眼泪', '泪水'],
+  愤怒激昂: ['愤怒', '生气', '怒火', '暴怒', '愤慨', '激动', '激烈', '激昂', '爆发', '咆哮', '狠戾', '杀气'],
+  欢快轻松: ['欢快', '轻松', '开心', '高兴', '喜悦', '愉快', '兴奋', '雀跃', '欢呼', '热闹', '喧闹', '温馨', '甜蜜', '幸福', '美好', '温情', '浪漫', '俏皮'],
+  平静舒缓: ['平静', '安静', '宁静', '静谧', '静默', '沉寂', '安详', '平缓', '温和', '从容', '沉稳', '淡然', '安逸', '悠远', '寂静'],
+  中性: ['冷静', '平淡', '客观', '普通', '日常', '寻常', '中性', '面无表情'],
+};
+
+/** 从自由文本中取情绪类别：扫描 MOOD_WORDS 命中位置，preferLast=true 取【靠后终点态】（正文转折取尾：
+ *  "喧闹…瞬间安静"→平静舒缓）；preferLast=false 取【最先出现态】（VI 画面语言情绪词通常居前、代表目标画面基调）。
+ *  命中多个类别时按位置排序，同一类别取最早出现词；无任何命中返回 ''（交给 q.emotion 兜底）。 */
+function moodIntentForText(text: string | null | undefined, preferLast: boolean): string {
+  const s = String(text || '');
+  if (!s.trim()) return '';
+  const hits: Array<{ cat: string; pos: number }> = [];
+  for (const [cat, toks] of Object.entries(MOOD_WORDS)) {
+    let bestPos = -1;
+    for (const tk of toks) {
+      const p = s.indexOf(tk);
+      if (p >= 0 && (bestPos < 0 || p < bestPos)) bestPos = p;
+    }
+    if (bestPos >= 0) hits.push({ cat, pos: bestPos });
+  }
+  if (hits.length === 0) return '';
+  hits.sort((a, b) => (preferLast ? b.pos - a.pos : a.pos - b.pos));
+  return hits[0].cat;
+}
+
 /** 🎞️ 候选段独立封面完整性校验（2026-09-05 封面错位根治）：
  *  Python daemon 真检测时会给每个 3s 匹配候选段抽独立封面（文件名 basename 以 seg_ 开头）；
  *  而 Node 侧 buildMatchSegmentsFromChunks 兜底重建的候选段没有独立封面（继承镜头级 chunk 封面或空）。
@@ -573,7 +659,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  供 daemon 做"文案情绪↔画面情绪"匹配（文案段落 emotion 来自步骤3 LLM 生成，帧 emotion 来自步骤2 VLM 结构化输出）。
      *  🎬 P0 OP/ED：先平移 frameDescs.timeMs -= trimStartMs，再删除 OP/ED 区间外的帧描述，
      *     保证帧时间轴与 chunks（已平移）完全对齐，避免双指针聚合空归。 */
-    const frameDescsRaw: { timeMs: number; description: string; emotion?: string; shotType?: string; cameraMovement?: string; characters?: string[] }[] = collectFrameDescriptions(task).map((f: any) => {
+    const frameDescsRaw: { timeMs: number; description: string; emotion?: string; shotType?: string; cameraMovement?: string; scene?: string; characters?: string[] }[] = collectFrameDescriptions(task).map((f: any) => {
       /** 合并角色名：VLM downstream.characters（画面中实际看到的） ∪ 人脸识别帧级锚定 f.characters
        *  双重来源取并集去重，避免任何一方缺失导致角色维度漏数据。
        *  无效占位值（"无/路人/群众"等）在步骤2 normalizeDownstreamFields 中已转 undefined，
@@ -605,6 +691,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         shotType: f?.downstream?.shotType || f.shotType,
         /** 🎥 运镜方式（固定/推/拉/摇/移）：downstream.cameraMovement，兜底顶层 cameraMovement（P1 运镜衔接） */
         cameraMovement: f?.downstream?.cameraMovement || f.cameraMovement,
+        /** 🎬 批1 场景（N1）：VLM 的 scene 字段只进 desc「场景:」文本（normalizeDownstreamFields 未透传顶层），
+         *  帧级直接从 description 正则回捞（与 daemon _map_scene_group 前处理同源，R2-5 防空正则） */
+        scene: extractSceneFromDescription(f?.downstream?.scene || f.description),
         characters: mergedRoles.size > 0 ? Array.from(mergedRoles) : undefined,
       };
     });
@@ -636,6 +725,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       const emotionCounts = new Map<string, number>();
       const shotTypeCounts = new Map<string, number>();
       const cameraMovementCounts = new Map<string, number>();
+      const sceneCounts = new Map<string, number>();
       const roleCounts = new Map<string, number>();
 
       /** 将一段 VLM 帧加入时间窗聚合（引用计数 +1，首次出现时写入顺序表） */
@@ -652,6 +742,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (st) shotTypeCounts.set(st, (shotTypeCounts.get(st) || 0) + 1);
         const cm = (f.cameraMovement || '').trim();
         if (cm) cameraMovementCounts.set(cm, (cameraMovementCounts.get(cm) || 0) + 1);
+        const sn = (f.scene || '').trim();
+        if (sn) sceneCounts.set(sn, (sceneCounts.get(sn) || 0) + 1);
         for (const r of (f.characters || [])) {
           if (typeof r === 'string' && r.trim()) {
             const key = r.trim();
@@ -687,6 +779,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (cm) {
           const c = (cameraMovementCounts.get(cm) || 0) - 1;
           if (c <= 0) cameraMovementCounts.delete(cm); else cameraMovementCounts.set(cm, c);
+        }
+        const sn = (f.scene || '').trim();
+        if (sn) {
+          const c = (sceneCounts.get(sn) || 0) - 1;
+          if (c <= 0) sceneCounts.delete(sn); else sceneCounts.set(sn, c);
         }
         for (const r of (f.characters || [])) {
           if (typeof r === 'string' && r.trim()) {
@@ -739,6 +836,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (cameraMovementCounts.size > 0) {
           chunk.cameraMovement = [...cameraMovementCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
         }
+        /** 🎬 批1 场景众数（N1）：帧级场景值（desc「场景:」回捞）按引用计数取众数落 chunk.scene；
+         *  chunk.scene 再经 daemon _map_scene_group 映射成组，供 KM 场景命中加成/窗口豁免。 */
+        if (sceneCounts.size > 0) {
+          chunk.scene = [...sceneCounts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        }
         if (roleCounts.size > 0) chunk.characters = [...roleCounts.keys()];
         /** 🔧 Phase 0 终极兜底（聚合级，对老数据也生效）：
          *  若经过 frames 聚合后，chunk.shotType/emotion/characters 还是空（典型 8月12日项目诊断），
@@ -755,6 +857,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       const withEmotion = chunks.filter((c) => (c.emotion || '').trim().length > 0).length;
       const withShotType = chunks.filter((c) => (c.shotType || '').trim().length > 0).length;
       const withCameraMovement = chunks.filter((c) => (c.cameraMovement || '').trim().length > 0).length;
+      const withScene = chunks.filter((c) => (c.scene || '').trim().length > 0).length;
       const withCharacters = chunks.filter((c) => Array.isArray(c.characters) && c.characters.length > 0).length;
       const withKeywords = chunks.filter((c) => Array.isArray(c.keywords) && c.keywords.length > 0).length;
       AppLogger.info(LOG_TAGS.AI_AGENT,
@@ -763,6 +866,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         `${withEmotion}/${chunks.length} 带情绪，` +
         `${withShotType}/${chunks.length} 带景别shotType，` +
         `${withCameraMovement}/${chunks.length} 带运镜cameraMovement，` +
+        `${withScene}/${chunks.length} 带场景scene，` +
         `${withCharacters}/${chunks.length} 带角色characters，` +
         `${withKeywords}/${chunks.length} 带关键词keywords`);
       /** 🎬 阶段 B：把镜头级语义字段 inherit 到匹配候选级 matchSegments。
@@ -781,8 +885,34 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           if (parent.emotion) seg.emotion = parent.emotion;
           if (parent.shotType) seg.shotType = parent.shotType;
           if (parent.cameraMovement) seg.cameraMovement = parent.cameraMovement;
+          if (parent.scene) seg.scene = parent.scene;
           if (Array.isArray(parent.characters) && parent.characters.length > 0) seg.characters = parent.characters;
           if (Array.isArray(parent.keywords) && parent.keywords.length > 0) seg.keywords = parent.keywords;
+        }
+      }
+    }
+    /** 🎬 批1 场景补齐（N1，无条件执行）：上述帧聚合仅在"本批有帧描述"时运行——
+     *  命中 DB 缓存 / ownPool 复用且任务无帧时 chunk.scene 仍可能缺，这里统一补最后一层：
+     *  ① chunk 缺 scene → 从 chunk.description「场景:」正则回捞；
+     *  ② matchSegments 缺 scene → 先继承所属父镜头的 chunk.scene，仍缺再自身 desc 回捞。
+     *  保证送入 KM / preselect 的候选段恒携带 scene 字段（无描述/无场景词的段保持空，中性不加不减）。 */
+    {
+      const chunkByParentId = new Map<string, any>();
+      for (const c of chunks) chunkByParentId.set(String(c.parentChunkId || c.id), c);
+      for (const c of chunks) {
+        if (!(c.scene || '').trim()) {
+          const s = extractSceneFromDescription(c.description);
+          if (s) c.scene = s;
+        }
+      }
+      for (const seg of matchSegments) {
+        if ((seg.scene || '').trim()) continue;
+        const parent = chunkByParentId.get(String(seg.parentChunkId));
+        if (parent && (parent.scene || '').trim()) {
+          seg.scene = parent.scene;
+        } else {
+          const s = extractSceneFromDescription(seg.description);
+          if (s) seg.scene = s;
         }
       }
     }
@@ -1697,6 +1827,16 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     /** 🎙️ 原声段精确源时间窗（步骤3 已锚定，body 坐标）：定位优先直用，缺省=非原声段或上游未锚定 */
     audioSourceStartMs?: number;
     audioSourceEndMs?: number;
+    /** 🎬 批1 语义翻译层：query 地点约束（SCENE_GROUPS 组名；空=该段无地点约束）。
+     *  VI 绝对优先 → 正文兜底；daemon 侧组等值命中才触发场景加成 / 窗口豁免。 */
+    sceneGroup?: string;
+    /** 🎬 批1 语义翻译层：query 情绪终点态（平静舒缓/欢快轻松/紧张悬疑/悲伤沉重/愤怒激昂/中性）。
+     *  VI 闸门优先锁定，正文仅在 VI 无情绪词时兜底；daemon 非空时替换 q.emotion 进 emotion_sim。 */
+    moodIntent?: string;
+    /** 🎬 决策 #6（ADR-003）：抽象文案路由标记透传（=== true 规范化，老数据无字段即 false） */
+    isAbstractNarration?: boolean;
+    /** 🎬 决策 #2 契约化（ADR-003）：显式闪回标记透传（优先级高于 KM 内部时间豁免关键词猜测） */
+    isFlashback?: boolean;
   }> {
     // 🎯 Phase 2：Step5 二次兜底 — 保证所有 query 的 visualIntent 100% 非空（老项目 canvas_data 里的 shots 也能覆盖）
     const filledShots = SemanticAnalyzeStrategy.ensureAllVisualIntentFilled(scriptShots || []);
@@ -1727,6 +1867,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       const transcript = String(s.audioSource?.transcript || '').replace(/^原声[:：]\s*/, '').trim();
       const baseText = textRaw || (isOriginal ? transcript : '');
       const text = visualIntent.length > 0 ? `${baseText} | ${visualIntent}` : baseText;
+      // 🎬 批1 语义翻译层（N4）：sceneGroup 地点约束「VI 绝对优先 → 正文兜底」（R2-1 只做完整组词，防假阳性）；
+      //   moodIntent 情绪终点态「VI 闸门」（R2-2：VI 命中情绪词立即锁定，正文一律不回退覆盖；
+      //   VI 无情绪词才降级正文启发式，按转折取靠后终点状态——"喧闹…瞬间安静"→平静舒缓）。
+      const sceneGroup = matchSceneGroup(visualIntent) || matchSceneGroup(baseText) || '';
+      const moodIntent = moodIntentForText(visualIntent, false) || moodIntentForText(baseText, true) || '';
       // 🔧 修复 Bug B：之前只认 s.startMs / s.durationMs，老项目 / 只跑了 Step1 的项目只提供 start/end（秒），
       //   导致 startMs 全部变 0，Step5 overlap 推算永远打在 0ms，匹配结果一句也对不上
       const timing = SemanticAnalyzeStrategy._resolveScriptShotTiming(s);
@@ -1740,6 +1885,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         startMs: timing.startMs,
         durationMs: timing.durationMs,
         keepOriginalAudio: isOriginal,
+        sceneGroup,
+        moodIntent,
         /** 🎙️ 原声段精确源时间窗（步骤3 写入为源坐标，模式 A 不再转 body）：供定位直接二分锁定源坐标切片 */
         audioSourceStartMs: isOriginal && typeof s.audioSource?.sourceStartMs === 'number'
           ? s.audioSource.sourceStartMs
@@ -1770,10 +1917,15 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     queries: Array<{
       shotId: string; text: string; audioDurationMs: number;
       emotion?: string; visualIntent?: string; startMs: number; durationMs: number;
+      /** 🎬 批1：地点约束组名（buildMatchQueries 产出）。非空时把同组切片强制并入候选集/并集，
+       *  防"弱文本 + 远时序"的同组切片被 Top-K 整体剔除（KM 窗口豁免将无从触发）。 */
+      sceneGroup?: string;
     }>,
     videoChunks: Array<{
       id: string; startMs: number; endMs: number; description?: string;
       emotion?: string; shotType?: string; characters?: string[];
+      /** 🎬 批1：切片场景值（帧场景众数 / desc「场景:」回捞），供场景组保底入池映射 */
+      scene?: string;
     }>,
     opts?: { alpha?: number; beta?: number; minDescCoverage?: number; logProjectId?: string },
   ): {
@@ -2067,6 +2219,47 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (unionIds.size >= minUnion) break;
         unionIds.add(cid);
       }
+    }
+
+    /* -------------------- 步骤4.5（🎬 批1 N3 补充）：场景组保底入池 -------------------- */
+    // 带 sceneGroup 的 query 若其同组切片因"弱文本 + 远时序"被 Top-K 整体剔除，
+    // 则 daemon 侧的窗口豁免 / 场景加成将无从触发（候选池里根本没有目标切片）。
+    // 这里把同组切片按时间均匀抽样（上限 MAX_SCENE_EXTRA）强制并入 perQueryTopK 与 unionIds，
+    // 与 daemon 端 R2-3 窗口豁免配合，让散布全片的目标场景切片可被 KM 选中。
+    const MAX_SCENE_EXTRA = 24;
+    let scenePoolAdded = 0;
+    for (const q of queries) {
+      const qsg = String(q.sceneGroup || '').trim();
+      if (!qsg) continue;
+      const sid = String(q.shotId);
+      const candList = perQueryTopK[sid] || [];
+      const candSet = perQueryTopKSet[sid] || new Set<string>();
+      if (!perQueryTopK[sid]) perQueryTopK[sid] = candList;
+      if (!perQueryTopKSet[sid]) perQueryTopKSet[sid] = candSet;
+      /** 按时间序收集同组切片 id（workingChunks 已按时间轴排序） */
+      const sceneIds: string[] = [];
+      for (const c of workingChunks) {
+        if (candSet.has(String(c.id))) continue;   // 已入选的跳过，不重复
+        const cs = String(c.scene || '').trim() || extractSceneFromDescription(String(c.description || ''));
+        if (cs && matchSceneGroup(cs) === qsg) sceneIds.push(String(c.id));
+      }
+      if (sceneIds.length === 0) continue;
+      /** 同组切片多于上限时按时间轴均匀抽样（保证覆盖面而非簇在一处） */
+      const step = Math.max(1, Math.ceil(sceneIds.length / MAX_SCENE_EXTRA));
+      let picked = 0;
+      for (let i = 0; i < sceneIds.length && picked < MAX_SCENE_EXTRA; i += step) {
+        const cid = sceneIds[i];
+        if (candSet.has(cid)) continue;
+        candSet.add(cid);
+        candList.push(cid);
+        unionIds.add(cid);
+        picked++;
+        scenePoolAdded++;
+      }
+    }
+    if (scenePoolAdded > 0) {
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[preselectTopK] ${opts?.logProjectId || ''} 批1 场景组保底入池：${scenePoolAdded} 个同组切片并入候选集（让 KM 场景命中可跨窗取到散布切片）`);
     }
 
     /* -------------------- 步骤5：按 chunk.id∈unionIds 构造 filteredChunks，顺序与原 videoChunks 一致（daemon 侧期望按 startMs 顺序） -------------------- */

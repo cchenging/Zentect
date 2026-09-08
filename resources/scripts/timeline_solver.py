@@ -186,6 +186,17 @@ class KMMatchQuery(BaseModel):
     True 直接豁免时序软罚——跨场景是剪辑意图（画面回溯）而非时序倒流错误；
     优先级高于 _is_temporal_exempt 的关键词猜测（后者保留作为缺省兜底）。"""
     isFlashback: bool = False
+    """🎬 批1（2026-09-06）语义翻译层：query 场景组（SCENE_GROUPS 组名，如 教室系/医院系；空=该段无地点约束）。
+    Node 侧按 visualIntent → 正文 推导（不做裸子串，R2-1），daemon 用它做三件事：
+      ① 主矩阵场景命中加成（_scene_match_boost +0.08）
+      ② _query_window 场景感知扩张（窗内无同组切片时继续扩，突破 5.0 硬边界，R2-3）
+      ③ 矩阵窗外/候选白名单外 sceneGroup 命中格豁免 5.0 强惩罚（降软罚通道）
+    仅当 query.sceneGroup == chunk.sceneGroup 才触发，场景词不在组表 → 空串（中性，不加不减）。"""
+    sceneGroup: str = ''
+    """🎬 批1（2026-09-06）语义翻译层：query 情绪终点态（平静舒缓/欢快轻松/紧张悬疑/悲伤沉重/愤怒激昂/中性）。
+    Node 侧 VI 绝对优先锁定（R2-2）、正文仅在 VI 无情绪词时兜底并取转折终点状态；
+    daemon 侧非空时**替换 query.emotion** 作为 emotion_sim 的 query 侧输入（复用既有 EMOTION_CATEGORIES/EMOTION_COMPAT 冲突抑制，R2-4）。"""
+    moodIntent: str = ''
 
 
 # ============================================================
@@ -297,6 +308,9 @@ def _query_window(query, universe_indices, video_chunks):
     - 优先取 Node 显式透传的 windowStartMs/windowEndMs（决策 #1：Node 侧算好直接给）；
     - 未透传时由源锚派生：w0=max(0,startMs−30s)，w1=startMs+durationMs+60s（与 Node 口径一致）；
     - 候选不足（窗内切片数 < WINDOW_MIN_CANDIDATES）时单向扩张：先 +120s 后延，仍不足再 −120s 前探。
+    - 🎬 批1 R2-3 场景感知扩张：query 带 sceneGroup 时，扩张判据从"窗内切片数 ≥5"
+      改为"窗内存在同组切片"——只要窗内无同组切片且未达上限(+600s)，继续 +120s 单向扩张，
+      让散布全片的目标场景切片能进入候选（教室切片 0.5~24min 散布实证 F5）。
     返回 (w0, w1)；源锚也无效（startMs 与 durationMs 均 ≤0）返回 None，调用方走旧 ±3 块兜底。"""
     w0 = float(getattr(query, 'windowStartMs', 0) or 0)
     w1 = float(getattr(query, 'windowEndMs', 0) or 0)
@@ -313,10 +327,25 @@ def _query_window(query, universe_indices, video_chunks):
         def _in_win(_w0, _w1):
             return sum(1 for i in universe_indices
                        if _w0 <= float(video_chunks[i].get('startMs') or 0) <= _w1)
-        if _in_win(w0, w1) < WINDOW_MIN_CANDIDATES:
-            w1 += WINDOW_EXPAND_MS
+        q_scene_group = (getattr(query, 'sceneGroup', '') or '').strip()
+        if q_scene_group:
+            # 🎬 批1 R2-3：场景感知扩张——只要窗内尚无同组切片就继续单向 +120s（上限 +600s 防失控）
+            def _scene_in_win(_w0, _w1):
+                for i in universe_indices:
+                    _cs = float(video_chunks[i].get('startMs') or 0)
+                    if _w0 <= _cs <= _w1 \
+                            and _map_scene_group(video_chunks[i].get('scene') or '') == q_scene_group:
+                        return True
+                return False
+            _steps = 0
+            while not _scene_in_win(w0, w1) and _steps < 5:   # 5×120s = 上限 +600s
+                w1 += WINDOW_EXPAND_MS
+                _steps += 1
+        else:
             if _in_win(w0, w1) < WINDOW_MIN_CANDIDATES:
-                w0 = max(0.0, w0 - WINDOW_EXPAND_MS)
+                w1 += WINDOW_EXPAND_MS
+                if _in_win(w0, w1) < WINDOW_MIN_CANDIDATES:
+                    w0 = max(0.0, w0 - WINDOW_EXPAND_MS)
     return (w0, w1)
 
 
@@ -379,6 +408,60 @@ def _emotion_compatibility(q_emotion: str, c_emotion: str) -> float:
     if q_norm == c_norm:
         return 1.0
     return _EMOTION_COMPAT_SYMMETRIC.get((q_norm, c_norm), 0.15)
+
+
+# ==========================================
+# 🎬 批1（2026-09-06）语义翻译层：SCENE_GROUPS 场景组表 + 场景命中加成
+#   ⚠️ 与 SemanticAnalyzeStrategy.ts 的 SCENE_GROUPS/moodIntent 词表同源，改词表须两端同步
+#   chunk 侧：Node 聚合 chunk.scene（帧场景众数 / desc「场景:」正则回捞）→ _map_scene_group 映射到组；
+#   query 侧：Node buildMatchQueries 用同表从 visualIntent → 正文 推导 sceneGroup；
+#   组等值命中（query.sceneGroup == chunk.sceneGroup）才触发加成/窗口豁免（防裸子串假阳性 R2-1）。
+# ==========================================
+SCENE_GROUP_BOOST = 0.08   # 主矩阵场景组命中加成（§4.1 维度A，软加成）
+SCENE_GROUPS = {
+    '教室系': ['教室内', '教室一角', '教室过道', '教室后排', '明亮教室', '教室课桌', '讲台', '黑板前', '课堂', '教室'],
+    '医院系': ['医院', '病房', '医院走廊', '病床前', '诊室', '候诊区'],
+    '居室系': ['卧室', '客厅', '房间', '宿舍', '昏暗卧室'],
+    '办公系': ['办公室', '办公桌', '会议室', '办公桌前', '办公桌后'],
+    '车间系': ['车间', '工厂', '流水线', '厂房'],
+    '餐饮系': ['餐桌', '饭店', '食堂', '厨房', '宴席', '室内餐桌'],
+    '户外系': ['街道', '马路', '街头', '广场', '操场', '室外', '户外街道'],
+    '场馆系': ['大厅', '会场', '舞台', '教室大厅', '复古大厅', '昏暗大厅', '大厅空镜'],
+    '其他室内': ['昏暗室内', '室内', '室内近景', '室内特写'],
+}
+
+
+def _map_scene_group(scene_text: str) -> str:
+    """场景文本 → 场景组（R2-1 防假阳性核心）：
+    - 只做「完整组词包含」匹配，绝不做单字/过短子串匹配（防'车'伤'工厂车间'、'室'伤'室外操场'）；
+    - 命中多个组时取【最长组词】所属组（'教室大厅' 同时含 教室/大厅 时归词更长的 场馆系）；
+    - 无任何组词命中返回 ''（中性，场景维度不加不减，不影响正确性）。"""
+    text = (scene_text or '').strip()
+    if not text:
+        return ''
+    best_group, best_len = '', -1
+    for _group, _tokens in SCENE_GROUPS.items():
+        for _tok in _tokens:
+            if _tok and len(_tok) > best_len and _tok in text:
+                best_group, best_len = _group, len(_tok)
+    return best_group
+
+
+def _scene_match_boost(q_scene_group: str, c_scene_group: str) -> float:
+    """场景组等值命中加成：query 与切片映射到同一场景组才 +0.08（软加成，绝不否决语义主分）；
+    任一侧为空（中性）或组不同 → 0。"""
+    if not (q_scene_group or '').strip() or not (c_scene_group or '').strip():
+        return 0.0
+    return SCENE_GROUP_BOOST if q_scene_group == c_scene_group else 0.0
+
+
+def _scene_boost_for_query_chunk(query, chunk) -> float:
+    """对象级场景加成（变速重选/单调重选/衔接重排共用）：
+    直接按 query.sceneGroup 与 chunk.scene 映射结果做等值判定，避免在每处重算组表索引。"""
+    qsg = (getattr(query, 'sceneGroup', '') or '').strip()
+    if not qsg:
+        return 0.0
+    return _scene_match_boost(qsg, _map_scene_group(chunk.get('scene') or ''))
 
 
 # 🛑 2026-09-05 并发防护闸：KM 是 CPU/内存重型任务（CLIP 预提取 + 94×694 多维矩阵），
@@ -1561,7 +1644,10 @@ def _apply_continuity_rerank(results: list, queries, video_chunks: list,
             vdur = chunk.get("durationMs", 0)
             if audio_dur_ms > 0 and vdur > 0:
                 dur = _compute_duration_score(audio_dur_ms, vdur)
-            return _compute_combined_score(sem, dur, emo, role, weights=weights), chunk
+            # 🎬 批1：衔接重排基准/候选同样计入场景加成（与 KM 主体一致），
+            #   防"重排为了衔接把场景命中切片换成场景外镜头"（sceneGroup 是软维度，仅作等权加成）
+            return _compute_combined_score(sem, dur, emo, role, weights=weights) \
+                + _scene_boost_for_query_chunk(queries[qi], chunk), chunk
 
         cur_score, _ = _score(cur_ci_idx)
 
@@ -2034,7 +2120,17 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
 
     # 🎭 P0 意境维度：构建文案情绪 ↔ 切片情绪相容度矩阵 (n_queries, n_chunks)
     #    切片情绪由步骤2 帧情绪按时间轴聚合而来（chunk.emotion），文案情绪来自步骤3 生成（query.emotion）
-    query_emotions = [(q.emotion or '') for q in req.queries]
+    #    🎬 批1 R2-4：query 侧 moodIntent（Node 按 VI 闸门推导的终点态）**优先替换** query.emotion——
+    #    情绪转折文案（"喧闹…瞬间安静"）的画面期望态应由 moodIntent 表达；moodIntent 为空仍用 q.emotion（老行为不变）。
+    query_emotions = []
+    _mood_count = 0
+    for _q in req.queries:
+        _mi = (getattr(_q, 'moodIntent', '') or '').strip()
+        if _mi:
+            query_emotions.append(_mi)
+            _mood_count += 1
+        else:
+            query_emotions.append(_q.emotion or '')
     chunk_emotions = [(video_chunks[ci].get("emotion") or '') for ci in valid_chunk_indices]
     # 🔧 R5 矩阵降精度（PR-2）：情绪矩阵 float64 → float32
     emotion_sim = np.zeros((n_queries, len(valid_chunk_indices)), dtype=np.float32)
@@ -2043,7 +2139,7 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             emotion_sim[qi, ci_idx] = _emotion_compatibility(query_emotions[qi], chunk_emotions[ci_idx])
     q_with_emotion = sum(1 for e in query_emotions if e.strip())
     c_with_emotion = sum(1 for e in chunk_emotions if e.strip())
-    print(f"[KM] 情绪匹配就绪：{q_with_emotion}/{n_queries} 段文案带情绪，{c_with_emotion}/{len(valid_chunk_indices)} 切片带情绪",
+    print(f"[KM] 情绪匹配就绪：{q_with_emotion}/{n_queries} 段文案带情绪（其中 moodIntent 优先 {_mood_count} 段），{c_with_emotion}/{len(valid_chunk_indices)} 切片带情绪",
           file=sys.stderr)
 
     # 🎭 P1 角色组合匹配：构建 Query 角色 ↔ 切片角色契合度矩阵 (n_queries, n_chunks)
@@ -2059,6 +2155,18 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
     q_with_role = sum(1 for r in query_roles if r)
     c_with_role = sum(1 for r in chunk_roles if r)
     print(f"[KM] 角色匹配就绪：{q_with_role}/{n_queries} 段文案带角色，{c_with_role}/{len(valid_chunk_indices)} 切片带角色",
+          file=sys.stderr)
+
+    # 🎬 批1（2026-09-06）语义翻译层：query/chunk 场景组预计算（R2-1/R2-3 共用）
+    #    query 组来自 Node buildMatchQueries 推导（visualIntent → 正文），chunk 组由 _map_scene_group 映射
+    #    chunk.scene（Node 聚合的帧场景众数 / desc「场景:」正则回捞）。两数组索引与 semantic_sim 行列一一对应：
+    #    query_scene_groups[qi]  ↔ 第 qi 个 query；chunk_scene_groups[ci_idx] ↔ valid_chunk_indices 第 ci_idx 个切片。
+    query_scene_groups = [(getattr(q, 'sceneGroup', '') or '').strip() for q in req.queries]
+    chunk_scene_groups = [_map_scene_group(video_chunks[ci].get('scene') or '') for ci in valid_chunk_indices]
+    q_with_scene = sum(1 for g in query_scene_groups if g)
+    c_with_scene = sum(1 for g in chunk_scene_groups if g)
+    print(f"[KM] 场景分组就绪：{q_with_scene}/{n_queries} 段文案带场景约束（{query_scene_groups and {g for g in query_scene_groups if g} or set()}），"
+          f"{c_with_scene}/{len(valid_chunk_indices)} 切片映射到场景组",
           file=sys.stderr)
     # 🔧 KM 真实进度：语义/情绪/角色矩阵全部就绪（进入分块求解前）
     _report_km_progress(req.taskId, 0.42, "语义·情绪·角色多维矩阵就绪，开始时序分块求解...")
@@ -2213,11 +2321,18 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 audio_dur_ms = req.queries[qi].audioDurationMs or 0
                 video_dur_ms = chunk.get("durationMs", 0)
 
+                # 🎬 批1 R2-1/R2-3：场景组等值命中（query.sceneGroup == chunk.sceneGroup）。
+                #    命中的格子在下方豁免【候选白名单强惩罚】与【窗外 5.0 死刑】（降软罚通道），
+                #    让"文案明确要教室 + 全片只有远处有教室"时能跨窗取到目标场景切片；
+                #    豁免只作用于 sceneGroup 命中格，防"所有切片都能跨窗"破坏时序约束。
+                _q_sg = query_scene_groups[qi] if qi < len(query_scene_groups) else ''
+                scene_hit = bool(_q_sg) and ci_idx < len(chunk_scene_groups) and _q_sg == chunk_scene_groups[ci_idx]
+
                 # 🔧 P2 #11 方案B：非候选格置强惩罚，让 KM 尽可能在候选内求解。
                 #    用 5.0（远超 combined_score 的 [0,1] 量级）而非正无穷：
                 #    若某个 query 候选全部落在本时序块之外，KM 仍能兜底选次优，不会触发 assign 无解。
                 cand_set = candidate_sets[qi]
-                if cand_set is not None:
+                if cand_set is not None and not scene_hit:
                     chunk_id = str(chunk.get("id") or "")
                     if chunk_id and chunk_id not in cand_set:
                         local_cost[lqi, lci] = 5.0  # 强惩罚：绝不优先，但保留兜底可分配
@@ -2225,8 +2340,9 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
 
                 # 🔬 Step1 Layer1：窗外强惩罚（决策 #1 硬边界）。与 candidateIds 同通道量级，
                 #   保证 KM 绝不跨段落所属窗口去做全局退让，杜绝"跨幕次乱跳"。无有效窗口(qi 不在 _qw)不加。
+                #   🎬 批1 R2-3：sceneGroup 命中格豁免 5.0 死刑 → 落入下方软罚通道（时序距离衰减，最高 −0.15）。
                 _wq = _qw.get(qi)
-                if _wq is not None:
+                if _wq is not None and not scene_hit:
                     _w0, _w1 = _wq
                     _cstart = float(chunk.get("startMs") or 0)
                     if not (_w0 <= _cstart <= _w1):
@@ -2285,6 +2401,7 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 #   - 时序软罚基准：Δ = chunk.startMs − query.source startMs
                 #     （反时 −0.12 / 顺承 +0.04 / 大跨距线性衰减封顶 −0.15），flashback/montage 段语义豁免；
                 #   - 情绪路由加权：query 带非中性情绪时，空镜 +0.03 / 主角特写 +0.02；
+                #   - 🎬 批1 §4.1 维度A：场景组等值命中 +0.08（软加成，绝不否决语义主分）；
                 #   均为加性微调，绝不压过 0.68 语义主依据（断层 B 软罚原则）。
                 _delta = float(chunk.get("startMs") or 0) - float(getattr(q, 'startMs', 0) or 0)
                 _adjust = 0.0 if _is_temporal_exempt(q) else _temporal_penalty(_delta)
@@ -2300,6 +2417,9 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                         getattr(q, 'visualIntent', '') or '',
                         chunk.get('cameraMovement') or '',
                     )
+                # 🎬 批1 维度A：场景组等值命中加成（scene_hit 已在上方按 query/chunk 场景组等值判定）
+                if scene_hit:
+                    _adjust += SCENE_GROUP_BOOST
                 combined_score = _compute_combined_score(sem_score, duration_penalty, emotion_score, role_score, weights=req.weights) + _adjust
                 local_cost[lqi, lci] = -combined_score
 
@@ -2396,7 +2516,9 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 # 替换原硬编码 0.6*sem + 0.4*dur，消除主 KM 与重选的打分断层
                 cur_emotion = float(emotion_sim[qi, chunk_rank[real_ci]])
                 cur_role = float(role_sim[qi, chunk_rank[real_ci]])
-                cur_combined = _compute_combined_score(cur_sem, cur_dur, cur_emotion, cur_role, weights=req.weights)
+                # 🎬 批1：变速重选基准同样计入场景加成（防"场景命中切片因时长偏短被换成场景外镜头"）
+                cur_combined = _compute_combined_score(cur_sem, cur_dur, cur_emotion, cur_role, weights=req.weights) \
+                    + _scene_boost_for_query_chunk(query, cur_chunk)
                 best_ci = real_ci
                 best_combined = cur_combined
 
@@ -2422,7 +2544,8 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                     best_dur_pen = _compute_duration_score(audio_dur_ms, video_dur_ms)
                     best_emotion = cur_emotion
                     best_role = cur_role
-                    combined_score = _compute_combined_score(best_sem, best_dur_pen, best_emotion, best_role, weights=req.weights)
+                    combined_score = _compute_combined_score(best_sem, best_dur_pen, best_emotion, best_role, weights=req.weights) \
+                        + _scene_boost_for_query_chunk(query, chunk)
                     _spd = (video_dur_ms / final_video_duration_ms) if final_video_duration_ms > 0 else 1.0
                     print(f"[KM] shotId={query.shotId} 变速 {raw_speed_factor:.2f} 超限 → 拼接级联定窗（{'+'.join(merged['seg_ids'])}={video_dur_ms}ms，变速 {_spd:.2f}）", file=sys.stderr)
                 else:
@@ -2463,7 +2586,8 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                             continue
                         cand_emotion = float(emotion_sim[qi, chunk_rank[cand_ci]])
                         cand_role = float(role_sim[qi, chunk_rank[cand_ci]])
-                        cand_combined = _compute_combined_score(cand_sem, cand_dur_score, cand_emotion, cand_role, weights=req.weights)
+                        cand_combined = _compute_combined_score(cand_sem, cand_dur_score, cand_emotion, cand_role, weights=req.weights) \
+                            + _scene_boost_for_query_chunk(query, cand_chunk)
                         if cand_combined > best_combined:
                             best_combined = cand_combined
                             best_ci = cand_ci
@@ -2493,7 +2617,8 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                         best_emotion = float(emotion_sim[qi, chunk_rank[best_ci]])
                         # 🎭 P1 角色契合度：变速重选同样计入角色命中，避免为了时长丢弃角色更贴合的切片
                         best_role = float(role_sim[qi, chunk_rank[best_ci]])
-                        combined_score = _compute_combined_score(best_sem, best_dur_pen, best_emotion, best_role, weights=req.weights)
+                        combined_score = _compute_combined_score(best_sem, best_dur_pen, best_emotion, best_role, weights=req.weights) \
+                            + _scene_boost_for_query_chunk(query, chunk)
 
             # 🎯 方向2（2026-08-30）：跨 query 时间单调约束（纵深防御）
             # 8/29 事故复现：跨项目缓存命中后"文案时间递增但切片时间倒走"（旧切片池时间轴错乱）。
@@ -2544,7 +2669,8 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                     cand_dur_score = _compute_duration_score(audio_dur_ms, cand_dur)
                     cand_emotion = float(emotion_sim[qi, chunk_rank[cand_ci]])
                     cand_role = float(role_sim[qi, chunk_rank[cand_ci]])
-                    cand_combined = _compute_combined_score(cand_sem, cand_dur_score, cand_emotion, cand_role, weights=req.weights)
+                    cand_combined = _compute_combined_score(cand_sem, cand_dur_score, cand_emotion, cand_role, weights=req.weights) \
+                        + _scene_boost_for_query_chunk(query, cand_chunk)
                     if cand_combined > mono_best_combined:
                         mono_best_combined = cand_combined
                         mono_best_ci = cand_ci
@@ -2565,13 +2691,18 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             # 🎬 阶段2 2.4 匹配诊断：Q(段落) 命中切片，肉眼核对 VI↔desc 是否名副其实（防分高但画面不贴）。
             #    字段：RawSem=combined（2.3 启用后为归一后综合分）、Gate=该 query 是否被 2.3 温和归一拉伸(1/0)、
             #          Smax=该 query 候选池原始最大相似度（审计基准）、has_desc(0/1)、VI/ChunkDesc 截断样本
+            #    🎬 批1 新增：Scene组 = query场景组↔切片场景组（空=中性）、Mood = query moodIntent（为空回退 q.emotion）
             try:
                 _vi = str(getattr(query, 'visualIntent', '') or '')[:20]
                 _desc = str(chunk.get('description') or '')[:24]
                 _has_desc = 1 if str(chunk.get('description') or '').strip() else 0
                 _smax = float(np.max(raw_semantic_sim[qi])) if raw_semantic_sim is not None else float('nan')
                 _gate = 1 if (not MATCH_NORM_GATE_DISABLED and _smax >= MATCH_GATE_MIN_SMAX) else 0
-                print(f"[MATCH_DIAG] Q:{query.shotId} | RawSem:{float(combined_score):.2f} | Gate:{_gate} | Smax:{_smax:.2f} | has_desc:{_has_desc} | VI:\"{_vi}\" <-> ChunkDesc:\"{_desc}\"", file=sys.stderr)
+                _q_sg = query_scene_groups[qi] if qi < len(query_scene_groups) else ''
+                _c_sg = chunk_scene_groups[chunk_rank[real_ci]] if real_ci in chunk_rank and chunk_rank[real_ci] < len(chunk_scene_groups) else ''
+                _mood = (getattr(query, 'moodIntent', '') or '').strip() or (query.emotion or '')
+                print(f"[MATCH_DIAG] Q:{query.shotId} | RawSem:{float(combined_score):.2f} | Gate:{_gate} | Smax:{_smax:.2f} | has_desc:{_has_desc} | "
+                      f"Scene组:\"{_q_sg}\"↔\"{_c_sg}\" | Mood:\"{_mood}\" | VI:\"{_vi}\" <-> ChunkDesc:\"{_desc}\"", file=sys.stderr)
             except Exception:
                 pass
 
