@@ -1,6 +1,7 @@
 // — 路径: src/main/core/JobScheduler.ts
 import { JobRepository } from '../database/repositories/JobRepository';
 import { MediaRepository } from '../database/repositories/MediaRepository';
+import { SettingsRepository } from '../database/repositories/SettingsRepository';
 import { MainNotifier } from './MainNotifier';
 import { PipelineEngine } from '../engine/PipelineEngine';
 import { ProjectService } from '../services/ProjectService';
@@ -316,6 +317,17 @@ export class JobScheduler {
       const targetMedia = projectMedias.find((m: any) => m.type === 'video');
       const mediaId = targetMedia?.id || `media_${Date.now()}`;
 
+      // 🎬 2026-09-08 方案B：极速导入的 ASR 不再写死中文——语言/引擎从全局设置读取
+      //   （步骤1「识别语言/引擎」选择后持久化到 asrLanguage/asrEngine，极速导入自动沿用）。
+      //   韩语/日语/粤语等经 SenseVoice(language=ko/ja/yue) 或 Faster-Whisper 正确识别；
+      //   paraformer 仅支持中文，选它时强制 zh，避免中文引擎去解韩语产出乱码。
+      const settingsRepo = new SettingsRepository();
+      const quickAsrEngine = settingsRepo.get<string>('asrEngine', 'sensevoice') || 'sensevoice';
+      const quickAsrLang = settingsRepo.get<string>('asrLanguage', 'zh') || 'zh';
+      const quickWhisper: Record<string, unknown> = { enabled: true, engine: quickAsrEngine };
+      if (quickAsrEngine === 'paraformer') quickWhisper.language = 'zh';
+      else quickWhisper.language = quickAsrLang;
+
       // 复用 PipelineEngine + Step1MaterialStrategy，编排抽帧/音频分离/ASR/人脸
       const engine = new PipelineEngine();
       const busResult = await engine.executePipeline(
@@ -335,10 +347,8 @@ export class JobScheduler {
               config: {
                 frames: { enabled: true },
                 audio: { enabled: true, separationMode: 'quality', engine: 'mdx' },
-                // 🔧 修复：显式指定识别语言为中文 + sensevoice 引擎，不再依赖 auto 检测
-                //   auto 检测对剧集片头(音乐/静音)易误判为非中文 → 误走 faster-whisper large-v3
-                //   (CPU 对长中文音频极慢，45 分钟都识别不完导致超时)。默认中文走 sensevoice 又快又稳。
-                whisper: { enabled: true, language: 'zh', engine: 'sensevoice' },
+                // 🎬 2026-09-08 方案B：语言/引擎由全局设置提供（韩剧可识别），不再硬编码中文
+                whisper: quickWhisper,
                 faces: { enabled: true },
               },
               existingMedia: targetMedia || null,

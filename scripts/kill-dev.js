@@ -47,6 +47,9 @@ function getProcesses() {
     const raw = execSync(`"${psExe}" -NoProfile -EncodedCommand ${encoded}`, {
       encoding: 'utf8',
       maxBuffer: 20 * 1024 * 1024,
+      // 🛡️ 2026-09-09：WMI 偶发不可用时 execSync 会无限阻塞，导致 dev 启动卡死在 kill 阶段。
+      //   加 8s 超时：超时即放弃清理直接继续启动（getProcesses 外层 catch 兜底返回 []）。
+      timeout: 8000,
     });
     // 过滤 CLIXML 残留（#< CLIXML 开头的行）和首尾空白
     const output = raw.replace(/#<\s*CLIXML[\s\S]*?(?=\{|\[|$)/g, '').trim();
@@ -137,7 +140,7 @@ function main() {
 
   // 验证端口状态
   try {
-    const netstat = execSync('netstat -ano', { encoding: 'utf8' });
+    const netstat = execSync('netstat -ano', { encoding: 'utf8', timeout: 8000 });
     const ports = [8173, 34567, 9881];
     const stillUsed = ports.filter(port =>
       netstat.split('\n').some(line =>

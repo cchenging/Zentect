@@ -464,6 +464,43 @@ def _scene_boost_for_query_chunk(query, chunk) -> float:
     return _scene_match_boost(qsg, _map_scene_group(chunk.get('scene') or ''))
 
 
+# ==========================================
+# 🎬 B 立项（2026-09-08）同源拆分句的画面承接（SAME_SCENE 承接补配）
+#   背景：诊断老舅09 seg_8_sub_2「先超越它，再造自己的航母」空卡——它与前一句 seg_8_sub_1
+#   （同段演说被断句拆出的孪生子句，visualIntent 逐字一致）共用同一理想画面（scene_050_seg0，
+#   441.8s 唯一"激昂演讲"切点），sub_1 已按全局排他占用后，sub_2 在自己的窗口内没有第二个
+#   达标候选 → KM 不产出（错就错，不挂无关画面）。
+#   承接规则：若某 query 未获分配，且与【前一个已产出的相邻段落】构成"同源承接对"
+#   （visualIntent 逐字一致 或 同属同一断句子句族 seg_N_sub_k），则在其源时间近邻、
+#   同 scene 组的未用切片中找时间紧随的承接段；素材覆盖达 97% 目标时长即补配并原位推进时间轴
+#   （不再制造变速超限）。素材覆盖不足则如实保持未匹配并打 [承接] 日志——把
+#   "分配没给" 与 "素材真的不够" 分开暴露，绝不强行拉伸变速/挂无关画面。
+# ==========================================
+CONTINUATION_MAX_GAP_MS = 6000.0   # 承接段起点相对前段结束的最大间距（ms）
+CONTINUATION_COVER_MIN = 0.97      # 承接素材需覆盖目标时长的下限（沿用档1 原速准则，绝不强拉变速）
+
+
+def _is_same_continuation(q_prev, q_cur) -> bool:
+    """同源承接对判定：两段满足任一即视为同一画面源的连续叙述——
+    ① visualIntent 去空白后逐字一致（孪生子句由同源断句产生，画面意图完全相同）；
+    ② 同属一个断句子句族（seg_N_sub_1 / seg_N_sub_2 共享 base seg_N）。
+    仅作承接触发器，具体能否补配还须过场景组/时间近邻/素材覆盖三道闸。"""
+    if q_prev is None or q_cur is None:
+        return False
+    _vp = (getattr(q_prev, 'visualIntent', None) or '').strip()
+    _vc = (getattr(q_cur, 'visualIntent', None) or '').strip()
+    if _vp and _vp == _vc:
+        return True
+
+    def _base(sid):
+        _m = re.match(r'^(.+?)_sub_\d+$', str(sid or '').strip())
+        return _m.group(1) if _m else None
+
+    _bp = _base(getattr(q_prev, 'shotId', None))
+    _bc = _base(getattr(q_cur, 'shotId', None))
+    return bool(_bp and _bc and _bp == _bc)
+
+
 # 🛑 2026-09-05 并发防护闸：KM 是 CPU/内存重型任务（CLIP 预提取 + 94×694 多维矩阵），
 #   且全局模型 release/load 非线程安全——若"失败残留任务"与"用户立刻重试"两个 KM 并发，
 #   会在同一 daemon 里叠加抢模型/CPU/内存 → 整机卡死（实测现象）。
@@ -2237,6 +2274,114 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
         if _w is not None:
             _qw[_qi] = _w
 
+    # 🎬 B 立项（2026-09-08）同源拆分句的画面承接：前序锚（最近一个已产出的相邻叙述段）。
+    #   消费改为按脚本顺序（行序升序）处理，保证该锚 = 时间轴上紧邻的上一个叙述段，
+    #   同源承接补配才能锚定正确的前段。
+    _km_prev_anchor = None
+
+    def _backfill_continuation_for(_qi):
+        """同源拆分句承接补配（B 立项）：当前 query 因排他/候选不足未获实体分配时，
+        若与前一个已产出段落构成同源承接对（visualIntent 逐字一致 或 同断句子句族 seg_N_sub_k），
+        从其源时间近邻、同 scene 组的未用切片中取时间紧随的承接段；素材覆盖 ≥ CONTINUATION_COVER_MIN
+        才补配并原位推进时间轴（沿用档1 原速截尾，绝不制造变速超限/挂无关画面）。
+        素材覆盖不足则保持未匹配并打 [承接] 日志——把"分配没给"与"素材真的不够"分开暴露。
+        返回 True=已补配，False=未补（保持原未匹配行为）。"""
+        nonlocal current_timeline_ms, last_chunk_end_ms, _km_prev_anchor
+        _q = req.queries[_qi]
+        if getattr(_q, 'keepOriginalAudio', False) or _km_prev_anchor is None:
+            return False
+        _pa = _km_prev_anchor
+        if not _is_same_continuation(_pa['query'], _q):
+            return False
+        _pc = _pa['chunk']
+        _pcs = float(_pc.get('startMs') or 0)
+        _pce = float(_pc.get('endMs') or _pcs)
+        _qst = float(getattr(_q, 'startMs', 0) or 0)
+        if not (_pcs - 2000.0 <= _qst <= _pce + CONTINUATION_MAX_GAP_MS):
+            return False
+        _pg = _map_scene_group(_pc.get('scene') or '')
+        if not _pg:
+            print(f"[承接] Q:{_q.shotId} 前段无 scene 场景组，无法判定承接，保持未匹配", file=sys.stderr)
+            return False
+        _audio = float(getattr(_q, 'audioDurationMs', 0) or 0)
+        if _audio <= 0:
+            return False
+        # 1) 承接候选：起点紧随前段结束（±500ms 容差内，≤ 前段结束+gap）、同 scene 组、未占用，取时间最早者
+        _best_ci = None
+        _best_cs = None
+        for _ci in range(len(video_chunks)):
+            if _ci in global_used_chunks:
+                continue
+            _c = video_chunks[_ci]
+            _cs = float(_c.get('startMs') or 0)
+            _ce = float(_c.get('endMs') or _cs)
+            if _cs < _pce - 500.0 or _cs > _pce + CONTINUATION_MAX_GAP_MS or _ce <= _pce:
+                continue
+            if _map_scene_group(_c.get('scene') or '') != _pg:
+                continue
+            if _best_ci is None or _cs < _best_cs:
+                _best_ci, _best_cs = _ci, _cs
+        if _best_ci is None:
+            print(f"[承接] Q:{_q.shotId} 前段后 {CONTINUATION_MAX_GAP_MS / 1000.0:.0f}s 内无同场景未用承接段，保持未匹配", file=sys.stderr)
+            return False
+        # 2) 素材覆盖：单段覆盖达标直接采用；不足则尝试同父级联补足（复用既有级联定窗，仅取覆盖达标的）
+        _b_c = video_chunks[_best_ci]
+        _b_dur = float(_b_c.get('durationMs') or 0)
+        if _b_dur <= 0:
+            _b_dur = float(_b_c.get('endMs') or 0) - float(_b_c.get('startMs') or 0)
+        _use_ci = None
+        _chunk = None
+        if _b_dur >= _audio * CONTINUATION_COVER_MIN:
+            _use_ci = _best_ci
+            _chunk = _b_c
+        else:
+            _merged = _try_merge_contiguous_segs(_best_ci, video_chunks, global_used_chunks, _audio)
+            if _merged is not None and _merged['total_dur'] >= _audio * CONTINUATION_COVER_MIN:
+                for _mi in _merged['seg_indices']:
+                    global_used_chunks.add(_mi)
+                _use_ci = _merged['seg_indices'][0]
+                _chunk = _merged['chunk']
+            else:
+                print(f"[承接] Q:{_q.shotId} 承接素材覆盖 < {CONTINUATION_COVER_MIN * 100:.0f}% 目标({_audio:.0f}ms)，"
+                      f"保持未匹配（不拉变速、不挂无关画面）", file=sys.stderr)
+                return False
+        # 3) 原速截尾定窗：承接段长于目标时按目标截尾（变速 1.0），与档1 同口径，弃长尾防字幕帧
+        _chunk = dict(_chunk)
+        _s0 = float(_chunk.get('startMs') or 0)
+        _e0 = float(_chunk.get('endMs') or _s0)
+        if (_e0 - _s0) > _audio * WINDOWIZE_TAIL_MAX_RATIO:
+            _chunk['endMs'] = round(_s0 + _audio, 1)
+            _chunk['durationMs'] = round(_audio, 1)
+        _c_dur = float(_chunk.get('durationMs') or 0)
+        # 4) 占位 + 时间轴原位推进 + 结果入列（承接不虚高：confidence ≤0.85 且不超过前段）
+        global_used_chunks.add(_use_ci)
+        _t0 = current_timeline_ms
+        _t1 = _t0 + _audio
+        _spd = (_c_dur / _audio) if _audio > 0 and _c_dur > 0 else 1.0
+        _spd = max(0.97, min(1.03, _spd))
+        _prev_conf = float((_pa['result'] or {}).get('confidence') or 0.8)
+        results.append({
+            "shotId": _q.shotId,
+            "chunkId": _chunk.get("id", f"chunk_{_use_ci:03d}"),
+            "confidence": round(min(0.85, _prev_conf), 4),
+            "coverPath": _chunk.get("coverPath", ""),
+            "chunkData": _chunk,
+            "audioDurationMs": _audio,
+            "videoTimelineStartMs": round(_t0, 1),
+            "videoTimelineEndMs": round(_t1, 1),
+            "appliedSpeedFactor": round(_spd, 3),
+            # 🛑 回退降级兜底后无降级段，degraded 恒 False（保留字段供前端兼容）
+            "degraded": False,
+        })
+        _km_prev_anchor = {'query': _q, 'chunk': _chunk, 'result': results[-1]}
+        current_timeline_ms = _t1
+        _cce = float(_chunk.get('endMs') or 0)
+        if last_chunk_end_ms is None or _cce > last_chunk_end_ms:
+            last_chunk_end_ms = _cce
+        print(f"[承接] Q:{_q.shotId} 同源承接补配 → {_chunk.get('id')}（源 {_s0:.0f}~{_e0:.0f}ms，"
+              f"变速 {_spd:.2f}，时间轴 {_t0:.0f}→{_t1:.0f}ms）", file=sys.stderr)
+        return True
+
     # ===== [KM-DIAG] 空结果定位计数(分块循环累计,仅在 results 为空时打印) =====
     dbg_zero_dur_queries = sum(1 for qi in range(n_queries) if not (req.queries[qi].audioDurationMs or 0))
     dbg_block_gap_query = 0   # 有 query 但 ±3 窗口空候选的块(时序错位症结)
@@ -2436,14 +2581,22 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
         #   local_n_queries==0 时除零保护（与下方 if not block_queries 的 continue 呼应）。
         _seg_local_total = max(1, int(local_n_queries))
         _seg_local_idx = 0
-        for ri, ci in zip(row_ind, col_ind):
-            if ri >= local_n_queries or ci >= local_n_chunks:
-                continue
+        # 🎬 B 立项：按脚本顺序（行序升序）消费——保证承接补配的"前序锚"=时间轴上紧邻的上一个叙述段；
+        #   scipy 行序本就升序，显式排序为稳定契约（承接补配依赖它做正确锚定）。
+        for ri, ci in sorted(zip(row_ind, col_ind), key=lambda p: p[0]):
             qi = block_queries[ri]
+            if ci >= local_n_chunks:
+                # 🎬 B 立项：padding 行（本块 query 多于切片，query 无实体分配）→ 尝试同源承接补配
+                if _backfill_continuation_for(qi):
+                    _seg_local_idx += 1
+                continue
             ci_idx = block_chunk_idx_list[ci]
             real_ci = valid_chunk_indices[ci_idx]
 
             if real_ci in global_used_chunks and not _is_reusable_broll(video_chunks[real_ci]):
+                # 🎬 B 立项：命中跨块已用切片（该 query 在本块可分配候选已耗尽）→ 尝试同源承接补配
+                if _backfill_continuation_for(qi):
+                    _seg_local_idx += 1
                 continue
             global_used_chunks.add(real_ci)
 
@@ -2726,6 +2879,8 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             cur_end_ms = float(chunk.get("endMs") or float(chunk.get("startMs") or 0))
             if last_chunk_end_ms is None or cur_end_ms > last_chunk_end_ms:
                 last_chunk_end_ms = cur_end_ms
+            # 🎬 B 立项：记录前序锚（最近一个已产出的相邻叙述段），供后续同源承接补配定位紧邻前段
+            _km_prev_anchor = {'query': query, 'chunk': chunk, 'result': results[-1]}
 
             # 🃏 真流式（段级推送）：解完这一段就立刻把它推到前端，
             #   用户感知是"卡片一张一张跳出来"，而不是等整块解完才整批蹦出。

@@ -771,7 +771,9 @@ export class AIService {
         alpha: 0.6,
         beta: 0.3,
         gamma: 0.1,
-      });
+        /** 🛑 2026-09-08：KM 属重负载长任务，必须显式 15min 总超时（触发 AIDaemon 核心 http 通道），
+         *  否则沿用默认 60s 必自杀；重试 0 避免重复触发 8min 级求解叠加。 */
+      }, { timeout: 900000, retries: 0 });
 
       if (!solverResult?.success) {
         throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, '后端排他性全局对齐决策引擎求解失败');

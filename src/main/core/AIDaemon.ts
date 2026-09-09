@@ -42,6 +42,13 @@ export class AIDaemon {
   private requestSem: Semaphore;
   /** 队列深度告警阈值：排队请求超过此值打 warn，便于诊断上游是否暴打 daemon */
   private readonly QUEUE_WARN_THRESHOLD = 8;
+  /** 🛑 2026-09-08 根因修复：Node 内置 fetch（undici）默认 headersTimeout=300s——
+   *  KM 求解 / 切片检测这类长任务在重负载首跑（无 clipZhEmbedding 缓存时全量封面重编码可达 7min+）
+   *  期间 FastAPI 不返回响应头，undici 会在 300s 强制掐断 → Node 报 fetch failed、
+   *  daemon 端孤儿任务继续跑完导致"失败后仍卡"。
+   *  约定：timeout ≥ 此阈值(4min) 的请求改走 Node 核心 http.request（无 headersTimeout 天花板，
+   *  仅受我方总时长 timer 与 socket 空闲双重约束）。 */
+  private readonly LONG_HTTP_MIN_TIMEOUT_MS = 240000;
 
   private constructor() {
     this.runtimeManager = AiRuntimeManager.getInstance();
@@ -302,24 +309,71 @@ export class AIDaemon {
           };
           const timeoutId = setTimeout(() => { notifyCancel(); controller.abort(); }, timeoutMs);
 
-          // Fix 10: 外部取消信号触发时同步中止 fetch
+          // Fix 10: 外部取消信号触发时同步中止请求
           onExternalAbort = () => { notifyCancel(); controller.abort(); };
           options?.signal?.addEventListener('abort', onExternalAbort);
 
-          const res = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(options?.taskId ? { 'X-Task-Id': options.taskId } : {}),
-            },
-            body: JSON.stringify(payload),
-            signal: controller.signal,
-          });
+          const reqHeaders: Record<string, string> = {
+            'Content-Type': 'application/json',
+            ...(options?.taskId ? { 'X-Task-Id': options.taskId } : {}),
+          };
+          const reqBody = JSON.stringify(payload);
+          /** 🛑 2026-09-08：长任务（≥4min 超时档）改走 Node 核心 http.request ——
+           *  绕开 undici fetch 默认 headersTimeout=300s 在"响应头长时间不到达"时的强制掐断；
+           *  核心 http 无响应头硬超时，只受外层 timeoutId（timeoutMs 总时长）与 AbortController 约束。 */
+          const longCall = timeoutMs >= this.LONG_HTTP_MIN_TIMEOUT_MS;
+
+          let res: { ok: boolean; status: number; bodyText: string };
+          if (longCall) {
+            res = await new Promise<{ ok: boolean; status: number; bodyText: string }>((resolve, reject) => {
+              const nodeReq = http.request({
+                hostname: '127.0.0.1',
+                port: this.port,
+                path: endpoint,
+                method: 'POST',
+                headers: { ...reqHeaders, 'Content-Length': Buffer.byteLength(reqBody) },
+              }, (nodeRes) => {
+                const chunks: Buffer[] = [];
+                nodeRes.on('data', (c: Buffer) => chunks.push(c));
+                nodeRes.on('end', () => {
+                  resolve({
+                    ok: nodeRes.statusCode !== undefined && nodeRes.statusCode >= 200 && nodeRes.statusCode < 300,
+                    status: nodeRes.statusCode || 0,
+                    bodyText: Buffer.concat(chunks).toString('utf8'),
+                  });
+                });
+              });
+              nodeReq.on('error', reject); // err.code（ECONNRESET/ETIMEDOUT/ECONNREFUSED）交外层分类
+              const abortNodeReq = () => {
+                const abortErr: any = new Error('aborted');
+                abortErr.name = 'AbortError'; // 外层 isTimeout 判定命中 → 走"响应超时"友好提示
+                nodeReq.destroy(abortErr);
+              };
+              // 请求结束（成功/失败）后清理 abort 监听，防泄漏
+              nodeReq.on('close', () => controller.signal.removeEventListener('abort', abortNodeReq));
+              if (controller.signal.aborted) {
+                abortNodeReq(); // 已在创建前被超时/外部取消：直接中止，不再发起写入
+              } else {
+                controller.signal.addEventListener('abort', abortNodeReq, { once: true });
+                nodeReq.write(reqBody);
+                nodeReq.end();
+              }
+            });
+          } else {
+            const fRes = await fetch(url, {
+              method: 'POST',
+              headers: reqHeaders,
+              body: reqBody,
+              signal: controller.signal,
+            });
+            const fText = await fRes.text();
+            res = { ok: fRes.ok, status: fRes.status, bodyText: fText };
+          }
           clearTimeout(timeoutId);
           options?.signal?.removeEventListener('abort', onExternalAbort);
           onExternalAbort = null;
           if (!res.ok) {
-            const errText = await res.text().catch(() => '未返回详细错误');
+            const errText = res.bodyText || '未返回详细错误';
             const errMsg = `HTTP ${res.status} - ${errText}`;
             /** 服务端返回 5xx → 可重试 */
             if (res.status >= 500 && attempt < maxRetries) {
@@ -332,7 +386,7 @@ export class AIDaemon {
             }
             throw new Error(errMsg);
           }
-          return await res.json();
+          return JSON.parse(res.bodyText || '{}');
         } catch (e: any) {
           lastError = e;
 

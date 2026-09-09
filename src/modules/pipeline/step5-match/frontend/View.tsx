@@ -960,7 +960,9 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
         </div>
       )}
       {matchResults.length > 0 ? (
-        <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-2">
+        /* 🎯 2026-09-08：镜头匹配卡片区挂 visible-scrollbar——全局默认滚动条 thumb 透明且仅 hover 显影，
+         *  若不挂该类，Windows 上该列表即使可滚也"看不见滚动条"，观感像功能没实现。 */
+        <div className="visible-scrollbar flex-1 min-h-0 overflow-y-auto flex flex-col gap-2">
           <DragReorderList items={matchResults} getItemId={(m) => m.id} onReorder={onReorder}
             renderItem={(m, index, isDragging) => (
               <div className={`w-full glass-card-sm p-3 flex flex-col gap-2 transition-all border-l-4 ${isDragging ? "opacity-50" : ""} ${m.confirmed ? "border-l-accent-green" : m.degraded ? "border-l-warning" : m.score >= 0.8 ? "border-l-accent-green" : m.score >= 0.5 ? "border-l-warning" : "border-l-accent-rose"}`}>
@@ -1031,7 +1033,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
               <button onClick={() => setReplacingShotId(null)} className="text-muted-foreground hover:text-foreground cursor-pointer"><X size={18} /></button>
             </div>
             <div
-              className="overflow-y-auto p-4 grid grid-cols-3 gap-3 content-start max-h-[516px]"
+              className="visible-scrollbar overflow-y-auto p-4 grid grid-cols-3 gap-3 content-start max-h-[516px]"
               onScroll={(e) => {
                 // 滚动接近底部时追加下一批（兜底；主机制是底部哨兵 IntersectionObserver）
                 const el = e.currentTarget;
@@ -1072,7 +1074,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
               </span>
               <button onClick={closePreview} className="text-muted-foreground hover:text-foreground cursor-pointer"><X size={18} /></button>
             </div>
-            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+            <div className="visible-scrollbar flex-1 overflow-y-auto p-4 flex flex-col gap-3">
               {/* 视频画面：切片视频文件；无切片文件时回退封面图 */}
               <div className="w-full aspect-video rounded-lg bg-black overflow-hidden relative shrink-0">
                 {previewVideoUrl ? (
