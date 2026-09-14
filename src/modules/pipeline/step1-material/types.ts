@@ -82,8 +82,8 @@ export interface AudioConfig {
 /** ASR 引擎配置 */
 export interface WhisperConfig {
   enabled: boolean;
-  /** ASR 引擎：'sensevoice'(中文) | 'faster-whisper'(英文) | 'paraformer'(高精度中文)，显式指定，不再自动检测 */
-  engine: 'sensevoice' | 'faster-whisper' | 'paraformer';
+  /** ASR 引擎：'paraformer'(中文) | 'faster-whisper'(英文/多语言)，显式指定，不再自动检测。SenseVoice 已删除（2026-09-14） */
+  engine: 'paraformer' | 'faster-whisper';
   language?: string;
   /** 🔧 去硬编码：faster-whisper 模型大小（tiny/base/small/medium/large-v3），默认 large-v3 精度最高 */
   modelSize?: string;

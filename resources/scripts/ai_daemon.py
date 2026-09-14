@@ -176,8 +176,6 @@ async def preload_models(models: str = 'clip,chinese_clip,face'):
         tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_chinese_clip))
     if 'face' in model_names:
         tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_face_app))
-    if 'funasr' in model_names:
-        tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_funasr_sensevoice))
     if 'faster_whisper' in model_names:
         tasks.append(loop.run_in_executor(_GLOBAL_EXECUTOR, AIModels.get_faster_whisper))
     if 'paraformer' in model_names:
@@ -196,7 +194,7 @@ async def check_deps():
     targets = {
         'demucs': 'Demucs (音频分离)',
         'audio_separator': 'MDX-Net (音频分离)',
-        'funasr': 'SenseVoice (ASR)',
+        'funasr': 'Paraformer (ASR)',
         'insightface': 'InsightFace (人脸识别)',
         'hdbscan': 'HDBSCAN (人脸聚类)',
         'torch': 'PyTorch',
@@ -236,7 +234,7 @@ async def check_deps():
     modules = {
         'torch': {**_module_ready(['torch', 'torchaudio']),
                   'display_name': 'PyTorch 推理引擎', 'size': '~2.1 GB',
-                  'shared_by': ['demucs', 'sensevoice', 'clip']},
+                  'shared_by': ['demucs', 'paraformer', 'clip']},
         'demucs': {**_module_ready(['demucs', 'torch', 'torchaudio']),
                    'display_name': 'Demucs 音频分离引擎', 'size': '~2.2 GB (含 torch)',
                    'needs': ['torch', 'torchaudio']},
@@ -246,8 +244,8 @@ async def check_deps():
         'whisper': {**_module_ready([]),
                     'display_name': 'Whisper.cpp ASR 引擎', 'size': '0 (已内置)',
                     'needs': []},
-        'sensevoice': {**_module_ready(['funasr', 'torch']),
-                       'display_name': 'SenseVoice ASR 引擎', 'size': '~600 MB (含 torch)',
+        'paraformer': {**_module_ready(['funasr', 'torch']),
+                       'display_name': 'Paraformer ASR 引擎', 'size': '~600 MB (含 torch)',
                        'needs': ['torch']},
         'insightface': {**_module_ready(['insightface']),
                         'display_name': 'InsightFace 人脸识别引擎', 'size': '~200 MB',

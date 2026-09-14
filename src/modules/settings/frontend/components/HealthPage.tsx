@@ -629,7 +629,7 @@ export const HealthPage: React.FC = () => {
               <div>
                 <div className="text-sm font-semibold text-foreground">AI 运行时 GPU 加速</div>
                 <div className="text-xs text-muted-foreground mt-0.5">
-                  启用 NVIDIA CUDA 加速 PyTorch 推理（CLIP/SenseVoice/Demucs）
+                  启用 NVIDIA CUDA 加速 PyTorch 推理（CLIP/Paraformer/Demucs）
                 </div>
               </div>
             </div>

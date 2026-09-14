@@ -90,7 +90,7 @@ declare module '../storeTypes' {
         density?: 'sparse' | 'standard' | 'dense' | string;
       };
       audio: { enabled: boolean; engine: 'demucs' | 'mdx'; };
-      whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'auto'; };
+      whisper: { enabled: boolean; engine: 'paraformer' | 'faster-whisper' | 'auto'; };
       faces: {
         enabled: boolean;
         engine: 'insightface' | 'mediapipe';
@@ -170,7 +170,7 @@ export const createUISlice: StateCreator<EditorState, [], [], UISlice> = (set, g
       minFrameInterval: 3.5,
     },
     audio: { enabled: true, engine: 'mdx' },
-    whisper: { enabled: true, engine: 'sensevoice' },
+    whisper: { enabled: true, engine: 'paraformer' },
     faces: { enabled: true, engine: 'insightface' }
   },
 

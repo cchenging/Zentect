@@ -56,21 +56,13 @@ interface ModelModuleDef {
 /** 17 个具体模型定义（V5 细化版 + V8 增 faster_whisper + V9 增 kokoro_voices，与 manifest.json models 数组对齐） */
 const MODEL_DEFINITIONS: ModelSeedDef[] = [
   // === ASR 语音识别 ===
-  {
-    id: 'sensevoice_onnx', name: 'SenseVoice ONNX', displayName: 'SenseVoice 量化模型', type: 'asr',
-    description: 'SenseVoice 多语言语音识别量化模型（中/日/韩/粤/auto 默认引擎）', version: '1.0', pythonPkg: 'funasr',
-    manifestPaths: ['sensevoice_onnx/model_quant.onnx'],
-    scanPaths: ['sensevoice_onnx/model_quant.onnx', 'sensevoice/model_quant.onnx'],
-  },
-  {
-    id: 'sensevoice_small', name: 'SenseVoiceSmall', displayName: 'SenseVoice PyTorch 模型', type: 'asr',
-    description: 'SenseVoice PyTorch 完整模型（含 utils/ctc_alignment.py）', version: '1.0', pythonPkg: 'funasr',
-    manifestPaths: ['sensevoice_small/model.pt'],
-    scanPaths: ['sensevoice_small/model.pt', 'huggingface/sensevoice_small/model.pt'],
-  },
+  // 🧹 SenseVoice 已删除（2026-09-14）：中文主线改用 Paraformer（paraformer_large 本地预置引擎），
+  //   外文走 faster-whisper / 多模态听译，SenseVoice 不再承担任何 ASR 职责。
+  //   fsmn_vad 保留：它是 FunASR VAD 通用组件，paraformer 识别同样依赖，因此脱离模块归属，
+  //   作为本地预置引擎随 paraformer_large 一并保留（不再出现在模型管理页）。
   {
     id: 'fsmn_vad', name: 'FSMN VAD', displayName: 'FSMN 语音活动检测', type: 'asr',
-    description: 'FunASR FSMN VAD 语音端点检测模型（ASR 前置组件）', version: '1.0', pythonPkg: 'funasr',
+    description: 'FunASR FSMN VAD 语音端点检测模型（ASR 前置组件，供 Paraformer 使用）', version: '1.0', pythonPkg: 'funasr',
     manifestPaths: ['fsmn_vad/model.pt'],
     scanPaths: ['fsmn_vad/model.pt', 'huggingface/fsmn_vad/model.pt'],
   },
@@ -82,6 +74,17 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
     scanPaths: [
       'faster_whisper/large-v3/model.bin',
       'faster_whisper/large-v3/ct2.bin',
+    ],
+  },
+  {
+    // 🎬 2026-09-09 方案A：新增 turbo（809M，decoder 4 层），韩语精度接近 large-v3、速度快 2–8 倍，CPU 韩剧首选
+    id: 'faster_whisper_large_v3_turbo', name: 'Faster-Whisper large-v3-turbo', displayName: 'Faster-Whisper large-v3-turbo (韩语/亚洲语言)', type: 'asr',
+    description: 'Faster-Whisper CTranslate2 多语言 ASR（large-v3-turbo，韩语 CER 约 2%，比 large-v3 快 2–8 倍）',
+    version: '1.0', pythonPkg: 'faster-whisper',
+    manifestPaths: ['faster_whisper/large-v3-turbo/model.bin'],
+    scanPaths: [
+      'faster_whisper/large-v3-turbo/model.bin',
+      'faster_whisper/large-v3-turbo/ct2.bin',
     ],
   },
   // === Vision 视觉识别 ===
@@ -184,13 +187,15 @@ const LEGACY_MODEL_IDS = [
 
 /** 模型下载源配置（V6 修正版，URL 仍为占位，实际下载依赖预装或 huggingface-cli） */
 const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
-  sensevoice_onnx: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model_quant.onnx' },
-  sensevoice_small: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'model.pt' },
+  // 🧹 SenseVoice 下载源已删除（2026-09-14），fsmn_vad 保留（paraformer 依赖）
   fsmn_vad: { url: 'https://huggingface.co/FunAudioLLM/SenseVoiceSmall/resolve/main', file: 'fsmn_vad/model.pt' },
   // 🔧 faster-whisper large-v3：CTranslate2 格式，首次使用时自动从 HuggingFace 下载
   //   下载源：https://huggingface.co/Systran/faster-whisper-large-v3/tree/main
   //   用户也可手动下载整个目录放到 resources/models/faster_whisper/large-v3/
   faster_whisper_large_v3: { url: 'https://huggingface.co/Systran/faster-whisper-large-v3/resolve/main', file: 'model.bin' },
+  // 🎬 2026-09-09 方案A：turbo 下载源（CTranslate2 格式，首次使用自动 HF 下载或手动放置）
+  //   注意：faster-whisper 的 large-v3-turbo 映射到 mobiuslabsgmbh（非 Systran），见 faster_whisper/utils.py _MODELS
+  faster_whisper_large_v3_turbo: { url: 'https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/main', file: 'model.bin' },
   clip: { url: 'https://huggingface.co/openai/clip-vit-base-patch32/resolve/main', file: 'model.safetensors' },
   // 中文 CLIP：多文件模型（config.json/preprocessor_config.json/vocab.txt 需随权重一起放置，权重为 pytorch_model.bin）
   chinese_clip: { url: 'https://huggingface.co/OFA-Sys/chinese-clip-vit-base-patch16/resolve/main', file: 'pytorch_model.bin' },
@@ -232,22 +237,14 @@ const MODEL_MODULES: ModelModuleDef[] = [
     runtimeId: 'demucs',  // 运行时依赖：demucs + torch + torchaudio
     sizeNote: '~80 MB (模型) + 2.2 GB (运行时，含 torch)',
   },
-  // === ASR 语音识别（2 张卡片）===
+  // === ASR 语音识别（1 张卡片，SenseVoice 已删除 2026-09-14）===
   {
-    id: 'sensevoice', category: 'asr', displayName: 'SenseVoice 语音识别',
-    description: 'FunASR SenseVoice 多语言 ASR（中文增强，需 PyTorch）',
+    id: 'faster_whisper', category: 'asr', displayName: 'Faster-Whisper 语音识别（多语言）',
+    description: 'Faster-Whisper CTranslate2 多语言 ASR（large-v3 / large-v3-turbo，韩语等亚洲语言推荐 turbo）',
     icon: '🎙️', required: 'optional',
-    modelIds: ['sensevoice_onnx', 'sensevoice_small', 'fsmn_vad'],
-    runtimeId: 'sensevoice',  // 运行时依赖：funasr + torch
-    sizeNote: '~500 MB (模型) + 600 MB (运行时，含 torch)',
-  },
-  {
-    id: 'faster_whisper', category: 'asr', displayName: 'Faster-Whisper 语音识别（英文/欧洲语言）',
-    description: 'Faster-Whisper CTranslate2 英文/欧洲语言 ASR（large-v3，WER 约 5%）',
-    icon: '🎙️', required: 'optional',
-    modelIds: ['faster_whisper_large_v3'],
+    modelIds: ['faster_whisper_large_v3', 'faster_whisper_large_v3_turbo'],
     runtimeId: 'faster_whisper',  // 运行时依赖：faster-whisper + ctranslate2 + onnxruntime
-    sizeNote: '~3 GB (模型) + 200 MB (运行时，含 ctranslate2)',
+    sizeNote: '~3 GB (large-v3) / ~1.5 GB (turbo) + 200 MB (运行时，含 ctranslate2)',
   },
   // === 视觉（2 张卡片）===
   {

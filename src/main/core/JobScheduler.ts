@@ -319,10 +319,10 @@ export class JobScheduler {
 
       // 🎬 2026-09-08 方案B：极速导入的 ASR 不再写死中文——语言/引擎从全局设置读取
       //   （步骤1「识别语言/引擎」选择后持久化到 asrLanguage/asrEngine，极速导入自动沿用）。
-      //   韩语/日语/粤语等经 SenseVoice(language=ko/ja/yue) 或 Faster-Whisper 正确识别；
-      //   paraformer 仅支持中文，选它时强制 zh，避免中文引擎去解韩语产出乱码。
+      //   韩语/日语/粤语等经 Faster-Whisper 正确识别；paraformer 仅支持中文，选它时强制 zh，
+      //   避免中文引擎去解韩语产出乱码。SenseVoice 已删除（2026-09-14）。
       const settingsRepo = new SettingsRepository();
-      const quickAsrEngine = settingsRepo.get<string>('asrEngine', 'sensevoice') || 'sensevoice';
+      const quickAsrEngine = settingsRepo.get<string>('asrEngine', 'paraformer') || 'paraformer';
       const quickAsrLang = settingsRepo.get<string>('asrLanguage', 'zh') || 'zh';
       const quickWhisper: Record<string, unknown> = { enabled: true, engine: quickAsrEngine };
       if (quickAsrEngine === 'paraformer') quickWhisper.language = 'zh';

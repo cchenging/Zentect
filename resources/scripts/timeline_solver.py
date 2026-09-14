@@ -524,7 +524,6 @@ async def kuhn_munkres_match(req: KMMatchReq, request: Request):
         print(f"[KM] R1 进入步骤5 前 RSS={_mem_rss_mb():.1f}MB（释放 ASR/人脸前）", file=sys.stderr)
         try:
             AIModels.release_faster_whisper()
-            AIModels.release_funasr_sensevoice()
             AIModels.release_paraformer()
             AIModels.release_face_app()   # 新增：人脸模型与 Chinese-CLIP 互斥，进入步骤5 即释放避免共存
         except Exception as e:

@@ -256,7 +256,6 @@ class AIModels:
     clip_processor = None
     chinese_clip_model = None
     chinese_clip_processor = None
-    _funasr_model = None
     _faster_whisper_model = None
     _paraformer_model = None  # Paraformer-Large 中文 ASR（懒加载）
 
@@ -314,14 +313,6 @@ class AIModels:
             cls._gc_collect()
 
     @classmethod
-    def release_funasr_sensevoice(cls):
-        """释放 FunASR SenseVoice + VAD 模型内存"""
-        if cls._funasr_model is not None:
-            del cls._funasr_model
-            cls._funasr_model = None
-            cls._gc_collect()
-
-    @classmethod
     def release_faster_whisper(cls):
         """释放 faster-whisper 模型内存"""
         if cls._faster_whisper_model is not None:
@@ -343,7 +334,6 @@ class AIModels:
         cls.release_face_app()
         cls.release_clip()
         cls.release_chinese_clip()
-        cls.release_funasr_sensevoice()
         cls.release_faster_whisper()
         cls.release_paraformer()
         print('[AI Daemon] 🧹 所有模型已释放，内存已回收', file=sys.stderr)
@@ -459,42 +449,6 @@ class AIModels:
         if cls.chinese_clip_model is False:
             return (None, None)
         return (cls.chinese_clip_model, cls.chinese_clip_processor)
-
-    @classmethod
-    def get_funasr_sensevoice(cls):
-        """函数级中文注释：获取 funasr AutoModel（SenseVoiceSmall + fsmn-vad），懒加载+带锁保护。
-        首次加载（200MB 权重+反序列化）需要几秒，设置 loading 状态让健康检查不误判重启。
-        失败不做显式降级（缺依赖直接抛错在上层 ASR 入口处理）。"""
-        if cls._funasr_model is None:
-            with INFERENCE_LOCK:
-                if cls._funasr_model is None:
-                    _mark_loading_start("funasr")
-                    try:
-                        from funasr import AutoModel
-                        sv_dir = os.path.join(MODELS_DIR, 'sensevoice_small')
-                        vad_dir = os.path.join(MODELS_DIR, 'fsmn_vad')
-                        print('[AI Daemon] 🧠 SenseVoiceSmall + fsmn-vad 启动…',
-                              file=sys.stderr)
-                        print(f'[AI Daemon]    SenseVoiceSmall: {sv_dir}',
-                              file=sys.stderr)
-                        print(f'[AI Daemon]    FSMN-VAD:       {vad_dir}',
-                              file=sys.stderr)
-
-                        if sv_dir not in sys.path:
-                            sys.path.insert(0, sv_dir)
-
-                        cls._funasr_model = AutoModel(
-                            model=sv_dir,
-                            vad_model=vad_dir,
-                            vad_kwargs={'max_single_segment_time': 30000},
-                            device=cls._ensure_device(),
-                            disable_update=True,
-                            trust_remote_code=True,  # SenseVoice 有自定义 model.py，必须信任远程代码
-                            hub='ms',  # 明确指定 ModelScope hub，避免自动探测触发联网
-                        )
-                    finally:
-                        _mark_loading_done()
-        return cls._funasr_model
 
     @classmethod
     def get_paraformer(cls):

@@ -32,7 +32,7 @@ describe('Step1 Types', () => {
           targetLanguage: 'zh-CN',
           frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, scale: 1024, fps: 2 },
           audio: { enabled: true },
-          whisper: { enabled: true, engine: 'sensevoice' },
+          whisper: { enabled: true, engine: 'paraformer' },
           faces: { enabled: true, engine: 'insightface' },
         },
       };
@@ -133,13 +133,13 @@ describe('Step1 Types', () => {
   });
 
   describe('WhisperConfig', () => {
-    it('应支持 sensevoice 和 faster-whisper 引擎', () => {
-      const engines: WhisperConfig['engine'][] = ['sensevoice', 'faster-whisper'];
+    it('应支持 paraformer 和 faster-whisper 引擎（SenseVoice 已删除）', () => {
+      const engines: WhisperConfig['engine'][] = ['paraformer', 'faster-whisper'];
       expect(engines).toHaveLength(2);
     });
 
     it('language 为可选字段', () => {
-      const config: WhisperConfig = { enabled: true, engine: 'sensevoice' };
+      const config: WhisperConfig = { enabled: true, engine: 'paraformer' };
       expect(config.language).toBeUndefined();
     });
   });
@@ -163,7 +163,7 @@ describe('Step1 Types', () => {
           targetLanguage: 'zh-CN',
           frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, scale: 1024, fps: 2 },
           audio: { enabled: true },
-          whisper: { enabled: true, engine: 'sensevoice' },
+          whisper: { enabled: true, engine: 'paraformer' },
           faces: { enabled: true, engine: 'insightface' },
         },
       };
@@ -241,7 +241,7 @@ describe('Step1 Types', () => {
           targetLanguage: 'zh-CN',
           frames: { enabled: true, mode: 'VLM_OPTIMIZED', sceneThreshold: 0.28, quality: 3, scale: 1024, fps: 2 },
           audio: { enabled: true },
-          whisper: { enabled: true, engine: 'sensevoice' },
+          whisper: { enabled: true, engine: 'paraformer' },
           faces: { enabled: true, engine: 'insightface' },
         },
         extractedData: {

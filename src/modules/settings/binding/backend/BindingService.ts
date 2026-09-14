@@ -9,7 +9,7 @@ export type { ProfileBinding as ProfileBindingRow } from '../../../../main/datab
 /** 管线节点定义（与规格 §3.7.2 对齐） */
 export const PIPELINE_NODES = [
   { taskType: 'audio', label: '音频分离', localOptions: ['本地轻量模型', 'Demucs', 'MDX-Net'] },
-  { taskType: 'asr', label: '台词识别 (ASR)', localOptions: ['Whisper 本地版', 'SenseVoiceSmall'] },
+  { taskType: 'asr', label: '台词识别 (ASR)', localOptions: ['Paraformer 中文', 'Faster-Whisper 多语言'] },
   { taskType: 'visual', label: 'VLM 画面分析', useModelPool: true },
   { taskType: 'sentiment', label: '情绪识别', useModelPool: true },
   { taskType: 'script', label: 'AI 解说文案', useModelPool: true },

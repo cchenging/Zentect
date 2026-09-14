@@ -41,6 +41,9 @@ dist-packages/
 # ESLint 缓存
 .eslintcache
 
+# TypeScript 编译缓存临时目录
+.tsctmp/
+
 # 测试脚本目录
 /tests/
 

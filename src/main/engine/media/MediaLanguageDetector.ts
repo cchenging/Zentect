@@ -30,7 +30,7 @@ export function detectMediaLanguage(transcriptText: string, detectedLanguage?: s
   const chineseChars = cleaned.match(/[\u4e00-\u9fff]/g);
   const chineseRatio = chineseChars ? chineseChars.length / cleaned.length : 0;
 
-  // 如果 SenseVoice 返回的语言标签明确不是 zh
+  // 如果 ASR 返回的语言标签明确不是 zh
   const isForeignLang = detectedLanguage && detectedLanguage !== 'zh' && detectedLanguage !== 'auto';
 
   if (isForeignLang || chineseRatio < 0.2) {

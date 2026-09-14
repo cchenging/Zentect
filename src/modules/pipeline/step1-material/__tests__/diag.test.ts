@@ -43,7 +43,7 @@ describe('CLOSURE_TEST2', () => {
     console.log('transcribe === mockTranscribe:', instance.transcribe === mockTranscribe);
     console.log('typeof instance.transcribe:', typeof instance.transcribe);
     
-    instance.transcribe('test', '/out', 'media-1', 'zh', 'sensevoice');
+    instance.transcribe('test', '/out', 'media-1', 'zh', 'paraformer');
     console.log('mockTranscribe calls after call:', mockTranscribe.mock.calls.length);
     
     expect(instance.transcribe).toBe(mockTranscribe);

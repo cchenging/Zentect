@@ -1,4 +1,4 @@
-// 定義所有 AI 提取器的標準輸入輸出介面
+// 定义所有 AI 提取器的标准输入输出接口
 export interface AudioExtractResult {
     vocalsPath?: string;
     bgmPath?: string;
@@ -17,7 +17,7 @@ export interface IAudioExtractor {
 }
 
 export interface ITextExtractor {
-    transcribe(audioPath: string, outDir: string, mediaId: string, language?: string, engine?: 'sensevoice' | 'faster-whisper' | 'auto'): Promise<TextExtractResult>;
+    transcribe(audioPath: string, outDir: string, mediaId: string, language?: string, engine?: 'paraformer' | 'faster-whisper' | 'auto'): Promise<TextExtractResult>;
 }
 
 export interface IVisionExtractor {

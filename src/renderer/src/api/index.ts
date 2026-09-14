@@ -149,7 +149,7 @@ export const API = {
     runGlobalTTS: (projectId: string, shots: any[]) => invokeSafe(IPC_CHANNELS.AI_RUN_GLOBAL_TTS, projectId, shots),
     visionSingle: (data: any) => invokeSafe(IPC_CHANNELS.AI_VISION_SINGLE, data),
     // 检查 Python 依赖安装状态（返回 { deps, modules, python_executable } 或 null）
-    // V7 modules 字段：torch/demucs/mdx_net/whisper/sensevoice/insightface/clip 7 个引擎的 ready 状态
+    // V7 modules 字段：torch/demucs/mdx_net/whisper/paraformer/insightface/clip 7 个引擎的 ready 状态（SenseVoice 已删除 2026-09-14）
     checkDeps: () => invokeSafe<{
       deps: Record<string, { installed: boolean; version: string | null; display_name: string }>;
       modules: Record<string, {

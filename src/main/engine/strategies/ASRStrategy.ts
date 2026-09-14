@@ -44,7 +44,7 @@ export class ASRStrategy extends BaseNodeStrategy {
     const outDir = path.dirname(targetAudioPath);
     /** 从 params 中提取语言参数 */
     const language = (task.params as any)?.language || 'zh';
-    const engine = (task.params as any)?.engine || 'sensevoice';
+    const engine = (task.params as any)?.engine || 'paraformer';
     AppLogger.info(LOG_TAGS.SCHEDULER, `[ASR] 启动真实语音识别，音频: ${targetAudioPath}, 引擎: ${engine}`);
     onProgress(5, '正在启动语音识别引擎...');
     try {

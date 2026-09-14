@@ -610,8 +610,7 @@ export const zhCN = {
     engine_mdx: 'MDX-Net (轻量,极速)',
     engine_demucs: 'Demucs (重型,高保真)',
     engine_auto: '自动 (Demucs → MDX 降级)',
-    engine_sensevoice: 'SenseVoice (极速版)',
-    engine_faster_whisper: 'Faster-Whisper (英文/欧洲语言)',
+    engine_faster_whisper: 'Faster-Whisper (多语言)',
     engine_paraformer: 'Paraformer (高精度中文)',
 
     // 💥 补充：嵌套子配置对象（MediaParser 组件按 t.mediaParser.frames?.title 方式访问）

@@ -1,7 +1,7 @@
 // 📁 路径: src/main/engine/strategies/__tests__/LocalWhisperStrategy.test.ts
 // 🎯 GAP 1: ASR 引擎自动路由 + 噪声过滤 单元测试
 // 重点验证:
-//   1. resolveEngineByLang — 根据归一化语言代码自动路由 senseVoice / faster-whisper / auto
+//   1. resolveEngineByLang — 根据归一化语言代码自动路由 paraformer / faster-whisper / auto（SenseVoice 已删除 2026-09-14）
 //   2. cleanText — 过滤 [MUSIC]/[blank]/[SOUND] 方括号噪声, (笑声)/(掌声)/(呼吸)/圆括号噪声, 保留台词括号内容
 //   3. 多空白压缩: 多个噪声标记移除后残留连续空白, 必须压成单空格 + trim()
 
@@ -13,23 +13,23 @@ const AnyStrategy = LocalWhisperStrategy as any;
 
 // ============================================================
 // GAP-1a: engine='auto' 自动路由 — 6 条用例
-// 规则: 中日韩粤(zh/ja/ko/yue) → senseVoice, 其它明确语言 → faster-whisper, auto → auto (传 Python 端预检测)
+// 规则: 中文(zh) → paraformer, 其它明确语言(ja/ko/yue/en/...) → faster-whisper, auto → auto (传 Python 端预检测)
 // ============================================================
 describe('LocalWhisperStrategy.resolveEngineByLang — GAP-1a ASR 引擎自动路由', () => {
-  it('[GAP1A-1] language=zh (中文) → 应路由 sensevoice', () => {
-    expect(AnyStrategy.resolveEngineByLang('zh')).toBe('sensevoice');
+  it('[GAP1A-1] language=zh (中文) → 应路由 paraformer', () => {
+    expect(AnyStrategy.resolveEngineByLang('zh')).toBe('paraformer');
   });
 
-  it('[GAP1A-2] language=ja (日文) → 应路由 sensevoice', () => {
-    expect(AnyStrategy.resolveEngineByLang('ja')).toBe('sensevoice');
+  it('[GAP1A-2] language=ja (日文) → 应路由 faster-whisper', () => {
+    expect(AnyStrategy.resolveEngineByLang('ja')).toBe('faster-whisper');
   });
 
-  it('[GAP1A-3] language=ko (韩文) → 应路由 sensevoice', () => {
-    expect(AnyStrategy.resolveEngineByLang('ko')).toBe('sensevoice');
+  it('[GAP1A-3] language=ko (韩文) → 应路由 faster-whisper', () => {
+    expect(AnyStrategy.resolveEngineByLang('ko')).toBe('faster-whisper');
   });
 
-  it('[GAP1A-4] language=yue (粤语) → 应路由 sensevoice', () => {
-    expect(AnyStrategy.resolveEngineByLang('yue')).toBe('sensevoice');
+  it('[GAP1A-4] language=yue (粤语) → 应路由 faster-whisper', () => {
+    expect(AnyStrategy.resolveEngineByLang('yue')).toBe('faster-whisper');
   });
 
   it('[GAP1A-5] language=en (英文) → 应路由 faster-whisper', () => {

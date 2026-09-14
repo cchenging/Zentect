@@ -536,7 +536,7 @@ describe('Step1MaterialStrategy', () => {
       const result = await (strategy as any).performTask(
         {
           mediaPath: '/v.mp4',
-          config: { whisper: { enabled: true, engine: 'sensevoice' }, frames: false, audio: true },
+          config: { whisper: { enabled: true, engine: 'paraformer' }, frames: false, audio: true },
         },
         buildContext(),
         '/tmp/cache',
@@ -554,7 +554,7 @@ describe('Step1MaterialStrategy', () => {
       const result = await (strategy as any).performTask(
         {
           mediaPath: '/v.mp4',
-          config: { whisper: { enabled: true, engine: 'sensevoice' }, frames: false, audio: true },
+          config: { whisper: { enabled: true, engine: 'paraformer' }, frames: false, audio: true },
         },
         buildContext(),
         '/tmp/cache',

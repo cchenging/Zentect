@@ -70,15 +70,6 @@ export class HealthCheckService {
       hint: fs.existsSync(ffmpegPath) ? '' : '系统缺失 FFmpeg，请重新安装软件'
     });
 
-    // ASR（SenseVoice）— 打包在安装包中
-    const sensevoicePath = path.join(PathManager.getModelsPath(), 'sensevoice_onnx');
-    results.push({
-      name: '语音识别 (ASR)',
-      available: fs.existsSync(sensevoicePath),
-      type: 'local',
-      hint: fs.existsSync(sensevoicePath) ? '' : 'ASR 模型缺失，语音识别不可用'
-    });
-
     // ASR（Paraformer）— 高精度中文引擎（可选，需联网下载到 models/paraformer_large）
     const paraformerPath = path.join(PathManager.getModelsPath(), 'paraformer_large');
     results.push({

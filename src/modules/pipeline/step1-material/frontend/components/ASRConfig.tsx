@@ -2,40 +2,37 @@
 // ASR 引擎 + faster-whisper 模型大小配置面板
 // 🔧 去硬编码：faster-whisper 模型大小不再固定 large-v3，改为前端可配置透传
 
-import React from 'react';
-import { Zap, Cpu, Target, Languages } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Cpu, Target, Languages, Loader2 } from 'lucide-react';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 import { API } from '@renderer/api';
+// 下拉美化：shadcn Select（Radix，定制外观，替代系统原生白底 select 弹层）
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '@renderer/components/ui/select';
 // 从 store 的 ExtractionConfig 派生 whisper 配置类型（含 modelSize）
-// 🔧 去 auto：ASR 引擎三选一 —— 中文(SenseVoice) / 英文(Faster-Whisper) / 高精度中文(Paraformer)
-type WhisperConfig = { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'paraformer'; language?: string; modelSize?: string };
+// 🔧 去 sensevoice：ASR 引擎二选一 —— 中文(Paraformer) / 多语言(Faster-Whisper)。SenseVoice 已删除（2026-09-14）
+type WhisperConfig = { enabled: boolean; engine: 'paraformer' | 'faster-whisper'; language?: string; modelSize?: string };
 
 interface ASRConfigProps {
   isRunning?: boolean;
 }
 
-/** ASR 引擎选项：3 选 1 单控件（中文 / 英文 / 高精度中文） */
+/** ASR 引擎选项：2 选 1 单控件（中文 / 多语言） */
 const ENGINE_OPTIONS = [
   {
-    value: 'sensevoice' as const,
+    value: 'paraformer' as const,
     label: '中文',
-    desc: 'SenseVoice',
-    Icon: Zap,
-    hint: '基于 FunASR + fsmn-vad，中文识别又快又稳。默认推荐，电视剧场景首选。',
+    desc: 'Paraformer',
+    Icon: Target,
+    hint: '基于 FunASR + fsmn-vad，880MB 高精度中文引擎，支持热词纠错专名错别字。中文电视剧场景首选（默认）。',
   },
   {
     value: 'faster-whisper' as const,
-    label: '英文',
+    label: '多语言',
     desc: 'Faster-Whisper',
     Icon: Cpu,
-    hint: '基于 CTranslate2，英文识别率高（WER 约 5%）。模型大小可在下方选择。',
-  },
-  {
-    value: 'paraformer' as const,
-    label: '高精度',
-    desc: 'Paraformer',
-    Icon: Target,
-    hint: '基于 FunASR + fsmn-vad，880MB 高精度中文引擎，支持热词纠错专名错别字。CPU 较慢但更准。',
+    hint: '基于 CTranslate2，韩语/日语/粤语/英语等多语言识别（韩语等亚洲语言推荐 large-v3-turbo）。模型大小可在下方选择。',
   },
 ] as const;
 
@@ -47,17 +44,20 @@ const MODEL_SIZE_OPTIONS = [
   { value: 'base', label: 'base', hint: '较快，精度一般' },
   { value: 'small', label: 'small', hint: '速度与精度均衡' },
   { value: 'medium', label: 'medium', hint: '较慢，精度高' },
+  // 🎬 2026-09-09 方案A：新增 large-v3-turbo（809M，decoder 4 层），
+  //   韩语等亚洲语言精度接近 large-v3（CER ~2%），速度约快 2–8 倍，CPU 韩剧首选。
+  { value: 'large-v3-turbo', label: 'large-v3-turbo', hint: '精度接近 large-v3、快约 2–8 倍（韩语/亚洲语言推荐）' },
   { value: 'large-v3', label: 'large-v3', hint: '最慢，精度最高（默认）' },
 ] as const;
 
-/** 🎬 方案B（2026-09-08）识别语言：独立于引擎选择，决定 ASR 语种与模型匹配。
- *  中日韩粤 → SenseVoice；英语 → Faster-Whisper；韩剧要更高准确率可选英语类引擎外，
- *  更优做法：语言=韩语 + 引擎=Faster-Whisper（large-v3 韩语多语言更强）。 */
+/** 🎬 方案B（2026-09-08）识别语言：独立于引擎选择，决定 ASR 语种与所用模型。
+ *  Paraformer 仅支持中文；韩语/日语/粤语/英语等多语言交给 Faster-Whisper。
+ *  韩剧要更高准确率：语言=韩语 + 引擎=Faster-Whisper（large-v3-turbo 韩语多语言更强）。 */
 const LANGUAGE_OPTIONS = [
-  { value: 'zh', label: '中文', hint: 'SenseVoice 中文识别，中文电视剧首选（默认）' },
-  { value: 'ko', label: '韩语', hint: '韩语剧集：SenseVoice 快；追求准确率建议配合 Faster-Whisper large-v3' },
-  { value: 'ja', label: '日语', hint: '日语剧集，SenseVoice 支持' },
-  { value: 'yue', label: '粤语', hint: '粤语内容，SenseVoice 支持' },
+  { value: 'zh', label: '中文', hint: 'Paraformer 中文识别，中文电视剧首选（默认）' },
+  { value: 'ko', label: '韩语', hint: '韩语剧集：推荐配合 Faster-Whisper large-v3-turbo，速度快且准确率高' },
+  { value: 'ja', label: '日语', hint: '日语剧集，使用 Faster-Whisper 识别' },
+  { value: 'yue', label: '粤语', hint: '粤语内容，使用 Faster-Whisper 识别' },
   { value: 'en', label: '英语', hint: 'Faster-Whisper large-v3 英语识别率高' },
   { value: 'auto', label: '自动', hint: '交由后端预检测/引擎自动决定（中文剧集片头易误判，默认不建议）' },
 ] as const;
@@ -68,15 +68,50 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
   const extractionConfig = useStep1Store((s) => s.extractionConfig);
   const updateExtractionConfig = useStep1Store((s) => s.updateExtractionConfig);
 
-  const whisper: WhisperConfig = extractionConfig?.whisper || { enabled: true, engine: 'sensevoice' };
-  // 默认选中中文：仅当显式为 faster-whisper / paraformer 才选中对应项，其余（含旧数据 auto/undefined）一律回退中文
+  // 🎬 动态已下载模型清单：磁盘 `resources/models/faster_whisper/{size}/` 实际存在的尺寸才可选
+  //   null = 拉取中；Set<string> = 已下载的 size（目录名）；空集 = 无已下载模型
+  const [downloadedSizes, setDownloadedSizes] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const list: any[] = await API.model.getModuleList();
+        if (!alive) return;
+        const fw = (list || []).find((m) => m.id === 'faster_whisper');
+        const sizes = new Set<string>();
+        for (const m of fw?.models || []) {
+          // 模型 id `faster_whisper_large_v3` → size `large-v3`（目录名，与后端 get_faster_whisper(model_size) 一致）
+          if (m.status === 'downloaded') sizes.add(String(m.id).replace('faster_whisper_', '').replace(/_/g, '-'));
+        }
+        setDownloadedSizes(sizes);
+      } catch (e) {
+        if (!alive) return;
+        // 拉取失败：如实置空（不伪造列表），由下拉呈现「无已下载模型」，避免掩盖真实状态
+        setDownloadedSizes(new Set());
+        console.error('[ASRConfig] 读取已下载 whisper 模型失败:', e);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  // 候选渲染集 = 完整目录里「已下载」的项（tiny/base/small/medium 无对应模型文件定义，天然不出现）
+  const modelSizeOptions = useMemo(() => {
+    if (!downloadedSizes) return [];
+    return MODEL_SIZE_OPTIONS.filter((o) => downloadedSizes.has(o.value));
+  }, [downloadedSizes]);
+
+  const whisper: WhisperConfig = extractionConfig?.whisper || { enabled: true, engine: 'paraformer' };
+  // 默认选中中文：仅当显式为 faster-whisper 才选中对应项，其余（含旧数据 sensevoice/auto/undefined）一律回退 paraformer
   const currentEngine: EngineValue = whisper.engine === 'faster-whisper'
     ? 'faster-whisper'
-    : whisper.engine === 'paraformer'
-      ? 'paraformer'
-      : 'sensevoice';
-  const currentModelSize = whisper.modelSize || 'large-v3';
-  // 🎬 方案B：识别语言（缺省按引擎推导：faster-whisper→en，sensevoice/paraformer→zh）
+    : 'paraformer';
+  // 当前实际渲染的模型：存储值若不在已下载集（磁盘缺失则无法用），落到首个已下载项；
+  //   列表为空（无任何已下载模型）时仍显示存储值，交由 UI 呈现「无可用模型」
+  const storedModelSize = whisper.modelSize || 'large-v3';
+  const currentModelSize = (downloadedSizes && downloadedSizes.has(storedModelSize) && storedModelSize)
+    || (modelSizeOptions[0]?.value)
+    || storedModelSize;
+  // 🎬 方案B：识别语言（缺省按引擎推导：faster-whisper→en，paraformer→zh）
   const currentLanguage: LanguageValue = LANGUAGE_VALUES.includes(whisper.language as LanguageValue)
     ? (whisper.language as LanguageValue)
     : (currentEngine === 'faster-whisper' ? 'en' : 'zh');
@@ -87,7 +122,7 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
     API.system.setSetting('asrLanguage', language).catch(() => { /* fire-and-forget */ });
   };
 
-  /** 切换引擎：同时联动语言（中文→SenseVoice + zh，英文→Faster-Whisper + en） */
+  /** 切换引擎：同时联动语言（中文→Paraformer + zh，多语言→Faster-Whisper + en） */
   const handleEngineChange = (engine: EngineValue) => {
     if (isRunning) return;
     const language: LanguageValue = engine === 'faster-whisper' ? 'en' : 'zh';
@@ -96,19 +131,19 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
   };
 
   /** 🎬 方案B：切换识别语言（auto/中/日/韩/粤/英）。
-   *  paraformer 仅支持中文——语言非中文时自动切回 SenseVoice（覆盖中日韩粤），防止中文引擎解韩语乱码。 */
-  const handleLanguageChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+   *  paraformer 仅支持中文——语言非中文时自动切到 Faster-Whisper，防止中文引擎解外文乱码。 */
+  const handleLanguageChange = (value: string) => {
     if (isRunning) return;
-    const lang = e.target.value as LanguageValue;
-    const engine: EngineValue = (currentEngine === 'paraformer' && lang !== 'zh') ? 'sensevoice' : currentEngine;
+    const lang = value as LanguageValue;
+    const engine: EngineValue = (currentEngine === 'paraformer' && lang !== 'zh') ? 'faster-whisper' : currentEngine;
     updateExtractionConfig({ whisper: { ...whisper, engine, language: lang } });
     persistAsrDefaults(engine, lang);
   };
 
   /** 切换 faster-whisper 模型大小 */
-  const handleModelSizeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleModelSizeChange = (value: string) => {
     if (isRunning) return;
-    updateExtractionConfig({ whisper: { ...whisper, modelSize: e.target.value } });
+    updateExtractionConfig({ whisper: { ...whisper, modelSize: value } });
   };
 
   const activeHint = ENGINE_OPTIONS.find((o) => o.value === currentEngine)?.hint || '';
@@ -150,43 +185,51 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
             <Languages size={13} className="shrink-0" />
             识别语言
           </span>
-          <select
-            value={currentLanguage}
-            onChange={handleLanguageChange}
-            disabled={isRunning}
-            className="bg-muted/30 border border-border/50 rounded-md px-2 py-1 text-[12px] text-foreground outline-none focus:border-accent cursor-pointer disabled:opacity-50"
-          >
-            {LANGUAGE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
+          <Select value={currentLanguage} onValueChange={handleLanguageChange} disabled={isRunning}>
+            <SelectTrigger className="h-8 w-auto min-w-[130px] bg-muted/30 border-border/50 text-[12px] focus:border-accent focus:ring-accent/30">
+              <SelectValue placeholder="选择语言" />
+            </SelectTrigger>
+            <SelectContent>
+              {LANGUAGE_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
           {LANGUAGE_OPTIONS.find((o) => o.value === currentLanguage)?.hint || ''}
           {currentLanguage === 'ko' && currentEngine === 'faster-whisper'
-            ? ' — 韩语 + Faster-Whisper large-v3：多语言大模型，韩剧准确率优先组合。'
+            ? ' — 韩语 + Faster-Whisper：多语言大模型（推荐 large-v3-turbo），韩剧准确率优先组合。'
             : ''}
         </p>
       </div>
 
-      {/* faster-whisper 模型大小选择（引擎为英文 Faster-Whisper 时显示） */}
+      {/* faster-whisper 模型大小选择（引擎为多语言 Faster-Whisper 时显示）——仅列已下载模型 */}
       {currentEngine === 'faster-whisper' && (
         <div className="flex flex-col gap-1">
           <div className="flex flex-row items-center justify-between gap-2">
-            <span className="text-[12px] text-muted-foreground">Faster-Whisper 模型大小</span>
-            <select
-              value={currentModelSize}
-              onChange={handleModelSizeChange}
-              disabled={isRunning}
-              className="bg-muted/30 border border-border/50 rounded-md px-2 py-1 text-[12px] text-foreground outline-none focus:border-accent cursor-pointer disabled:opacity-50"
-            >
-              {MODEL_SIZE_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
+            <span className="text-[12px] text-muted-foreground">Faster-Whisper 模型</span>
+            <Select value={currentModelSize} onValueChange={handleModelSizeChange} disabled={isRunning || downloadedSizes === null}>
+              <SelectTrigger className="h-8 w-auto min-w-[150px] bg-muted/30 border-border/50 text-[12px] focus:border-accent focus:ring-accent/30">
+                {downloadedSizes === null ? (
+                  <span className="flex items-center gap-1.5 text-muted-foreground">
+                    <Loader2 size={12} className="animate-spin" />
+                    读取中…
+                  </span>
+                ) : (
+                  <SelectValue placeholder="无已下载模型" />
+                )}
+              </SelectTrigger>
+              <SelectContent>
+                {modelSizeOptions.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
-            {modelSizeHint} — 模型越大越准但越慢；改小可显著提升速度（需重新识别生效）。
+            {modelSizeHint ? `${modelSizeHint} — ` : ''}
+            下拉仅显示磁盘已下载的模型（到「模型管理 → 语音识别」下载更多）；改小可显著提升速度（需重新识别生效）。
           </p>
         </div>
       )}

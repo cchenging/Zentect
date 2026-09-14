@@ -12,16 +12,17 @@ import * as fs from 'fs';
  * ASR 策略：统一通过 Python Daemon 调用本地 ASR 模型
  *
  * 引擎选择：
- * - 'sensevoice'（默认）：中日韩粤语言，基于 FunASR + fsmn-vad
- * - 'faster-whisper'：英文/欧洲语言，基于 CTranslate2，WER 约 5%，速度比 whisper.cpp 快 4-8 倍
+ * - 'paraformer'（默认）：中文精确识别，基于 FunASR + fsmn-vad
+ * - 'faster-whisper'：英文/多语言（含韩语/日语/粤语），基于 CTranslate2，WER 约 5%，速度比 whisper.cpp 快 4-8 倍
  *
- * 注：原 whisper.cpp 路径已移除（ggml-base.bin 模型 WER 17-30%，识别率不达标）
+ * 注：SenseVoice 已删除（2026-09-14）。中文走 paraformer，韩语等外文走 faster-whisper。
+ *   原 whisper.cpp 路径也已移除（ggml-base.bin 模型 WER 17-30%，识别率不达标）
  */
 export class LocalWhisperStrategy implements ITextExtractor {
 
   public async transcribe(
     audioPath: string, outDir: string, mediaId: string,
-    language: string = 'zh', engine: 'sensevoice' | 'faster-whisper' | 'auto' = 'sensevoice',
+    language: string = 'zh', engine: 'paraformer' | 'faster-whisper' | 'auto' = 'paraformer',
     signal?: AbortSignal,
     onProgress?: (pct: number, msg: string) => void,
     /** faster-whisper 模型大小（去硬编码，透传给 Python 端；默认 large-v3 精度最高） */
@@ -41,14 +42,14 @@ export class LocalWhisperStrategy implements ITextExtractor {
     await fs.promises.mkdir(outDir, { recursive: true });
     const whisperOutPath = path.join(outDir, `transcript_${mediaId}.json`);
 
-    // 统一走 Python Daemon：SenseVoice / faster-whisper 都通过 HTTP+SSE 调用
+    // 统一走 Python Daemon：Paraformer / faster-whisper 都通过 HTTP+SSE 调用
     const daemon = AIDaemon.getInstance();
     if (!daemon.isOnline()) {
       throw new AppError(ErrorCode.AI_SERVICE_OFFLINE, 'Python Daemon 离线，无法执行 ASR 推理');
     }
 
     // 自动路由 engine（engine='auto' 时根据 language 选择；明确指定引擎则保持不变）
-    let effectiveEngine: 'sensevoice' | 'faster-whisper' | 'paraformer' | 'auto' = engine;
+    let effectiveEngine: 'paraformer' | 'faster-whisper' | 'auto' = engine;
     if (engine === 'auto') {
       const normalizedLang = LocalWhisperStrategy.normalizeLangCode(language);
       effectiveEngine = LocalWhisperStrategy.resolveEngineByLang(normalizedLang);
@@ -59,7 +60,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
 
   /**
    * 通过 Python Daemon 调用 ASR（统一使用 PythonClient.callAsync）
-   * SenseVoice 和 faster-whisper 共用此路径，通过 engine 参数区分
+   * Paraformer 和 faster-whisper 共用此路径，通过 engine 参数区分
    */
   private async transcribeViaDaemon(
     audioPath: string, whisperOutPath: string,
@@ -134,7 +135,7 @@ export class LocalWhisperStrategy implements ITextExtractor {
 
     const lower = language.toLowerCase().trim();
 
-    // 中文变体：zh-CN/zh-TW/zh-Hans/zh-Hant → zh；yue 保留（粤语 SenseVoice 支持）
+    // 中文变体：zh-CN/zh-TW/zh-Hans/zh-Hant → zh；yue 保留（粤语交给 faster-whisper）
     if (lower.startsWith('zh-') || lower === 'zh') return 'zh';
     if (lower === 'yue') return 'yue';
 
@@ -165,22 +166,21 @@ export class LocalWhisperStrategy implements ITextExtractor {
    * 根据归一化语言代码自动选择 ASR 引擎（纯函数，便于单测与复用）
    *
    * 规则（项目核心准则，唯一真源）：
-   *   - 中日韩粤（zh/ja/ko/yue）→ sensevoice
-   *   - 其它明确语言（en/fr/de/es/ru/ar/...）→ faster-whisper
+   *   - 中文（zh）→ paraformer（中文精确识别，本地预置，不依赖下载）
+   *   - 其它明确语言（en/ja/ko/yue/fr/de/...）→ faster-whisper（多语言，韩语等亚洲语言推荐 turbo）
    *   - 'auto'（语言未知，需预检测）→ 保留 auto，交由 Python 端先跑语言预检测再选对应引擎
    *
    * @param normalizedLangCode 已经经过 normalizeLangCode 归一化的语言代码 (2 字母或 auto)
    * @returns 实际传给 Python Daemon 的 engine 值
    */
-  public static resolveEngineByLang(normalizedLangCode: string): 'sensevoice' | 'faster-whisper' | 'auto' {
+  public static resolveEngineByLang(normalizedLangCode: string): 'paraformer' | 'faster-whisper' | 'auto' {
     if (!normalizedLangCode) return 'auto';
     const lower = normalizedLangCode.toLowerCase().trim();
-    // 明确走 SenseVoice 的中日韩粤白名单
-    const SENSEVOICE_LANGS = new Set(['zh', 'ja', 'ko', 'yue']);
-    if (SENSEVOICE_LANGS.has(lower)) return 'sensevoice';
+    // 中文 → paraformer；其它明确语言 → faster-whisper（SenseVoice 已删除 2026-09-14，不外延）
+    if (lower === 'zh') return 'paraformer';
     // auto → 保留 auto 传 Python 端（错就错，不在 Node 端猜测 fallback）
     if (lower === 'auto') return 'auto';
-    // 其它所有明确语言 → faster-whisper
+    // 其它所有明确语言（en/ja/ko/yue/...）→ faster-whisper
     return 'faster-whisper';
   }
 

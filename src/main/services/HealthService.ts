@@ -16,7 +16,7 @@ interface RuntimePkgStatus {
   displayName: string;    // 显示名（PyTorch）
   installed: boolean;
   version: string | null; // 已安装版本，未装为 null
-  /** 使用方列表（如 ['Demucs', 'SenseVoice', 'CLIP']） */
+  /** 使用方列表（如 ['Demucs', 'Paraformer', 'CLIP']） */
   usedBy: string[];
 }
 
@@ -337,10 +337,10 @@ export class HealthService {
   private async getRuntimePkgs(): Promise<RuntimePkgStatus[]> {
     // 包名 → 使用方映射（与 ai_daemon modules.shared_by 对齐）
     const pkgUsedBy: Record<string, string[]> = {
-      torch: ['Demucs', 'SenseVoice', 'CLIP'],
+      torch: ['Demucs', 'Paraformer', 'CLIP'],
       torchaudio: ['Demucs'],
       demucs: ['Demucs'],
-      funasr: ['SenseVoice'],
+      funasr: ['Paraformer'],
       transformers: ['CLIP'],
       tokenizers: ['CLIP'],
       kokoro: ['Kokoro TTS'],

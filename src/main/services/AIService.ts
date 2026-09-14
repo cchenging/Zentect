@@ -564,7 +564,7 @@ export class AIService {
    *       demucs:    { ready, missing, display_name, size, needs },
    *       mdx_net:   { ready, missing, display_name, size, needs },
    *       whisper:   { ready, missing, display_name, size, needs },
-   *       sensevoice:{ ready, missing, display_name, size, needs },
+   *       paraformer:{ ready, missing, display_name, size, needs },
    *       insightface:{ ready, missing, display_name, size, needs },
    *       clip:      { ready, missing, display_name, size, needs },
    *     },

@@ -44,7 +44,7 @@ const ALL_PIPELINE_NODES = [
   { taskType: 'sentiment', label: '情绪识别',  useModelPool: true, icon: '🎭', desc: '台词情感分析' },
   // 本地节点：使用本地引擎，不走云 API
   { taskType: 'audio',     label: '音频处理',  localOptions: ['本地轻量模型', 'Demucs', 'MDX-Net'], icon: '🎵', desc: '人声/伴奏分离' },
-  { taskType: 'asr',       label: '语音识别',  localOptions: ['Whisper 本地版', 'SenseVoiceSmall'], icon: '🎙', desc: '语音转文字' },
+  { taskType: 'asr',       label: '语音识别',  localOptions: ['Paraformer 中文', 'Faster-Whisper 多语言'], icon: '🎙', desc: '语音转文字' },
   // 禁用节点：由下方独立配置决定
   { taskType: 'tts',       label: '语音合成',  hint: '由下方语音合成配置决定', disabled: true, icon: '🔊', desc: '文字转语音' },
 ] as const;

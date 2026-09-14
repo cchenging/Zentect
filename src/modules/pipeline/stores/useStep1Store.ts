@@ -60,7 +60,7 @@ export interface ExtractionConfig {
     density?: SharedFrameDensityPreset | string;
   };
   audio: AudioConfig;
-  whisper: { enabled: boolean; engine: 'sensevoice' | 'faster-whisper' | 'paraformer'; language?: string; modelSize?: string };
+  whisper: { enabled: boolean; engine: 'paraformer' | 'faster-whisper'; language?: string; modelSize?: string };
   faces: {
     enabled: boolean;
     engine: 'insightface' | 'mediapipe';
@@ -184,10 +184,11 @@ const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
     matrixMode: 'auto',
   },
   audio: { enabled: true, separationMode: 'quality', engine: 'mdx' },
-  // 🔧 修复：默认中文走 SenseVoice（又快又稳），显式指定 language='zh'
+  // 🔧 默认中文走 Paraformer（本地预置，又快又稳），显式指定 language='zh'
   //   旧默认 engine='auto' 会让 Python 端用 faster-whisper 预检测语言，
   //   对电视剧片头(音乐/静音)易误判 → 误走 faster-whisper large-v3，CPU 上极慢导致超时。
-  whisper: { enabled: true, engine: 'sensevoice', language: 'zh', modelSize: 'large-v3' },
+  //   SenseVoice 已删除（2026-09-14），中文引擎统一为 paraformer，韩语等外文走 faster-whisper。
+  whisper: { enabled: true, engine: 'paraformer', language: 'zh', modelSize: 'large-v3' },
   faces: { enabled: true, engine: 'insightface' },
 };
 
@@ -202,9 +203,10 @@ const PERSIST_PARTIAL = (state: Step1Store) => ({
  * - version 2: whisper 默认引擎收拢为 SenseVoice + language='zh'（中文电视剧稳定识别）
  * - version 3: whisper 增加 modelSize='large-v3'（faster-whisper 模型大小去硬编码，可配置）
  * - version 4: 移除 whisper 的 'auto' 引擎，改为显式二选一（中文 SenseVoice / 英文 Faster-Whisper）
- * migrate：处理 0→4（策略归一化 + 密度档 + whisper 迁移 + whisper 模型大小 + 去 auto）
+ * - version 5: SenseVoice 已删除（2026-09-14），中文引擎改为 Paraformer；历史 sensevoice 值归一为 paraformer
+ * migrate：处理 0→5（策略归一化 + 密度档 + whisper 迁移 + whisper 模型大小 + 去 auto + 去 sensevoice）
  */
-const PERSIST_VERSION = 4;
+const PERSIST_VERSION = 5;
 
 export const useStep1Store = create<Step1Store>()(
   persist(
@@ -268,15 +270,15 @@ export const useStep1Store = create<Step1Store>()(
             if (version < 1 && extractionConfig.frames) {
               extractionConfig.frames = migrateFramesConfig(extractionConfig.frames);
             }
-            // version < 2：旧 whisper 配置（engine:'auto' 或缺失 language）→ 默认中文走 SenseVoice
+            // version < 2：旧 whisper 配置（engine:'auto' 或缺失 language）→ 默认中文走 Paraformer
             // 关键：persist 持久化会让旧 localStorage 覆盖新默认值，必须在此强制收拢，
             //      否则用户"改了默认值"也会被本地旧 {engine:'auto'} 顶掉。
             if (version < 2) {
               const w = extractionConfig.whisper;
               extractionConfig.whisper =
                 w && typeof w === 'object'
-                  ? { ...w, engine: 'sensevoice', language: 'zh' }
-                  : { enabled: true, engine: 'sensevoice', language: 'zh' };
+                  ? { ...w, engine: 'paraformer', language: 'zh' }
+                  : { enabled: true, engine: 'paraformer', language: 'zh' };
             }
             // version < 3：whisper 补齐 modelSize（faster-whisper 模型大小去硬编码）
             // 兼容旧持久化数据：缺失时补默认 large-v3，避免 undefined 被透传导致 Python 端用默认值
@@ -286,12 +288,19 @@ export const useStep1Store = create<Step1Store>()(
                 if (!w.modelSize) w.modelSize = 'large-v3';
               }
             }
-            // version < 4：移除 whisper 的 'auto' 引擎 —— 旧数据 engine='auto' 归一为中文 SenseVoice
+            // version < 4：移除 whisper 的 'auto' 引擎 —— 旧数据 engine='auto' 归一为中文 Paraformer
             // 去自动：ASR 引擎二选一，不再按语言自动检测；旧 auto 历史数据默认走中文最稳妥
             if (version < 4) {
               const w = extractionConfig.whisper;
               if (w && typeof w === 'object' && w.engine === 'auto') {
-                extractionConfig.whisper = { ...w, engine: 'sensevoice', language: 'zh' };
+                extractionConfig.whisper = { ...w, engine: 'paraformer', language: 'zh' };
+              }
+            }
+            // version < 5：SenseVoice 已删除（2026-09-14）——历史 sensevoice 值归一为 paraformer
+            if (version < 5) {
+              const w = extractionConfig.whisper;
+              if (w && typeof w === 'object' && w.engine === 'sensevoice') {
+                extractionConfig.whisper = { ...w, engine: 'paraformer' };
               }
             }
           }
