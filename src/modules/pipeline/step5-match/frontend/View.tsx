@@ -170,6 +170,18 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   /** 是否处于暂停态（audio play/pause 事件驱动，保证卡片/播放条图标与实际播放状态一致） */
   const [playPaused, setPlayPaused] = useState(false);
   const playerAudioRef = useRef<HTMLAudioElement | null>(null);
+  /** 🔧 2026-09-14：匹配卡片区「跳到第 N 段」定位——输入序号后滚动到对应卡片并高亮 */
+  const [gotoN, setGotoN] = useState("");
+  const matchListRef = useRef<HTMLDivElement | null>(null);
+  const jumpToMatch = () => {
+    const n = parseInt(gotoN, 10);
+    if (!Number.isFinite(n) || n < 1 || n > matchResults.length) return;
+    const el = matchListRef.current?.querySelector(`[data-match-slot="mslot-${n - 1}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+      setGotoN("");
+    }
+  };
   /** 「找歌」已复制的曲名（反馈 1.6s） */
   const [copiedBgm, setCopiedBgm] = useState("");
   const playPct = playDur > 0 ? Math.min(100, (playCur / playDur) * 100) : 0;
@@ -959,13 +971,37 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
           </div>
         </div>
       )}
+      {/* 🔧 2026-09-14：匹配卡片区顶部「跳到第 N 段」快速定位（非滚动，固定于此），解决长列表翻找困难 */}
+      {matchResults.length > 0 && (
+        <div className="flex items-center gap-2 text-[12px] shrink-0">
+          <span className="text-muted-foreground">跳到第</span>
+          <input
+            value={gotoN}
+            onChange={(e) => setGotoN(e.target.value.replace(/[^0-9]/g, "").slice(0, 5))}
+            onKeyDown={(e) => { if (e.key === "Enter") jumpToMatch(); }}
+            disabled={isProcessing}
+            placeholder="序号"
+            title="输入段落序号后回车或点定位"
+            className="w-16 px-2 py-1 text-center bg-bg-secondary/50 border border-border rounded-md outline-none placeholder:text-muted-foreground/40 focus:border-accent/60 disabled:opacity-40"
+          />
+          <span className="text-muted-foreground">段</span>
+          <button
+            onClick={jumpToMatch}
+            disabled={isProcessing}
+            title="滚动到该段卡片"
+            className="px-2.5 py-1 text-[12px] bg-accent/15 text-accent hover:bg-accent/25 rounded-md transition-all cursor-pointer disabled:opacity-40">
+            定位
+          </button>
+          <span className="text-muted-foreground">共 {matchResults.length} 段</span>
+        </div>
+      )}
       {matchResults.length > 0 ? (
-        /* 🎯 2026-09-08：镜头匹配卡片区挂 visible-scrollbar——全局默认滚动条 thumb 透明且仅 hover 显影，
-         *  若不挂该类，Windows 上该列表即使可滚也"看不见滚动条"，观感像功能没实现。 */
-        <div className="visible-scrollbar flex-1 min-h-0 overflow-y-auto flex flex-col gap-2">
+        /* 🎯 2026-09-14：卡片区挂 visible-scrollbar 保证滚动条常显；max-h 不依赖父链 flex-1 塌陷，
+         *  强制内部滚动只在卡片区接管滚轮，避免整页顺滑滚动却"看不见滚动条"。 */
+        <div ref={matchListRef} className="visible-scrollbar flex-1 min-h-0 max-h-[calc(100vh-340px)] overflow-y-auto flex flex-col gap-2">
           <DragReorderList items={matchResults} getItemId={(m) => m.id} onReorder={onReorder}
             renderItem={(m, index, isDragging) => (
-              <div className={`w-full glass-card-sm p-3 flex flex-col gap-2 transition-all border-l-4 ${isDragging ? "opacity-50" : ""} ${m.confirmed ? "border-l-accent-green" : m.degraded ? "border-l-warning" : m.score >= 0.8 ? "border-l-accent-green" : m.score >= 0.5 ? "border-l-warning" : "border-l-accent-rose"}`}>
+              <div data-match-slot={`mslot-${index}`} className={`w-full glass-card-sm p-3 flex flex-col gap-2 transition-all border-l-4 ${isDragging ? "opacity-50" : ""} ${m.confirmed ? "border-l-accent-green" : m.degraded ? "border-l-warning" : m.score >= 0.8 ? "border-l-accent-green" : m.score >= 0.5 ? "border-l-warning" : "border-l-accent-rose"}`}>
                 <div className="flex gap-3">
                   {/* 排列序号：取自 DragReorderList 实时 index（拖拽重排即更新），独立列不随内容伸缩 */}
                   <div className="w-7 h-[90px] flex items-center justify-center shrink-0 text-muted-foreground/70 font-mono text-sm select-none">{index + 1}</div>

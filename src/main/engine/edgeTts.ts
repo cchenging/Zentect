@@ -8,15 +8,15 @@
 //   2. 发送帧必须是带 Path 头的 Message 文本帧（speech.config / ssml）
 //   3. 音频二进制消息 = [2B headerLen BE][header 文本 X-RequestId...Path:audio][MP3 数据直接开始]
 //   4. 结束信号 = 文本帧 Path:turn.end
-//   5. 版本号/UA 必须保持较新（旧版 Chrome/130 会被 403 拒绝，需用 143）
+//   5. 版本号/UA 必须保持较新（旧版会被微软拒连，2026-09 起需 ≥153）
 
 import crypto from 'crypto'
 import https from 'https'
 import type { Socket } from 'net'
 
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
-// 微软要求较新的 Chromium 版本号（旧版本会被 403 拒绝）
-const SEC_MS_GEC_VERSION = '1-143.0.3650.75'
+// 微软要求较新的 Chromium 版本号（旧版本会被拒连；当前用到 Edge Stable 153.0.4234.32）
+const SEC_MS_GEC_VERSION = '1-153.0.4234.32'
 const OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3'
 const WSS_HOST = 'speech.platform.bing.com'
 const WSS_PATH = '/consumer/speech/synthesize/readaloud/edge/v1'
@@ -30,7 +30,7 @@ const WSS_HEADERS = {
   'Origin': 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
   'Sec-WebSocket-Version': '13',
   'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0',
 }
 
 // RFC 6455 握手魔数

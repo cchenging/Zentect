@@ -82,7 +82,7 @@ export class TTSEngine {
       const msg = err?.message || '';
       // 网络/连接中断类错误（如守护进程被重启导致 fetch failed）≠ 依赖缺失，不能误提示装依赖
       if (isConnectionInterruptedError(msg)) {
-        throw new Error(`${msg || '语音合成失败'}（AI 运行时连接中断，可能是守护进程被重启，请重试）`);
+        throw new Error(`${msg || '语音合成失败'}（语音服务连接中断或服务端拒绝连接，请检查网络后重试）`);
       }
       const hint = provider === 'doubao' ? '（请在 设置 → AI → 语音合成 中检查火山引擎配置）'
         : provider === 'kokoro' ? '（请到 设置 → 健康检查 → AI 运行时依赖 安装 Kokoro 依赖）' : '';

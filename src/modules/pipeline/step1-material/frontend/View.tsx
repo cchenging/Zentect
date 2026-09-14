@@ -464,7 +464,7 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         {/* ASR 引擎 + faster-whisper 模型大小配置 */}
         <ASRConfig isRunning={whisperStatus === "running"} />
         {whisperStatus === "completed" && asrLines.length > 0 && (
-          <div className="rounded-md bg-bg-secondary border border-border/20 overflow-hidden"
+          <div className="rounded-md bg-bg-secondary border border-border/20 overflow-y-auto overflow-x-hidden max-h-[320px]"
             onMouseEnter={() => setHoverPaused(true)}
             onMouseLeave={() => setHoverPaused(false)}>
             {asrLines.map((line, idx) => {

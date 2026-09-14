@@ -171,7 +171,7 @@ export class TTSProvider {
       const msg = err?.message || '';
       // 网络/连接中断类错误（如守护进程被重启导致 fetch failed）≠ 依赖缺失，不能误提示装依赖
       if (isConnectionInterruptedError(msg)) {
-        throw new AppError(ErrorCode.AI_PROCESS_FAILED, `${msg || '语音合成失败'}（AI 运行时连接中断，可能是守护进程被重启，请重试）`)
+        throw new AppError(ErrorCode.AI_PROCESS_FAILED, `${msg || '语音合成失败'}（语音服务连接中断或服务端拒绝连接，请检查网络后重试）`)
       }
       const hints: Record<string, string> = {
         doubao: '（请在 设置 → AI → 语音合成 中检查火山引擎配置）',

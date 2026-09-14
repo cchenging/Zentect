@@ -590,7 +590,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           /** 🔧 缓存隔离：传 projectId 让 daemon 素材池缓存按项目隔离 */
           projectId,
           mediaId: sceneMediaId,
-        }, { timeout: 300000 });
+        }, { timeout: 900000 });
         const chunkData = chunkResult?.data || chunkResult;
         /** 🛑 2026-09-05 修复（封面缺失总根因）：daemon detect 响应为
          *  { success, data: <chunks 数组>, chunks: <chunks 数组>, matchSegments: <独立 seg 数组> }——
@@ -1031,7 +1031,13 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
             `[镜头匹配] 原声段落 ${r.shotId} 定位原片 ${r.loc.videoTimelineStartMs}~${r.loc.videoTimelineEndMs}ms → 切片 ${r.loc.chunkId}`,
           );
         } else {
-          AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] 原声段落 ${r.shotId} 未在 ASR 时间轴命中，回退语义匹配`);
+          // 🔧 2026-09-14 原声定位失败诊断（warn 级，避免 debug 被日志级别过滤）：回显文本/锚点/ASR 规模以定位根因
+          const fq = r.query as any;
+          const fbText = String((fq?.text ?? '') || '').split('|')[0].replace(/\s+/g, ' ').slice(0, 44);
+          AppLogger.warn(
+            LOG_TAGS.AI_AGENT,
+            `[镜头匹配] 原声段落 ${r.shotId} 未定位(audioSource=${typeof fq?.audioSourceStartMs === 'number'}, asrLines=${Array.isArray(asrLines) ? asrLines.length : 0}) 「${fbText}」 回退语义匹配`,
+          );
         }
       }
     }
@@ -1421,7 +1427,12 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     }
     /** 1. 在 ASR 时间轴中找与原文最贴近的行（时间锚点收窄 + 最长包含匹配，避免短句/跨镜头误命中） */
     const win = SemanticAnalyzeStrategy.findAsrSourceWindow(text, asrLines, anchorStartMs, anchorEndMs);
-    if (!win) return null;
+    if (!win) {
+      // 🔧 2026-09-14 原声定位失败分层诊断：ASR 文本时间窗未命中
+      AppLogger.warn(LOG_TAGS.AI_AGENT,
+        `[镜头匹配] 原声段落定位失败: ASR文本时间窗未命中 | asrLines=${asrLines?.length} anchor=${Number.isFinite(anchorStartMs) ? anchorStartMs : '-'}~${Number.isFinite(anchorEndMs) ? anchorEndMs : '-'}`);
+      return null;
+    }
     const startMs = win.sourceStartMs;
     const endMs = win.sourceEndMs;
 
@@ -1429,7 +1440,12 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *    切片天然按 startMs 升序，用二分 O(log C) 定位到 startMs 附近，再在相邻 2-3 个切片内判定覆盖。 */
     const chunk = SemanticAnalyzeStrategy.findCoveringChunk(videoChunks, startMs, endMs, 0)
       || SemanticAnalyzeStrategy.findCoveringChunk(videoChunks, startMs + 500, endMs - 500, 0);
-    if (!chunk) return null;
+    if (!chunk) {
+      // 🔧 2026-09-14 原声定位失败分层诊断：文本窗命中但无覆盖切片
+      AppLogger.warn(LOG_TAGS.AI_AGENT,
+        `[镜头匹配] 原声段落定位失败: 文本窗命中但切片未覆盖 | 窗口=${Math.round(startMs)}~${Math.round(endMs)}ms segs=${videoChunks?.length}`);
+      return null;
+    }
 
     return {
       chunkId: chunk.id || '',
@@ -1523,6 +1539,67 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     segs.push(cur);
 
     /** 选覆盖最长的连续块作为台词时间窗（台词重复出现时取信息量最大的一处） */
+    let bestSeg = segs[0];
+    for (const seg of segs) {
+      if (seg.end - seg.start > bestSeg.end - bestSeg.start) bestSeg = seg;
+    }
+    if (bestSeg.end <= bestSeg.start) return null;
+    return { sourceStartMs: bestSeg.start, sourceEndMs: bestSeg.end };
+  }
+
+  /**
+   * 🎙️ 按时间窗锁定 ASR 台词（原声定位【主路径】）：在锚点画面时间窗 [anchorStartMs, anchorEndMs]（±1s 容差）
+   * 内，收集与窗口重叠的 ASR 台词行，按时间连续合并（≤1s 停顿视为同句），返回台词在原片中的源坐标时间窗。
+   *
+   * 设计纠正（2026-09-14）：原声段的音频源本质由"这段画面里说话的时间"决定，而非"LLM 回填文本能否对上 ASR"。
+   * 此函数不依赖任何文本匹配——韩语/超长剧本/LLM 抄录不准等场景下同样能锁定，从根上消除
+   * "audioSource 为空 → 步骤5 回退文本匹配再次失败"的整条失败链。文本匹配仅保留在窗口内多段台词
+   * 需区分时（由调用方决定），不再作为锁定音频源的前提。
+   *
+   * @param asrLines ASR 时间轴 [{ text, startMs, endMs }]（源坐标）
+   * @param anchorStartMs 锚点画面起始（源坐标 ms，原声段对应 chunk 的时间起点）
+   * @param anchorEndMs 锚点画面结束（源坐标 ms）
+   * @returns 源坐标台词时间窗；窗口内无有效台词返回 null
+   */
+  static findAsrWindowByTime(
+    asrLines: any[],
+    anchorStartMs?: number,
+    anchorEndMs?: number,
+  ): { sourceStartMs: number; sourceEndMs: number } | null {
+    if (!Array.isArray(asrLines) || asrLines.length === 0) return null;
+    const aStart = Number(anchorStartMs);
+    const aEnd = Number(anchorEndMs);
+    if (!Number.isFinite(aStart)) return null;
+    const lo = aStart - 1000;
+    const hi = (Number.isFinite(aEnd) && aEnd > aStart ? aEnd : aStart) + 1000;
+
+    /** 收集窗口内台词行：过滤超短行/纯语气词（<2 汉字），与 findAsrSourceWindow 同款过滤，避免短响词污染窗口 */
+    const lines: Array<{ s: number; e: number }> = [];
+    for (const line of asrLines) {
+      const s = Number(line.startMs);
+      const e = Number(line.endMs);
+      if (!Number.isFinite(s) || (Number.isFinite(e) ? e < lo : true) || s > hi) continue;
+      const t = (line.text || line.originalText || '').replace(/\s+/g, '');
+      if (!t) continue;
+      const hanCount = (t.match(/[\u4e00-\u9fa5]/g) || []).length;
+      if (hanCount < 2 && t.length < 4) continue;
+      lines.push({ s, e: Number.isFinite(e) && e > s ? e : s + 3000 });
+    }
+    if (lines.length === 0) return null;
+
+    /** 按时间合并连续/重叠行（≤1s 停顿视为同句），选覆盖最长的连续块作为台词时间窗 */
+    lines.sort((a, b) => a.s - b.s);
+    const segs: Array<{ start: number; end: number }> = [];
+    let cur = { start: lines[0].s, end: lines[0].e };
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].s <= cur.end + 1000) {
+        cur.end = Math.max(cur.end, lines[i].e);
+      } else {
+        segs.push(cur);
+        cur = { start: lines[i].s, end: lines[i].e };
+      }
+    }
+    segs.push(cur);
     let bestSeg = segs[0];
     for (const seg of segs) {
       if (seg.end - seg.start > bestSeg.end - bestSeg.start) bestSeg = seg;

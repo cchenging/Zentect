@@ -1579,18 +1579,16 @@ ${roleMapLines.join('\n')}
 
     const parsedShots: GeneratedShot[] = merged.map((p) => {
       const scanResult = lexiconFilter.scan(p.text || '');
-      /** 🎙️ 原声保留段：生成阶段即用 ASR 精确锁定原声台词在源片中的时间窗（源坐标），
-       *  步骤4 原声试听/导出硬绑定直接可读。与步骤5 locateOriginalClip 同源（findAsrSourceWindow）；
-       *  ASR 未命中时 audioSource 置空，由 Normalizer 按 chunk 时间轴 fallback（近似），不伪造精确值。 */
+      /** 🎙️ 原声保留段：生成阶段即锁定原声台词在源片中的时间窗（源坐标），
+       *  步骤4 原声试听/导出硬绑定直接可读。音频源以【画面时间窗】为主锁定（见下），文本反查仅作辅助。 */
       const isOriginalAudio = (p as any).keepOriginalAudio === true;
-      /** 原声段用 chunk 画面时间窗做锚点收窄 ASR 匹配范围，防止台词重复时跨镜头误匹配 */
+      /** 🎙️ 原声段音频源：段落画面时间窗（源坐标=原视频绝对时间）本身可直接作音源，无需文本反查；
+       *  ASR（findAsrWindowByTime）仅做"让原声更紧凑"的可选收敛——开头去垫声、结尾不拖尾。
+       *  收敛不出则直接落回段落画面窗（?? 兜底）：音频窗永不空、零文本匹配，LLM 抄录不准不再影响定位。 */
+      const anchorStart = (p as any).startMs;
+      const anchorEnd = (p as any).startMs + ((p as any).durationMs || 0);
       const asrWin = isOriginalAudio
-        ? SemanticAnalyzeStrategy.findAsrSourceWindow(
-            p.text || '',
-            asrLines,
-            (p as any).startMs,
-            (p as any).startMs + (p as any).durationMs,
-          )
+        ? (SemanticAnalyzeStrategy.findAsrWindowByTime(asrLines, anchorStart, anchorEnd) ?? { sourceStartMs: anchorStart, sourceEndMs: anchorEnd })
         : null;
       return {
         /** ✅ 身份键统一：出生处唯一主键 seg_N 透传为最终产物的 id（前端 Normalizer 断言主键必存在）；shotId 同值并存兼容过渡 */
@@ -1750,6 +1748,9 @@ ${roleMapLines.join('\n')}
 ## Task
 你将收到一份经过物理切片与视觉分析的视频片段流（含有时间轴、角色锚定、ASR原声及画面描述）${args.plotOutline ? '，以及一份已提炼的【全局剧情大纲】' : ''}。
 请据此撰写一份"贴合剧情主线、在关键节点给出合理解读"的高吸引力解说文案。
+
+## 🌍 多语原声处理（外语剧集）
+当片段流中的 asrContext／原声台词为韩语、日语、英语等外语原文时：先完整理解其剧情含义，再**统一以流畅中文**撰写解说；严禁照抄外文原句，严禁将外文单词/短句混入解说文本，也不得把同一角色姓名译成多套中文名。人名、地名沿用全程最合理的统一译法，并严格使用【全局已知角色列表】中的姓名。
 
 ## 🎬 剧情思维（最高优先级，先于一切形式规则）
 1. **贴剧情，不贴画面**：解说不是画面翻译！每一段解说必须回答"这段在剧情中推进了什么"（因果/转折/人物弧线），段与段之间承上启下、逻辑连贯。撰写前先对照下方【全局剧情大纲】的 arc（剧情弧线）与 keyTurns（转折点），明确本段处于弧线哪一阶段、在推进哪个转折——解说须紧扣该阶段剧情任务，不得脱离主线自说自话。
