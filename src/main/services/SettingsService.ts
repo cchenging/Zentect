@@ -63,6 +63,10 @@ export class SettingsService {
       throw new AppError(ErrorCode.FS_PATH_INVALID, '设置键名不能为空');
     }
     this.repo.saveSettings({ [key]: value });
+    // 🔧 日志目录设置：保存后立即注入 AppLogger，日志写入动态切到新目录（electron-log 每次写求值，无需重启）
+    if (key === 'logPath') {
+      AppLogger.setLogDir((value && value.trim()) ? value.trim() : null);
+    }
     AppLogger.info(LOG_TAGS.SYSTEM, `设置已更新: ${key}`);
   }
 

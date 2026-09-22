@@ -16,6 +16,8 @@ import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
 import { diffParagraphs, applyDiffUpdate } from "@modules/editor/shell/utils/scriptDiffTree";
 import { StepScriptGenerationView } from "./View";
 import { breakLongParagraphs } from "./breakLongParagraphs";
+// 🎯 匹配单位开关（renderer 侧只读；读不到 process.env 时按 legacy 兜底，主进程为权威来源）
+import { resolveScriptMatchUnitMode } from "../../../../shared/utils/scriptMatchUnit";
 // 判别联合契约唯一净化入口：renderer「重新生成」路径的段落同样必须过 Normalizer
 import { normalizeScriptParagraph } from "../../../../shared/utils/normalizeScriptParagraph";
 
@@ -99,6 +101,12 @@ export const StepScriptGeneration: React.FC = () => {
               /** 🎯 P3 时间轴锚定：透传对应 chunk 的时间起点/时长（ms），供步骤5 锚定切片 */
               startMs: p.startMs,
               durationMs: p.durationMs,
+              /** 🎯 参考帧锚点透传：步骤3 产出的真实画面锚点，供断句子句继承后进入步骤5 query */
+              refFrameTimeMs: p.refFrameTimeMs,
+              refFrameDesc: p.refFrameDesc,
+              refFrameSource: p.refFrameSource,
+              /** 🎯 匹配单位：透传步骤3 断句器写入的「完整句」id（sentence 档才有，legacy 档为 undefined） */
+              matchUnitId: p.matchUnitId,
               /** 🎙️ 原声保留段判别信息透传：缺失时 Normalizer 会把原声段误判为解说段，
                *  写后显示成带引号的普通文案且无「原声保留」标签（须重进才恢复）。 */
               type: p.type,
@@ -115,7 +123,7 @@ export const StepScriptGeneration: React.FC = () => {
           const narrationOnlyPara = rawParagraphs.filter(
             (p: any) => !(p.type === 'original_audio' || p.keepOriginalAudio || p.audioSource),
           );
-          const mergedPara = [...breakLongParagraphs(narrationOnlyPara), ...originalAudioPara]
+          const mergedPara = [...breakLongParagraphs(narrationOnlyPara, { matchUnit: resolveScriptMatchUnitMode() }), ...originalAudioPara]
             .sort((a: any, b: any) => (a.__order ?? 0) - (b.__order ?? 0));
           // 爆破切分器拆分超长段落后，统一过 Normalizer 净化为判别联合契约
           // （补齐 type / 毫秒时间轴，editing 布尔由 Normalizer narration 分支透传保留）

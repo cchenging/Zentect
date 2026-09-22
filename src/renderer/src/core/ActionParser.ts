@@ -139,6 +139,12 @@ export class ActionParser {
       const upstreamContext: Record<string, any> = {};
 
       const incomingEdges = incomingEdgesMap.get(nodeId) || [];
+      /** 🔧 恢复 dependsOn 透传：2e824988 重构时误删了 `upstreamContext.dependsOn`，
+       *  导致各 nodeParser 的 `dependsOn: upstreamContext.dependsOn || []` 恒为空数组，
+       *  下游 ASRStrategy（用 task.dependsOn[0] 作为上游节点 bus key 取产物）与
+       *  PipelineEngine（按 parentId 合并 simulatedBus）的父节点串联全部失效。
+       *  此处按入边还原上游节点 ID 列表，与重构前行为一致。 */
+      upstreamContext.dependsOn = incomingEdges.map((e) => e.source);
       for (const inEdge of incomingEdges) {
         const srcNode = nodeMap.get(inEdge.source);
         if (srcNode) {

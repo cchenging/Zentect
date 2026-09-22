@@ -305,7 +305,24 @@ export class SmartFramePostProcessor {
         : this.inferTimeMs(strategy, i, fps, timePoint);
       // 🎬 body 坐标 → 源坐标（叠加 OP 裁剪偏移）。相对量（帧间差/占比）不受影响，
       //   AsrAnchorMatcher（源坐标 ASR）与 GapFrameRefiller（源视频 seek）因此同步修正。
-      const timeMs = base.timeMs + sourceOffsetMs;
+      let timeMs = base.timeMs;
+      if (timeMs < 0) {
+        // 🛑 修复：无精确 PTS 且非均匀策略时 inferTimeMs 返回估算占位 -1，
+        //   若直接 -1+sourceOffset(OP 裁剪偏移)，每帧都会退化成同一个恒定值
+        //   （实测全片 664 帧 frames_time_ms 全=64999 = -1+65000），污染后续时间轴。
+        // 🛠 P0 修复 2：兜底插值不能用「视频 fps」——稀疏选帧（实测 664 帧覆盖 4227s）
+        //   下 i/fps*1000 仅覆盖前约 27s，全片时间轴整体错位。改为按已知 body 窗口时长
+        //   均匀铺开（i/(n-1)×windowMs）再叠加 OP 裁剪偏移，量级与源时间保持一致；
+        //   仍保留 estimatedTime=true 供下游识别「非精确时间」。
+        const windowMs = (options.videoDurationMinutes ?? 0) * 60000;
+        timeMs = windowMs > 0
+          ? sourceOffsetMs + Math.round((i / Math.max(1, files.length - 1)) * windowMs)
+          : sourceOffsetMs + Math.round((i / Math.max(1e-6, fps ?? 2)) * 1000);
+      } else {
+        // 🎬 body 坐标 → 源坐标（叠加 OP 裁剪偏移）。相对量（帧间差/占比）不受影响，
+        //   AsrAnchorMatcher（源坐标 ASR）与 GapFrameRefiller（源视频 seek）因此同步修正。
+        timeMs = base.timeMs + sourceOffsetMs;
+      }
       sceneIndex += 1;
       kept.push({
         framePath: filePath,

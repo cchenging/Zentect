@@ -83,10 +83,12 @@ export class DatabaseWriteQueue {
       AppLogger.error(LOG_TAGS.DATABASE, 'DatabaseWriteQueue 批量写入失败', e)
     }
 
+    // 🔧 修复重试死锁：scheduleDrain 内有 `if (this.processing) return` 保护，而此刻 processing 仍为 true
+    //    ⇒ 直接调用会被挡掉、不再注册定时器；失败任务被重新入队后队列永久停摆、Promise 永不 settle。
+    //    故先复位 processing，再按需调度下一轮排水（成功路径下队列为空，等价于原来的置 false）。
+    this.processing = false
     if (this.queue.length > 0) {
       this.scheduleDrain()
-    } else {
-      this.processing = false
     }
   }
 

@@ -44,6 +44,7 @@ import { ModelController } from './controllers/ModelController'
 import { ApiProfileController } from './controllers/ApiProfileController'
 import { migrateOldApiConfig } from './database/migrations/migrateApiProfiles'
 import { SettingsController } from './controllers/SettingsController'
+import { StoryboardController } from './controllers/StoryboardController'
 import { SettingsRepository } from './database/repositories/SettingsRepository'
 import { CrashReporter } from './core/CrashReporter'
 import { TelemetryOptInGate } from './core/TelemetryOptInGate'
@@ -132,6 +133,12 @@ class AppBootstrap {
         (async () => {
           try {
             SQLiteConnection.getInstance().getDB();
+            // 🔧 日志目录设置注入：DB 就绪后立即读取 logPath，electron-log 每次写日志重新求值路径，
+            //   后续日志写即动态切到用户配置的日志目录（无需重启）；DB 未就绪/读失败则保持默认 userData/logs
+            try {
+              const cfgLog = new SettingsRepository().get<string>('logPath', '');
+              if (cfgLog && cfgLog.trim()) AppLogger.setLogDir(cfgLog.trim());
+            } catch { /* 保持默认日志目录 */ }
             // 🔧 启动性能修复：将 migrateStaleEncryptedData 延迟到数据库就绪后 2 秒执行，
             //   避免 SQLite 同步大事务阻塞启动关键路径。migrateStaleEncryptedData 会
             //   遍历 settings 表逐条解密，在 WAL 模式下独占写锁，导致后续所有
@@ -179,15 +186,21 @@ class AppBootstrap {
           }
         })(),
         // 6. AI 运行时唤醒 (AiRuntimeManager 接管, AIDaemon 为 facade)
-        (async () => {
+        // 🔧 启动黑屏修复：把 AI 运行时从「关键路径且被 Promise.all 等待」剥离，改为
+        //    **窗口就绪后 2 秒的非阻塞后台预热**。冷载 ai_daemon.py 要 import torch(CPU)
+        //    全程 ~40s 压满机器，若在启动关键路径同步抢占，会把渲染进程(vite)饿死，
+        //    导致 `did-start-loading`(~50ms) → `dom-ready`(~40s) 的长黑屏。所有 daemon 消费者
+        //    均走 `AIDaemon.ensureWarm()` 按需自启（AIService/PipelineEngine/HealthService 等），
+        //    故延迟后台预热不破坏任何功能；前台 UI 在 torch 导入期间保持即时可用。
+        setTimeout(() => {
           try {
             AiRuntimeManager.getInstance();
             AIDaemon.getInstance().start();
-            AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 6/10 AI 运行时已拉起 (${mark('AiRuntime')}ms)`);
+            AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 6/10 AI 运行时后台预热启动 (${mark('AiRuntime')}ms)`);
           } catch (e) {
             AppLogger.warn(LOG_TAGS.BOOTSTRAP, 'AI 运行时启动失败（非致命）', e as Error);
           }
-        })(),
+        }, 2000),
         // 7. M4.0 运行时服务启动 (崩溃/遥测/统计)
         (async () => {
           try {
@@ -237,6 +250,7 @@ class AppBootstrap {
     new UserController().register()
     new ModelController().register()
     new SettingsController().register()
+    new StoryboardController().register()
   }
 
   // ==========================================

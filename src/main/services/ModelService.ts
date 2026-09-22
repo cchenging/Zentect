@@ -96,9 +96,16 @@ const MODEL_DEFINITIONS: ModelSeedDef[] = [
   },
   {
     id: 'chinese_clip', name: 'Chinese-CLIP', displayName: '中文 CLIP 跨模态模型', type: 'vision',
-    description: 'OFA Chinese-CLIP 中文文本-图像匹配（中文文案直编无需翻译，步骤5 语义匹配优先）', version: '1.0',
+    description: 'OFA Chinese-CLIP 中文文本-图像匹配（步骤2 镜头语义索引使用）', version: '1.0',
     manifestPaths: ['chinese-clip/pytorch_model.bin'],
     scanPaths: ['chinese-clip/pytorch_model.bin', 'chinese-clip/config.json', 'chinese-clip/vocab.txt'],
+  },
+  {
+    id: 'bge_small_zh', name: 'BGE-small-zh-v1.5', displayName: 'BGE 中文文本嵌入模型', type: 'vision',
+    description: 'BAAI BGE-small-zh-v1.5 中文文本嵌入（步骤5 语义主分：文案↔切片描述的文本检索，替代 CLIP 图文通道）',
+    version: '1.5',
+    manifestPaths: ['bge-small-zh-v1.5/model.safetensors'],
+    scanPaths: ['bge-small-zh-v1.5/model.safetensors', 'bge-small-zh-v1.5/config.json'],
   },
   // === TTS 语音合成 ===
   {
@@ -199,6 +206,9 @@ const MODEL_SOURCES: Record<string, { url: string; file: string }> = {
   clip: { url: 'https://huggingface.co/openai/clip-vit-base-patch32/resolve/main', file: 'model.safetensors' },
   // 中文 CLIP：多文件模型（config.json/preprocessor_config.json/vocab.txt 需随权重一起放置，权重为 pytorch_model.bin）
   chinese_clip: { url: 'https://huggingface.co/OFA-Sys/chinese-clip-vit-base-patch16/resolve/main', file: 'pytorch_model.bin' },
+  // BGE 文本嵌入（步骤5 语义主分）：多文件模型，权重为 model.safetensors；
+  //   config.json / tokenizer.json / tokenizer_config.json / vocab.txt / special_tokens_map.json 需一并放置
+  bge_small_zh: { url: 'https://huggingface.co/BAAI/bge-small-zh-v1.5/resolve/main', file: 'model.safetensors' },
   buffalo_l_det_10g: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/det_10g.onnx' },
   buffalo_l_w600k_r50: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/w600k_r50.onnx' },
   buffalo_l_1k3d68: { url: 'https://huggingface.co/deepinsight/insightface/resolve/main', file: 'buffalo_l/1k3d68.onnx' },
@@ -258,12 +268,12 @@ const MODEL_MODULES: ModelModuleDef[] = [
     sizeNote: '~50 MB (模型) + 200 MB (运行时)',
   },
   {
-    id: 'clip', category: 'vision', displayName: 'CLIP 跨模态匹配',
-    description: '中文 CLIP + 英文 CLIP 双模型图文匹配（中文直编优先，步骤5 镜头匹配核心）',
+    id: 'clip', category: 'vision', displayName: 'CLIP 跨模态 + BGE 文本嵌入',
+    description: '步骤2 镜头语义索引用 CLIP/Chinese-CLIP；步骤5 语义匹配用 BGE-small-zh 文本嵌入（文案↔切片描述，替代图文通道）',
     icon: '🧠', required: 'optional',
-    modelIds: ['clip', 'chinese_clip'],
-    runtimeId: 'clip',  // 运行时依赖：transformers + torch
-    sizeNote: '~950 MB (模型) + 100 MB (运行时，含 torch)',
+    modelIds: ['clip', 'chinese_clip', 'bge_small_zh'],
+    runtimeId: 'clip',  // 运行时依赖：transformers + torch（三者共用同一运行时）
+    sizeNote: '~1.05 GB (模型) + 100 MB (运行时，含 torch)',
   },
   // === TTS 语音合成（1 张卡片）===
   {

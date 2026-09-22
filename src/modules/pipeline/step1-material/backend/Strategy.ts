@@ -1103,6 +1103,15 @@ export class Step1MaterialStrategy extends BaseNodeStrategy {
               editing: false,
             };
           });
+          // 步骤1 ③ 气口时长（silenceGapMs）：逐句计算"本句结尾到下一句开头"的静音气口毫秒，
+          // 供步骤5 gap_padding(补丁7)/beat_snap(补丁2) 卡做句尾磁吸（单位 ms，末句无后继置 0）。
+          // 假设 transcription 已按时间升序输出；若出现重叠/乱序则钳制为 0，绝不出现负值。
+          for (let gi = 0; gi < asrLines.length; gi++) {
+            const next = asrLines[gi + 1];
+            const curEnd = asrLines[gi].endMs;
+            const gap = next ? next.startMs - curEnd : 0;
+            asrLines[gi].silenceGapMs = Math.max(0, Math.round(gap));
+          }
 
           AppLogger.info(LOG_TAGS.MEDIA_ENGINE,
             `[Step1] Whisper JSON 解析完成，${asrLines.length} 段台词`);

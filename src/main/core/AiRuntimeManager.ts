@@ -1,6 +1,7 @@
-import { spawn, ChildProcess, execSync } from 'child_process'
+import { spawn, ChildProcess, exec } from 'child_process'
 import path from 'path'
 import * as http from 'http'
+import os from 'os'
 import { PathManager } from '../utils/pathManager'
 import { ProcessManager } from '../utils/processManager'
 import { ProcessSupervisor } from './ProcessSupervisor'
@@ -67,6 +68,25 @@ export class AiRuntimeManager {
     }
   }
 
+  /**
+   * 函数级中文注释：构造 daemon 线程预算环境变量（BLAS/OpenBLAS/MKL/torch 线程数 = 半核）。
+   *  与 ProcessManager.setBackground 的"半核限核亲和"同口径，从源头压住 torch 初始化期
+   *  全核铺线程导致的冷启动 CPU 满载卡顿（R4 线程预算的 Node 侧兜底，双保险）。
+   */
+  private buildDaemonThreadEnv(): Record<string, string> {
+    const cpuCount = os.cpus().length || 4
+    const half = Math.max(1, Math.ceil(cpuCount / 2))
+    const threads = String(half)
+    return {
+      OMP_NUM_THREADS: threads,
+      MKL_NUM_THREADS: threads,
+      OPENBLAS_NUM_THREADS: threads,
+      NUMEXPR_NUM_THREADS: threads,
+      VECLIB_MAXIMUM_THREADS: threads,
+      TORCH_NUM_THREADS: threads
+    }
+  }
+
   /** 启动 AI 运行时（Python daemon） */
   async start(): Promise<{ success: boolean; message: string }> {
     if (this.isOnline && this.runtimePid) {
@@ -93,7 +113,7 @@ export class AiRuntimeManager {
       //   场景：应用异常退出（crash/force kill）时 stop() 未执行，旧 daemon 残留监听 34567 端口。
       //   新 daemon 因端口冲突启动失败，但 waitForHttpReady 检测到旧进程 /health 误判为就绪，
       //   导致业务路由全部 404（旧代码路由未注册）。
-      this.killStaleDaemonOnPort(this.runtimePort)
+      await this.killStaleDaemonOnPort(this.runtimePort)
 
       AppLogger.info(LOG_TAGS.AI_DAEMON, '[AiRuntimeManager] 启动 AI 运行时...', {
         script: scriptPath, port: this.runtimePort, device: deviceType
@@ -107,7 +127,7 @@ export class AiRuntimeManager {
       //   → /api/separate 返回 500 "所选引擎均不可用" → 前端 fetch failed
       //   系统级 site-packages 已有完整依赖（scipy 1.15.2 + numpy 1.26.4 + librosa 等），
       //   无需 py_libs。scriptsPath 仍需保留，让 ai_daemon.py 能 import 同目录子模块。
-      const pythonEnv = { ...process.env, PYTHONPATH: scriptsPath };
+      const pythonEnv = { ...process.env, PYTHONPATH: scriptsPath, ...this.buildDaemonThreadEnv() };
       const proc = spawn(pythonPath, [
         scriptPath,
         '--port', String(this.runtimePort),
@@ -167,7 +187,8 @@ export class AiRuntimeManager {
         }
       })
 
-      await this.waitForHttpReady(30000)
+      // 函数级中文注释：就绪探测给足 90s，覆盖 torch(CPU) 冷启动 ~40s，避免 30s 窗口误杀 → isOnline 误报
+      await this.waitForHttpReady(90000)
       this.isOnline = true
 
       AppLogger.info(LOG_TAGS.SYSTEM, `[AiRuntimeManager] AI 运行时已启动 (PID: ${this.runtimePid}, Port: ${this.runtimePort})`)
@@ -192,36 +213,34 @@ export class AiRuntimeManager {
    * 清理占用指定端口的残留 daemon 进程
    * 通过 netstat 查找监听端口的 PID，若与当前 runtimePid 不同则 kill
    */
-  private killStaleDaemonOnPort(port: number): void {
-    try {
-      // netstat 查找监听目标端口的进程 PID
-      const output = execSync(`netstat -ano | findstr ":${port} "`, {
-        encoding: 'utf-8',
-        timeout: 5000
+  private async killStaleDaemonOnPort(port: number): Promise<void> {
+    // 函数级中文注释：netstat 查询通过子进程异步执行，避免 execSync 同步阻塞主线程
+    //  （冷启动卡顿来源之一）；返回前等待清理完成，保证 spawn 前的端口是干净的。
+    const output = await new Promise<string>((resolve) => {
+      exec(`netstat -ano | findstr ":${port} "`, { encoding: 'utf-8', timeout: 5000 }, (_err, stdout) => {
+        resolve(stdout || '')
       })
-      const pids = new Set<number>()
-      for (const line of output.trim().split('\n')) {
-        const parts = line.trim().split(/\s+/)
-        // netstat 输出格式：协议 本地地址 外部地址 状态 PID
-        // 仅匹配 LISTENING 状态的 TCP 连接
-        if (parts.length >= 5 && parts[3] === 'LISTENING') {
-          const pid = parseInt(parts[4], 10)
-          if (pid && pid !== this.runtimePid && pid !== process.pid) {
-            pids.add(pid)
-          }
+    })
+    const pids = new Set<number>()
+    for (const line of output.trim().split('\n')) {
+      const parts = line.trim().split(/\s+/)
+      // netstat 输出格式：协议 本地地址 外部地址 状态 PID
+      // 仅匹配 LISTENING 状态的 TCP 连接
+      if (parts.length >= 5 && parts[3] === 'LISTENING') {
+        const pid = parseInt(parts[4], 10)
+        if (pid && pid !== this.runtimePid && pid !== process.pid) {
+          pids.add(pid)
         }
       }
-      if (pids.size === 0) return
-      AppLogger.warn(LOG_TAGS.AI_DAEMON, `[AiRuntimeManager] 检测到端口 ${port} 被残留进程占用，正在清理: PIDs=[${[...pids].join(', ')}]`)
-      for (const pid of pids) {
-        try {
-          ProcessManager.killTree(pid)
-        } catch {
-          // 单个 PID kill 失败不阻断流程
-        }
+    }
+    if (pids.size === 0) return
+    AppLogger.warn(LOG_TAGS.AI_DAEMON, `[AiRuntimeManager] 检测到端口 ${port} 被残留进程占用，正在清理: PIDs=[${[...pids].join(', ')}]`)
+    for (const pid of pids) {
+      try {
+        ProcessManager.killTree(pid)
+      } catch {
+        // 单个 PID kill 失败不阻断流程
       }
-    } catch {
-      // netstat 无输出或命令失败 → 端口未被占用，正常情况
     }
   }
 
@@ -306,10 +325,10 @@ export class AiRuntimeManager {
 
     return async (_label: string, _restartCount: number): Promise<ChildProcess> => {
       // 🔧 自动重启时也清理端口残留进程，防止旧 daemon 占用端口
-      this.killStaleDaemonOnPort(port)
+      await this.killStaleDaemonOnPort(port)
       const scriptsPath = path.join(PathManager.getResourcesPath(), 'scripts');
       // 🔧 修复 P0：PYTHONPATH 只加 scriptsPath，不再加 py_libs（py_libs/scipy 不完整会导致 MDX-Net 崩溃）
-      const pythonEnv = { ...process.env, PYTHONPATH: scriptsPath };
+      const pythonEnv = { ...process.env, PYTHONPATH: scriptsPath, ...this.buildDaemonThreadEnv() };
       const proc = spawn(pythonPath, [
         scriptPath,
         '--port', String(port),
@@ -343,7 +362,8 @@ export class AiRuntimeManager {
         }
       })
 
-      await this.waitForHttpReady(30000)
+      // 函数级中文注释：就绪探测给足 90s，覆盖 torch(CPU) 冷启动 ~40s，避免 30s 窗口误杀 → isOnline 误报
+      await this.waitForHttpReady(90000)
       this.isOnline = true
 
       AppLogger.info(LOG_TAGS.SYSTEM, `[AiRuntimeManager] 重启就绪 (PID: ${proc.pid})`)

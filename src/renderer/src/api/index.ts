@@ -241,6 +241,13 @@ export const API = {
     clearChunkCache: (projectId: string, mediaPath: string) =>
       invokeSafe<{ success: boolean; deleted: number; message: string }>(IPC_CHANNELS.ENGINE_CLEAR_CHUNK_CACHE, { projectId, mediaPath }),
 
+    // 🔧 步骤5 手动替换切片：按一句解说文案检索语义相关切片候选池（打开替换弹窗时调用）
+    searchSlices: (mediaId: string, text: string, topN?: number) =>
+      invokeSafe<{ success: boolean; message?: string; candidates: any[] }>(
+        IPC_CHANNELS.ENGINE_SEARCH_SLICES,
+        { mediaId, text, topN },
+      ),
+
     // V1.0: SimplePipelineRunner — 固定管线
     runV1Pipeline: (projectId: string, mediaId: string, mediaPath: string) =>
       invokeSafe('engine:run-v1-pipeline', { projectId, mediaId, mediaPath }),

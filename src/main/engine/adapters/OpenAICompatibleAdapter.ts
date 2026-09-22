@@ -362,7 +362,17 @@ export class OpenAICompatibleAdapter implements ILLMProvider {
         continue;
       } catch (e: any) {
         lastError = e;
-        const detail = String(e?.message || e);
+        /** 🔧 透出 undici 真实根因：Node fetch 的 e.message 恒为 "fetch failed"，真实原因（ECONNREFUSED/
+         *  ENOTFOUND/ETIMEDOUT/CERT 证书/代理等）藏在 e.cause，此前被吞导致只看到 fetch failed。
+         *  这里把 cause.code/cause.message 并入 detail 与 e.message，让上层聚合错误也能自曝根因（只增强报错，不改逻辑）。 */
+        const cause = (e as any)?.cause;
+        const causeText = cause
+          ? String(cause?.code || cause?.name || '') + (cause?.message ? ` ${cause.message}` : '')
+          : '';
+        const detail = String(e?.message || e) + (causeText ? ` (cause: ${causeText.trim()})` : '');
+        if (causeText && e instanceof Error && !e.message.includes('cause:')) {
+          e.message = `${e.message} (cause: ${causeText.trim()})`;
+        }
         attempt++;
 
         if (!isRetryable(undefined, detail) || attempt >= maxAttempt) {

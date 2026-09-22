@@ -23,6 +23,7 @@ import { PathManager } from '../utils/pathManager';
 import { ExceptionHub } from '../core/ExceptionHub';
 import { ProjectRepository } from '../database/repositories/ProjectRepository';
 import { VideoChunkRepository } from '../database/repositories/VideoChunkRepository';
+import { SliceSearchService, SliceSearchRequest } from '../engine/search/SliceSearchService';
 import { JobScheduler } from '../core/JobScheduler';
 import { AiRuntimeManager } from '../core/AiRuntimeManager';
 import * as path from 'path';
@@ -56,6 +57,20 @@ export class EngineController {
       preflightCache = { ok, message, checks };
       preflightCacheTime = now;
       return preflightCache;
+    });
+    // 🔧 步骤5 手动替换切片：按一句解说文案检索语义相关候选（TF-IDF，零额外推理，本地同步）
+    IpcRouter.handle(IPC_CHANNELS.ENGINE_SEARCH_SLICES, (_event, payload: SliceSearchRequest) => {
+      const { mediaId, text, topN } = payload || {};
+      if (!mediaId || !(text || '').trim()) {
+        return { success: false, message: '缺少素材或文案', candidates: [] };
+      }
+      try {
+        const candidates = SliceSearchService.search({ mediaId, text, topN });
+        return { success: true, candidates };
+      } catch (e: any) {
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[切片检索] 按文案检索候选失败: ${e?.message || e}`);
+        return { success: false, message: e?.message || '检索失败', candidates: [] };
+      }
     });
     // V1.0: SimplePipelineRunner — 固定管线，按序执行（含人机交替挂起）
     IpcRouter.handleWithSchema(

@@ -1,6 +1,89 @@
 // 📁 路径: src/infra/logger/AppLogger.ts
 import log from 'electron-log';
+import { app } from 'electron';
+import * as fs from 'fs';
+import * as path from 'path';
 import { LogSanitizer } from './LogSanitizer';
+
+// ============================================================
+// 🔧 文件日志落盘（2026-09-14 重新启用，附带自动清理）
+// 历史背景：早期因"旧进程持有文件句柄/描述符失效，每次写日志抛 EBADF+完整堆栈，
+//        拖慢主进程（每次 IPC 都触发）"而关闭 file transport，仅保留 console。
+// 现在重新启用：electron-log 的 file transport 自带"按 maxSize 自动轮转"（写满后同名 .old.log），
+//        配合下方启动时的"按天/按总数"双重清理，避免日志堆成巨无霸。
+//  - level = 'info'：落盘级别只记 info/warn/error，过滤掉高频 debug（如 healthcheck 心跳），省盘且够诊断
+//  - maxSize  = 1MB：单份轮转就绪，多代历史由 electron-log 自动 handle；不会无限膨胀
+// ============================================================
+log.transports.file.level = 'info';
+log.transports.file.maxSize = 1024 * 1024;
+
+/** 🔧 用户配置的日志目录（null 表示使用默认 userData/logs）。由 main 进程在 DB 就绪后通过 setLogDir 注入。
+ *  electron-log 的 file transport 每次写日志都会重新调用 resolvePathFn 求值路径，
+ *  因此运行时切换日志目录无需重启、对下一条日志立即生效。 */
+let configuredLogDir: string | null = null;
+
+/** 🔧 计算当前生效的日志目录：优先取用户配置，缺省回退默认 userData/logs。 */
+function getEffectiveLogDir(): string {
+  return (configuredLogDir && configuredLogDir.trim())
+    ? configuredLogDir.trim()
+    : app.getPath('logs');
+}
+
+/** 🔧 动态日志路径：本地文件回车时每次求值（依赖 configuredLogDir，切目录立即生效，无需重启）。 */
+log.transports.file.resolvePathFn = () => path.join(getEffectiveLogDir(), 'main.log');
+
+/**
+ * 🔧 启动时自动清理日志目录：双重策略防堆积。
+ *  1. 按时间：删除超过 retentionDays 的日志文件（默认 7 天）；
+ *  2. 按数量：若剩余文件总数仍超 maxFiles，则按修改时间删最旧的过量文件。
+ *  extends/vite dev 热重载会多次执行，幂等且容忍句柄占用（删除失败静默跳过）。
+ * @param retentionDays 日志保留天数，超期删除
+ * @param maxFiles      日志目录下保留的最大文件数
+ */
+function cleanupLogFiles(retentionDays = 7, maxFiles = 20): void {
+  try {
+    const dirName = getEffectiveLogDir();
+    if (!dirName || !fs.existsSync(dirName)) return;
+    const listLogs = (): string[] => fs.readdirSync(dirName)
+      .map((n) => path.join(dirName, n))
+      .filter((p) => { try { return fs.statSync(p).isFile() && p.toLowerCase().endsWith('.log'); } catch { return false; } });
+    // ① 按修改时间清除超期文件
+    const cutoff = Date.now() - retentionDays * 24 * 3600 * 1000;
+    for (const p of listLogs()) {
+      try { if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p); } catch { /* 句柄占用则跳过 */ }
+    }
+    // ② 超总数仍存在的，删最旧的过量文件
+    const remain = listLogs();
+    if (remain.length > maxFiles) {
+      remain.sort((a, b) => { try { return fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs; } catch { return 0; } });
+      for (const p of remain.slice(0, remain.length - maxFiles)) {
+        try { fs.unlinkSync(p); } catch { /* 忽略单个清理失败 */ }
+      }
+    }
+  } catch { /* 目录不可达时静默，不阻塞启动 */ }
+}
+
+// 应用就绪后执行首次清理（app.getPath('logs') 需 app ready 后才稳定）
+if (app.isReady()) {
+  cleanupLogFiles();
+} else {
+  app.whenReady().then(() => cleanupLogFiles());
+}
+
+/**
+ * 🔧 由 main 进程在 DB 就绪后注入用户配置的日志目录；并立即对新目录执行一次清理（防堆积）。
+ *  electron-log file transport 每次写日志重新求值路径，因此切换目录对下一条日志立即生效，无需重启。
+ * 传入空/无效值则回退默认 userData/logs（等效"使用默认位置"）。
+ * @param dir 用户配置的日志目录；为空时回退默认
+ */
+function setLogDir(dir: string | null | undefined): void {
+  configuredLogDir = (dir && dir.trim()) ? dir.trim() : null;
+  if (app.isReady()) {
+    cleanupLogFiles();
+  } else {
+    app.whenReady().then(() => cleanupLogFiles());
+  }
+}
 
 // ============================================================
 // Windows 中文乱码修复
@@ -11,16 +94,6 @@ import { LogSanitizer } from './LogSanitizer';
 // ============================================================
 
 log.transports.console.level = 'debug';
-
-// ============================================================
-// 🔧 修复 EBADF：日志文件写入失败时静默降级，不再抛错+堆栈
-// 根因：旧进程持有文件句柄 / 文件描述符失效时，每次写日志都抛
-//       "EBADF: bad file descriptor, write" + 完整堆栈，
-//       严重拖慢主进程（每次 IPC 调用都触发）
-// 方案：直接关闭 file transport，仅保留 console transport
-//       文件日志在开发环境下非必需，console 已由下方自定义 writeFn 输出
-// ============================================================
-log.transports.file.level = false;
 
 (log.transports.console as unknown as { writeFn: (msg: { message: { level: string; data: any[]; date: Date } }) => void }).writeFn = ({ message }: { message: { level: string; data: any[]; date: Date } }) => {
   const level = message.level;
@@ -56,6 +129,11 @@ log.transports.file.level = false;
 export class AppLogger {
   public static getInstance() {
     return AppLogger;
+  }
+
+  /** 🔧 注入/更新日志目录（委托模块级 setLogDir）。DB 就绪后由 main 进程调用，切换目录立即生效无需重启。 */
+  public static setLogDir(dir: string | null | undefined): void {
+    setLogDir(dir);
   }
 
   private static formatMessage(message: string, meta?: any): string {

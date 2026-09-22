@@ -75,6 +75,10 @@ const api = {
     getActive: (projectId: string) => safeInvoke(IPC_CHANNELS.TASK_GET_ACTIVE, projectId),
     cancel: (taskId: string) => safeInvoke(IPC_CHANNELS.TASK_CANCEL, taskId),
   },
+  storyboard: {
+    /** 🎬 前端分镜单面板：幂等读取当前项目 ShotSpec 工单（缺文件/解析失败返回空） */
+    loadOrders: (projectId: string) => safeInvoke(IPC_CHANNELS.STORYBOARD_LOAD, projectId),
+  },
   ai: {
     generateTTS: (text: string, roleId: string) => safeInvoke(IPC_CHANNELS.AI_GENERATE_TTS, text, roleId),
     testNetwork: (type: string, config: any) => safeInvoke(IPC_CHANNELS.AI_TEST_NETWORK, type, config),

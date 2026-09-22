@@ -40,6 +40,10 @@ interface WindowApi {
     runSingleTTS: (projectId: string, shot: any) => Promise<any>;
     runGlobalTTS: (projectId: string, shots: any[]) => Promise<any>;
   };
+  storyboard: {
+    /** 🎬 前端分镜单面板：幂等读取当前项目 ShotSpec 工单（缺文件/解析失败返回空） */
+    loadOrders: (projectId: string) => Promise<{ orders: any[] }>;
+  };
   events: {
     onTaskProgress: (handler: (...args: any[]) => void) => void;
     onTaskCompleted: (handler: (...args: any[]) => void) => void;

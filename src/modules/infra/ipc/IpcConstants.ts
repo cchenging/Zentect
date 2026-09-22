@@ -40,6 +40,8 @@ export const IPC_CHANNELS = {
   ENGINE_ABORT_PIPELINE: 'engine:abort-pipeline',
   /** 🔧 2026-09-05：清空当前视频切片缓存（步骤5 UI"清空切片缓存"按钮，强制重切） */
   ENGINE_CLEAR_CHUNK_CACHE: 'engine:clear-chunk-cache',
+  // 🔧 步骤5 手动替换切片：按一句解说文案做 TF-IDF 检索，返回语义相关切片候选池
+  ENGINE_SEARCH_SLICES: 'engine:search-slices',
   ENGINE_PREFLIGHT: 'engine:preflight',
   ENGINE_REQUIRE_USER_ACTION: 'engine:require-user-action',
   ENGINE_RESUME_PIPELINE: 'engine:resume-pipeline',
@@ -254,6 +256,10 @@ export const IPC_CHANNELS = {
   SETTINGS_GET_BY_KEYS: 'settings:getByKeys',
   SETTINGS_RESET_ALL: 'settings:resetAll',
   SETTINGS_VALIDATE_PATH: 'settings:validatePath',
+
+  // --- 分镜单 (S2 ShotSpec 工单) 域 ---
+  /** 🎬 前端分镜单面板：幂等读取当前项目 `storyboard_orders.json`（缺文件/解析失败一律返回空，不抛错） */
+  STORYBOARD_LOAD: 'storyboard:load',
 
   // --- V1.2 批量队列与出片 ---
   BATCH_QUEUE_ADD: 'batch:queueAdd',            // 批量添加渲染任务

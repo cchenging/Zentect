@@ -1,6 +1,10 @@
 // 📁 路径：src/main/engine/strategies/ScriptGenStrategy.ts
 import { BaseNodeStrategy, ExecutionContext } from './BaseNodeStrategy';
 import { SemanticAnalyzeStrategy } from './SemanticAnalyzeStrategy';
+/** 🎬 S2 分镜开单（2026-09-20 用户拍板）：开单从「步骤5 内」提前到「步骤3 完成后自动触发」，
+ *  步骤3 产物即母句序列，构造与步骤5 完全同口径的 query 直接开单落盘；
+ *  步骤5 时 openOrders 命中缓存只回填 query、不重复调 LLM（省步骤5 时间）。 */
+import { StoryboardAgent, resolveStoryboardOpen } from '../storyboard/StoryboardAgent';
 import { LLMFactory } from '../adapters/LLMFactory';
 import { AppLogger } from '../../core/AppLogger';
 import { LexiconFilter } from '../lexicon/LexiconFilter';
@@ -9,6 +13,12 @@ import { PERSONAS } from '../prompts/personas';
 import { CONSTRAINTS } from '../prompts/constraints';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 import { breakLongParagraphs } from '@modules/pipeline/step3-script/frontend/breakLongParagraphs';
+// 🎯 匹配单位 SSOT：模式开关（ZENTECT_SCRIPT_MATCH_UNIT）+ 完整句计数 + 诊断读数纯函数
+import {
+  resolveScriptMatchUnitMode,
+  countCompleteSentences,
+  summarizeScriptMatchUnits,
+} from '../../../shared/utils/scriptMatchUnit';
 // SSOT：三档原声策略 ⇔ 密度折减系数 DR 唯一映射表，直接引用契约层单源（与前端档位切换同表）
 import { DENSITY_RATIO_BY_AUDIO_STRATEGY } from '../../../shared/types/entities/editor';
 
@@ -65,6 +75,22 @@ export interface GeneratedShot {
   startMs?: number;
   /** 🎯 P3 时间轴锚定：本段解说词对应的画面时长（ms） */
   durationMs?: number;
+  /** 🎯 参考帧时间（源视频坐标，ms）：本段文案在母块时间窗内命中的**真实参考帧**时间。
+   *  与 startMs（母块内等分插值的近似锚点）并存，供步骤5 作为真实匹配查询锚点透传。 */
+  refFrameTimeMs?: number;
+  /** 🎯 参考帧画面描述：refFrameTimeMs 对应帧的步骤2 VLM 描述；退化为母块首帧时为空字符串 */
+  refFrameDesc?: string;
+  /** 🎯 参考帧来源：matched=窗内文本重合度最高帧命中；block_first=无可用帧描述时的退化标记 */
+  refFrameSource?: 'matched' | 'block_first';
+  /** 🎬 决策 #6：抽象旁白标记。True = 本段为"岁月流转/时光荏苒"类**无具体画面语义**的抽象抒情，
+   *  步骤5 匹配时语义主分改由景别分级抽象分取代（空镜优先），并跳过关键词/情绪路由。
+   *  ⚠️ 该字段必须贯通 LLM → parsed → 断句子句 → parsedShots → matchQueries，
+   *  任一环丢弃都会让抽象路由静默失效（历史缺陷：全链路从未传递，路由形同虚设）。 */
+  isAbstractNarration?: boolean;
+  /** 🎯 匹配单位：本段所属「完整句」的稳定 id（sentence 档由断句器写入，legacy 档不产出）。
+   *  步骤5 查询端按它把同一完整句的各碎片折叠成一条匹配 query（一个完整句 = 一个匹配单位），
+   *  匹配结果再按同一 id 回填到该完整句覆盖的全部碎片/子句（沿用既有 id 映射，不新造映射表）。 */
+  matchUnitId?: string;
   /** 🎙️ 原声保留段音频源：步骤3 生成阶段用 ASR 精确锁定原声台词在源片中的时间窗（源坐标）。
    *  缺失（ASR 未命中）时置空，由 Normalizer 按 chunk 时间轴 fallback（近似），不伪造精确值。 */
   audioSource?: {
@@ -253,6 +279,108 @@ function ensureVisualIntentFilled(
     result = t ? `【兜底】${t.slice(0, 20)}` : '【兜底】通用画面';
   }
   return result;
+}
+
+/**
+ * 🎯 由步骤2 帧结构拼装"帧描述"文本（参考帧的可读画面描述）。
+ * 规则（不造假）：
+ *  1. 优先使用 VLM 结构化动作 action，带景别前缀便于步骤5 复用镜头语言信号（如：【特写】死死盯住冰鱼）；
+ *  2. action 缺失时退化为该帧关键词拼接（最多 6 个，动作/道具类，供文本重合度打分有料可用）；
+ *  3. 二者皆缺返回空字符串——调用方据此走 block_first 退化，绝不用编造描述充数。
+ *
+ * @param frame 步骤2 downstreamContext.shots 中的单帧（含 action/shotType/keywords）
+ * @returns 帧描述文本（可能为空字符串）
+ */
+function frameDescriptionOf(frame: any): string {
+  const action = String(frame?.action || '').trim();
+  const shotType = String(frame?.shotType || '').trim();
+  const prefix = shotType ? `【${shotType}】` : '';
+  if (action) return `${prefix}${action}`;
+  const keywords = Array.isArray(frame?.keywords)
+    ? frame.keywords.filter((k: any) => typeof k === 'string' && k.trim()).slice(0, 6).join('、')
+    : '';
+  return keywords;
+}
+
+/**
+ * 🎯 文本重合度打分（简单、可解释、可离线复算）：字符二元组 Jaccard 相似度 ∈ [0,1]。
+ * 归一化仅保留中文/字母/数字（去标点空白），任一文本不足 2 字时退化为字符一元组；
+ * 任一侧为空返回 0（不给分），保证"无描述帧"永远不会被误判为最佳匹配。
+ *
+ * @param a 待比较文本 A（段文案 text + visualIntent）
+ * @param b 待比较文本 B（帧描述）
+ * @returns Jaccard 重合度（0~1，越大越重合）
+ */
+function frameTextOverlap(a: string, b: string): number {
+  const norm = (s: string): string => String(s || '').toLowerCase().replace(/[^\u4e00-\u9fa5a-z0-9]/g, '');
+  const sa = norm(a);
+  const sb = norm(b);
+  if (!sa || !sb) return 0;
+  const gramSize = sa.length >= 2 && sb.length >= 2 ? 2 : 1;
+  const toGrams = (s: string): Set<string> => {
+    const set = new Set<string>();
+    for (let i = 0; i + gramSize <= s.length; i++) set.add(s.slice(i, i + gramSize));
+    return set;
+  };
+  const A = toGrams(sa);
+  const B = toGrams(sb);
+  if (A.size === 0 || B.size === 0) return 0;
+  let inter = 0;
+  A.forEach((g) => { if (B.has(g)) inter += 1; });
+  const union = A.size + B.size - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+/**
+ * 🎯 参考帧选择（步骤3 真实画面锚点，落到段落的 refFrameTimeMs/refFrameDesc/refFrameSource）。
+ *
+ * 选择规则（简单、可解释、可离线复算）：
+ *   1. 候选集 = 步骤2 帧中 timeMs 落在"母块时间窗 [chunk.startMs, chunk.startMs + chunk.durationMs)"内的帧；
+ *   2. 对每帧按 frameDescriptionOf 取帧描述，与"段文案（text + visualIntent）"做 frameTextOverlap 打分，
+ *      取重合度最高的一帧（同分取时间更早者，保证结果确定可复算）；
+ *   3. 命中且描述非空 → refFrameSource='matched'，写入该帧时间（源坐标）与描述；
+ *   4. 母块窗内无帧 / 帧描述全空 / 母块时间轴非法 → 退化为 refFrameSource='block_first'，
+ *      时间取"母块首帧时间"（窗内最早帧时间，窗内无帧时回退母块起点 startMs），描述为空字符串。
+ *
+ * ⚠️ 本函数只产出**新增**字段，不改变 startMs/durationMs 的既有计算逻辑。
+ *
+ * @param chunk 该段文案对应的母块 ContextChunk（含 startMs/durationMs）
+ * @param paragraphText 段文案拼接文本（text + visualIntent）
+ * @param frames 步骤2 下游帧数组（downstreamContext.shots）
+ * @returns 参考帧三字段（timeMs 在退化且母块时间轴非法时为 undefined）
+ */
+function resolveParagraphRefFrame(
+  chunk: any,
+  paragraphText: string,
+  frames: any[],
+): { refFrameTimeMs?: number; refFrameDesc: string; refFrameSource: 'matched' | 'block_first' } {
+  const winStart = Number(chunk?.startMs);
+  const winDur = Number(chunk?.durationMs);
+  if (!Number.isFinite(winStart) || !Number.isFinite(winDur) || winDur <= 0) {
+    // 母块时间轴非法：无锚点可退化，返回 undefined + 空描述（不伪造时间）
+    return { refFrameDesc: '', refFrameSource: 'block_first' };
+  }
+  const winEnd = winStart + winDur;
+  const framesInWindow = (Array.isArray(frames) ? frames : [])
+    .map((f) => ({ t: Number(f?.timeMs), f }))
+    .filter((x) => Number.isFinite(x.t) && x.t >= winStart && x.t < winEnd)
+    .sort((a, b) => a.t - b.t);
+  // 母块首帧时间：窗内最早帧时间；窗内无帧时回退母块起点
+  const blockFirstFrameMs = framesInWindow.length > 0 ? framesInWindow[0].t : Math.round(winStart);
+
+  const queryText = String(paragraphText || '');
+  let best: { t: number; desc: string; score: number } | null = null;
+  for (const { t, f } of framesInWindow) {
+    const desc = frameDescriptionOf(f);
+    if (!desc) continue; // 无描述帧不参与匹配（不给假锚点）
+    const score = frameTextOverlap(queryText, desc);
+    // 严格大于：同分保留更早的帧，保证选择结果确定、可离线复算
+    if (!best || score > best.score) best = { t, desc, score };
+  }
+  if (best && best.desc) {
+    return { refFrameTimeMs: Math.round(best.t), refFrameDesc: best.desc, refFrameSource: 'matched' };
+  }
+  return { refFrameTimeMs: Math.round(blockFirstFrameMs), refFrameDesc: '', refFrameSource: 'block_first' };
 }
 
 /** 🎭 五幕张力曲线（步骤3 爆款文案升级）：按归一化章节进度分配戏剧任务，映射到 chapterGroups 索引。
@@ -1562,12 +1690,28 @@ ${roleMapLines.join('\n')}
         /** 🎯 P3 时间轴锚定：对应 chunk 的画面时间起点/时长（ms），供步骤5 锚定切片 */
         startMs: srcChunk?.startMs ?? 0,
         durationMs: srcChunk?.durationMs ?? 0,
+        /** 🎯 参考帧锚点（新增字段，与 startMs 并存不替换）：本段文案在其母块时间窗内命中
+         *  "与文案文本重合度最高"的真实帧，写入该帧时间（源坐标）+ 帧描述 + 来源标记；
+         *  无可用帧描述时退化为母块首帧时间 + 空描述。断句后由子句原样继承，最终透传到步骤5 query。 */
+        ...resolveParagraphRefFrame(
+          srcChunk,
+          `${raw.text || ''} ${raw.visualIntent || ''}`.trim(),
+          visualShots,
+        ),
+        /** 🎬 决策 #6：抽象旁白标记（LLM 按契约产出，仅 true 才为真），
+         *  断句后由子句继承，最终驱动步骤5 的空镜优先路由 */
+        isAbstractNarration: raw.isAbstractNarration === true,
       };
     });
 
+    // 🎯 匹配单位模式（开关 ZENTECT_SCRIPT_MATCH_UNIT，取值 sentence/legacy，缺省 legacy）：
+    //   legacy = 每个按标点切出的碎片各算一个匹配单位（线上现状，默认零变化）；
+    //   sentence = 一个完整句一个匹配单位（碎片仍作 TTS/字幕承载，仅额外打上 matchUnitId 供步骤5 折叠）。
+    const matchUnitMode = resolveScriptMatchUnitMode();
+
     // 长段落断句：>18 字的文案按标点切成爆款微短句，避免 TTS 超时与画面张冠李戴。
     // 原声段落不参与切分，原样保留（keep_key/original_main 模式下 LLM 标记的 keepOriginalAudio）。
-    const broken = breakLongParagraphs(parsed.filter((p) => !p.keepOriginalAudio));
+    const broken = breakLongParagraphs(parsed.filter((p) => !p.keepOriginalAudio), { matchUnit: matchUnitMode });
     const originalParagraphs = parsed.filter((p) => p.keepOriginalAudio);
 
     // 按原始顺序合并：非原声断句子句 + 原声段落，保持与 LLM 输出顺序一致
@@ -1618,6 +1762,15 @@ ${roleMapLines.join('\n')}
         /** 🎯 P3 时间轴锚定：子句继承父段落对应 chunk 的时间起点/时长（ms） */
         startMs: (p as any).startMs ?? 0,
         durationMs: (p as any).durationMs ?? 0,
+        /** 🎯 参考帧锚点透传：子句继承父段落命中的真实参考帧（时间/描述/来源），
+         *  供步骤5 buildMatchQueries 原样带入 query（与 startMs 并存，不改变既有匹配输入口径）。 */
+        refFrameTimeMs: (p as any).refFrameTimeMs,
+        refFrameDesc: (p as any).refFrameDesc,
+        refFrameSource: (p as any).refFrameSource,
+        /** 🎬 决策 #6：抽象旁白标记透传到最终产物，供步骤5 matchQueries 读取并走空镜优先路由 */
+        isAbstractNarration: (p as any).isAbstractNarration === true,
+        /** 🎯 匹配单位：透传断句器写入的 matchUnitId（sentence 档才有；legacy 档缺省不写，保持产物零变化） */
+        ...((p as any).matchUnitId ? { matchUnitId: String((p as any).matchUnitId) } : {}),
         /** 🎙️ 原声保留段音频源：ASR 精确时间窗（源坐标），供步骤4 原声试听与导出硬绑定 */
         audioSource: asrWin
           ? {
@@ -1629,6 +1782,26 @@ ${roleMapLines.join('\n')}
           : undefined,
       } as GeneratedShot;
     });
+
+    // 🎯 匹配单位诊断读数（可测口径，对齐方案 §23.12 §四）：
+    //   匹配单位数 = sentence 档为"完整句数"（一个完整句一条匹配 query），legacy 档为"碎片数"（线上现状）；
+    //   碎片率 = (匹配单位数 − 完整句数) / 匹配单位数 ⇒ legacy 实测 18/25=72%，sentence 目标 ≤20%。
+    //   口径只统计会真正进匹配队列的解说碎片（非原声 + 非空文本），与步骤5 buildMatchQueries 的过滤一致。
+    {
+      const narrationShots = parsedShots.filter(
+        (s) => s.keepOriginalAudio !== true && String(s.text || '').trim().length > 0,
+      );
+      const sentenceCount = parsed
+        .filter((p) => !p.keepOriginalAudio)
+        .reduce((sum, p) => sum + countCompleteSentences(p.text), 0);
+      const unitSummary = summarizeScriptMatchUnits(narrationShots, sentenceCount);
+      AppLogger.info(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成][匹配单位] 模式=${matchUnitMode} 匹配单位数=${unitSummary.matchUnits} ` +
+        `子句数=${unitSummary.clauses} 完整句数=${unitSummary.sentences} ` +
+        `碎片率=${(unitSummary.fragmentRate * 100).toFixed(1)}%`,
+      );
+    }
 
     const flaggedCount = parsedShots.filter(s => s.flagged).length;
     const replacedCount = parsedShots.filter(s => s.replaced).length;
@@ -1667,6 +1840,30 @@ ${roleMapLines.join('\n')}
     }
 
     onProgress(100, `剧本重铸成功，共计 ${parsedShots.length} 幕分镜！`);
+
+    /** 🎬 S2 分镜开单（2026-09-20 用户拍板）：开单从「步骤5 内」提前到「步骤3 完成后自动触发」。
+     *  与步骤5 buildMatchQueries 完全同口径（sentence 档折叠 + visualIntent 兜底 + text 拼接），
+     *  ttsDurations 传空数组：开单不依赖步骤4（buildMatchQueries 内 ttsById 空 Map 不硬失败，
+     *  audioDurationMs 只是分镜参考字段，缺失不影响开单）。
+     *  开单落盘 storyboard_orders.json；步骤5 时 openOrders 命中缓存只回填 query、不重复调 LLM。
+     *  off 档（resolveStoryboardOpen()=false）整段旁路（P1），步骤3 行为零变化。 */
+    if (resolveStoryboardOpen()) {
+      try {
+        const projectId = context?.projectId?.trim() || undefined;
+        const motherQueries = SemanticAnalyzeStrategy.buildMatchQueries(parsedShots, [], 0, projectId);
+        const orders = await StoryboardAgent.openOrders(motherQueries, projectId, {
+          batchSize: Number(process.env.ZENTECT_STORYBOARD_BATCH) > 0
+            ? Number(process.env.ZENTECT_STORYBOARD_BATCH)
+            : undefined,
+        });
+        AppLogger.info(LOG_TAGS.AI_AGENT,
+          `[步骤3][开单] 文案完成后自动开单：${orders?.length ?? 0}/${motherQueries.length} 张工单已落盘（步骤5 将命中缓存，不再重复调 LLM）`);
+      } catch (e: any) {
+        // 开单失败绝不影响步骤3 完成：warn 回退，步骤5 侧会再兜底尝试
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[步骤3][开单] 自动开单失败（回退，步骤5 侧再试）：${e?.message || e}`);
+      }
+    }
+
     // 返回 Object 而非裸数组，兼容前端 mapPipelineResultToState 的 { shots: [...] } 格式
     return { shots: parsedShots } as unknown as GeneratedShot[];
   }

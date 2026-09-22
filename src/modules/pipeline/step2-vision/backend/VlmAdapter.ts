@@ -76,7 +76,14 @@ export class VlmAdapter {
     responseFormat: any,
   ): Promise<string> {
     const buildOpts = (level: FormatLevel): any => {
-      if (level === 1) return { response_format: responseFormat };
+      if (level === 1) {
+        // 🔧 兼容性修复：OpenAI 规范下 type 与 json_schema 只能取其一。
+        // 若调用方误传 {type:'json_object', json_schema:{...}}（冲突组合），服务端会直接 400 报错。
+        // 此处将 type 归一为 'json_schema'——只要带了 schema 就按严格校验下发，消解冲突避免首请求即失败。
+        const rf = { ...(responseFormat || {}) };
+        if (rf.json_schema) rf.type = 'json_schema';
+        return { response_format: rf };
+      }
       if (level === 2) return { response_format: { type: 'json_object' } };
       return {};
     };

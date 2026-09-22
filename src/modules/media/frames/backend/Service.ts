@@ -330,15 +330,24 @@ export class FrameExtractionService {
       let stderrLog = '';
       // 🎭 后处理时序元数据：累积 showinfo 输出的 pts_time（秒）
       const ptsSeconds: number[] = [];
+      // 🛠 P0 修复：pts_time 解析必须「行缓冲 + 容忍负值」。
+      //   旧实现逐 chunk 直接正则且只认无符号数，任一条丢失都会让下方
+      //   「数量一致才采用」的判定失败，从而丢弃【全片】精确时间戳：
+      //     ① -ss 前置 seek 后首帧 pts_time 为负（如 -0.000000）→ 不匹配被丢弃；
+      //     ② 一行 pts_time 被切分到两个 stderr chunk → 整行丢失。
+      let stderrLineBuf = '';
       child.stderr.on('data', (data: Buffer) => {
         const text = data.toString();
         stderrLog += text;
         if (stderrLog.length > 2048) stderrLog = stderrLog.slice(-2048);
         if (postProcess) {
-          const matches = text.match(/pts_time:([0-9.]+)/g);
-          if (matches) {
-            for (const m of matches) {
-              const sec = parseFloat(m.replace('pts_time:', ''));
+          stderrLineBuf += text;
+          const lines = stderrLineBuf.split('\n');
+          stderrLineBuf = lines.pop() ?? ''; // 末尾不完整行留待下一 chunk 拼接
+          for (const line of lines) {
+            const m = line.match(/pts_time:\s*(-?\d+(?:\.\d+)?)/);
+            if (m) {
+              const sec = parseFloat(m[1]);
               if (!Number.isNaN(sec)) ptsSeconds.push(sec);
             }
           }

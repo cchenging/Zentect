@@ -749,7 +749,7 @@ export class AIService {
        *    - 避免 N×M .find 的 TTS 查找热点（内部 Map 索引 O(1)）；
        *    - 自动注入情绪/角色/画面意图/时间锚/原声标记多维字段；
        *    - AIService 与 SemanticAnalyzeStrategy 共用实现，防止漂移。 */
-      const queries = SemanticAnalyzeStrategy.buildMatchQueries(scriptShots, ttsDurations);
+      const queries = SemanticAnalyzeStrategy.buildMatchQueries(scriptShots, ttsDurations, 0, payload.projectId);
 
       /** 🔧 P2 #11 方案 A：KM Top-K 预选（与 SemanticAnalyzeStrategy 共用同一 preselectTopK）。
        *   AIService 这条老接口没有"原声段落预匹配"步骤，直接全部 queries 送预选。 */

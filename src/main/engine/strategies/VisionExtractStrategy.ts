@@ -90,9 +90,26 @@ export interface FrameDetail {
     dramaticConflict?: string;
     subject?: string;
     primarySubject?: string;
+    /** 👀 A域 v7：主体视线朝向（补丁14 跳轴守卫数据源），枚举 LEFT|RIGHT|FRONT|NONE */
+    eyelineDirection?: string;
     secondarySubjects?: string[];
     interaction?: string;
     shotStyle?: string;
+    /** 🎬 第2步（2026-09-16）：人物空间位置/构图（美术/导演维度） */
+    spatialRelation?: string;
+    /** 🎬 第2步（2026-09-16）：光影/色调/氛围（美术：影调连续性） */
+    visualAtmosphere?: string;
+    /** 🎬 §20 第1步（2026-09-16）：场景值（置景维度）。VLM v4 起 665/665 帧原生输出，
+     *  此前**未透传**，切片侧只能靠 description 的「场景:」正则回捞 → 两套口径可能不一致；
+     *  现补入 downstream，切片侧改为「原生优先 + 正则兜底」。 */
+    scene?: string;
+    /** 🎬 §20 第4步（2026-09-16）：关键道具（道具锚定维度）。schema v4 就要求，但**prompt 正文从未列出该键**
+     *  → 实测 0/665 帧产出；v5 起 prompt/schema 对齐后开始采集。 */
+    keyProps?: string;
+    /** 🎬 §20 第4步（2026-09-16）：服装造型（主要人物上装颜色/款式）——同场换装（Costume Break）判据数据源 */
+    costume?: string;
+    /** 🎬 §20 第4步（2026-09-16）：环境介质/天气/时段（晴/雨/雪/夜/黄昏…）——影调与内外景判据数据源 */
+    weatherEnv?: string;
     characters?: string[];
     asrText?: string;
   };
@@ -369,6 +386,115 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
   public readonly nodeType = 'vision-extract';
 
   /**
+   * 🧹 帧 JSON 契约键集合（§20 第4步）：键名归一化的比对基准，须与 VLM schema 的 properties 保持一致。
+   * 改 schema 时同步改这里，否则新键会被当作"未知键"统计。
+   */
+  private static readonly FRAME_CONTRACT_KEYS: readonly string[] = [
+    'scene', 'subject', 'primarySubject', 'secondarySubjects', 'interaction', 'shotStyle', 'eyelineDirection',
+    'characters', 'narrativeAction', 'emotionalState', 'shotType', 'cameraMovement',
+    'dramaticConflict', 'visualAtmosphere', 'spatialRelation', 'keyProps', 'costume',
+    'weatherEnv', 'keywords',
+    /** 🎭 2026-09-18 新增契约键：**整段/父镜头全体出场人物**（聚合层字段，非 VLM 逐帧 schema）。
+     *  切片级 characters 改为"逐帧窗口"口径后，父镜头并集单独落在此键；
+     *  按"新增字段必须同步契约键"的规则登记，避免它出现时被统计成未知键（错就错，不丢原始数据）。 */
+    'charactersSceneLevel',
+  ];
+
+  /**
+   * 🧹 帧 JSON 键名契约归一化（§20 第4步，2026-09-16）
+   *
+   * 背景（两轮全量实测证据）：`vlm_frame_cache` 每轮都会出现 2~3 个脏键，形态分两类——
+   *   A. **结构漂移**：`visualAt Atmosphere`（键名内插空格）→ 分词后多出一个词元；
+   *   B. **词内拼写错**：`narrageAction` / `dramanticConflict` / `visualAtrosphere` / `visualAtmoscape`
+   *      → 分词后词元个数不变，但某词元字母错漏。
+   * 两类都会让对应契约字段**静默缺失**（v4 轮 narrativeAction/visualAtmosphere 各 664/665）。
+   * `safeParseVlmJson` 只做 `JSON.parse`（不猜键名），故在模型边界补两级**确定性**修复：
+   *   一级（结构）：脏键词元**包含**某契约键全部词元 → 改名（容忍插入词）；
+   *   二级（拼写）：归一化全键的 Levenshtein 相似度 ≥ FUZZY_MIN_SIM，且**唯一**（与次佳差 ≥ FUZZY_MARGIN）、
+   *                且目标契约键在该帧缺失 → 改名。
+   * 两级都不命中 => 原样保留并计入"未知键"（错就错：不编造值、不丢弃原始数据）。
+   *
+   * @param item VLM 返回的单帧解析对象
+   * @returns item=归一化后的新对象（不改原对象）；repaired=结构改名次数；
+   *          repairedFuzzy=拼写改名次数（单独计数便于审计）；unknown=未识别的键名列表
+   */
+  public static normalizeFrameKeys(item: any): { item: any; repaired: number; repairedFuzzy: number; unknown: string[] } {
+    if (!item || typeof item !== 'object') return { item, repaired: 0, repairedFuzzy: 0, unknown: [] };
+    /** 键名分词（仅用于比对）：camelCase 边界 + 非字母数字分隔符全部切开后转小写。
+     *  例：'visualAtmosphere' → [visual, atmosphere]；'visualAt Atmosphere' → [visual, at, atmosphere]。 */
+    const tokenize = (k: unknown): string[] => String(k)
+      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/[^A-Za-z0-9]+/g, ' ')
+      .toLowerCase()
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    /** 键名归一（相似度用）：仅保留字母数字并小写 */
+    const flatten = (k: unknown): string => String(k).toLowerCase().replace(/[^a-z0-9]/g, '');
+    /** Levenshtein 编辑距离（标准 DP；键名都很短，成本可忽略） */
+    const editDistance = (a: string, b: string): number => {
+      if (a === b) return 0;
+      const prev: number[] = new Array(b.length + 1).fill(0);
+      for (let j = 0; j <= b.length; j++) prev[j] = j;
+      for (let i = 1; i <= a.length; i++) {
+        let diag = prev[0];
+        prev[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+          const tmp = prev[j];
+          prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+          diag = tmp;
+        }
+      }
+      return prev[b.length];
+    };
+    /** 🎯 拼写相似度阈值（实测标定）：本轮 3 个脏键相似度分别 0.94/0.94/0.69，
+     *  取 0.65 可全部命中；而合法新增键（如 'mood'）长度 <5 直接跳过，避免误吸。 */
+    const FUZZY_MIN_SIM = 0.65;
+    /** 唯一性余量：最佳与次佳相似度差 < 该值即视为歧义，不改名 */
+    const FUZZY_MARGIN = 0.15;
+    /** 契约键 → 词元集合 + 归一化串（两级比对基准） */
+    const canonList: { key: string; tokens: string[]; flat: string }[] = VisionExtractStrategy.FRAME_CONTRACT_KEYS
+      .map((k) => ({ key: k, tokens: tokenize(k), flat: flatten(k) }));
+    const out: any = {};
+    const unknown: string[] = [];
+    let repaired = 0;
+    let repairedFuzzy = 0;
+    for (const [k, v] of Object.entries(item)) {
+      if (VisionExtractStrategy.FRAME_CONTRACT_KEYS.includes(k)) { out[k] = v; continue; }
+      const dirtyTokens = tokenize(k);
+      const dirtyFlat = flatten(k);
+      /** 一级（结构漂移）：契约键词元**全部**出现在脏键词元中；多键并列命中视为歧义不改名 */
+      let hit: string | null = null;
+      let hitLen = -1;
+      let ambiguous = false;
+      for (const c of canonList) {
+        if (c.tokens.length === 0 || !c.tokens.every((t) => dirtyTokens.includes(t))) continue;
+        if (c.tokens.length > hitLen) { hit = c.key; hitLen = c.tokens.length; ambiguous = false; }
+        else if (c.tokens.length === hitLen) { ambiguous = true; }
+      }
+      if (hit && !ambiguous && out[hit] === undefined) { out[hit] = v; repaired++; continue; }
+      /** 二级（词内拼写错）：短键跳过 + 相似度阈值 + 唯一性余量 */
+      if (dirtyFlat.length >= 5) {
+        const scored = canonList
+          .map((c) => ({ key: c.key, sim: 1 - editDistance(dirtyFlat, c.flat) / Math.max(dirtyFlat.length, c.flat.length) }))
+          .sort((a, b) => b.sim - a.sim);
+        const best = scored[0];
+        const second = scored[1];
+        if (best && best.sim >= FUZZY_MIN_SIM
+          && (!second || best.sim - second.sim >= FUZZY_MARGIN)
+          && out[best.key] === undefined) {
+          out[best.key] = v;
+          repairedFuzzy++;
+          continue;
+        }
+      }
+      out[k] = v;
+      unknown.push(k);
+    }
+    return { item: out, repaired, repairedFuzzy, unknown };
+  }
+
+  /**
    * GAP 3: downstream 字段规范化 — 空占位词转 undefined（错就错不兜底假值）
    *
    * 背景：VLM 即使被 prompt 禁止输出"无/None"，仍有概率违反；把这些占位字符串传给
@@ -410,6 +536,8 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       const cnPlaceholders = new Set([
         '无', '无人', '无动作', '无交互', '无冲突', '无人物', '无表情',
         '无氛围', '无构图', '无运镜', '空', '未检测', '未检测到',
+        // §20 第4步（2026-09-16）：新增字段的占位词（VLM 被要求"无关键道具时写无道具"）
+        '无道具', '无服装', '无天气', '无环境',
       ]);
       if (cnPlaceholders.has(trimmed)) return undefined;
       // 英文占位词（完整匹配 / 空格拆分词全匹配）
@@ -448,9 +576,23 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       subject: normStr(jsonItem?.subject),
       // 👥 P0 多人物关系建模：主焦点/陪体/交互动作/场景分类/角色集合
       primarySubject: normStr(jsonItem?.primarySubject),
+      // 👀 A域 v7：视线朝向（补丁14 跳轴守卫）结构化透传，全链路原样保留 LEFT|RIGHT|FRONT|NONE
+      eyelineDirection: normStr(jsonItem?.eyelineDirection),
       secondarySubjects: normArr<string>(jsonItem?.secondarySubjects),
       interaction: normStr(jsonItem?.interaction),
       shotStyle: normStr(jsonItem?.shotStyle),
+      // 🎬 第2步（2026-09-16）：补上此前**未透传**的两个字段——它们只活在 VLM 原始 JSON 里，
+      //   导致切片级 spatialRelation / visualAtmosphere 恒为空（实测键都不存在），
+      //   美术(影调相容)、导演(构图/空间关系)两个维度的数据源被静默掐断。
+      spatialRelation: normStr(jsonItem?.spatialRelation),
+      visualAtmosphere: normStr(jsonItem?.visualAtmosphere),
+      // 🎬 §20 第1步（2026-09-16）：scene 置景字段透传——此前只活在 VLM 原始 JSON（v4 起 665/665），
+      //   切片侧被迫用 description 正则回捞，两套口径并存。透传后由切片侧「原生优先 + 正则兜底」。
+      scene: normStr(jsonItem?.scene),
+      // 🎬 §20 第4步（2026-09-16）：道具/服装/环境三个新采集字段（v5 prompt 起产出）
+      keyProps: normStr(jsonItem?.keyProps),
+      costume: normStr(jsonItem?.costume),
+      weatherEnv: normStr(jsonItem?.weatherEnv),
       characters: normArr<string>(jsonItem?.characters),
       asrText: normStr(frameAsrText),
     };
@@ -836,18 +978,37 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     // 优先使用 input.frameTimeMs（步骤1 落库的真实时间轴，长度必须与帧数一致），
     // 缺失/长度不匹配时回退 estimatedInterval 估算并 WARN 提示数据不精确（不掩盖、不兜底）。
     const realFrameTimes = Array.isArray(input.frameTimeMs) ? input.frameTimeMs : undefined;
-    const useRealFrameTimes = !!realFrameTimes
-      && realFrameTimes.length === totalFrameCount
+    const realTimesFinite = !!realFrameTimes && realFrameTimes.length > 0
       && realFrameTimes.every((t: any) => Number.isFinite(Number(t)));
-    const frameTimesMs: number[] = useRealFrameTimes && realFrameTimes
-      ? realFrameTimes.map((t: any) => Math.round(Number(t)))
-      : new Array(totalFrameCount).fill(0).map((_, i) => Math.round(i * estimatedInterval * 1000));
+    /** 🛠 P0 修复：此前要求「长度必须完全相等」，否则整批丢弃、全量回退均匀估算时间轴。
+     *  实测触发：重抽帧后帧数 665，而上游传入的 frameTimeMs 仍是上一次的 664（差 1 帧），
+     *  结果全片真实（非均匀、按场景抽帧）时间轴被丢弃，帧↔切片归位出现秒级偏移。
+     *  改为「小差异按序对齐」：长度近似（容差 ≤ max(2, 1%)）时保留真实时间轴——多则截断，
+     *  少则尾部按真实平均间隔外推；真实段的非均匀分布不被破坏。差异过大才回退估算（不掩盖）。 */
+    const timeLenDiff = realFrameTimes ? Math.abs(realFrameTimes.length - totalFrameCount) : Number.MAX_SAFE_INTEGER;
+    const timeLenTolerance = Math.max(2, Math.round(totalFrameCount * 0.01));
+    const useRealFrameTimes = realTimesFinite && timeLenDiff <= timeLenTolerance;
+    const frameTimesMs: number[] = (() => {
+      if (!useRealFrameTimes || !realFrameTimes) {
+        return new Array(totalFrameCount).fill(0).map((_, i) => Math.round(i * estimatedInterval * 1000));
+      }
+      const src = realFrameTimes.map((t: any) => Math.round(Number(t)));
+      if (src.length >= totalFrameCount) return src.slice(0, totalFrameCount);
+      // 真实时间戳短于帧数：保留真实段，尾部按真实平均间隔外推（避免整批降级）
+      const out = [...src];
+      const baseIntervalMs = src.length > 1
+        ? (src[src.length - 1] - src[0]) / (src.length - 1)
+        : estimatedInterval * 1000;
+      while (out.length < totalFrameCount) out.push(Math.round(out[out.length - 1] + baseIntervalMs));
+      return out;
+    })();
     if (useRealFrameTimes) {
       AppLogger.info(LOG_TAGS.AI_AGENT,
-        `[画面描述] 🎬 使用帧真实时间戳（源坐标）：${totalFrameCount} 帧，首帧 ${(frameTimesMs[0] / 1000).toFixed(1)}s，末帧 ${(frameTimesMs[totalFrameCount - 1] / 1000).toFixed(1)}s`);
-    } else if (Array.isArray(input.frameTimeMs) && input.frameTimeMs.length !== totalFrameCount) {
+        `[画面描述] 🎬 使用帧真实时间戳（源坐标）：${totalFrameCount} 帧，首帧 ${(frameTimesMs[0] / 1000).toFixed(1)}s，末帧 ${(frameTimesMs[totalFrameCount - 1] / 1000).toFixed(1)}s`
+        + (timeLenDiff > 0 ? `（长度差 ${timeLenDiff} 帧已按序对齐）` : ''));
+    } else if (Array.isArray(input.frameTimeMs)) {
       AppLogger.warn(LOG_TAGS.AI_AGENT,
-        `[画面描述] ⚠️ 帧真实时间戳长度(${input.frameTimeMs.length})与帧数(${totalFrameCount})不一致，回退估算时间轴，asrText 匹配可能不精确`);
+        `[画面描述] ⚠️ 帧真实时间戳长度(${input.frameTimeMs.length})与帧数(${totalFrameCount})差异过大(>${timeLenTolerance})，回退估算时间轴，asrText 匹配可能不精确`);
     }
 
     /** 🎬 帧平均时间间隔（秒）：真实时间戳模式按首末帧差值，估算模式用 estimatedInterval */
@@ -886,6 +1047,9 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     /** 每帧的描述和JSON数据存储（提前声明，供 P1-1/P1-2 使用，避免 TDZ） */
     const frameDescriptions: string[] = new Array(totalFrameCount).fill('');
     const frameJsonItems: (any | null)[] = new Array(totalFrameCount).fill(null);
+    /** 🧹 §20 第4步：键名漂移修复统计（VLM 输出脏键名 → 契约键改名；未知键名单独暴露）。
+     *  在缓存查询**之前**声明——L2 缓存回灌路径同样要过 `normalizeFrameKeys`（缓存里可能存着旧脏键）。 */
+    const keyRepairStats = { repaired: 0, repairedFuzzy: 0, unknownKeys: new Set<string>(), framesWithDirtyKey: 0 };
 
     // ========== P1-1: pHash 视觉去重 ==========
     // 计算相邻帧的感知哈希，静态镜头（Hamming 距离 < 5）跳过 VLM，复用前一帧描述
@@ -921,7 +1085,17 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         // 直接从缓存恢复描述
         try {
           const parsedItem = JSON.parse(cached.resultJson);
-          frameJsonItems[idx] = parsedItem;
+          /** 🧹 §20 第4步：缓存回灌同样过键名契约归一化——历史缓存里可能存着脏键
+           *  （实测 v5 首轮 3 帧：dramanticConflict / visualAtrosphere / visualAtmoscape），
+           *  若不在此处修复，命中缓存的帧会持续丢失对应字段且不再有 VLM 调用机会。 */
+          const _cachedKeyNorm = VisionExtractStrategy.normalizeFrameKeys(parsedItem);
+          if (_cachedKeyNorm.repaired > 0 || _cachedKeyNorm.repairedFuzzy > 0 || _cachedKeyNorm.unknown.length > 0) {
+            keyRepairStats.repaired += _cachedKeyNorm.repaired;
+            keyRepairStats.repairedFuzzy += _cachedKeyNorm.repairedFuzzy;
+            keyRepairStats.framesWithDirtyKey++;
+            _cachedKeyNorm.unknown.forEach((k: string) => keyRepairStats.unknownKeys.add(k));
+          }
+          frameJsonItems[idx] = _cachedKeyNorm.item;
           frameDescriptions[idx] = cached.description;
         } catch {
           cachedFrameIndices.delete(idx);
@@ -969,7 +1143,11 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       return `${String(m).padStart(2, '0')}:${s.toFixed(2).padStart(5, '0')}`;
     };
 
-    /** 构建单帧的流式推送数据 */
+    /** 构建单帧的流式推送数据
+     *  ⚠️ 字段必须与最终产物 frameDetails（本方法下方 return 处）**同构**：
+     *  流式推送会经 usePipelineExecutor 写入前端 store 并可能落库，若此处缺 downstream/characters，
+     *  一旦步骤2 中断或未收尾被全覆盖，store 会长期停留"无 downstream 帧"，
+     *  导致步骤5 的 shotType/运镜/剧作冲突/美术氛围等结构化字段静默归零（已实测确认）。 */
     const buildPartialFrames = (): FrameDetail[] => {
       const details: FrameDetail[] = [];
       for (let fi = 0; fi < totalFrameCount; fi++) {
@@ -981,10 +1159,23 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         );
         const idx = physicalFrames.indexOf(allFrames[fi]);
         const url = (framePathsOriginal.length > 0 && idx >= 0) ? framePathsOriginal[idx] : allFrames[fi];
+        const jsonItem = frameJsonItems[fi];
+        const frameAsrText = matchedAsr.map(l => l.text).join(' ');
+        /** 与最终产物同口径：占位词归一化 → 再从 description 前缀回捞缺失结构化字段 */
+        const downstream = jsonItem
+          ? VisionExtractStrategy.normalizeDownstreamFields(jsonItem, frameAsrText)
+          : undefined;
+        if (downstream && frameDescriptions[fi] && frameDescriptions[fi].trim()) {
+          VisionExtractStrategy.fillStructuredFromDescription(downstream, frameDescriptions[fi]);
+        }
+        /** 顶层 emotion 与最终产物同口径（原生字段 → downstream 回捞值） */
+        const topEmotion = (jsonItem?.emotionalState || jsonItem?.emotionTone || '')?.toString().trim()
+          || (downstream?.emotion ?? '')?.toString().trim()
+          || '';
         details.push({
           url,
           description: frameDescriptions[fi],
-          asrText: matchedAsr.map(l => l.text).join(' '),
+          asrText: frameAsrText,
           asrTime: matchedAsr.length > 0
             ? `${matchedAsr[0].startTime.toFixed(1)}s-${matchedAsr[matchedAsr.length - 1].endTime.toFixed(1)}s`
             : '',
@@ -992,7 +1183,9 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           timeStr: formatTimeStr(frameTimeSec),
           editing: false,
           confirmed: true,
-          emotion: frameJsonItems[fi]?.emotionTone || '',
+          emotion: topEmotion,
+          downstream,
+          characters: effectiveFrameRoles ? (effectiveFrameRoles[fi] || []) : undefined,
         });
       }
       return details;
@@ -1039,7 +1232,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
 
         /** 全局摘要用低 temperature 确保稳定 */
         const summaryFmt = {
-          type: 'json_object' as const,
+          type: 'json_schema' as const,
           json_schema: {
             name: 'global_scene_summary',
             schema: {
@@ -1119,7 +1312,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       const frameRolesAnchoringPrompt = buildFrameRolesAnchoringPrompt(batchFrames, effectiveFrameRoles);
       // 🎭 人物名称使用指引：仅在有人物名单或帧级锚定时附加，避免无 roles 时出现悬空引用
       const rolesUsageHint = (rolesContextPrompt || frameRolesAnchoringPrompt)
-        ? '\n- 若画面中出现【已知人物角色】或【逐帧角色锚定】中的人物，请使用其名称；未在名单中的人物用"男子/女子"等泛称'
+        ? '\n- 若画面中出现【已知人物角色】或【逐帧角色锚定】中的人物，请使用其名称；未在名单中的人物用客观外观描述（如"穿蓝色条纹衬衫的男子"），严禁凭脸猜演员名/角色名'
         : '';
 
       // P2: 拼图模式 — 先构建网格图（失败则降级为 1x1 多图独立发送）
@@ -1138,7 +1331,11 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           : '3×3 网格图（9 个子图，按 [1]~[9] 编号排列）';
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 写该帧出现的所有角色名（主焦点+陪体+可辨识角色，优先用已知角色真实姓名）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么（15字以内）","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","characters":["角色名1"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 只写该帧画面中**肉眼可见的人物**：优先用客观外观描述（如"穿蓝色条纹衬衫的男子""短发女子"）；仅在能确定身份时（如与提供的人物名单一致）才使用其姓名\n- 🔴 characters 严禁（违反即错误）：① 严禁写道具/布景/家具/车辆/植物/食物/建筑等**非人物**（如"绿植""窗外路灯""三人围坐沙发""飞机""沙发"）；② 严禁凭脸猜测演员名或角色名（禁止"XX饰演的YY"这类推断，也不许硬套明星名）；无法确定身份就用①中的外观描述\n- 🔴 characters 无人物时输出**空数组 []**（禁止写"无主体人物""无人物"等占位串）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容
+- 🎬 keyProps 写画面中关键道具**类别枚举**：必须从 [无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具] 中选一类（如"武器""文书证件"），无关键道具写"无道具"；严禁写具体道具名，具体道具（如"手枪""旧信封""裂开的牌匾"）写进 scene 或 narrativeAction\n- 👀 eyelineDirection 写主体视线朝向类别枚举：必须从 [LEFT|RIGHT|FRONT|NONE] 中选，仅视线方向清晰可判时写 LEFT/RIGHT/FRONT，视线不可判/空镜/无主体写 NONE（补丁14 跳轴守卫依赖）
+- 👗 costume 写主要人物的上装造型（颜色+款式，如"白衬衫""黑色风衣""病号服"）；多人写最突出的一个；空镜/无人物写"无人物"
+- 🌦 weatherEnv 写环境介质与时段（如"雨夜街头""室内白天"；可选 晴/阴/雨/雪/雾/夜/黄昏），无法判断写"室内"或"不明"
+- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","eyelineDirection":"LEFT|RIGHT|FRONT|NONE","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么（15字以内）","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keyProps":"道具类别枚举:无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具","costume":"人物上装造型（无人物写无人物）","weatherEnv":"环境介质/时段","characters":["该帧可见人物的客观外观描述，如穿蓝色条纹衬衫的男子；无人物写 []"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
         });
         userContent.push({
           type: 'image_url',
@@ -1148,7 +1345,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         /** 1x1 模式或拼图降级：多图独立发送 */
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 写该帧出现的所有角色名（主焦点+陪体+可辨识角色，优先用已知角色真实姓名）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容\n- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么（15字以内）","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","characters":["角色名1"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 只写该帧画面中**肉眼可见的人物**：优先用客观外观描述（如"穿蓝色条纹衬衫的男子""短发女子"）；仅在能确定身份时（如与提供的人物名单一致）才使用其姓名\n- 🔴 characters 严禁（违反即错误）：① 严禁写道具/布景/家具/车辆/植物/食物/建筑等**非人物**（如"绿植""窗外路灯""三人围坐沙发""飞机""沙发"）；② 严禁凭脸猜测演员名或角色名（禁止"XX饰演的YY"这类推断，也不许硬套明星名）；无法确定身份就用①中的外观描述\n- 🔴 characters 无人物时输出**空数组 []**（禁止写"无主体人物""无人物"等占位串）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容\n- 🎬 keyProps 写画面中与剧情相关或主体交互的关键道具/物品（如"裂开的牌匾""手枪""旧信封"），无关键道具写"无道具"\n- 👗 costume 写主要人物的上装造型（颜色+款式，如"白衬衫""黑色风衣"）；多人写最突出的一个；空镜/无人物写"无人物"\n- 🌦 weatherEnv 写环境介质与时段（如"雨夜街头""室内白天"），无法判断写"室内"或"不明"\n- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","eyelineDirection":"LEFT|RIGHT|FRONT|NONE","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么（15字以内）","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keyProps":"道具类别枚举:无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具","costume":"人物上装造型（无人物写无人物）","weatherEnv":"环境介质/时段","characters":["该帧可见人物的客观外观描述，如穿蓝色条纹衬衫的男子；无人物写 []"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
         });
         for (const f of batchFrames) {
           userContent.push({
@@ -1165,7 +1362,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       /** P0-1：JSON Schema 强制结构化输出，消除格式解析失败
        * 🎬 shotType：剪辑师准则新增字段，输出特写/近景/中景/全景，供 step3 蒸馏【特写】前缀 */
       const responseFormat = {
-        type: 'json_object' as const,
+        type: 'json_schema' as const,
         json_schema: {
           name: 'vision_frame_analysis',
           schema: {
@@ -1180,11 +1377,12 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
                       scene: { type: 'string', description: '场景空间：交代画面所在的物理空间与关键陈设/道具布局，如"昏暗室内，桌面中央放着一面裂开的牌匾，背景墙斑驳"或"车内副驾驶座，挡风玻璃映着雨夜街灯"。不啰嗦材质/花纹/衣料，但空间与关键物品必须说清楚，禁止只用2-6字概括，禁止"无"' },
                       subject: { type: 'string', description: '画面核心主体（优先用已知角色真实姓名，如"张三"；无人用泛称，空镜写"空镜头"）' },
                       // 👥 P0 多人物关系建模：主焦点/陪体/交互/场景分类/角色集合
-                      primarySubject: { type: 'string', description: '多人物主焦点：画面中核心叙事人物（优先用已知角色真实姓名，如"张三"；单人画面同 subject）' },
+                      primarySubject: { type: 'string', description: '画面绝对单焦点（剪辑 R4 单焦点门禁判定谁最重要）：优先用已知角色真实姓名，如"张三"；单人画面同 subject；主体为物件/无人物时空镜头写具体物件或"空镜头"' },
+                      eyelineDirection: { type: 'string', description: '主体视线朝向（补丁14 跳轴守卫）：LEFT|RIGHT|FRONT|NONE，仅视线清晰可判时写方向，视线不可判/空镜/无主体写 NONE', enum: ['LEFT', 'RIGHT', 'FRONT', 'NONE'] },
                       secondarySubjects: { type: 'array', items: { type: 'string' }, description: '多人物陪体列表：辅助/次要人物（如 ["李四"]）；背景路人/群众禁止入此列' },
                       interaction: { type: 'string', description: '人物间交互动作：谁对谁做了什么（15字内动词主导，如"张三举枪质问角落里的李四"；单人画面写该人物对道具/对象的动作）' },
                       shotStyle: { type: 'string', description: '多人物场景分类：单人|双人对峙|过肩镜头|群戏|主角+背景人群', enum: ['单人', '双人对峙', '过肩镜头', '群戏', '主角+背景人群'] },
-                      characters: { type: 'array', items: { type: 'string' }, description: '该帧出现的所有角色名集合（主焦点+陪体+可辨识路人；优先用已知角色名）' },
+                      characters: { type: 'array', items: { type: 'string' }, description: '仅该帧画面中肉眼可见的人物：用客观外观描述（如"穿蓝色条纹衬衫的男子"）；仅在能确定身份时（如与提供的人物名单一致）才用姓名。严禁写道具/布景/家具/车辆/植物/食物等非人物；严禁凭脸猜测演员名或角色名（禁止"XX饰演的YY"）；画面中无人物时输出空数组 []' },
                       // 🎬 拉片式动作：必须包含动作对象/交互道具/对手，让观众仅凭此句就知道"对什么做了什么"
                       narrativeAction: { type: 'string', description: '主体核心动作/状态：必须写明动作对象与交互道具/对手（如"手指轻触牌匾上的裂纹仔细端详"而非"手指轻触裂纹"；"张三举枪质问李四"而非"张三举枪"）。禁止"无动作"；禁止只写动作不写对象' },
                       emotionalState: { type: 'string', description: '主体的微表情/情绪（如眼神/咬牙/冷笑；静态写具体状态，禁止"无表情"占位）' },
@@ -1194,10 +1392,14 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
                       visualAtmosphere: { type: 'string', description: '光影/色调/氛围（2-4字概括，禁止"无氛围"占位）' },
                       spatialRelation: { type: 'string', description: '人物空间位置/构图（如"张三前景居主体，李四后景阴影中"；禁止"无构图"占位）' },
                       // 🎬 关键道具字段：独立展示，避免"牌匾/手枪/信封"这类关键物品被压缩进 keywords 后不可见
-                      keyProps: { type: 'string', description: '画面中与剧情相关或主体交互的关键道具/物品（如"裂开的牌匾""手枪""旧信封""手机屏幕显示未读消息"），无关键道具时写"无道具"' },
+                      // A域 v7：keyProps 强制为可枚举类别（补丁8/17 实体相交/稀有料判定），具体道具名由 scene/narrativeAction 描述承载
+                      keyProps: { type: 'string', description: '关键道具类别枚举（补丁8/17 实体相交判定）：从 [无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具] 选一类；无关键道具写"无道具"；具体道具名（如"手枪""旧信封""裂开的牌匾"）写进 scene 或 narrativeAction', enum: ['无道具', '武器', '文书证件', '通信工具', '容器载体', '工具器械', '财物珍宝', '其他关键道具'] },
+                      // 🎬 §20 第4步（v5）：服装造型 / 环境介质——同场换装与天气影调判据的数据源
+                      costume: { type: 'string', description: '画面主要人物的上装造型：颜色+款式（如"白衬衫""黑色风衣""病号服"）；多人写最突出的一个；空镜或无人物写"无人物"' },
+                      weatherEnv: { type: 'string', description: '环境介质与时段：晴/阴/雨/雪/雾/夜/黄昏/室内（如"雨夜街头""室内白天"）；无法判断写"室内"或"不明"' },
                       keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词（仅动作/情绪/道具/人物，禁止环境词）' },
                     },
-                    required: ['scene', 'subject', 'primarySubject', 'secondarySubjects', 'interaction', 'shotStyle', 'narrativeAction', 'emotionalState', 'shotType', 'cameraMovement', 'dramaticConflict', 'visualAtmosphere', 'spatialRelation', 'keyProps'],
+                    required: ['scene', 'subject', 'primarySubject', 'eyelineDirection', 'secondarySubjects', 'interaction', 'shotStyle', 'narrativeAction', 'emotionalState', 'shotType', 'cameraMovement', 'dramaticConflict', 'visualAtmosphere', 'spatialRelation', 'keyProps', 'costume', 'weatherEnv'],
                   },
               },
             },
@@ -1229,6 +1431,15 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         /** P0-2：响应式流 — 逐帧写入并立即推送，不等整个批次解析完 */
         for (let i = 0; i < batchFrames.length; i++) {
           const frameIdx = batchFrames[i].idx;
+          /** 🧹 §20 第4步：模型边界键名归一化——脏键名改名为契约键，未知键名保留并计数暴露 */
+          const _keyNorm = VisionExtractStrategy.normalizeFrameKeys(parsedItems[i]);
+          if (_keyNorm.repaired > 0 || _keyNorm.repairedFuzzy > 0 || _keyNorm.unknown.length > 0) {
+            keyRepairStats.repaired += _keyNorm.repaired;
+            keyRepairStats.repairedFuzzy += _keyNorm.repairedFuzzy;
+            keyRepairStats.framesWithDirtyKey++;
+            _keyNorm.unknown.forEach((k: string) => keyRepairStats.unknownKeys.add(k));
+          }
+          parsedItems[i] = _keyNorm.item;
           const parsedItem = parsedItems[i];
           if (!parsedItem || typeof parsedItem !== 'object') {
             throw new Error(`VLM 第 ${i + 1} 帧返回非对象数据，拒绝降级解析`);
@@ -1245,7 +1456,12 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
             parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
             parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
             // 🎬 关键道具独立展示：牌匾/手枪/信封等剧情线索必须可见（原 keywords 有但不展示，导致道具丢失）
-            parsedItem.keyProps && parsedItem.keyProps !== '无道具' ? `道具:${parsedItem.keyProps}` : '',
+            parsedItem.keyProps && parsedItem.keyProps !== '无道具' ? `道具:${parsedItem.keyProps}` : '道具:无道具',
+            // 👀 A域 v7 方案A：视线朝向显式展示（NONE=不可判/空镜/无主体，隐藏避免刷屏；LEFT/RIGHT/FRONT 固定展示）
+            parsedItem.eyelineDirection && parsedItem.eyelineDirection !== 'NONE' ? `视线:${parsedItem.eyelineDirection}` : '',
+            // 🎬 §20 第4步：服装造型 / 环境介质独立展示（同场换装、天气影调判据的可见数据源）
+            parsedItem.costume ? `造型:${parsedItem.costume}` : '',
+            parsedItem.weatherEnv ? `环境:${parsedItem.weatherEnv}` : '',
             parsedItem.dramaticConflict ? `看点:${parsedItem.dramaticConflict}` : '',
           ].filter(Boolean);
           frameDescriptions[frameIdx] = parts.join(' ');
@@ -1282,7 +1498,12 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
               parsedItem.visualAtmosphere ? `光影:${parsedItem.visualAtmosphere}` : '',
               parsedItem.spatialRelation ? `空间:${parsedItem.spatialRelation}` : '',
               // 🎬 与 UI 实时推送保持一致：关键道具独立展示
-              parsedItem.keyProps && parsedItem.keyProps !== '无道具' ? `道具:${parsedItem.keyProps}` : '',
+              parsedItem.keyProps && parsedItem.keyProps !== '无道具' ? `道具:${parsedItem.keyProps}` : '道具:无道具',
+              // 👀 A域 v7 方案A：视线朝向显式展示（NONE=不可判/空镜/无主体，隐藏避免刷屏；LEFT/RIGHT/FRONT 固定展示）
+              parsedItem.eyelineDirection && parsedItem.eyelineDirection !== 'NONE' ? `视线:${parsedItem.eyelineDirection}` : '',
+              // 🎬 §20 第4步：与 UI 实时推送同构（缓存 description 必须含新字段，否则命中缓存的帧看不到）
+              parsedItem.costume ? `造型:${parsedItem.costume}` : '',
+              parsedItem.weatherEnv ? `环境:${parsedItem.weatherEnv}` : '',
               parsedItem.dramaticConflict ? `看点:${parsedItem.dramaticConflict}` : '',
             ].filter(Boolean);
             cacheRecords.push({
@@ -1455,6 +1676,12 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
 
     const validCount = frameDescriptions.filter(d => d.trim()).length;
     AppLogger.info(LOG_TAGS.AI_AGENT, `[画面描述] 全部完成，总帧数: ${totalFrameCount}，有效描述: ${validCount}，覆盖率: ${((validCount / totalFrameCount) * 100).toFixed(1)}%`);
+
+    /** 🧹 §20 第4步 诊断：键名漂移修复明细（0 也要打——否则无法区分"没脏键"与"这段代码没跑"） */
+    AppLogger.info(LOG_TAGS.AI_AGENT,
+      `[画面描述] 🧹 JSON 键名契约校验：脏键帧=${keyRepairStats.framesWithDirtyKey}/${totalFrameCount} `
+      + `结构改名=${keyRepairStats.repaired} 拼写改名=${keyRepairStats.repairedFuzzy} `
+      + `未知键=${keyRepairStats.unknownKeys.size > 0 ? [...keyRepairStats.unknownKeys].join('/') : '无'}`);
 
     /** 构建每帧完整信息 */
     const frameDetails: FrameDetail[] = allFrames.map((fp: string, i: number) => {
