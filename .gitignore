@@ -155,6 +155,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# 一次性调试脚本（含 _tmp_ 前缀临时测试脚本 / 手动拼排脚本）
+_tmp_*.py
+check_logs.ps1
+src/test/test_jy_*.py
+src/test/_template_*.json
+
 # temp / 编辑器临时文件
 /temp/
 *.tmp
