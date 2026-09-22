@@ -72,7 +72,8 @@ async def detect_scene_chunks(req: SceneChunkReq):
                 cached_chunks = cached.get("chunks") or []
                 cached_segs = cached.get("matchSegments") or []
                 return {"success": True, "data": cached_chunks, "chunks": cached_chunks,
-                        "matchSegments": cached_segs, "fromCache": True}
+                        "matchSegments": cached_segs, "fromCache": True,
+                        "sceneCuts": cached.get("sceneCuts") or []}
             # 不满足阶段 B 契约（阶段 A 数组 / 空 matchSegments）：删除脏池，落回下方真重切
             PROJECT_MATERIAL_POOL.pop(media_id, None)
 
@@ -126,7 +127,8 @@ async def detect_scene_chunks(req: SceneChunkReq):
         if result.get("success") and result.get("data"):
             PROJECT_MATERIAL_POOL[media_id] = {
                 "chunks": result.get("data") or [],
-                "matchSegments": result.get("matchSegments") or []
+                "matchSegments": result.get("matchSegments") or [],
+                "sceneCuts": result.get("sceneCuts") or []
             }
 
         return result
@@ -630,5 +632,8 @@ def _build_chunks_with_covers(file_path: str, output_dir: str, scene_changes_sec
         "chunks": chunks,
         "matchSegments": match_segments,
         "totalDurationMs": round(duration_ms, 1),
-        "sceneChangeCount": len(filtered_changes)
+        "sceneChangeCount": len(filtered_changes),
+        # 🔧 sceneCuts：物理镜头切点毫秒列表（= filtered_changes，已按 min_chunk_duration 去毛刺）。
+        #   供未来「自动场次划分 / 空镜池分段」消费；当前无强制消费端，作为束搜索后续输入透出备用。
+        "sceneCuts": [round(t * 1000, 1) for t in filtered_changes]
     }

@@ -258,6 +258,8 @@ class AIModels:
     chinese_clip_processor = None
     _faster_whisper_model = None
     _paraformer_model = None  # Paraformer-Large 中文 ASR（懒加载）
+    _text_embedder_model = None      # BGE 文本嵌入（步骤5 语义主分唯一通道）
+    _text_embedder_tokenizer = None
 
     @classmethod
     def set_cli_device(cls, device_str: str):
@@ -313,6 +315,19 @@ class AIModels:
             cls._gc_collect()
 
     @classmethod
+    def release_text_embedder(cls):
+        """函数级中文注释：释放 BGE 文本嵌入模型内存（步骤5 匹配结束后调用，避免常驻叠加到下一个项目）"""
+        if cls._text_embedder_model is not None and cls._text_embedder_model is not False:
+            import torch
+            del cls._text_embedder_model
+            del cls._text_embedder_tokenizer
+            cls._text_embedder_model = None
+            cls._text_embedder_tokenizer = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            cls._gc_collect()
+
+    @classmethod
     def release_faster_whisper(cls):
         """释放 faster-whisper 模型内存"""
         if cls._faster_whisper_model is not None:
@@ -334,6 +349,7 @@ class AIModels:
         cls.release_face_app()
         cls.release_clip()
         cls.release_chinese_clip()
+        cls.release_text_embedder()
         cls.release_faster_whisper()
         cls.release_paraformer()
         print('[AI Daemon] 🧹 所有模型已释放，内存已回收', file=sys.stderr)
@@ -449,6 +465,70 @@ class AIModels:
         if cls.chinese_clip_model is False:
             return (None, None)
         return (cls.chinese_clip_model, cls.chinese_clip_processor)
+
+    @classmethod
+    def get_text_embedder(cls):
+        """函数级中文注释：获取 BGE 中文文本嵌入模型（懒加载，带锁保护）。
+
+        定位：步骤5 的**语义主分唯一通道**——用「文案 visualIntent/text ↔ 切片 VLM description」
+        做纯文本检索。与 CLIP 不同，不需要图像编码器，只做文本编码（[CLS] 池化 + L2 归一化）。
+        设计取舍：模型缺失或加载失败**直接抛错**，不静默降级——语义主分没有替代通道，
+        若降级为常量矩阵，全片匹配将退化为噪声（这是"不掩盖、不兜底"的显式失败原则）。"""
+        if cls._text_embedder_model is None:
+            with INFERENCE_LOCK:
+                if cls._text_embedder_model is None:
+                    _mark_loading_start("text_embedder")
+                    try:
+                        model_dir = os.path.join(MODELS_DIR, 'bge-small-zh-v1.5')
+                        # 目录缺失直接抛错并给出可操作提示，避免 from_pretrained 打印误导性的 Repo id 报错
+                        if not os.path.isdir(model_dir) or not os.path.exists(os.path.join(model_dir, 'config.json')):
+                            raise FileNotFoundError(
+                                f"BGE 文本嵌入模型目录不存在: {model_dir}"
+                                f"（请下载 bge-small-zh-v1.5 或手动放置到该目录）"
+                            )
+                        from transformers import AutoModel, AutoTokenizer
+                        print('[AI Daemon] 🧠 首次按需加载: BGE-small-zh 文本嵌入（步骤5 语义主分）...',
+                              file=sys.stderr)
+                        cls._text_embedder_tokenizer = AutoTokenizer.from_pretrained(
+                            model_dir, local_files_only=True
+                        )
+                        cls._text_embedder_model = AutoModel.from_pretrained(
+                            model_dir, local_files_only=True
+                        ).to(cls._ensure_device())
+                        cls._text_embedder_model.eval()
+                    except Exception as e:
+                        # 不缓存失败标记：文本嵌入是硬依赖，每次调用都应暴露同一失败原因，便于用户修复后即时恢复
+                        cls._text_embedder_model = None
+                        cls._text_embedder_tokenizer = None
+                        raise RuntimeError(f"BGE 文本嵌入模型加载失败: {e}") from e
+                    finally:
+                        _mark_loading_done()
+        return (cls._text_embedder_tokenizer, cls._text_embedder_model)
+
+    @classmethod
+    def encode_texts(cls, texts, batch_size: int = 32, max_length: int = 512):
+        """函数级中文注释：用 BGE 编码一批文本，返回 (n, dim) 的 L2 归一化 float32 矩阵。
+
+        归一化后「余弦相似度 == 点积」，供 KM 直接一次矩阵乘得到相似度矩阵。
+        池化方式与 BGE 官方一致：取 [CLS] 位（last_hidden_state[:, 0]）+ L2 归一化。"""
+        tokenizer, model = cls.get_text_embedder()
+        import numpy as np
+        import torch
+        if not texts:
+            return np.zeros((0, 0), dtype=np.float32)
+        device = cls._ensure_device()
+        vecs = []
+        with INFERENCE_LOCK:
+            with torch.no_grad():
+                for i in range(0, len(texts), batch_size):
+                    # 空文本会让注意力全落在 [PAD] 上产生无意义向量，用占位词兜底（对应"该切片无描述"）
+                    batch = [((t or '').strip() or '无描述') for t in texts[i:i + batch_size]]
+                    enc = tokenizer(
+                        batch, padding=True, truncation=True, max_length=max_length, return_tensors='pt'
+                    ).to(device)
+                    hidden = model(**enc).last_hidden_state[:, 0]
+                    vecs.append(torch.nn.functional.normalize(hidden, p=2, dim=-1).cpu().numpy())
+        return np.vstack(vecs).astype(np.float32)
 
     @classmethod
     def get_paraformer(cls):
