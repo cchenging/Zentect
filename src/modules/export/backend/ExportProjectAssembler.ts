@@ -221,6 +221,8 @@ export function assembleExportProjectSync(
       videoTimelineStartMs: startMs,
       videoTimelineEndMs: endMs,
       appliedSpeedFactor: m?.appliedSpeedFactor,
+      // 🔧 E域（§10.2.6 动作2）：透传 solver 的剪裁优先哨兵（补丁12），统一装配器消费
+      isExactSpeed: m?.isExactSpeed === true,
       keepOriginalAudio: m?.keepOriginalAudio === true,
     };
   });

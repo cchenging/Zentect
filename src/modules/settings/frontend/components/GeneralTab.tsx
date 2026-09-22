@@ -75,6 +75,17 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({ data, onUpdate }) => {
               <Button onClick={() => handleSelectDirectory('jianyingPath')} variant="outline" className="h-8 px-3 text-xs shrink-0 border-border/50 hover:border-accent/40 hover:text-accent">浏览</Button>
             </div>
           </div>
+        {/* 日志目录 */}
+          <div className="flex items-center gap-4">
+            <div className="w-[160px] shrink-0">
+              <div className="text-xs text-foreground font-medium">日志目录</div>
+              <div className="text-xs text-muted-foreground">留空使用默认位置；保存后立即生效</div>
+            </div>
+            <div className="flex-1 flex gap-2">
+              <Input readOnly value={data.logPath || ''} placeholder="默认 AppData/Roaming/Zentect/logs" className="flex-1 text-xs font-mono text-muted-foreground bg-bg-secondary h-8 border-border/50" />
+              <Button onClick={() => handleSelectDirectory('logPath')} variant="outline" className="h-8 px-3 text-xs shrink-0 border-border/50 hover:border-accent/40 hover:text-accent">浏览</Button>
+            </div>
+          </div>
         </div>
       </div>
 

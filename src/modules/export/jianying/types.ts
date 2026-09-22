@@ -21,6 +21,9 @@ export interface JianyingExportInput {
     score: number;
     confirmed: boolean;
     appliedSpeedFactor?: number;
+    /** 🔧 E域（§10.2.6）：剪裁优先哨兵——true=该段"源时长≥目标、纯子窗裁剪、禁 linear stretch"，
+     *  由 solver 在 matchResult 产出（补丁12），导出端强制 speed=1.0 只选子窗。 */
+    isExactSpeed?: boolean;
     audioDurationMs?: number;
     chunkData?: Record<string, unknown>;
     /** 原声段落标记：true=保留原片原声，不配 TTS 配音 */
@@ -128,6 +131,9 @@ export interface CompileShot extends Shot {
   chunkData?: Record<string, unknown> | null;
   /** 变速因子（1.0=正常，<1.0=慢放，>1.0=快进） */
   appliedSpeedFactor?: number;
+  /** 🔧 E域（§10.2.6）：剪裁优先哨兵——true 表示"源时长≥目标时长、纯子窗裁剪、禁 linear stretch"。
+   *  导出端对 isExactSpeed=true 强制 speed=1.0，只在源窗内选高光子窗对齐目标（补丁12）。 */
+  isExactSpeed?: boolean;
   /** 视频时间线起始毫秒（原视频坐标） */
   videoTimelineStartMs?: number;
   /** 视频时间线结束毫秒（原视频坐标） */

@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS_SCHEMA: Record<string, any> = {
   autoSaveInterval: 5,
   gpuAcceleration: true,
   jianyingPath: '',
+  logPath: '',
   deepseekKey: '', deepseekModels: null,
   qwenKey: '', qwenModels: null,
   doubaoKey: '', doubaoModels: null,

@@ -1,7 +1,9 @@
 // Module: editor/storyboard/frontend/components/ShotCard
 // 原 editor/components/storyboard/ShotCard.tsx — 已迁移
 
-import { useState, useCallback, useRef, useEffect } from 'react';
+// ⚠️ 必须显式引入 React：vitest 下 .tsx 走 esbuild 经典 JSX transform（编译为 React.createElement），
+//    缺省默认导入时组件渲染即抛 "React is not defined"（仓库内其余 .tsx 同样显式引入 React）。
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import type { Shot, Role } from '../../../../../shared/types';
 import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
 import { useSortable } from '@dnd-kit/sortable';

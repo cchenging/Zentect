@@ -79,6 +79,14 @@ vi.mock('../../../../renderer/src/components/shared/drag-reorder-list', () => ({
 let StepShotMatchingView: React.FC<StepShotMatchingProps>;
 
 beforeAll(async () => {
+  // jsdom 未实现 IntersectionObserver，而 View 的"替换弹窗"用哨兵做无限滚动（new IntersectionObserver），
+  // 缺失时渲染即抛 "IntersectionObserver is not defined"。此处补一个最小可用桩（仅需 observe/disconnect）。
+  (globalThis as any).IntersectionObserver = class {
+    observe() { /* noop */ }
+    unobserve() { /* noop */ }
+    disconnect() { /* noop */ }
+    takeRecords() { return []; }
+  };
   const mod = await import('../frontend/View');
   StepShotMatchingView = mod.StepShotMatchingView;
 });

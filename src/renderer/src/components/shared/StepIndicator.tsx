@@ -1,10 +1,15 @@
 // StepIndicator - 步骤导航指示器
 import React from 'react';
 import { StatusIcon } from './status-icon';
+import type { LucideIcon } from 'lucide-react';
 
 interface Step {
   id: string | number;
   label: string;
+  /** 可选：人设/剧组合职图标（如 lucide Search/Mic/Clapperboard），提升剧组观感 */
+  icon?: LucideIcon;
+  /** 可选：步骤号角标（默认直接用 step.id 数字） */
+  badge?: string | number;
 }
 
 interface StepIndicatorProps {
@@ -67,7 +72,7 @@ export const StepIndicator: React.FC<StepIndicatorProps> = ({
             <button onClick={() => onStepClick?.(stepId)}
               className={`flex items-center gap-1.5 cursor-pointer outline-none ${colorClass}`}>
               <div className={`w-[22px] h-[22px] rounded-md flex items-center justify-center text-[12px] font-bold ${bgClass}`}>
-                {isDone ? <StatusIcon status="completed" size={12} /> : isRunning ? <StatusIcon status="running" size={12} /> : stepId}
+                {isDone ? <StatusIcon status="completed" size={12} /> : isRunning ? <StatusIcon status="running" size={12} /> : step.icon ? <step.icon size={13} className={colorClass} /> : <>{step.badge ?? stepId}</>}
               </div>
               <span className="text-[12px] font-medium hidden xl:inline">{step.label}</span>
             </button>

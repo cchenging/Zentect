@@ -27,6 +27,9 @@ export interface ExportShot {
   videoTimelineEndMs?: number;
   /** 变速因子（1.0=正常） */
   appliedSpeedFactor?: number;
+  /** 🔧 E域（§10.2.6）：剪裁优先哨兵——true=该段"源时长≥目标、纯子窗裁剪、禁 linear stretch"，
+   *  由 solver 在 matchResult 产出（补丁12），导出端强制 speed=1.0 只选子窗。 */
+  isExactSpeed?: boolean;
   /** 是否保留原片原声（true=原声段，不配 TTS 配音，剪映导出时视频段音量开足） */
   keepOriginalAudio?: boolean;
   /**

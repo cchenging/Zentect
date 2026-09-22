@@ -81,13 +81,13 @@ export const useStep5Store = create<Step5Store>()((set) => ({
     set((s) => ({
       matchResults: s.matchResults.map((m: any) =>
         /** ✅ 身份键统一：消费端一律读 id（出生处即段落唯一主键），删除 shotId 双门 */
-        m.id === shotId ? { ...m, confirmed: true } : m
+        m.id === shotId ? { ...m, confirmed: true, isUserLocked: true } : m
       ),
     })),
   replaceMatch: (shotId, newMediaId) =>
     set((s) => ({
       matchResults: s.matchResults.map((m: any) =>
-        m.id === shotId ? { ...m, mediaId: newMediaId, confirmed: false } : m
+        m.id === shotId ? { ...m, mediaId: newMediaId, confirmed: false, isUserLocked: true } : m
       ),
     })),
   setActiveBgm: (bgm) => set({ activeBgm: bgm }),

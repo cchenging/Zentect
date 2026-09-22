@@ -3,7 +3,7 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { Check, RefreshCw, Film, X, Play, Pause, Volume2, VolumeX, Music, Music2, Upload, Trash2, Sparkles, Loader2, Copy, Search, Clock, FileText, Heart, ListMusic, Download, ListPlus, AlertTriangle } from "lucide-react";
+import { Check, RefreshCw, Film, X, Play, Pause, Volume2, VolumeX, Music, Music2, Upload, Trash2, Sparkles, Loader2, Copy, Search, Clock, FileText, Heart, ListMusic, Download, ListPlus, AlertTriangle, Lock } from "lucide-react";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { Badge, StatHeader, EmptyState } from "@renderer/components/shared";
 import { DragReorderList } from "@renderer/components/shared/drag-reorder-list";
@@ -251,6 +251,13 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   }, []);
 
   const [replacingShotId, setReplacingShotId] = useState<string | null>(null);
+  /** 🔧 替换弹窗"仅显示符合当前文案的切片"：
+   *  replaceText   当前段解说词（检索 query）
+   *  relatedChunks null=检索中；数组（可空）=按文案检索到的相关切片
+   *  showRelated   true=仅显示相关候选；false=显示全部切片 */
+  const [replaceText, setReplaceText] = useState<string>('');
+  const [relatedChunks, setRelatedChunks] = useState<any[] | null>(null);
+  const [showRelated, setShowRelated] = useState(true);
   /** 预览弹窗状态：当前预览的 shotId + 播放/暂停 */
   const [previewShotId, setPreviewShotId] = useState<string | null>(null);
   const [previewPlaying, setPreviewPlaying] = useState(false);
@@ -263,9 +270,12 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   /** 底部加载哨兵 ref（列表末尾占位元素，始终渲染） */
   const poolSentinelRef = useRef<HTMLDivElement | null>(null);
 
+  /** 🔧 替换弹窗当前候选池：默认"仅显示符合文案的相关候选"（打开时由文案检索得到）；
+   *  检索无结果或手动切到"全部"时，回退到全量 videoChunks / mediaItems。 */
   const chunkPool = useMemo(() => {
+    if (showRelated && relatedChunks && relatedChunks.length > 0) return relatedChunks;
     return videoChunks.length > 0 ? videoChunks : mediaItems.filter((m) => m.type === "video_chunk" || m.type === "frame");
-  }, [videoChunks, mediaItems]);
+  }, [showRelated, relatedChunks, videoChunks, mediaItems]);
 
   // 🔧 每次打开替换弹窗都从第一页开始渲染，避免残留上一轮的滚动加载进度
   useEffect(() => {
@@ -419,9 +429,41 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
     }
   }, [scriptParagraphs, emotionTone, frameEmotions, shotTypes, videoDurationMs]);
 
+  /** 🔧 打开替换弹窗：记录当前段文案，并按文案检索"相关候选"（默认仅显示相关；检索不到则回落全部） */
+  const openReplace = useCallback((m: any) => {
+    const text = (m && m.text && String(m.text).trim()) ? String(m.text).trim() : '';
+    const mediaId = String(mediaItems?.[0]?.id || '');
+    setReplaceText(text);
+    setReplacingShotId(m.id);
+    setShowRelated(true);
+    setRelatedChunks(null); // null=检索中
+    setPoolPage(1);
+    /** 无素材 id 或文案为空 → 无相关候选，回退全量 */
+    if (!mediaId || !text) {
+      setRelatedChunks([]);
+      return;
+    }
+    API.engine.searchSlices(mediaId, text, 24)
+      .then((res: any) => {
+        /** 相关候选 = 命中的物理切片；描述稀疏的历史项目可能为空 → 前端回落显示全部 */
+        const cands = (res && Array.isArray(res.candidates)) ? res.candidates : [];
+        setRelatedChunks(cands.map((c: any) => c.chunk).filter(Boolean));
+      })
+      .catch(() => setRelatedChunks([]));
+  }, [mediaItems]);
+
+  /** 🔧 关闭替换弹窗时复位相关候选状态，下次打开重新检索 */
+  useEffect(() => {
+    if (!replacingShotId) {
+      setRelatedChunks(null);
+      setShowRelated(true);
+      setReplaceText('');
+    }
+  }, [replacingShotId]);
+
   const handleReplaceSelect = (shotId: string, chunk: any) => {
     onReplace(shotId, chunk);
-    setReplacingShotId(null);
+    setReplacingShotId(null); // 选中后关闭替换弹窗
   };
 
   /** 复制文案到剪贴板（navigator.clipboard 优先，不可用时回退 textarea 选择复制），带 1.5s 成功反馈 */
@@ -1017,6 +1059,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                         {m.text || m.id}
                         {m.keepOriginalAudio && <Badge variant="warning" className="text-[11px] shrink-0">原声</Badge>}
                         {m.degraded && <Badge variant="warning" className="text-[11px] shrink-0" title="该段候选不足，已自动选最相关镜头，建议人工确认或替换">待确认</Badge>}
+                        {m.isUserLocked && <Badge variant="default" className="text-[11px] shrink-0 flex items-center gap-0.5" title="该镜头已被你手动锁定/确认，重新匹配时保持不变（确定性锚点）"><Lock size={10} /> 已锁定</Badge>}
                       </span>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {m.text && (
@@ -1045,7 +1088,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                       ) : (
                         <>
                           <button onClick={() => onConfirm(m.id)} className="px-2.5 py-1 text-[12px] bg-accent-green/20 text-accent-green hover:bg-accent-green hover:text-white rounded transition-all cursor-pointer">确认</button>
-                          <button onClick={() => setReplacingShotId(m.id)} className="px-2.5 py-1 text-[12px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer">替换</button>
+                          <button onClick={() => openReplace(m)} className="px-2.5 py-1 text-[12px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer">替换</button>
                         </>
                       )}
                     </div>
@@ -1067,6 +1110,21 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
             <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border bg-bg-secondary/60">
               <span className="text-[14px] font-semibold">选择视频片段</span>
               <button onClick={() => setReplacingShotId(null)} className="text-muted-foreground hover:text-foreground cursor-pointer"><X size={18} /></button>
+            </div>
+            {/* 🔧 文案 + 候选模式工具条：默认"仅显示符合文案的相关候选"，可切回全部 */}
+            <div className="shrink-0 px-4 py-2 border-b border-border bg-bg-primary/40 flex items-center gap-3">
+              <span className="flex-1 min-w-0 text-[12px] text-muted-foreground truncate">
+                {replaceText ? `文案：${replaceText}` : '（本段暂无文案）'}
+              </span>
+              <button
+                onClick={() => { if (relatedChunks === null) return; setShowRelated((s) => !s); setPoolPage(1); }}
+                disabled={relatedChunks === null}
+                className="shrink-0 text-[12px] px-2.5 py-1 rounded border border-border/60 text-muted-foreground hover:text-accent hover:border-accent/40 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+              >
+                {relatedChunks === null
+                  ? '检索相关中…'
+                  : (showRelated && relatedChunks.length > 0 ? `仅相关（${relatedChunks.length}）· 点此看全部` : '相关候选较少 · 当前显示全部')}
+              </button>
             </div>
             <div
               className="visible-scrollbar overflow-y-auto p-4 grid grid-cols-3 gap-3 content-start max-h-[516px]"

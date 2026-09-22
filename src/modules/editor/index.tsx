@@ -24,6 +24,8 @@ import { usePipelineOrchestrator } from '@modules/editor/shell';
 import { useMediaUpdatedListener } from '@modules/editor/shell';
 import { StepPanel } from '@modules/editor/shell';
 import PreviewMonitor from '@modules/editor/preview';
+/** 🎬 分镜单面板（editor left「分镜单」tab，展示 S2 ShotSpec 工单） */
+import StoryboardPanel from '@modules/editor/storyboard/frontend/components/StoryboardPanel';
 
 import { MEDIA_TABS } from '@modules/editor/shell';
 import { formatTime } from '@modules/editor/preview';
@@ -275,8 +277,8 @@ export default function Editor() {
           {/* 成功文件展示区域 */}
           <div className="glass-card overflow-hidden flex flex-col flex-1 min-h-0">
             <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border/30 shrink-0">
-              <span className="text-[12px] font-semibold">{activeMediaTab === 'video' ? '视频' : activeMediaTab === 'audio' ? '音频' : activeMediaTab === 'chunks' ? '视频切片' : '关键帧'}</span>
-              <span className="text-[12px] text-muted-foreground">共 {activeCount} 项</span>
+              <span className="text-[12px] font-semibold">{activeMediaTab === 'video' ? '视频' : activeMediaTab === 'audio' ? '音频' : activeMediaTab === 'chunks' ? '视频切片' : activeMediaTab === 'storyboard' ? '分镜单' : '关键帧'}</span>
+              {activeMediaTab === 'storyboard' ? null : <span className="text-[12px] text-muted-foreground">共 {activeCount} 项</span>}
             </div>
             <div className="flex items-center gap-1 px-3.5 pt-1.5 pb-0 shrink-0">
               {MEDIA_TABS.map(tab => (
@@ -300,6 +302,10 @@ export default function Editor() {
                 </button>
               ))}
             </div>
+            {activeMediaTab === 'storyboard' ? (
+              /** 🎬 分镜单：独立渲染 S2 工单面板（自身负担滚动 + 空态），复用左侧容器宽度 */
+              <StoryboardPanel projectId={id ?? ''} />
+            ) : (
             <div className={`flex-1 px-3.5 py-3 ${(activeMediaTab === 'chunks' || activeMediaTab === 'frames') ? 'overflow-y-auto overflow-x-hidden' : 'overflow-x-auto overflow-y-hidden'}`}>
               {filteredItems.length > 0 ? (
                 activeMediaTab === 'chunks' ? (
@@ -389,6 +395,7 @@ export default function Editor() {
                 </div>
               )}
             </div>
+            )}
           </div>
         </div>
 

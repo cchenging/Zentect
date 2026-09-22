@@ -133,6 +133,8 @@ export class JianyingExportService {
         audioPath: t?.audioUrl && !t._failed ? t.audioUrl : undefined,
         chunkData: m?.chunkData || null,
         appliedSpeedFactor: m?.appliedSpeedFactor,
+        // 🔧 E域（§10.2.6 动作2）：透传 solver 的剪裁优先哨兵，导出端据此禁 linear stretch、强制子窗裁剪
+        isExactSpeed: m?.isExactSpeed === true,
         videoTimelineStartMs: m?.videoTimelineStartMs,
         videoTimelineEndMs: m?.videoTimelineEndMs,
         keepOriginalAudio: p.keepOriginalAudio === true || m?.keepOriginalAudio === true,
@@ -194,6 +196,8 @@ export class JianyingExportService {
           audioPath: s.audioPath,
           chunkData: s.chunkData || null,
           appliedSpeedFactor: s.appliedSpeedFactor,
+          // 🔧 E域（§10.2.6 动作2）：透传装配器的剪裁优先哨兵
+          isExactSpeed: s.isExactSpeed === true,
           videoTimelineStartMs: Math.round(s.start * 1000),
           videoTimelineEndMs: Math.round(s.end * 1000),
           keepOriginalAudio: s.keepOriginalAudio === true,

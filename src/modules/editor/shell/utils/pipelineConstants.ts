@@ -5,22 +5,22 @@ import { Search, PictureInPicture, PenLine, Mic, Clapperboard, Film, Music, Imag
 // 🔧 修复 TS2339：导入 PipelineTask 类型供 STEP_SEQUENCES 使用
 import type { PipelineTask } from '../../../../shared/types';
 
-/** 步骤定义 */
+/** 步骤定义（华语剧组通俗人设风：让用户感觉"专业剧组各司其职"） */
 export const STEPS = [
-  { key: 1, label: '素材分析', icon: Search },
-  { key: 2, label: '画面描述', icon: PictureInPicture },
-  { key: 3, label: '解说文案', icon: PenLine },
-  { key: 4, label: '配音合成', icon: Mic },
-  { key: 5, label: '镜头匹配', icon: Clapperboard },
+  { key: 1, label: '素材助理', icon: Search },
+  { key: 2, label: '看片员', icon: PictureInPicture },
+  { key: 3, label: '首席编剧', icon: PenLine },
+  { key: 4, label: '专业播音', icon: Mic },
+  { key: 5, label: '剪辑大师', icon: Clapperboard },
 ];
 
 /** 步骤编号到管线节点序列的映射 */
 // 🔧 修复 TS2339：使用 PipelineTask 类型，包含 params/dependsOn/mergedInputs 字段
 export const STEP_SEQUENCES: Record<number, PipelineTask[]> = {
-  2: [{ nodeId: 'vlm-1', actionType: 'vision-extract', label: '画面描述', params: {}, dependsOn: [], mergedInputs: {} }],
-  3: [{ nodeId: 'script-1', actionType: 'script-gen', label: '解说文案', params: {}, dependsOn: [], mergedInputs: {} }],
-  4: [{ nodeId: 'tts-1', actionType: 'tts-synthesize', label: '配音合成', params: {}, dependsOn: [], mergedInputs: {} }],
-  5: [{ nodeId: 'match-1', actionType: 'semantic-analyze', label: '镜头匹配', params: {}, dependsOn: [], mergedInputs: {} }],
+  2: [{ nodeId: 'vlm-1', actionType: 'vision-extract', label: '看片员', params: {}, dependsOn: [], mergedInputs: {} }],
+  3: [{ nodeId: 'script-1', actionType: 'script-gen', label: '首席编剧', params: {}, dependsOn: [], mergedInputs: {} }],
+  4: [{ nodeId: 'tts-1', actionType: 'tts-synthesize', label: '专业播音', params: {}, dependsOn: [], mergedInputs: {} }],
+  5: [{ nodeId: 'match-1', actionType: 'semantic-analyze', label: '剪辑大师', params: {}, dependsOn: [], mergedInputs: {} }],
 };
 
 /**
@@ -75,6 +75,8 @@ export const MEDIA_TABS: { key: string; label: string; icon?: LucideIcon }[] = [
   { key: 'audio', label: '音频', icon: Music },
   { key: 'frames', label: '关键帧', icon: Image },
   { key: 'chunks', label: '视频切片', icon: Film },
+  /** 🎬 S2 分镜单：独立渲染 StoryboardPanel（不走 filteredItems 媒体网格） */
+  { key: 'storyboard', label: '分镜单', icon: Clapperboard },
 ];
 
 /** 任务代码到中文名称的映射（兼容 ExtractionPipeline 所有状态码） */

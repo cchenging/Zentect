@@ -13,6 +13,8 @@ import { API } from '@renderer/api';
 import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 import { AppNotifier } from '@renderer/core/AppNotifier';
 import { breakLongParagraphs } from '@modules/pipeline/step3-script/frontend/breakLongParagraphs';
+// 🎯 匹配单位开关（renderer 侧只读；读不到 process.env 时按 legacy 兜底，主进程为权威来源）
+import { resolveScriptMatchUnitMode } from '../../../../../shared/utils/scriptMatchUnit';
 import { normalizeScriptParagraph } from '../../../../../shared/utils/normalizeScriptParagraph';
 
 /**
@@ -129,6 +131,12 @@ export const usePipelineExecutor = () => {
               visualIntent: p.visualIntent,
               startMs: p.startMs,
               durationMs: p.durationMs,
+              /** 🎯 参考帧锚点透传：步骤3 产出的真实画面锚点，供断句子句继承后进入步骤5 query */
+              refFrameTimeMs: p.refFrameTimeMs,
+              refFrameDesc: p.refFrameDesc,
+              refFrameSource: p.refFrameSource,
+              /** 🎯 匹配单位：透传后端断句器写入的「完整句」id（sentence 档才有，legacy 档为 undefined） */
+              matchUnitId: p.matchUnitId,
               /** 🎙️ 原声保留段判别信息透传：缺失时 Normalizer 会把原声段误判为解说段，
                *  写后显示成带引号的普通文案且无「原声保留」标签（须重进才恢复）。 */
               type: p.type,
@@ -141,7 +149,7 @@ export const usePipelineExecutor = () => {
           // 🎙️ 分离原声段：原声段整段保留（断句会破坏原台词定位），仅解说段走断句器，再按 __order 合并
           const originalAudio = paragraphs.filter((p) => p.type === 'original_audio' || p.keepOriginalAudio || p.audioSource);
           const narrationOnly = paragraphs.filter((p) => !(p.type === 'original_audio' || p.keepOriginalAudio || p.audioSource));
-          const merged = [...breakLongParagraphs(narrationOnly), ...originalAudio]
+          const merged = [...breakLongParagraphs(narrationOnly, { matchUnit: resolveScriptMatchUnitMode() }), ...originalAudio]
             .sort((a, b) => (a.__order ?? 0) - (b.__order ?? 0));
           const newParagraphs = merged.map((x) => normalizeScriptParagraph({ ...x, editing: false }));
           s3.appendParagraphs(newParagraphs);

@@ -34,7 +34,9 @@ describe('AiConfigService', () => {
     });
 
     it('每个供应商应至少提供一个模型', () => {
-      for (const provider of providers) {
+      // custom（OpenAI 兼容）是"用户自行填写模型名"的占位供应商，models 故意为空
+      // （同文件下方已有"custom 允许空 baseUrl"用例佐证其特殊性），故此处排除 custom。
+      for (const provider of providers.filter((p) => p.id !== 'custom')) {
         expect(provider.models.length).toBeGreaterThan(0);
       }
     });

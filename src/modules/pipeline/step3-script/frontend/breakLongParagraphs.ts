@@ -1,3 +1,11 @@
+// 🎯 匹配单位 SSOT：sentence 档下给每个碎片打上"所属完整句"的 matchUnitId，
+//   让步骤5 按完整句折叠成"一个完整句一条匹配 query"（碎片仅作 TTS 承载 / 字幕）。
+import {
+  SCRIPT_SENTENCE_END_PUNCT,
+  buildMatchUnitId,
+  type ScriptMatchUnitMode,
+} from '../../../../shared/utils/scriptMatchUnit';
+
 /**
  * 爆破切分器：将超过"字幕安全框容量"的长段落按标点符号自动拆分为短句，
  * 防止 LLM 输出长段落导致 TTS 朗读超时与画面张冠李戴、字幕挤出安全框。
@@ -27,11 +35,21 @@ export interface BreakLongParagraphInput {
   characters?: string[];
   /** 🎯 P3 画面意图：父段落的画面意图描述，子句原样继承 */
   visualIntent?: string;
+  /** 🎬 决策 #6：抽象旁白标记（岁月流转/时光荏苒类无具体画面语义的段落）。
+   *  由步骤3 LLM 按契约产出（常规解说段严禁标记），子句**必须原样继承**——
+   *  否则拆分后子句丢失标记，步骤5 的抽象路由（空镜优先）对子句整体失效。 */
+  isAbstractNarration?: boolean;
   /** 🎯 P3 时间轴锚定：父段落对应 chunk 的时间起点/时长（ms），子句原样继承 */
   startMs?: number;
   durationMs?: number;
+  /** 🎯 参考帧锚点：父段落命中真实参考帧的时间/描述/来源，子句原样继承（步骤5 真实匹配锚点） */
+  refFrameTimeMs?: number;
+  refFrameDesc?: string;
+  refFrameSource?: 'matched' | 'block_first';
   /** 父段落原始序号：子句透传此值，供调用方按原始顺序合并（原声/非原声混排时保持顺序） */
   __order?: number;
+  /** 🎯 匹配单位：sentence 档下父段落自带的匹配单位 id（透传给占位/空文本段，保持分组不散） */
+  matchUnitId?: string;
 }
 
 export interface BreakLongParagraphOutput {
@@ -44,11 +62,20 @@ export interface BreakLongParagraphOutput {
   characters?: string[];
   /** 🎯 P3 画面意图：子句继承父段落的画面意图描述 */
   visualIntent?: string;
+  /** 🎬 决策 #6：抽象旁白标记，子句继承父段落（true 才写，避免给常规段写入噪声 false） */
+  isAbstractNarration?: boolean;
   /** 🎯 P3 时间轴锚定：子句继承父段落对应 chunk 的时间起点/时长（ms） */
   startMs?: number;
   durationMs?: number;
+  /** 🎯 参考帧锚点：子句继承父段落命中的真实参考帧时间/描述/来源 */
+  refFrameTimeMs?: number;
+  refFrameDesc?: string;
+  refFrameSource?: 'matched' | 'block_first';
   /** 父段落原始序号透传 */
   __order?: number;
+  /** 🎯 匹配单位 id：本片所属的「完整句」id（sentence 档写入；legacy 档不写，保持产物零变化）。
+   *  步骤5 查询端据此把同一完整句的各碎片折叠成一条匹配 query，匹配结果再按该 id 回填到全部碎片。 */
+  matchUnitId?: string;
 }
 
 /**
@@ -84,9 +111,20 @@ function hardSplit(text: string, max: number): string[] {
   return parts;
 }
 
+/**
+ * 函数级中文注释：长段落承载拆分器（TTS / 字幕安全框）。
+ *
+ * @param rawShots LLM 原始分镜数组（母段落）
+ * @param options.matchUnit 匹配单位模式：`legacy`（默认，产物与现状逐字节一致）/
+ *        `sentence`（给每个碎片打 `matchUnitId`，标记其所属完整句；碎片本身仍是 TTS/字幕承载单位）
+ * @returns 拆分后的短句分镜数组（每个子句至少 1.2 秒）
+ */
 export function breakLongParagraphs(
-  rawShots: BreakLongParagraphInput[]
+  rawShots: BreakLongParagraphInput[],
+  options?: { matchUnit?: ScriptMatchUnitMode },
 ): BreakLongParagraphOutput[] {
+  // 🎯 匹配单位开关：仅 sentence 档在产物上写入 matchUnitId；legacy 档不写字段（线上行为零变化）。
+  const useSentenceUnit = options?.matchUnit === 'sentence';
   const result: BreakLongParagraphOutput[] = [];
 
   rawShots.forEach((p, idx) => {
@@ -102,8 +140,15 @@ export function breakLongParagraphs(
     const baseDuration = p.duration || 3;
     // 🎭 父段落期望角色名单，子句原样继承（空数组即无角色，合法透传）
     const inheritedCharacters = Array.isArray(p.characters) ? p.characters : undefined;
+    // 🎬 决策 #6：父段落抽象旁白标记，子句原样继承（仅 true 才写出，不给常规段写噪声 false）
+    const inheritedAbstract = p.isAbstractNarration === true ? true : undefined;
     // 父段落原始序号，子句透传供调用方按原始顺序合并
     const inheritedOrder = p.__order;
+    // 🎯 匹配单位透传：入参若已带 matchUnitId（后端已断句产物再次过断句器的"重新生成"路径），
+    //   原样透传，避免渲染层读不到开关时二次断句把分组依据洗掉。sentence 档下则由本函数新算。
+    const inheritedMatchUnitId =
+      typeof p.matchUnitId === 'string' && p.matchUnitId.trim() ? p.matchUnitId : undefined;
+    const emitMatchUnitId = useSentenceUnit || inheritedMatchUnitId !== undefined;
     if (!rawText) {
       // 保留空文本段落：保持与 LLM 输出的 1:1 对齐，下游可识别"占位/无字幕"分镜。
       // 不静默丢弃，避免切分后段落计数与 LLM 输出错位。
@@ -116,9 +161,16 @@ export function breakLongParagraphs(
         emotion: p.emotion || '',
         characters: inheritedCharacters,
         visualIntent: p.visualIntent || '',
+        isAbstractNarration: inheritedAbstract,
         startMs: p.startMs,
         durationMs: p.durationMs,
+        // 🎯 参考帧锚点：空文本占位段同样继承父段落参考帧，保持字段不丢
+        refFrameTimeMs: p.refFrameTimeMs,
+        refFrameDesc: p.refFrameDesc,
+        refFrameSource: p.refFrameSource,
         __order: inheritedOrder,
+        // 🎯 匹配单位：空文本占位段无完整句可归属，沿用自身 id（保持 sentence 档下"段段有单位"不散链）
+        ...(emitMatchUnitId ? { matchUnitId: inheritedMatchUnitId || p.id || `para_${idx}` } : {}),
       });
       return;
     }
@@ -127,20 +179,25 @@ export function breakLongParagraphs(
     // 原 16 字硬上限会把"一句通顺的话"在逗号处拦腰切断，导致文案碎成 9~10 字短句、
     // 丢失剧情连贯性。24 字既能容纳通顺句子，又不会在常见播放器安全框内溢出（每行可换行）。
     const SUB_MAX = 24;
-    // 句号级结尾标点：句子结束，是最优先的断句点。
-    const SENTENCE_END_PUNCT = '。！？；.!?;';
+    // 句号级结尾标点：句子结束，是最优先的断句点（SSOT：@shared/utils/scriptMatchUnit，与诊断口径同源）。
+    const SENTENCE_END_PUNCT = SCRIPT_SENTENCE_END_PUNCT;
     // 逗号级句中标点：句子超框时才作为断句点。
     const COMMA_PUNCT = '，,、；;';
 
     // 第一步：先按句号级标点分出完整句子（用已遮蔽小数的 protectedText，避免小数被切）。
+    // 🎯 这里切出的「完整句」即 sentence 档下的匹配单位：一个完整句 = 一个匹配单位。
     const sentences = splitByPunct(protectedText, SENTENCE_END_PUNCT);
 
     // 第二步：对每个句子——安全框内整句保留；超框才切，断点优先逗号级标点，无标点则硬截断。
+    //   pieceUnitIdx 与 pieces 等长：记录每个碎片所属的完整句下标（sentence 档据此生成 matchUnitId）。
     const pieces: string[] = [];
-    for (const sent of sentences) {
+    const pieceUnitIdx: number[] = [];
+    for (let si = 0; si < sentences.length; si++) {
+      const sent = sentences[si];
       // 安全框内（≤16 字）：整句保留，即使带逗号也不拆（"老舅的货，价廉优"保持一整句）。
       if (sent.length <= SUB_MAX) {
         pieces.push(sent);
+        pieceUnitIdx.push(si);
         continue;
       }
       // 超框（>16 字）：优先用逗号级标点切分。
@@ -149,11 +206,15 @@ export function breakLongParagraphs(
         const commaParts = splitByPunct(sent, COMMA_PUNCT);
         for (const part of commaParts) {
           // 逗号切出的段仍超框（即该段无逗号可再切）→ 硬按安全框容量截断兜底。
-          pieces.push(...(part.length > SUB_MAX ? hardSplit(part, SUB_MAX) : [part]));
+          const hardParts = part.length > SUB_MAX ? hardSplit(part, SUB_MAX) : [part];
+          pieces.push(...hardParts);
+          for (let k = 0; k < hardParts.length; k++) pieceUnitIdx.push(si);
         }
       } else {
         // 超框且无任何逗号级标点 → 硬按安全框容量截断兜底。
-        pieces.push(...hardSplit(sent, SUB_MAX));
+        const hardParts = hardSplit(sent, SUB_MAX);
+        pieces.push(...hardParts);
+        for (let k = 0; k < hardParts.length; k++) pieceUnitIdx.push(si);
       }
     }
 
@@ -213,11 +274,27 @@ export function breakLongParagraphs(
         characters: inheritedCharacters,
         // 🎯 P3 画面意图：子句继承父段落的画面意图描述
         visualIntent: p.visualIntent || "",
+        // 🎬 决策 #6：子句继承父段落抽象旁白标记（否则拆分后步骤5 抽象路由对子句失效）
+        isAbstractNarration: inheritedAbstract,
         // 🎯 P3 时间轴锚定修正：按前缀和铺排子句起点与时长（ms）；父级毫秒轴缺失时透传原值
         startMs: hasParentTimeline ? startsMs[sIdx] : p.startMs,
         durationMs: hasParentTimeline ? dursMs[sIdx] : p.durationMs,
+        // 🎯 参考帧锚点：子句继承父段落命中的真实参考帧（时间/描述/来源），
+        //   保证断句拆分后步骤5 query 仍能拿到真实画面锚点（startMs 仍为母块内插值，二者并存）
+        refFrameTimeMs: p.refFrameTimeMs,
+        refFrameDesc: p.refFrameDesc,
+        refFrameSource: p.refFrameSource,
         // 子句透传父段落原始序号，供调用方按原始顺序合并
         __order: inheritedOrder,
+        // 🎯 匹配单位：sentence 档标记本碎片所属「完整句」的 id（一个完整句 = 一个匹配单位）。
+        //   已带 matchUnitId 的入参原样透传；无该字段且处于 legacy 档时不写 ⇒ 产物与现状逐字节一致。
+        ...(emitMatchUnitId
+          ? {
+              matchUnitId:
+                inheritedMatchUnitId ??
+                buildMatchUnitId(pieceId, pieceUnitIdx[sIdx] ?? 0, sentences.length),
+            }
+          : {}),
       };
     });
     // 尾段 absorb：仅在未触发 1.2s 保底的常规路径启用——把取整累计误差一次性划给最后一片，

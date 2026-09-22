@@ -230,11 +230,13 @@ describe('ShotCard (storyboard View)', () => {
   // === 状态指示器 ===
 
   describe('状态指示器', () => {
+    // 🧭 状态圆点颜色已统一到语义色 token（ShotCard 的 STATUS_COLORS = bg-success/bg-info/bg-muted），
+    //    不再是 Tailwind 原生调色板类名（bg-green-500/bg-blue-500/bg-gray-500），期望值随之更新。
     it('有 aiText 和 coverPath 时状态为 completed（绿色）', () => {
       const { container } = renderCard({
         shot: makeShot({ aiText: '台词', coverPath: '/cover.jpg' }),
       });
-      const dot = container.querySelector('.bg-green-500');
+      const dot = container.querySelector('.bg-success');
       expect(dot).toBeTruthy();
     });
 
@@ -242,7 +244,7 @@ describe('ShotCard (storyboard View)', () => {
       const { container } = renderCard({
         shot: makeShot({ text: '台词', aiText: '', coverPath: '' }),
       });
-      const dot = container.querySelector('.bg-blue-500');
+      const dot = container.querySelector('.bg-info');
       expect(dot).toBeTruthy();
     });
 
@@ -250,7 +252,7 @@ describe('ShotCard (storyboard View)', () => {
       const { container } = renderCard({
         shot: makeShot({ text: '', aiText: '', coverPath: '' }),
       });
-      const dot = container.querySelector('.bg-gray-500');
+      const dot = container.querySelector('.bg-muted');
       expect(dot).toBeTruthy();
     });
   });

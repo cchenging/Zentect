@@ -105,6 +105,13 @@ export const StepShotMatching: React.FC = () => {
     const step5State = useStep5Store.getState();
 
     if (!projectState.projectId) return;
+    /** 🔒 K2 锚定冻结：重匹配前快照用户手动锁定(iUserLocked)的切片，结果返回后原样恢复，
+     *  使手调工作不被全局 Beam 重算冲垮；未锁定的节点照常参与全新匹配。 */
+    const lockedSnapshot = new Map(
+      step5State.matchResults
+        .filter((m: any) => m.isUserLocked)
+        .map((m: any) => [m.id, m])
+    );
     pipelineState.setStepStatus(5, "running");
     pipelineState.setPipelineRunning(true);
     pipelineState.resetPipeline();
@@ -129,17 +136,18 @@ export const StepShotMatching: React.FC = () => {
           ttsDurations: step4State.ttsResults || [],
           /** ASR 原声时间轴：原声段落（keepOriginalAudio）按原声文本定位原片时间段 */
           asrLines: step1State.asrLines || [],
-          /** 步骤2 逐帧 VLM 描述（带时间戳）：按时间轴聚合到切片，做"文案↔切片描述"文本语义匹配（复用已花成本的画面理解，零额外 VLM 调用） */
-          frameDescriptions: step2State.vlmFrames
-            .map((f: any) => ({
-              timeMs: Number(f.timeMs) || 0,
-              description: (f.description || '').trim(),
-              /** 🎭 P0 意境维度：帧情绪标签（如：紧张/平静/温馨），聚合为切片情绪标签参与 KM 情绪匹配 */
-              emotion: (f.emotion || f.downstream?.emotion || '').trim(),
-              /** 🎬 帧景别（如：特写/中景/全景），聚合到切片供意境/衔接匹配 */
-              shotType: (f.downstream?.shotType || '').trim(),
-            }))
-            .filter((f) => f.description.length > 0),
+          /** 步骤2 逐帧 VLM 描述（带时间戳）：**整帧原样透传，禁止在本层裁剪字段**。
+           *  步骤5 需按时间轴把帧聚合到切片（description/emotion/shotType/运镜/场景/剧作冲突/美术氛围…），
+           *  这些结构化字段全部位于 `frame.downstream` 内；旧实现只挑出 4 个字段重组成无 downstream 的对象，
+           *  导致后端 665 帧"带 downstream=0"、7 个结构化字段在切片级静默归零（已实测确认的结构断层）。
+           *  形状与 usePipelineOrchestrator 单步执行步骤5 的 payload 完全同构（同一契约，避免两条入口分叉）。 */
+          visionResult: {
+            sceneDescriptions: step2State.vlmFrames
+              ?.map((f: any) => f.description || '')
+              .filter(Boolean)
+              .join('\n') || '',
+            frames: step2State.vlmFrames || [],
+          },
           bgmInfo: step5State.activeBgm ?? null,
         },
       }));
@@ -149,6 +157,13 @@ export const StepShotMatching: React.FC = () => {
         sourceMedia: projectState.mediaItems?.[0]?.filePath || "",
       });
       if (result) mapPipelineResultToState(result?.data || result, buildMappers());
+      /** 🔒 K2 锚定冻结恢复：全局重算结果里，被锁定节点按快照原样还原（含所选切片/裁点/变速/确认态），
+       *  其余节点保留新匹配结果——既有锚点不可变更，只让非锁定段吸收差异。 */
+      if (lockedSnapshot.size > 0) {
+        const cur = useStep5Store.getState().matchResults;
+        const restored = cur.map((m: any) => (lockedSnapshot.has(m.id) ? { ...lockedSnapshot.get(m.id) } : m));
+        useStep5Store.getState().setMatchResults(restored);
+      }
       pipelineState.setStepCompleted(5, true);
       pipelineState.setStepStatus(5, "completed");
       // 💥 根因修复：步骤5独立流程完成时统一落盘，否则匹配结果/切片池/步骤状态

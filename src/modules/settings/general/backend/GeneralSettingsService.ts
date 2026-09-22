@@ -13,6 +13,7 @@ export const DEFAULT_GENERAL_SETTINGS: GeneralSettings = {
   projectPath: '',
   exportPath: '',
   jianyingPath: '',
+  logPath: '',
   // 🔧 修复 TS2741：补全必填字段 theme（与 mode 同义，保留 mode 用于历史兼容读取）
   theme: 'dark',
   mode: 'dark',
@@ -32,6 +33,7 @@ export function toGeneralSettings(raw: Record<string, string>): GeneralSettings 
     projectPath: raw.projectPath || raw.projectStoragePath || '',
     exportPath: raw.exportPath || raw.videoExportPath || '',
     jianyingPath: raw.jianyingPath || raw.jianyingDraftPath || '',
+    logPath: raw.logPath || '',
     theme: themeVal || 'dark',
     mode: themeVal || 'dark',
     language: (raw.language as 'zh-CN' | 'en') || 'zh-CN',

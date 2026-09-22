@@ -37,6 +37,20 @@ vi.mock('../../../../../renderer/src/store/useStore', () => {
   };
 });
 
+// 🔧 项目名已迁移到 useProjectStore（useEditorStore 只剩保存状态），
+//    缺少此 mock 时 projectName 取不到 → TopBar 兜底渲染"加载中..."，用例"应显示项目名称"必失败。
+vi.mock('@modules/editor/stores/useProjectStore', () => {
+  const store = {
+    projectName: '测试项目',
+    projectId: 'proj-test-001',
+    setProjectMeta: vi.fn(),
+  };
+  const useProjectStore: any = (selector: any) =>
+    typeof selector === 'function' ? selector(store) : store;
+  useProjectStore.getState = () => store;
+  return { useProjectStore };
+});
+
 vi.mock('../../../../../renderer/src/store/useI18n', () => ({
   useI18n: () => ({
     t: {

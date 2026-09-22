@@ -157,6 +157,14 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
             startMs: typeof p.startMs === 'number' ? p.startMs : undefined,
             durationMs: typeof p.durationMs === 'number' ? p.durationMs : undefined,
             visualIntent: typeof p.visualIntent === 'string' ? p.visualIntent : undefined,
+            /** 🎯 参考帧锚点透传：步骤3 产出的真实画面锚点（时间/描述/来源）。
+             *  此处若漏透传则只在生成时写、水合时丢，步骤5 query 拿不到真实锚点。 */
+            refFrameTimeMs: typeof p.refFrameTimeMs === 'number' ? p.refFrameTimeMs : undefined,
+            refFrameDesc: typeof p.refFrameDesc === 'string' ? p.refFrameDesc : undefined,
+            refFrameSource: p.refFrameSource === 'matched' || p.refFrameSource === 'block_first' ? p.refFrameSource : undefined,
+            /** 🎯 匹配单位：透传步骤3 断句器写入的「完整句」id（sentence 档才有）。
+             *  此处若漏透传，则生成时有、落库/重开即丢，步骤5 折叠 query 的分组依据断裂。 */
+            matchUnitId: typeof p.matchUnitId === 'string' && p.matchUnitId.trim() ? p.matchUnitId : undefined,
             keepOriginalAudio: p.keepOriginalAudio === true,
             /** 🎙️ 原声保留段音频源透传：ScriptGenStrategy 生成的 ASR 精确时间窗（源坐标），
              *  步骤4 原声试听据此截取原片对应台词音频；缺失时 Normalizer 按 chunk 时间轴 fallback */
@@ -212,12 +220,15 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
               mediaType: m.mediaType || 'frame',
               mediaId: m.mediaId || m.chunkId || m.frameId || '',
               score: m.score || m.confidence || 0,
-              thumbnail: m.thumbnail || m.coverPath || m.framePath || '',
+              thumbnail: m.thumbnail || m.coverPath || m.framePath || (m.chunkData && (m.chunkData.coverPath || m.chunkData.thumbnail)) || '',
               chunkData: m.chunkData || null,
               audioDurationMs: m.audioDurationMs || 0,
               videoTimelineStartMs: m.videoTimelineStartMs || 0,
               videoTimelineEndMs: m.videoTimelineEndMs || 0,
               appliedSpeedFactor: m.appliedSpeedFactor || 1.0,
+              /** 🎯 匹配单位：步骤5 KM 折叠/回填时写在匹配结果上，此处透传落库，供下游按「完整句」溯源
+               *  与哨兵对齐。漏透传则生成时在 matchResult 上有、落库即丢（碎片 id 无法归到完整句）。 */
+              matchUnitId: (typeof m.matchUnitId === 'string' && m.matchUnitId.trim()) ? m.matchUnitId : undefined,
               confirmed: m.confirmed || false
             };
           }));
@@ -240,6 +251,8 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
               videoTimelineStartMs: seg.videoTimelineStartMs || 0,
               videoTimelineEndMs: seg.videoTimelineEndMs || 0,
               appliedSpeedFactor: seg.appliedSpeedFactor || 1.0,
+              /** 🎯 匹配单位：segments=daemon 匹配原始，同样透传 matchUnitId 落库，供下游按完整句溯源 */
+              matchUnitId: (typeof seg.matchUnitId === 'string' && seg.matchUnitId.trim()) ? seg.matchUnitId : undefined,
               confirmed: seg.confirmed || false
             };
           }));

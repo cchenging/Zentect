@@ -123,6 +123,80 @@ function resolveSourceDurationUs(shot: CompileShot): number {
   return resolveDurationUs(shot);
 }
 
+/** 🔧 E域（§10.2.6）：变速钳制上下界（用户 ±8% 铁律）。超出此范围拒绝 linear stretch，
+ *  一律回退"多镜头级联 / 子窗裁剪"（见 E 域动作3）。 */
+const SPEED_MAX = 1.08;
+const SPEED_MIN = 1 / SPEED_MAX;
+
+/**
+ * 🔧 E域（§10.2.6 动作1）：解析"裁剪优先、变速兜底"的源窗决策。
+ *
+ * 补丁12（变速恒定 1.00x + 物理截取）/ 补丁15（出入点避高动态）的物理落点。
+ * 规则：
+ *   - 源时长 ≥ 目标时长 → 变速锁定 1.00x，在源窗内选高光子窗对齐目标（纯子窗裁剪）：
+ *       · 默认取源窗**靠后**段（解说语料多聚焦后半段动作高潮，出点↔入点优先对齐句尾），
+ *         子窗时长为目标时长（不越源窗右界）。
+ *       · 动作未落点允许源窗起点前移 ≤300ms（Drop Lead-in，削除起手准备段，叠补丁7 弹性腔）。
+ *   - 源时长 < 目标时长且覆盖 <0.97 → 保留变速（由级联兄弟 seg 兜底，solver 已产出 merge 提示），
+ *     但 clamp 到 [1/1.08, 1.08]，越界即回退全窗（禁止线性拉伸）。
+ *   - isExactSpeed 哨兵（动作2）：为 true 时强制 speed=1.00x、只准子窗裁剪，杜绝 linear stretch。
+ *
+ * @param chunkData 切片数据（startMs/endMs/motionScore，源坐标）
+ * @param sourceStartMs 源切片起始（毫秒，已含原声 ASR 窗或普通段 chunk 窗）
+ * @param sourceDurMs 源窗长度（毫秒）
+ * @param targetDurMs 目标时长（毫秒）
+ * @param isExactSpeed 哨兵：纯裁剪段禁止拉伸
+ * @returns { sourceStartUs, sourceDurationUs, speed } 裁剪/变速后的源窗与变速因子（微秒）
+ */
+function resolveCutWindow(
+  chunkData: Record<string, unknown> | null | undefined,
+  sourceStartMs: number,
+  sourceDurMs: number,
+  targetDurMs: number,
+  isExactSpeed: boolean,
+): { sourceStartUs: number; sourceDurationUs: number; speed: number } {
+  const ckStart = Number(chunkData?.startMs ?? NaN);
+  const ceilingEndUs = Math.round(Math.max(sourceStartMs + sourceDurMs, Number(chunkData?.endMs ?? NaN)) * 1000);
+
+  // —— 子窗靠后裁剪（动作落点对齐句尾）——
+  if (isExactSpeed || (sourceDurMs >= targetDurMs && targetDurMs > 0)) {
+    // 子窗右端默认顶到源窗末（句尾对齐）；有效 endMs 时以其为上界。
+    const canUseEnd = Number.isFinite(ckStart) && Number.isFinite(Number(chunkData?.endMs ?? NaN));
+    const rightEndUs = canUseEnd
+      ? Math.round(Number(chunkData?.endMs) * 1000)
+      : ceilingEndUs;
+    const rightEndUsClamped = Math.min(rightEndUs, Math.round((sourceStartMs + sourceDurMs) * 1000));
+    const subStartUs = Math.max(
+      Math.round(sourceStartMs * 1000),
+      rightEndUsClamped - Math.round(targetDurMs * 1000),
+    );
+    // 丢起手准备段（Drop Lead-in）：动作未落点时源窗起点前移 ≤300ms，缓解「起手僵直」。
+    const leadInDropUs = Math.min(300 * 1000, Math.max(0, subStartUs - Math.round(sourceStartMs * 1000)));
+    const finalStartUs = subStartUs - leadInDropUs;
+    return {
+      sourceStartUs: finalStartUs,
+      sourceDurationUs: Math.round(targetDurMs * 1000),
+      speed: 1.0,
+    };
+  }
+
+  // —— 变速兜底：clamp 到 ±8%，越界即回退全窗（杜绝线性拉伸）——
+  const rawSpeed = sourceDurMs > 0 ? sourceDurMs / Math.max(targetDurMs, 1) : 1.0;
+  if (rawSpeed > 1) {
+    const clamped = Math.min(rawSpeed, SPEED_MAX);
+    return {
+      sourceStartUs: Math.round(sourceStartMs * 1000),
+      sourceDurationUs: Math.round(sourceDurMs * 1000),
+      speed: clamped,
+    };
+  }
+  return {
+    sourceStartUs: Math.round(sourceStartMs * 1000),
+    sourceDurationUs: Math.round(sourceDurMs * 1000),
+    speed: Math.max(rawSpeed, SPEED_MIN),
+  };
+}
+
 /**
  * 🎬 阶段 A：视频素材合并组。
  * 同一物理镜头内源时间连续的兄弟段（sceneGroupId 相同）共享一个视频素材，
@@ -675,7 +749,7 @@ export function assembleMaterials(
     const vMatId = groupVideoId.get(gid)!;
     /** 🎙️ 原声段恒原速（第五轮）：原声段时长=ASR 台词真实时间窗，套用 KM/组变速会破坏台词听感
      *  （用户反馈：原声有的变速过快、有的太慢）。此处双保险——旧项目落库的变速值也在消费端拦下。 */
-    const speed = shot.keepOriginalAudio === true ? 1.0 : (shot.appliedSpeedFactor || 1.0);
+    let speed = shot.keepOriginalAudio === true ? 1.0 : (shot.appliedSpeedFactor || 1.0);
 
     /** 🎙️ 原声段源窗（第五轮）：直用 ASR 精确台词窗 videoTimelineStartMs/EndMs（与 chunk 同坐标系，
      *  素材=源视频完整文件可直接取窗）。此前用 chunk.startMs（3s 切片头）导致：
@@ -702,6 +776,32 @@ export function assembleMaterials(
       // 末帧定格：源 = 源视频末帧，source 时长 0 → 剪映定格该帧（配合素材时长=源视频真实时长）
       sourceStartUs = lastFrameStartUs(g.probe);
       sourceDurationUs = 0;
+    }
+
+    // 🔧 E域（§10.2.6 动作1/3）：普通解说段走"裁剪优先、变速兜底"决策（补丁12/15 物理落点）。
+    //   约束：
+    //   - keepOriginalAudio（原声段回归）与 unmatched（末帧定格）分支不触碰，保持各自既有源窗逻辑。
+    //   - 仅对**单成员组**施加裁剪：多成员合并组（sceneGroupId 同父连续兄弟段）依赖逐段 chunk 全窗+组变速
+    //     保证源时间连续、无假转场，若逐段独立裁剪会产生源窗交叠/缝隙，破坏阶段 A 的合并连续性保证；
+    //     且合并 clip 的 speed 由「源总时长/目标总时长」自洽派生，本无随意拉伸问题。
+    //   结果用函数返回值覆盖源起点/源时长/变速（speed 已钳制到 [1/1.08, 1.08]）。
+    if (
+      shot.keepOriginalAudio !== true
+      && shot.unmatched !== true
+      && g.memberIndices.length === 1
+      && chunk
+      && typeof chunk.startMs === 'number'
+    ) {
+      const cut = resolveCutWindow(
+        chunk,
+        sourceStartUs / 1000,
+        sourceDurationUs / 1000,
+        durationUs / 1000,
+        shot.isExactSpeed === true,
+      );
+      sourceStartUs = cut.sourceStartUs;
+      sourceDurationUs = cut.sourceDurationUs;
+      speed = cut.speed;
     }
 
     const ref: ShotMaterialRef = {

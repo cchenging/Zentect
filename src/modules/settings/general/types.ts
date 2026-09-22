@@ -9,6 +9,8 @@ export interface GeneralSettings {
   exportPath: string;
   /** 剪映草稿位置 */
   jianyingPath: string;
+  /** 日志目录（留空使用默认 userData/logs）。可选：历史构造字面量不必带该字段 */
+  logPath?: string;
   /** 主题：深色 / 浅色 / 跟随系统 */
   theme: 'dark' | 'light' | 'system';
   /** 🔧 修复 TS2353：兼容旧字段 mode（与 theme 同义，部分历史代码仍使用 mode） */
