@@ -20,6 +20,9 @@ export interface AsrLine {
   end?: string;
   /** 结束时间（毫秒），唯一真实源 */
   endMs: number;
+  /** 步骤1 ③ 句尾静音气口时长（毫秒）：本句结尾到下一句开头的静音间隙，末句为 0。
+   *  供步骤5 gap_padding(补丁7)/beat_snap(补丁2) 卡做句尾磁吸。 */
+  silenceGapMs?: number;
   editing: boolean;
 }
 
@@ -92,6 +95,24 @@ export interface BaseScriptParagraph {
    */
   duration?: number;
   /**
+   * 🎯 参考帧时间（源视频坐标，ms）：步骤3 为该段文案从"母块时间窗内"选出的**真实画面锚点**，
+   * 与 startMs（母块内等分插值得到的近似锚点）并存、互不替换。
+   * 选择规则见 ScriptGenStrategy#resolveParagraphRefFrame：窗内帧描述与段文案（text+visualIntent）
+   * 字符二元组 Jaccard 重合度最高者；缺失帧描述时退化为母块首帧时间（refFrameSource='block_first'）。
+   */
+  refFrameTimeMs?: number;
+  /**
+   * 🎯 参考帧画面描述：refFrameTimeMs 对应帧的步骤2 VLM 画面描述（景别前缀 + action）；
+   * 退化（refFrameSource='block_first'）时为空字符串，不伪造描述。
+   */
+  refFrameDesc?: string;
+  /**
+   * 🎯 参考帧来源可解释标记：
+   * - matched     = 母块时间窗内命中"文本重合度最高"的真实帧；
+   * - block_first = 窗内无可用帧描述，退化为母块首帧时间 + 空描述。
+   */
+  refFrameSource?: 'matched' | 'block_first';
+  /**
    * 🔁 兼容迁移期遗留标记（@deprecated，保留一个版本周期）：判别联合落地前旧数据的原声布尔标记。
    * 读取端临时以 `type ?? keepOriginalAudio` 回退判定；所有持久化入口已经
    * normalizeScriptParagraph（§4.1 Normalizer 工厂）统一净化补齐 type，期满整体删除本字段。
@@ -133,6 +154,13 @@ export interface NarrationParagraph extends BaseScriptParagraph {
    * （画面本为异时序内容），优先级高于求解器内部的时间豁免关键词猜测。缺省 false = 常规时间惩罚。
    */
   isFlashback?: boolean;
+  /**
+   * 🎯 匹配单位：本段所属「完整句」的稳定 id（sentence 档由步骤3 断句器写入，见 breakLongParagraphs）。
+   * 步骤5 查询端按它把同一完整句的全部碎片折叠成**一条**匹配 query（一个完整句 = 一个匹配单位），
+   * 匹配结果再按同一 id 回填到该完整句覆盖的全部碎片/子句（沿用既有 `{母句id}_sub_{n}` id 映射）。
+   * 缺省（legacy 档 / 老工程）= 本段自身即一个匹配单位，行为与现状一致。
+   */
+  matchUnitId?: string;
 }
 
 /** 原声穿插段：播放以原片切片硬绑定为准，正文概念由 audioSource.transcript 承载（不参与 TTS 合成） */
@@ -262,6 +290,8 @@ export interface MatchResult {
   videoTimelineEndMs?: number;
   /** 🎯 候选不足降级警示（2026-09-06）：daemon 候选不足降级到全池时置 true，前端显示"兜底匹配"警示 */
   degraded?: boolean;
+  /** 🔒 K2 手动锁定锚点（2026-09-21）：用户手动替换/确认后置 true；重新匹配时该节点冻结不变 */
+  isUserLocked?: boolean;
 }
 
 /** 媒体项 */

@@ -40,6 +40,8 @@ function numOr(value: unknown, fallback: number): number {
  * - 时间轴：startMs / durationMs 强制非空（durationMs 缺失时依次尝试 legacy 秒级 duration × 1000、
  *   再退 3000ms 兜底），杜绝下游渲染 / 定位读到 NaN 或 undefined；
  * - 解说旁白段：text 以 cleanText 回退兜底（保证 UI 与 TTS 永远有字符串可读）、characters 补空数组；
+ * - 参考帧锚点（refFrameTimeMs/refFrameDesc/refFrameSource）：原样透传（三字段同源，任一非法即整体丢弃），
+ *   保证「生成时写入」与「重开工程水合」两条路都不丢步骤3 产出的真实画面锚点；
  * - 原声穿插段：audioSource 缺失时按「源时间窗 = [startMs, startMs+durationMs]」重建，
  *   transcript 从 legacy text 回退，speaker 标注占位提示人工复核，duckingBgm 取 true 保护台词可听性；
  * - 错就错：非对象输入 / 缺失主键 id 直接抛错暴露，绝不静默降级生成假数据污染时间轴。
@@ -90,7 +92,20 @@ export function normalizeScriptParagraph(raw: unknown): ScriptParagraph {
     startMs,
     durationMs,
     ...(typeof src.emotion === 'string' && src.emotion ? { emotion: src.emotion } : {}),
-  } satisfies Pick<NarrationParagraph | OriginalAudioParagraph, 'id' | 'shotId' | 'startMs' | 'durationMs' | 'emotion'>;
+    /** 🎯 参考帧锚点三字段同源：仅当时间合法且来源标记合法时才整体落库（描述允许空串），
+     *  避免半截数据（有时间无来源）流入步骤5 query。 */
+    ...(typeof src.refFrameTimeMs === 'number' && Number.isFinite(src.refFrameTimeMs)
+      && (src.refFrameSource === 'matched' || src.refFrameSource === 'block_first')
+      ? {
+          refFrameTimeMs: Math.round(src.refFrameTimeMs),
+          refFrameDesc: typeof src.refFrameDesc === 'string' ? src.refFrameDesc : '',
+          refFrameSource: src.refFrameSource,
+        }
+      : {}),
+  } satisfies Pick<
+    NarrationParagraph | OriginalAudioParagraph,
+    'id' | 'shotId' | 'startMs' | 'durationMs' | 'emotion' | 'refFrameTimeMs' | 'refFrameDesc' | 'refFrameSource'
+  >;
 
   // ── 分支构造 ──
   if (!isOriginal) {
@@ -105,9 +120,15 @@ export function normalizeScriptParagraph(raw: unknown): ScriptParagraph {
       characters: Array.isArray(src.characters)
         ? src.characters.filter((c): c is string => typeof c === 'string')
         : [],
-      // 🎬 决策 #6/#2（ADR-003）：仅显式 true 落字段（缺省即 false 语义），老数据零迁移
-      ...(src.isAbstractNarration === true ? { isAbstractNarration: true } : {}),
-      ...(src.isFlashback === true ? { isFlashback: true } : {}),
+      // 🎬 决策 #6/#2（ADR-003）：布尔值**原样保留**（含 false）。
+      //   ⚠️ 2026-09-16 修正：旧实现只落 `true`（`=== true ? {...} : {}`），把 `false` 丢成"字段缺失"，
+      //   导致落盘后**无法区分"本片 0 个抽象段"与"该字段根本没产出"**（实测踩坑：据此误判为
+      //   "步骤3 早于该字段上线"并白跑一次步骤3 重跑）。下游一律用 `=== true` 判定，落 false 无副作用。
+      ...(typeof src.isAbstractNarration === 'boolean' ? { isAbstractNarration: src.isAbstractNarration } : {}),
+      ...(typeof src.isFlashback === 'boolean' ? { isFlashback: src.isFlashback } : {}),
+      /** 🎯 匹配单位：原样透传步骤3 断句器写入的「完整句」id（缺失 = legacy 档/老工程，不写字段），
+       *  保证「生成时写入」与「重开工程水合」两条路都不丢匹配单位分组（步骤5 折叠 query 的依据）。 */
+      ...(typeof src.matchUnitId === 'string' && src.matchUnitId.trim() ? { matchUnitId: src.matchUnitId } : {}),
     };
     return paragraph;
   }
