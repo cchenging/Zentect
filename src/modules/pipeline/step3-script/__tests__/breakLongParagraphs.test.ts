@@ -3,6 +3,11 @@
 
 import { describe, it, expect } from 'vitest';
 import { breakLongParagraphs } from '../frontend/breakLongParagraphs';
+import {
+  countCompleteSentences,
+  resolveScriptMatchUnitMode,
+  summarizeScriptMatchUnits,
+} from '../../../../shared/utils/scriptMatchUnit';
 
 describe('breakLongParagraphs 爆破切分器', () => {
   // ==================== 短句直接保留 ====================
@@ -104,5 +109,59 @@ describe('breakLongParagraphs 爆破切分器', () => {
     expect(joined).toContain('1.2');
     // 句号后应正常断句（"这是第二句。"应独立成段）
     expect(result.some((s) => s.text.includes('这是第二句'))).toBe(true);
+  });
+});
+
+// ==================== 匹配单位：一个完整句 = 一个匹配单位（ZENTECT_SCRIPT_MATCH_UNIT） ====================
+// 样例取自真实线上请求 temp/p1-req.json 的 seg_0 母句（一个完整句被逗号切成 3 个碎片）。
+describe('breakLongParagraphs 匹配单位（sentence / legacy）', () => {
+  const SAMPLE_SENTENCE = '谁能想到，这个被朋友送上飞机的女孩，刚落地上海就变成了无家可归的穷光蛋。';
+
+  it('legacy 档（默认）：不写 matchUnitId，产物与现状一致', () => {
+    const out = breakLongParagraphs([{ id: 'seg_0', text: SAMPLE_SENTENCE, duration: 6 }]);
+    expect(out.length).toBeGreaterThan(1);
+    out.forEach((s) => expect(s.matchUnitId).toBeUndefined());
+  });
+
+  it('sentence 档：同一完整句的全部碎片共享同一个 matchUnitId（= 母句 id）', () => {
+    const out = breakLongParagraphs(
+      [{ id: 'seg_0', text: SAMPLE_SENTENCE, duration: 6 }],
+      { matchUnit: 'sentence' },
+    );
+    expect(out.length).toBeGreaterThan(1);
+    out.forEach((s) => expect(s.matchUnitId).toBe('seg_0'));
+  });
+
+  it('sentence 档：同一母段落内的多个完整句 → 各自独立的匹配单位 id', () => {
+    const out = breakLongParagraphs(
+      [{ id: 'seg_7', text: '第一句话特别长而且没有逗号，需要被逗号切开看看。第二句话很短。', duration: 6 }],
+      { matchUnit: 'sentence' },
+    );
+    const units = Array.from(new Set(out.map((s) => s.matchUnitId)));
+    expect(units).toEqual(['seg_7_s1', 'seg_7_s2']);
+  });
+
+  it('sentence 档把碎片率压到 ≤20%（真实样例口径）', () => {
+    const input = { id: 'seg_0', text: SAMPLE_SENTENCE, duration: 6 };
+    const legacyShots = breakLongParagraphs([input]);
+    const sentenceShots = breakLongParagraphs([input], { matchUnit: 'sentence' });
+    const sentences = countCompleteSentences(input.text);
+    expect(sentences).toBe(1); // 母句本身是一个完整句
+
+    const legacy = summarizeScriptMatchUnits(legacyShots, sentences);
+    const sentence = summarizeScriptMatchUnits(sentenceShots, sentences);
+
+    // legacy：每个碎片各算一个匹配单位 ⇒ 碎片率 = (3 − 1) / 3 ≈ 66.7%
+    expect(legacy.clauses).toBe(3);
+    expect(legacy.matchUnits).toBe(3);
+    expect(legacy.fragmentRate).toBeGreaterThan(0.5);
+    // sentence：一个完整句只算一个匹配单位 ⇒ 碎片率 0%
+    expect(sentence.clauses).toBe(3);
+    expect(sentence.matchUnits).toBe(1);
+    expect(sentence.fragmentRate).toBe(0);
+  });
+
+  it('开关缺省为 legacy（线上行为零变化）', () => {
+    expect(resolveScriptMatchUnitMode()).toBe('legacy');
   });
 });

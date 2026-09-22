@@ -143,13 +143,20 @@ describe('RuntimeVersionGuard — Artifact Integrity', () => {
   })
 
   describe('checkRuntimeCompatibility', () => {
-    it('缺少 runtime_version.json 时返回不兼容', () => {
+    it('缺少 runtime_version.json 时按开发模式降级（compatible=true 且给出 issue 提示）', () => {
+      // 🧭 改判依据：RuntimeVersionGuard.checkRuntimeCompatibility 在文件缺失时**有意**返回
+      //   { compatible: true, runtimeVersion: 'dev', issues: ['开发模式：…跳过版本检查'] }，
+      //   源码注释明确"开发模式降级为警告，不阻断 Python 服务启动"。该降级行为由 ca4f6cf8 引入，
+      //   晚于本用例的 db7bca3 ⇒ 用例原断言 compatible=false 已过期：守卫只负责"文件存在时校验版本"，
+      //   "文件缺失"被定义为开发态而非不兼容（第 3 个用例仍守住真正的版本过低→不兼容）。
       mockFsExistsSync.mockReturnValue(false)
 
       const result = guard.checkRuntimeCompatibility()
 
-      expect(result.compatible).toBe(false)
+      expect(result.compatible).toBe(true)
+      expect(result.runtimeVersion).toBe('dev')
       expect(result.issues.length).toBeGreaterThan(0)
+      expect(result.issues.some((i) => i.includes('跳过版本检查'))).toBe(true)
     })
 
     it('存在有效 version 和 buildHash 时返回兼容', () => {

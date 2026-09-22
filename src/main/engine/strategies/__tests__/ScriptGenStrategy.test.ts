@@ -379,6 +379,8 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
   it('阶段A 成功时，阶段B 的 systemPrompt 应注入【全局剧情大纲】', async () => {
     await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
     const systemContent = mockChat.mock.calls[1][0][0].content as string;
+    // 真正的大纲注入块（buildSystemPrompt 内由 args.plotOutline 条件挂载）
+    expect(systemContent).toContain('## 📖 全局剧情大纲');
     expect(systemContent).toContain('【全局剧情大纲】');
     expect(systemContent).toContain('一个被逼上绝路的人走上复仇之路');
     // 剧情思维规则应注入
@@ -401,8 +403,11 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
     expect(result.shots).toBeDefined();
     expect(result.shots.length).toBeGreaterThan(0);
     // 阶段B 的 systemPrompt 不含大纲（降级路径）
+    // ⚠️ 不能用字面量 `【全局剧情大纲】` 判断"是否注入了大纲"：它在 buildSystemPrompt 的
+    //    「## 🎬 剧情思维」规则1 里是**静态常驻文本**（指示模型"对照下方大纲"），任何路径都有。
+    //    真正随 plotOutline 条件挂载的注入块头部是 `## 📖 全局剧情大纲（必须首先通读…）`。
     const systemContent = mockChat.mock.calls[1][0][0].content as string;
-    expect(systemContent).not.toContain('【全局剧情大纲】');
+    expect(systemContent).not.toContain('## 📖 全局剧情大纲');
   });
 
   it('阶段A 请求失败（success=false）时，降级告警携带真实错误而非 JSON 契约误报，且 max_tokens 为 2500', async () => {
@@ -420,8 +425,9 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
     expect(result.shots).toBeDefined();
     expect(result.shots.length).toBeGreaterThan(0);
     // 阶段B 的 systemPrompt 不含大纲（降级路径）
+    // 同前：`【全局剧情大纲】` 在「剧情思维」规则里静态常驻，须以注入块头部判断。
     const systemContent = mockChat.mock.calls[1][0][0].content as string;
-    expect(systemContent).not.toContain('【全局剧情大纲】');
+    expect(systemContent).not.toContain('## 📖 全局剧情大纲');
     // 🔧 防截断：阶段A 的 max_tokens 应为 2500（第 0 次调用的第 4 个参数）；response_format 激活 adapter 的 json_object 降级链
     expect(mockChat.mock.calls[0][3]).toEqual({ max_tokens: 2500, response_format: { type: 'json_object' } });
     // 🔧 降级告警应携带真实错误（HTTP 503），而非被吞后的 "Unexpected end of JSON input"

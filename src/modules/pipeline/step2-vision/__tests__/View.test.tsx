@@ -6,11 +6,16 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/react';
-
-afterEach(cleanup);
-// 🔧 React 19 兼容：新 JSX transform 无需显式 import React
+// ⚠️ vitest 下 .tsx 由 esbuild 按"经典 JSX transform"编译（编译为 React.createElement），
+//    本文件的 render(<X/>) 因此必须显式引入 React，否则报 "React is not defined"。
+import React from 'react';
 import { StepVisionDescriptionView } from '../frontend/View';
 import type { VlmFrame } from '../../../../shared/types/entities/editor';
+
+afterEach(cleanup);
+// tsc 按 tsconfig.web 的 jsx:react-jsx（automatic）会把上面的默认导入判为"未读取"（TS6133），
+// 显式引用一次即可同时满足运行时（经典 transform）与类型检查。
+void React;
 
 // ========== 固定测试数据 ==========
 
@@ -122,11 +127,12 @@ describe('StepVisionDescriptionView', () => {
       const props = makeProps({ vlmFrames: frames });
       render(<StepVisionDescriptionView {...props} />);
 
-      // "帧 1" 和 "帧 2" 在界面中会出现多次（缩略图内和标签）
-      const allFrame1 = screen.getAllByText('帧 1');
-      const allFrame2 = screen.getAllByText('帧 2');
-      expect(allFrame1.length).toBeGreaterThanOrEqual(1);
-      expect(allFrame2.length).toBeGreaterThanOrEqual(1);
+      // 🧭 组件现把帧号与时间戳合并渲染在同一 span（`帧 N · 时间`），且仅在帧无 url 时才显示裸"帧 N"占位，
+      //    故精确文本 '帧 1' 已不存在；这里改为"文本以 帧 N 开头"匹配，仍校验帧号标签真实出现。
+      const frameLabels = (n: number) =>
+        screen.getAllByText((content) => new RegExp(`^帧 ${n}(\\s|·|$)`).test(content));
+      expect(frameLabels(1).length).toBeGreaterThanOrEqual(1);
+      expect(frameLabels(2).length).toBeGreaterThanOrEqual(1);
     });
   });
 

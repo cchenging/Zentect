@@ -48,6 +48,27 @@ vi.mock('@modules/media/frames', () => ({
   },
 }));
 
+// Step1 会实例化以下仓储（MediaRepository.findById / RoleRepository.findByProjectId /
+// GlobalCharacterRepository.matchOrCreate）。不 mock 时落到真实 SQLiteConnection，
+// 而本文件把 path.join 打了桩 ⇒ better-sqlite3 打开非法路径直接抛
+// "Cannot open database because the directory does not exist"，与子步骤编排无关。
+vi.mock('@modules/media/import/data/MediaRepository', () => ({
+  MediaRepository: class {
+    findById = vi.fn(() => null);
+  },
+}));
+vi.mock('../../../../main/database/repositories/RoleRepository', () => ({
+  RoleRepository: class {
+    findByProjectId = vi.fn(() => []);
+  },
+}));
+vi.mock('../../../../main/database/repositories/GlobalCharacterRepository', () => ({
+  GlobalCharacterRepository: class {
+    matchOrCreate = vi.fn(() => ({}));
+    absorbEmbedding = vi.fn();
+  },
+}));
+
 vi.mock('../../../../main/engine/media/AudioProcessor', () => ({
   AudioProcessor: {
     extractAndSeparate: vi.fn(),
@@ -58,6 +79,10 @@ vi.mock('../../../../main/engine/media/AudioProcessor', () => ({
 vi.mock('../../../../main/engine/media/VisionProcessor', () => ({
   VisionProcessor: {
     scanFaces: vi.fn(),
+    // ⚠️ mock 补齐：人脸检测后 Strategy 还会调用 clusterFaces（聚类）与 pickRepresentativeFace（选代表脸）。
+    //    原先只提供 scanFaces ⇒ clusterFaces 为 undefined、调用即抛并被降级 catch 吞掉 ⇒ roles 恒为空。
+    clusterFaces: vi.fn(),
+    pickRepresentativeFace: vi.fn(),
   },
 }));
 
@@ -101,7 +126,9 @@ import { VisionProcessor } from '../../../../main/engine/media/VisionProcessor';
 
 /** 构建执行上下文（含 bus 和可选 signal） */
 function buildContext(signal?: AbortSignal) {
-  return { bus: new Map(), signal } as any;
+  // Step1 的产物目录按项目物理隔离（Strategy 内 PathManager.getProjectDir(context.projectId)），
+  // 故上下文必须提供 projectId；缺失时 getProjectDir 直接抛"获取项目目录失败：未提供 projectId"。
+  return { bus: new Map(), signal, projectId: 'test-project' } as any;
 }
 
 /** 从 context.bus 读取 step1-result（嵌套结构） */
@@ -565,7 +592,11 @@ describe('Step1MaterialStrategy', () => {
       expect(result.asrLines).toEqual([]);
     });
 
-    it('targetLanguage 应映射到正确语言代码', async () => {
+    it('transcribe 参数契约：语言取 whisper.language（未配置→auto）、引擎走显式配置', async () => {
+      // 🧭 改判依据：Strategy 现调用 transcribe(audioPath, outDir, mediaId, lang, engine, signal, onProgress, modelSize) 共 8 参；
+      //   其中 lang = whisperCfg.language || 'auto'（源码 L749），而 targetLanguage 自 L756-776 起**只用于**
+      //   "中文目标 → 强制 Paraformer"的引擎兜底，不再做 'en-US' → 'en' 这类语言代码映射。
+      //   故原"6 参 + 第 4 参 'en'"的断言已过期，此处改为对齐当前契约（断言比原来更严：完整 8 参）。
       mockTranscribe.mockResolvedValue({ asrLines: [], whisperJsonPath: '' });
 
       await (strategy as any).performTask(
@@ -583,14 +614,15 @@ describe('Step1MaterialStrategy', () => {
         onProgress,
       );
 
-      // 验证 transcribe 被调用时参数正确（共 6 个参数）
       expect(mockTranscribe).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.any(String),
-        expect.any(String),
-        'en', // 'en-US' → 'en'
-        'faster-whisper',  // asrEngine（config.whisper.engine）
-        undefined,         // signal（context 未传 signal）
+        expect.any(String),   // asrSourcePath（16k 音频）
+        expect.any(String),   // audioDir
+        expect.any(String),   // mediaId
+        'auto',               // lang = whisper.language 未配置 → auto
+        'faster-whisper',     // asrEngine（显式 config.whisper.engine 优先）
+        undefined,            // signal（context 未传 signal）
+        expect.any(Function), // asrOnProgress 进度回调
+        'large-v3',           // modelSize 默认值
       );
     });
   });
@@ -614,6 +646,8 @@ describe('Step1MaterialStrategy', () => {
       vi.mocked(VisionProcessor.scanFaces).mockResolvedValue([
         { id: 'r1', name: '角色A', facePath: '/faces/r1.jpg' },
       ]);
+      // 聚类映射：r1 → role_0（否则落 role_unknown，多簇场景下会被当噪声过滤，roles 变空）
+      vi.mocked(VisionProcessor.clusterFaces).mockResolvedValue({ r1: 'role_0' } as any);
 
       const result = await (strategy as any).performTask(
         { mediaPath: '/v.mp4', config: { frames: true, faces: true, audio: false, whisper: false } },
@@ -622,11 +656,14 @@ describe('Step1MaterialStrategy', () => {
         onProgress,
       );
 
-      // scanFaces 接收 3 个参数（frames, facesDir, signal）
+      // scanFaces 现接收 5 个参数（frames, facesDir, signal, 预留位, onProgress 回调）：
+      // 末位进度回调是后续新增的 faces 子步骤真实进度透传，故变为 5 参。
       expect(VisionProcessor.scanFaces).toHaveBeenCalledWith(
         ['/f1.jpg', '/f2.jpg'],
         expect.any(String),
         undefined,
+        undefined,
+        expect.any(Function),
       );
       // 返回扁平结构，roles 在顶层
       expect(result.roles).toHaveLength(1);

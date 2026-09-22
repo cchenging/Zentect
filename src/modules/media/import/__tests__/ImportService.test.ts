@@ -51,7 +51,10 @@ const { mockLoggerInfo, mockLoggerWarn, mockLoggerError } = vi.hoisted(() => ({
   mockLoggerError: vi.fn(),
 }));
 
-vi.mock('../../../../infra/logger/AppLogger', () => ({
+// ⚠️ 模块路径纠偏：infra 层已从 src/infra 迁移到 src/modules/infra，
+//    原来的 '../../../../infra/logger/*' 指向不存在的 src/infra/... ⇒ mock 静默失效、
+//    实际走真实 AppLogger，导致 warn/error 断言全不命中（本文件 2 条用例失败的真正根因）。
+vi.mock('@modules/infra/logger/AppLogger', () => ({
   AppLogger: {
     info: mockLoggerInfo,
     warn: mockLoggerWarn,
@@ -59,7 +62,7 @@ vi.mock('../../../../infra/logger/AppLogger', () => ({
   },
 }));
 
-vi.mock('../../../../infra/logger/LogConstants', () => ({
+vi.mock('@modules/infra/logger/LogConstants', () => ({
   LOG_TAGS: { MEDIA: 'MEDIA', DATABASE: 'DATABASE' },
 }));
 
@@ -72,7 +75,17 @@ const { mockGetAllWindows } = vi.hoisted(() => ({
   mockWebContentsSend: vi.fn(),
 }));
 
+// ⚠️ 本 mock 会整体替换全局 setup.ts 的 electron mock，必须补齐 app：
+//    ImportService 间接引入 AppLogger，而 AppLogger 模块加载期执行 `if (app.isReady())`，
+//    缺失 app 时报 `No "app" export is defined on the "electron" mock`，整文件在 import 阶段即崩。
 vi.mock('electron', () => ({
+  app: {
+    getPath: vi.fn(() => '/mock/app/path'),
+    getName: vi.fn(() => 'Zentect'),
+    getVersion: vi.fn(() => '1.0.0'),
+    isReady: vi.fn(() => true),
+    whenReady: vi.fn(() => Promise.resolve()),
+  },
   BrowserWindow: {
     getAllWindows: mockGetAllWindows,
   },

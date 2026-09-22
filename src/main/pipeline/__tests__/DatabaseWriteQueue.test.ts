@@ -30,7 +30,9 @@ describe('DatabaseWriteQueue', () => {
 
   it('rejects when function throws', async () => {
     const promise = queue.enqueue(() => { throw new Error('db error'); });
-    vi.advanceTimersByTime(10);
+    // 失败任务按 maxRetries=2 重试（共 3 次尝试），每次尝试需一个 drainMs(5ms) 节拍 ⇒ 需推进 ≥15ms。
+    // 10ms 只够 2 次尝试，第 3 次定时器尚未到期，Promise 不会 settle（原 10ms 是无重试时代的遗留值）。
+    vi.advanceTimersByTime(30);
     await expect(promise).rejects.toThrow('db error');
   });
 

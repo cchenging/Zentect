@@ -71,7 +71,10 @@ describe('PipelineSuspendController', () => {
 
   describe('abandon', () => {
     it('removes suspension without resolving', () => {
-      controller.suspend('prj1', 'm1', 's1', 'confirm_cast');
+      const suspPromise = controller.suspend('prj1', 'm1', 's1', 'confirm_cast');
+      // abandon 按实现会 reject 挂起 Promise（防 Pipeline 死锁），属预期行为；
+      // 显式接住它，否则 Vitest 记为 Unhandled Rejection（曾导致整轮退出码为 1）。
+      suspPromise.catch(() => { /* 预期 reject，忽略 */ });
       expect(controller.isSuspended('prj1', 'm1')).toBe(true);
 
       controller.abandon('prj1', 'm1');

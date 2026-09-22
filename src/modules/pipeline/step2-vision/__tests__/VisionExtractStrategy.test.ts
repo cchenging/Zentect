@@ -5,6 +5,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // === Mock 依赖链 ===
 
+/** Mock electron：真实 AppLogger 在模块加载期就会调用 app.isReady()（vitest 无 Electron 运行时）
+ *  ⚠️ 不 mock 此项时整个测试文件在 import 阶段即崩（0 test），与环境无关而非用例失败。 */
+vi.mock('electron', () => ({
+  app: { isReady: () => false, whenReady: () => Promise.resolve(), getPath: () => '' },
+}));
+
 /** Mock AppLogger */
 vi.mock('../../../../main/core/AppLogger', () => ({
   AppLogger: {
@@ -168,7 +174,10 @@ describe('VisionExtractStrategy - P0 优化测试', () => {
       const options = callArgs[3];
       expect(options).toBeDefined();
       expect(options.response_format).toBeDefined();
-      expect(options.response_format.type).toBe('json_object');
+      // 🧭 改判依据：VisionExtractStrategy 现按 OpenAI 规范下发 `type:'json_schema'`
+      //   （同时 VlmAdapter 也会把 {type:'json_object', json_schema} 这种非法冲突组合归一为 'json_schema'）。
+      //   "type=json_object 却同时带 json_schema"会被服务端 400 拒绝 ⇒ 原断言 type='json_object' 已过期。
+      expect(options.response_format.type).toBe('json_schema');
       expect(options.response_format.json_schema).toBeDefined();
       expect(options.response_format.json_schema.name).toBe('vision_frame_analysis');
     });
@@ -287,7 +296,10 @@ describe('VisionExtractStrategy - P0 优化测试', () => {
       const shot1 = result.downstreamContext.shots[0];
       expect(shot1.action).toBe('男子走入画面');
       expect(shot1.emotion).toBe('平静');
-      expect(shot1.keywords).toEqual(['室内', '男子', '走路']);
+      // 🧭 下游 keywords 语义是"VLM 原生 keywords ∪ description 回捞 keywords"（fillStructuredFromDescription
+      //   的并集契约，已由 Phase0-fixes.test.ts 用例③「合并黑衣男子」与用例④「光影/环境→keywords」固化）。
+      //   本帧 description 含 `光影:暖色调`/`空间:中景`，故并集后额外带这两项——期望值随之更新（仍为精确 toEqual）。
+      expect(shot1.keywords).toEqual(['室内', '男子', '走路', '暖色调', '中景']);
     });
 
     it('每帧 frameDetail 应包含 downstream 字段', async () => {
@@ -297,7 +309,8 @@ describe('VisionExtractStrategy - P0 优化测试', () => {
 
       expect(result.frames[0].downstream).toBeDefined();
       expect(result.frames[0].downstream.action).toBe('男子走入画面');
-      expect(result.frames[1].downstream.keywords).toEqual(['杯子', '手部', '特写']);
+      // 同上：本帧 description 含 `光影:柔和光线`/`空间:近景`，并集后 keywords 追加这两项。
+      expect(result.frames[1].downstream.keywords).toEqual(['杯子', '手部', '特写', '柔和光线', '近景']);
     });
 
     it('VLM 未返回 keywords 时应降级为空数组', async () => {
@@ -1103,6 +1116,64 @@ describe('VisionExtractStrategy - P0 优化测试', () => {
     it('空或无有效动作时返回空字符串', () => {
       expect(buildStoryLineFromFrames([])).toBe('');
       expect(buildStoryLineFromFrames([null, { narrativeAction: '' }])).toBe('');
+    });
+  });
+
+  // 🧹 §20 第4步：VLM 键名漂移（脏键）契约归一化
+  describe('normalizeFrameKeys', () => {
+    it('结构漂移脏键（键名内插空格）按词元包含改名', () => {
+      // 证据：v4 轮 `visualAt Atmosphere`
+      const r = VisionExtractStrategy.normalizeFrameKeys({ 'visualAt Atmosphere': '昏暗压抑', shotType: '特写' });
+      expect(r.item.visualAtmosphere).toBe('昏暗压抑');
+      expect(r.repaired).toBe(1);
+      expect(r.repairedFuzzy).toBe(0);
+      expect(r.unknown).toEqual([]);
+    });
+
+    it('词内拼写错脏键（v5 轮实测 3 例）按相似度改名', () => {
+      // 证据：v5 全量轮 `dramanticConflict` / `visualAtrosphere` / `visualAtmoscape`
+      const r1 = VisionExtractStrategy.normalizeFrameKeys({ dramanticConflict: '发现秘密' });
+      expect(r1.item.dramaticConflict).toBe('发现秘密');
+      expect(r1.repairedFuzzy).toBe(1);
+      expect(r1.unknown).toEqual([]);
+      const r2 = VisionExtractStrategy.normalizeFrameKeys({ visualAtrosphere: '昏暗压抑' });
+      expect(r2.item.visualAtmosphere).toBe('昏暗压抑');
+      const r3 = VisionExtractStrategy.normalizeFrameKeys({ visualAtmoscape: '冷色调' });
+      expect(r3.item.visualAtmosphere).toBe('冷色调');
+      // 历史脏键 narrageAction 亦应被拼写层修复（v4 轮曾丢失 narrativeAction）
+      const r4 = VisionExtractStrategy.normalizeFrameKeys({ narrageAction: '拔枪' });
+      expect(r4.item.narrativeAction).toBe('拔枪');
+      expect(r4.repairedFuzzy).toBe(1);
+    });
+
+    it('大小写/下划线/连字符差异一律归一（不丢值、不编造值）', () => {
+      const r = VisionExtractStrategy.normalizeFrameKeys({ narrative_action: '静坐', 'SHOT TYPE': '中景', unknownX: 1 });
+      expect(r.item.narrativeAction).toBe('静坐');
+      expect(r.item.shotType).toBe('中景');
+      expect(r.repaired).toBe(2);
+      expect(r.unknown).toEqual(['unknownX']);
+      expect(r.item.unknownX).toBe(1);
+    });
+
+    it('契约键已存在时优先原生值，脏键不覆盖', () => {
+      const r = VisionExtractStrategy.normalizeFrameKeys({ shotType: '全景', 'shot type': '特写' });
+      expect(r.item.shotType).toBe('全景');
+      expect(r.repaired).toBe(0);
+      expect(r.item['shot type']).toBe('特写');
+    });
+
+    it('低相似度/过短未知键不改名（宁可暴露也不误吸）', () => {
+      // 'mood' 过短 → 跳过拼写层；'completelyDifferentKey' 相似度低 → 保留为未知键
+      const r = VisionExtractStrategy.normalizeFrameKeys({ mood: '压抑', completelyDifferentKey: 'x' });
+      expect(r.repaired).toBe(0);
+      expect(r.repairedFuzzy).toBe(0);
+      expect(r.unknown).toEqual(['mood', 'completelyDifferentKey']);
+      expect(r.item.mood).toBe('压抑');
+    });
+
+    it('非对象输入原样返回', () => {
+      expect(VisionExtractStrategy.normalizeFrameKeys(null).item).toBeNull();
+      expect(VisionExtractStrategy.normalizeFrameKeys('x').repaired).toBe(0);
     });
   });
 });

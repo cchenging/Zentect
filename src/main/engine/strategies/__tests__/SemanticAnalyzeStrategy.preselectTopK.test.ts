@@ -99,7 +99,7 @@ describe('SemanticAnalyzeStrategy.preselectTopK — P2 #11 方案A Top-K预选',
     const qs = buildQueries(3);
     const cs = buildChunks(20); // 100% 覆盖率
     const out = runPre(qs, cs, { logProjectId: '[TK-2]' });
-    // 动态 K 计算: max(15, ceil(3*1.8)=6, ceil(20*0.06)=2) = 15 → K*1.5 = 22.5 ≥ M → 触发小项目保护
+    // 动态 K 计算: max(15, ceil(3*3.0)=9, ceil(20*0.12)=3) = 15 → K*1.5 = 22.5 ≥ M → 触发小项目保护
     // 实现细节：跳预选回退 fallback 时，K 字段被写成 M，表示"取全集规模"，而非理论计算的 K
     expect(out.applied).toBe(false);
     expect(out.M0).toBe(20);
@@ -132,11 +132,19 @@ describe('SemanticAnalyzeStrategy.preselectTopK — P2 #11 方案A Top-K预选',
     });
     const out = runPre(qs, cs, { logProjectId: '[TK-3]' });
     expect(out.applied).toBe(true);
-    // s_0 的 top-K 候选第一个应该是 c_5（语义 + 时间双高）
+    // s_0 的 top-K 候选应包含 c_5（语义 + 时间双高的真匹配被召回）
     const topList = out.perQueryTopK['s_0'];
     expect(Array.isArray(topList)).toBe(true);
     expect(topList.length).toBeGreaterThanOrEqual(1);
-    expect(topList[0]).toBe('c_5');
+    expect(topList).toContain('c_5');
+    // 🎯 2026-09-20 时间局部化·顺续化：perQueryTopK 现按源时间 midMs 升序排列（不再是 score 降序），
+    //   首位由时间序决定而非语义分；此处仅校验候选列表已时间单调（新契约）。
+    const midOf = (id: string) => {
+      const idx = cs.findIndex((c: any) => c.id === id);
+      return ((Number(cs[idx].startMs) || 0) + (Number(cs[idx].endMs) || Number(cs[idx].startMs) || 0)) / 2 || 0;
+    };
+    const mids = topList.map(midOf);
+    for (let i = 1; i < mids.length; i++) expect(mids[i]).toBeGreaterThanOrEqual(mids[i - 1]);
   });
 
   it('[TK-4] 质量保护② 多样性扩张: 高分 chunk 都挤在时间起点附近 → 自动扩张到 2K 扩大跨度', () => {
@@ -154,7 +162,7 @@ describe('SemanticAnalyzeStrategy.preselectTopK — P2 #11 方案A Top-K预选',
     });
     const out = runPre(qs, cs, { logProjectId: '[TK-4]' });
     expect(out.applied).toBe(true);
-    // 动态 K: max(15, ceil(5*1.8)=9, ceil(50*0.06)=3) = 15
+    // 动态 K: max(15, ceil(5*3.0)=15, ceil(50*0.12)=6) = 15
     expect(out.K).toBe(15);
     // 看任何一个 query 的 top 列表，不能只在 c_0~c_5；必须扩张到覆盖更大跨度
     const anyTop = out.perQueryTopK['s_0'];

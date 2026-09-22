@@ -82,7 +82,9 @@ describe('MigrationManager', () => {
       mockReadFile.mockReturnValue('CREATE TABLE IF NOT EXISTS test (id TEXT);');
       manager.runAll();
       expect(mockReadFile).toHaveBeenCalledWith(expect.stringContaining('001_initial_schema.sql'), 'utf-8');
-      expect(mockExec).toHaveBeenCalledWith('CREATE TABLE IF NOT EXISTS test (id TEXT);');
+      // 🧭 代码现按 `;` 拆分语句并逐条 trim 后 exec（为正确处理"注释+多语句"的迁移文件），
+      //    故实际下发的 SQL 不带结尾分号；第 1 次 exec 则是 initMetaTable 建 _migrations 表。
+      expect(mockExec).toHaveBeenCalledWith('CREATE TABLE IF NOT EXISTS test (id TEXT)');
       expect(mockPrepRun).toHaveBeenCalledWith('001_initial_schema.sql');
     });
 
@@ -114,21 +116,25 @@ describe('MigrationManager', () => {
       expect(mockReadFile).toHaveBeenCalledTimes(1);
     });
 
-    it('SQL 执行异常时记录警告不崩溃', () => {
+    it('SQL 执行异常时向上抛出（原则1 不吞错，交由 SchemaValidator fail-fast）', () => {
+      // 🧭 改判依据：MigrationManager.runFile 自 d267f15e(2026-08-03) 起明确"原则1:其他错误不吞，
+      //   直接抛出且不标记 _migrations，让用户看到真实问题"（唯一幂等例外是 duplicate column name）。
+      //   原用例断言的"吞错不崩溃"是 db7bca3(2026-05-25) 的旧契约，已被有意废弃。
       mockExists.mockReturnValue(true);
       mockReaddir.mockReturnValue(['001_bad.sql']);
       mockPrepGet.mockReturnValue(undefined);
       mockReadFile.mockReturnValue('INVALID SQL SYNTAX!!!');
 
-      // initMetaTable CREATE TABLE _migrations 先成功执行
-      // 然后 migration SQL 执行时 throw → 被 runFile 内部 catch 吞掉
+      // initMetaTable 建 _migrations 第 1 次成功；第 2 次（迁移语句）抛错
       let execCallCount = 0;
       mockExec.mockImplementation(() => {
         execCallCount++;
         if (execCallCount >= 2) throw new Error('syntax error');
       });
 
-      expect(() => manager.runAll()).not.toThrow();
+      expect(() => manager.runAll()).toThrow('迁移文件 001_bad.sql 执行失败: syntax error');
+      // 失败的迁移不得写入 _migrations，否则下次会被误判为"已执行"而跳过
+      expect(mockPrepRun).not.toHaveBeenCalled();
     });
   });
 
@@ -164,6 +170,14 @@ describe('MigrationManager', () => {
         { name: 'is_draft', type: 'INTEGER', cid: 11, dflt_value: '1' },
         { name: 'current_step', type: 'TEXT', cid: 12, dflt_value: "'import'" },
         { name: 'action_payload', type: 'TEXT', cid: 13, dflt_value: null },
+        // 后续新增的治理字段：safeAddColumns 会逐个 PRAGMA 检查，缺一个就会发生 ALTER（本用例要求"零 ALTER"）
+        { name: 'show_id', type: 'TEXT', cid: 14, dflt_value: null },
+        { name: 'episode_number', type: 'INTEGER', cid: 15, dflt_value: null },
+        { name: 'global_character_id', type: 'TEXT', cid: 16, dflt_value: null },
+        { name: 'alias', type: 'TEXT', cid: 17, dflt_value: null },
+        { name: 'enabled', type: 'INTEGER', cid: 18, dflt_value: '1' },
+        { name: 'is_preset', type: 'INTEGER', cid: 19, dflt_value: '0' },
+        { name: 'preset_type', type: 'TEXT', cid: 20, dflt_value: null },
       ];
 
       mockPrepare.mockImplementation((sql: string) => {

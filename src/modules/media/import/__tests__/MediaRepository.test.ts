@@ -13,13 +13,19 @@ const { mockGetInstance } = vi.hoisted(() => ({
   mockGetInstance: vi.fn(),
 }));
 
-vi.mock('../../../../infra/database/core/SQLiteConnection', () => ({
+// ⚠️ mock 的模块说明符必须与**被测源码里的 import 说明符解析到同一文件**。
+// MediaRepository 位于 src/modules/media/import/data/，其依赖是 `../../../infra/...`
+// → 解析到 src/modules/infra/...；此前测试写成 `../../../../infra/...`（指向不存在的
+// src/infra/...），mock 全部落空 → 真 SQLiteConnection 被实例化 → PathManager.getDatabasePath()
+// 因 dataDir 未初始化而 `path.join(undefined)` 抛 TypeError（表现为所有用例红）。
+
+vi.mock('../../../infra/database/core/SQLiteConnection', () => ({
   SQLiteConnection: {
     getInstance: mockGetInstance,
   },
 }));
 
-vi.mock('../../../../infra/logger/AppLogger', () => ({
+vi.mock('../../../infra/logger/AppLogger', () => ({
   AppLogger: {
     info: vi.fn(),
     warn: vi.fn(),
@@ -27,11 +33,11 @@ vi.mock('../../../../infra/logger/AppLogger', () => ({
   },
 }));
 
-vi.mock('../../../../infra/logger/LogConstants', () => ({
+vi.mock('../../../infra/logger/LogConstants', () => ({
   LOG_TAGS: { MEDIA: 'MEDIA', DATABASE: 'DATABASE' },
 }));
 
-vi.mock('../../../../infra/error/AppError', () => ({
+vi.mock('../../../infra/error/AppError', () => ({
   AppError: class AppError extends Error {
     code: string;
     constructor(code: string, message: string) {

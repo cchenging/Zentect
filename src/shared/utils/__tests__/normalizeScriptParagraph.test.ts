@@ -62,4 +62,31 @@ describe('normalizeScriptParagraph — 身份键与判别联合契约', () => {
       expect('audioSource' in out).toBe(false);
     }
   });
+
+  // 🧪 2026-09-16 修正：布尔字段原样保留（含 false），使"全部 false"与"字段缺失"可区分
+  it('[布尔落盘契约] isAbstractNarration=false 必须保留，缺失才不落字段', () => {
+    const withFalse = normalizeScriptParagraph({
+      id: 'seg_1',
+      text: '常规解说段',
+      isAbstractNarration: false,
+      isFlashback: false,
+    });
+    const without = normalizeScriptParagraph({ id: 'seg_2', text: '未产出该字段的段' });
+    // 判别联合需先收窄到解说段分支
+    expect(withFalse.type).toBe('narration');
+    if (withFalse.type === 'narration') {
+      // false 是**明确判定**（下游一律用 === true 判定，故落 false 无副作用）
+      expect(withFalse.isAbstractNarration).toBe(false);
+      expect('isAbstractNarration' in withFalse).toBe(true);
+      expect(withFalse.isFlashback).toBe(false);
+    }
+    // 从未产出的段保持"无该字段"，不得伪造 false
+    expect('isAbstractNarration' in without).toBe(false);
+  });
+
+  it('[布尔落盘契约] isAbstractNarration=true 原样保留', () => {
+    const out = normalizeScriptParagraph({ id: 'seg_3', text: '岁月流转，转眼十年', isAbstractNarration: true });
+    expect(out.type).toBe('narration');
+    if (out.type === 'narration') expect(out.isAbstractNarration).toBe(true);
+  });
 });
