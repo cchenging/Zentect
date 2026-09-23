@@ -48,6 +48,12 @@ BEAM_WIDTH = 3
 # 从源头保证同父延续（reconcile 兜底）。仅本句候选间相对排序生效，不跨句、不影响前序句，
 # 故不会被全局 DP“劫持”NEW_SHOT 句的选取。数值需小于硬门禁、大于仅微差语义抖动。
 CONTINUE_PREF = 0.3
+# 跨新父源时间邻近软惩罚（P0 时序）：切到新父镜头时，若候选源时间距上一镜落点过远（大跨度
+# 跳闪），施加软阻尼让其远离。软阻尼不硬否决（与 Tier-1 硬门禁区分）、上限封顶以免压过语义主分，
+# 可经 env `ZENTECT_KM_TIME_PROX` 关闭（0=回退纯语义，缺省 0.5）。窗口/斜率见 `_src_time_prox`。
+TIME_PROX_SOFT_MAX = 0.5
+TIME_PROX_WINDOW_MS = 4000.0
+TIME_PROX_RAMP_MS = 12000.0
 
 
 # 装配期切片回查回调：`_pick_best_for_shot` 末帧漂移时据 chunkId 取完整切片。
@@ -345,6 +351,14 @@ def solve(
                             continue
                         # 前向审望资源耗尽惩罚（补丁1 占位）：MVP 注入 0，规则卡片可填充。
                         total += _forward_lookout(cand_id, cand_ids, scored)
+                        # 跨新父源时间邻近软惩罚（P0 时序）：切到新父且源时间远距上一镜落点则加阻尼。
+                        #   只改候选间相对排序，不改束路径推进；权重经 env 可关（A/B 复测）。
+                        _tp_w = _read_time_prox()
+                        if _tp_w > 0.0:
+                            _tp = _src_time_prox(prev_chunk, cand)
+                            if _tp > 0.0:
+                                # 用权重缩放（缺省 1.0，线性加权），确保默认即生效、可整档关闭。
+                                total += _tp * _tp_w
                         # CONTINUE_PREV 同父软偏好：仅对断言顺延上一镜的句生效。候选与上一镜
                         # 父镜头一致时降成本，从源头延续同父（reconcile 兜底）。prev_chunk 即
                         # path.curr_chunk——对每条第路径独立判断，故只影响本句候选间排序。
@@ -648,6 +662,58 @@ def _apply_continuation(path: BeamPath, query: dict, target_ms: float) -> None:
         # 超时长（跨过 7s 物理上限）→ 强切。
         path.continuation_count = 0
         path.last_shot_commit_ms = float(path.curr_chunk.get('startMs') or 0)
+
+
+def _read_time_prox() -> float:
+    """读取跨新父源时间邻近软惩罚开关（env `ZENTECT_KM_TIME_PROX`，缺省 1.0）。
+
+    0 → 回退纯语义时序（A/B 复测用）；1.0 → 全量施加；中间数值线性缩放阻尼。
+    非法值错就错地落 0（不豁免不造假）。
+
+    Returns:
+        float: [0, +∞) 的软惩罚权重（0 表示关闭）。
+    """
+    import os
+    raw = os.environ.get('ZENTECT_KM_TIME_PROX', '1.0')
+    try:
+        w = float(raw)
+    except (TypeError, ValueError):
+        w = 0.0  # 非法值：不豁免也不造假，按关闭处理（交由主流程暴露）
+    return max(0.0, w)
+
+
+def _src_time_prox(prev_chunk: Optional[dict], cand: dict) -> float:
+    """跨新父源时间邻近软惩罚（P0 时序）。
+
+    只有当候选与上一镜**父镜头不同**（真正切镜）时才施加；同父顺延交给 COMMON_DIE 续接机制，
+    不在此重复。判据用源时间窗起点差 `|cand.startMs - prev.startMs|`：
+      - ≤ TIME_PROX_WINDOW_MS（4s）：视为邻近，零惩罚（镜头间自然过渡不被干扰）；
+      - 4s~16s：线性爬升到 TIME_PROX_SOFT_MAX；
+      - ≥ 16s：封顶 TIME_PROX_SOFT_MAX（软阻尼封顶，绝不压过语义主分）。
+    上下行均对称取绝对值，避免「时间回跳」被单独豁免。
+
+    Args:
+        prev_chunk: 上一镜切片（束路径当前落点）；首镜/缺失时返回 0（无从比较）。
+        cand: 本句候选切片。
+
+    Returns:
+        float: 附加到 transition cost 的软惩罚（0 表示不计或邻近不罚）。
+    """
+    if prev_chunk is None or cand is None:
+        return 0.0
+    p_parent = prev_chunk.get('parentChunkId') or ''
+    c_parent = cand.get('parentChunkId') or ''
+    if p_parent and c_parent and p_parent == c_parent:
+        return 0.0  # 同父：不在此处理（交顺延/续接机制）
+    p_start = float(prev_chunk.get('startMs') or 0.0)
+    c_start = float(cand.get('startMs') or 0.0)
+    if not (p_start > 0 and c_start > 0):
+        return 0.0
+    gap = abs(c_start - p_start)
+    if gap <= TIME_PROX_WINDOW_MS:
+        return 0.0
+    ramp = TIME_PROX_WINDOW_MS + TIME_PROX_RAMP_MS  # 4s + 12s = 16s 封顶
+    return min(TIME_PROX_SOFT_MAX, TIME_PROX_SOFT_MAX * (gap - TIME_PROX_WINDOW_MS) / ramp)
 
 
 def _forward_lookout(cand_id: str, cand_ids: List[str],

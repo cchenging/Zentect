@@ -4608,6 +4608,38 @@ def _run_new_engine(req) -> dict:
     _cover_n = sum(1 for it in results if it.get('coverPath') or it.get('thumbnail'))
     _append_engine_trace(f"[on-engine] 卡片封面回填：coverPath/thumbnail 非空 {_cover_n}/{len(results)}")
 
+    # 🔍 per-query 命中/未命中统计（诊断）：query 总数 = 请求侧所有碎片查询；未命中 =
+    #   beam 未给该 query 分配切片（solved 无键）。未命中里 `is_orig` 标记原声段——原声段本
+    #   应在 Node 侧走 originalMatches 定位、不依赖 beam，故应剔除后才是"真正匹配不到的普通解说段"。
+    _hit_sids = {str(it.get('shotId')) for it in results}
+    _miss_parts = []
+    for _qm in ctx.queries:
+        _qsid = str(_qm.get('shotId'))
+        if _qsid not in _hit_sids:
+            _q_is_orig = bool(_qm.get('keepOriginalAudio')) or str(_qm.get('audioMode', '')) == 'original'
+            _q_txt = str(_qm.get('text') or '')[:18].replace(chr(10), ' ')
+            _miss_parts.append(f"{_qsid}|orig={_q_is_orig}|{_q_txt}")
+    _append_engine_trace(
+        "[on-engine] 本次查询统计 query_total=%d 命中=%d 未命中=%d 未命中列表=[%s]" % (
+            len(ctx.queries), len(results), len(_miss_parts), ", ".join(_miss_parts)))
+
+    # 🎬 前段选片明细落盘（临时诊断）：逐句输出选中切片的源时间窗/时长/变速/原声哨兵，
+    #   用于核对「画面重复（同根切片复用/邻时间段）/配音卡顿（变速无结论)/画面跳（源窗不单调）」。
+    for _it in results:
+        _cd = _it.get('chunkData') or {}
+        _s = float(_cd.get('startMs') or 0.0)
+        _e = float(_cd.get('endMs') or float(_cd.get('startMs') or 0.0))
+        _d = float(_cd.get('durationMs') or max(0.0, _e - _s))
+        _it_isx = bool(_it.get('isExactSpeed'))
+        _it_spd = _it.get('appliedSpeedFactor')
+        _it_spd = round(float(_it_spd), 3) if _it_spd is not None else None
+        _it_sid = _it.get('shotId', '')
+        _it_txt = str(_it.get('text') or '')[:18].replace(chr(10), ' ')
+        _append_engine_trace(
+            "[选片明细] %s | ck=%s src=[%d,%d] dur=%d | spd=%s isExact=%s | txt=%s" % (
+                _it_sid, _it.get('chunkId', ''), int(_s), int(_e), int(_d),
+                _it_spd, _it_isx, _it_txt))
+
     # 🃏 on 档卡片流式补齐：legacy KM 在分块求解过程中调 _report_km_progress/_report_km_blocks
     #   把逐块结果推给 Node 的 /api/solver/km_progress 轮询（前端据此逐个渲染卡片）。新引擎是
     #   一次性求解返回，若不喂进度前端只收到原声首卡、语义卡全空（用户实测「除了原声一个画面
