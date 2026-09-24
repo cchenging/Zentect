@@ -22,8 +22,10 @@ from typing import Dict, List, Optional
 
 from montage_contract import (
     ContractError,
+    PRIMARY_SUBJECT_SENTINELS,
     default_chunk,
     default_query,
+    normalize_chunk_aliases,
     require_field,
 )
 
@@ -61,7 +63,8 @@ def build_chunk_index(chunks: List[dict]) -> Dict[str, dict]:
         chunks: 切片资产列表（raw，来自输入契约 videoChunks）。
 
     Returns:
-        Dict[str, dict]: {chunkId: chunk}，用 default_chunk 补齐缺省字段。
+        Dict[str, dict]: {chunkId: chunk}，用 default_chunk 补齐缺省字段，并把
+        生产者键名（shotType/scene/cameraMovement/colorHistogram）补空为契约键名。
 
     Raises:
         ContractError: 存在重复 id 或切片缺 id（数据唯一性被破坏时必须暴露）。
@@ -73,6 +76,10 @@ def build_chunk_index(chunks: List[dict]) -> Dict[str, dict]:
             raise ContractError(f'切片 id 重复: {cid}')
         chunk = default_chunk()
         chunk.update(raw)
+        # 契约键名 ← 生产者键名「补空」（摄入边界单点归一，别名表见 montage_contract）：
+        #   生产者链写 shotType/scene/cameraMovement/colorHistogram，契约写 shotScale/
+        #   location/camera/colorHist，不补则 4 张卡的 availability 闸门永不开（实测全 0%）。
+        normalize_chunk_aliases(chunk)
         index[cid] = chunk
     _flag_critical_hero_assets(list(index.values()))
     return index
@@ -87,13 +94,21 @@ def _flag_critical_hero_assets(chunks: List[dict]) -> None:
     不可造假门：签名任一维为空（该维未回填）则不参与判定 → isCriticalHeroAsset 保持 False，
     不会因缺失字段伪造门禁。频次统计为多源归约，无模型、无启发权重，可复现。
 
+    补丁18 兼容：`primarySubject` 的哨兵值（`MULTIPLE`/`EMPTY`，非角色名）与空同口径处理——
+    哨兵是"无人/无单一主控"的宣告，**不是**这条切片的稀有签名，若混入签名会让大量空镜/多人戏
+    互相撞签而同批失去唯一性（假阴性）。故哨兵一律剔除该维后参与频次统计。
+
     Args:
         chunks: 已补齐缺省字段的切片列表（就地改写 isCriticalHeroAsset）。
     """
     from collections import Counter
     sigs: List[str] = []
     for c in chunks:
-        parts = [str(c.get(k) or '').strip() for k in ('primarySubject', 'keyProps', 'shotType')]
+        parts = [
+            '' if str(c.get(k) or '').strip() in PRIMARY_SUBJECT_SENTINELS
+            else str(c.get(k) or '').strip()
+            for k in ('primarySubject', 'keyProps', 'shotType')
+        ]
         sigs.append('|'.join(p for p in parts if p))
     counter = Counter(s for s in sigs if s)
     for c, s in zip(chunks, sigs):

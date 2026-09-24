@@ -264,6 +264,12 @@ def build_match_cost(
     chunk_ids: List[str] = list(chunk_by_id.keys())
     chunk_desc_texts = [_build_chunk_semantic_text(chunk_by_id[cid], desc_aug)
                         for cid in chunk_ids]
+    # 方向3 前置检查（A/B 自诊断）：实体并入到底命中了几条切片。
+    #   `_DESC_AUG_FIELDS` 里的 keyProps/weatherEnv **不在 default_chunk 契约**，只有上游真回填才有料；
+    #   aug_hit=0 ⇒ desc_aug=on 与 off 逐字节等价，A/B 无判别力（先补上游字段，再谈收益）。
+    _aug_hit = (sum(1 for cid, t in zip(chunk_ids, chunk_desc_texts)
+                    if t != _build_chunk_semantic_text(chunk_by_id[cid], False))
+                if desc_aug else 0)
     _c_emb = AIModels.encode_texts(chunk_desc_texts)  # 切片描述编码（行=切片，两路共享）
     _qc_emb = AIModels.encode_texts(query_concat_texts)  # 拼接句编码（行=句，α=1-β）
     semantic_sim = np.matmul(_qc_emb, _c_emb.T).astype(np.float32)
@@ -380,6 +386,7 @@ def build_match_cost(
     import sys
     import statistics as _stats
     _diag_parts = [f"[text-rerank] β={beta:.3f} desc_aug={'on' if desc_aug else 'off'} "
+                   f"实体并入命中={_aug_hit}/{len(chunk_ids)} "
                    f"候选内语义主分融合生效",
                    f"_beta_changed_top1={_beta_changed_n}/{len(result)}"]
     if _cand_pool_sizes:

@@ -2697,6 +2697,171 @@ def _apply_continuity_rerank(results: list, queries, video_chunks: list,
     return results
 
 
+# ============================================================================
+# 🧪 ③ 组内软惩罚（软排他）—— 方案 §3.3 落码（2026-09-24）
+#   动机：块内代价矩阵是**静态**的（构造完成后一次性求解）⇒「同场同组两句命中同一物理镜头」
+#   的冲突**在构造期不可见**，只能在解出来之后才看得见 ⇒ 必须"求解 → 检出冲突 → 加罚重解"。
+#
+#   冲突口径 = 同 query.sceneGroup（非空等值）+ 同 parentChunkId（非空）
+#             + |ΔsegmentIndexInParent| >= GROUP_SOFT_SEG_GAP
+#   ⚠️ 口径是**实测重定**的，不是拍脑袋（方案 §3.2 v1.3）：原冻结的「景别等值 + 描述相近」
+#      两条附加条件在 Layer-2 生产基质上**双双空转**——父内 shotType 368/368 全等、
+#      父内 description 3214/3214 逐字相同 ⇒ 会退化成已被弃用的「同父即罚」，把"同一镜头
+#      连续顺延"（一画面多句，补丁8 明确合法）一并误伤。故改锚**同父内段序距离**：
+#      parentChunkId 是连续物理镜头（scene_NNN），segY 是它的时间片 ⇒ 段序相邻=顺延（豁免）、
+#      段序远离=切走又回切（真重复，才罚）。实测基线 16 对同组同父句对 → 开火 7 / 豁免 9。
+#
+#   缺省 **off ⇒ 零行为变化**（守方案 §0 规矩 1）。本项按 §3.5 判为**极可能负收益**，
+#   故"缺省 off + 3 轮上限 + 单测护栏"三件须齐备后才谈 L3。
+# ============================================================================
+GROUP_SOFT_EXCL_ENV = 'ZENTECT_KM_GROUP_SOFT_EXCL'
+GROUP_SOFT_EXCL_DUMP_ENV = 'ZENTECT_KM_DUMP_GROUP_EXCL'
+GROUP_SOFT_SEG_GAP = 2        # 同父内段序距离阈值：>=2 才算"真重复画面"（=1 相邻顺延，豁免）
+GROUP_SOFT_DELTA = 0.05       # 每轮加罚步长
+GROUP_SOFT_MAX_TOTAL = 0.20   # 单格累计加罚上限（3 轮 × 0.05 = 0.15，留余量）
+GROUP_SOFT_MAX_ROUNDS = 3     # 迭代上限；3 轮不收敛 → 取当前解 + 打诊断（不静默）
+
+
+def read_group_soft_excl() -> bool:
+    """函数级中文注释：读组内软排他开关——1/on/true/yes 开；缺省与任何其他值一律 off（零行为变化）。"""
+    return (os.environ.get(GROUP_SOFT_EXCL_ENV, 'off') or 'off').strip().lower() in ('1', 'on', 'true', 'yes')
+
+
+def _group_conflict_pairs(row_ind, col_ind, block_queries, block_chunk_idx_list,
+                          valid_chunk_indices, video_chunks, query_scene_groups,
+                          local_n_chunks) -> list:
+    """检出「同场同组同物理镜头」冲突对，返回按 (i, ci, j, cj) 升序的**局部坐标**列表。
+
+    判据见文件头注释（方案 §3.2 v1.3）。`parentChunkId` 或 `segmentIndexInParent` 缺任一 ⇒
+    不判冲突（拿不准就不罚，防误伤）；padding 列（无实体切片）与空 `sceneGroup` 不参与。
+    """
+    # 先按 (query 场景组, 父镜头) 分桶，桶内才两两比较 ⇒ 避免整块 O(n²) 空转
+    buckets = {}
+    for i in range(len(block_queries)):
+        ci = int(col_ind[i])
+        if ci >= local_n_chunks:
+            continue
+        qi = block_queries[i]
+        qsg = query_scene_groups[qi] if qi < len(query_scene_groups) else ''
+        if not qsg:
+            continue
+        chunk = video_chunks[valid_chunk_indices[block_chunk_idx_list[ci]]]
+        pid = str(chunk.get('parentChunkId') or '')
+        seg = chunk.get('segmentIndexInParent')
+        if not pid or seg is None:
+            continue
+        buckets.setdefault((qsg, pid), []).append((i, ci, int(seg)))
+
+    pairs = []
+    for _key, items in buckets.items():
+        if len(items) < 2:
+            continue
+        for a in range(len(items)):
+            for b in range(a + 1, len(items)):
+                if abs(items[a][2] - items[b][2]) < GROUP_SOFT_SEG_GAP:
+                    continue
+                pairs.append((items[a][0], items[a][1], items[b][0], items[b][1]))
+    return sorted(pairs)
+
+
+def _penalize_group_conflicts(pairs, work, penalty) -> list:
+    """对每组冲突中「代价较大的一方」所在格加罚 δ（单格累计封顶），**就地**改 work/penalty。
+
+    返回本轮**真正被加罚**的格 [(i, ci), ...]（已达上限的格不虚报）。
+    """
+    cells = set()
+    for (i, ci, j, cj) in pairs:
+        cells.add((i, ci) if work[i, ci] >= work[j, cj] else (j, cj))
+    fired = []
+    for (i, ci) in sorted(cells):
+        add = min(GROUP_SOFT_DELTA, GROUP_SOFT_MAX_TOTAL - float(penalty[i, ci]))
+        if add <= 0:
+            continue
+        work[i, ci] += add
+        penalty[i, ci] += add
+        fired.append((i, ci))
+    return fired
+
+
+def _solve_with_group_soft_exclusion(local_cost, block_queries, block_chunk_idx_list,
+                                     valid_chunk_indices, video_chunks,
+                                     query_scene_groups, local_n_chunks,
+                                     enabled=None, diag_tag=''):
+    """块内求解包装：静态矩阵求解 → 检出组内冲突 → 加罚重解（≤ GROUP_SOFT_MAX_ROUNDS 轮）。
+
+    `local_cost` 可含右侧 padding 列（补零列）；`local_n_chunks` 为**真实切片列数**，仅它以内参与冲突判定。
+    `enabled=None` ⇒ 读 env（缺省 off）。off 档与直接 `linear_sum_assignment(local_cost)`
+    **逐位一致**（§3.4-5 上锁）。返回 (row_ind, col_ind)；既有矩阵构造与求解语义一律不改。
+    """
+    import numpy as np
+    from scipy.optimize import linear_sum_assignment
+
+    if enabled is None:
+        enabled = read_group_soft_excl()
+    if not enabled:
+        with INFERENCE_LOCK:
+            row_ind, col_ind = linear_sum_assignment(local_cost)
+        return row_ind, col_ind
+
+    work = local_cost.copy()
+    penalty = np.zeros_like(work)
+    dump_target = (os.environ.get(GROUP_SOFT_EXCL_DUMP_ENV) or '').strip()
+    records = []
+
+    def _cell_name(cell):
+        """把局部格 (行号, 列号) 渲染成 [query 序号, chunkId]，供 dump 离线复算。"""
+        _i, _ci = int(cell[0]), int(cell[1])
+        _ch = video_chunks[valid_chunk_indices[block_chunk_idx_list[_ci]]]
+        return [int(block_queries[_i]), str(_ch.get('id') or '')]
+
+    _tag_suffix = f" {diag_tag}" if diag_tag else ""
+    prev_c = None
+    pen_total = 0.0
+    fire_total = 0
+    resolved = False
+    with INFERENCE_LOCK:
+        row_ind, col_ind = linear_sum_assignment(work)
+        for rnd in range(1, GROUP_SOFT_MAX_ROUNDS + 1):
+            conflicts = _group_conflict_pairs(row_ind, col_ind, block_queries, block_chunk_idx_list,
+                                              valid_chunk_indices, video_chunks, query_scene_groups,
+                                              local_n_chunks)
+            if not conflicts or conflicts == prev_c:
+                resolved = True
+                _km_diag(f"[group-soft-excl] 轮次={rnd} 冲突对 {len(prev_c or [])}->{len(conflicts)} "
+                         f"加罚格 {fire_total} 累计δ={pen_total:.2f} 收敛{_tag_suffix}")
+                break
+            fired = _penalize_group_conflicts(conflicts, work, penalty)
+            fire_total += len(fired)
+            pen_total = float(penalty.sum())
+            row_ind, col_ind = linear_sum_assignment(work)
+            after = _group_conflict_pairs(row_ind, col_ind, block_queries, block_chunk_idx_list,
+                                          valid_chunk_indices, video_chunks, query_scene_groups,
+                                          local_n_chunks)
+            _km_diag(f"[group-soft-excl] 轮次={rnd} 冲突对 {len(conflicts)}->{len(after)} "
+                     f"加罚格 {len(fired)} 累计δ={pen_total:.2f}{_tag_suffix}")
+            if dump_target:
+                records.append({
+                    'round': rnd,
+                    'conflicts': [_cell_name((i, ci)) + _cell_name((j, cj))
+                                  for (i, ci, j, cj) in conflicts],
+                    'afterConflicts': len(after),
+                    'penalized': [_cell_name(c) for c in fired],
+                    'cumDelta': round(pen_total, 4),
+                })
+            prev_c = conflicts
+    if not resolved:
+        _km_diag(f"[group-soft-excl] ⚠️ {GROUP_SOFT_MAX_ROUNDS} 轮未收敛（取当前解，不静默）{_tag_suffix}")
+    if dump_target:
+        try:
+            with open(dump_target, 'w', encoding='utf-8') as _f:
+                json.dump({'tag': diag_tag, 'rounds': records, 'resolved': resolved,
+                           'cumDelta': round(pen_total, 4)}, _f, ensure_ascii=False)
+            print(f"[KM-DUMP] group-soft-excl dumped -> {dump_target}", file=sys.stderr)
+        except Exception as _e:
+            print(f"[KM-DUMP] group-soft-excl failed: {_e}", file=sys.stderr)
+    return row_ind, col_ind
+
+
 def _kuhn_munkres_match_sync(req: KMMatchReq) -> dict:
     """
     🚀 KM 全局排他性最优匹配算法
@@ -2734,7 +2899,8 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
     详见 `_kuhn_munkres_match_sync` 的 docstring。
     """
     import numpy as np
-    from scipy.optimize import linear_sum_assignment
+    # 注：块内求解已收口到 _solve_with_group_soft_exclusion（③ 组内软惩罚包装），
+    #     本 impl 不再直接调用 linear_sum_assignment。
     n_queries = len(req.queries)
 
     video_chunks = req.videoChunks
@@ -3818,8 +3984,11 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             padding = np.zeros((local_n_queries, local_n_queries - local_n_chunks), dtype=np.float32)
             local_cost = np.hstack([local_cost, padding])
 
-        with INFERENCE_LOCK:
-            row_ind, col_ind = linear_sum_assignment(local_cost)
+        # 🧪 ③ 组内软惩罚（软排他，缺省 off）：off 档逐位等价于直接 linear_sum_assignment
+        row_ind, col_ind = _solve_with_group_soft_exclusion(
+            local_cost, block_queries, block_chunk_idx_list, valid_chunk_indices,
+            video_chunks, query_scene_groups, local_n_chunks,
+            diag_tag=f'block{block_idx}')
 
         # 🃏 真流式：块内按匈牙利返回顺序逐段推送卡片，
         #   段级进度在 block_base→block_end 内插值，单块再大也能看到进度连续推进。
@@ -4559,14 +4728,36 @@ def _kmmatch_to_segment_request(req) -> dict:
     }
 
 
+def _key_value_usable(v) -> bool:
+    """单值「是否算已回填」判据 —— `_collect_available_keys` 与 `_collect_key_coverage` 的共用真源。
+
+    判据（对齐 rules 各卡 availability 语义）：字符串 strip 后非空 / 数值 > 0（0 视为未回填）
+    / 列表元组非空 / 布尔 is True（关键哨兵如 isCriticalHeroAsset 必须真标记才点亮）。
+
+    Args:
+        v: 字段值。
+
+    Returns:
+        bool: True 表示该字段值算真实可用。
+    """
+    if isinstance(v, str):
+        return bool(v.strip())
+    if isinstance(v, (list, tuple)):
+        return bool(v)
+    if isinstance(v, bool):
+        return v is True
+    if v is None:
+        return False
+    try:
+        return float(v) > 0
+    except (TypeError, ValueError):
+        return True  # 非数值型（如 dict 结构化字段）有值即算可用
+
+
 def _collect_available_keys(chunks, queries) -> set:
     """收集本轮数据里真实可用（非空）的字段名集合，用于规则卡 available_keys 收窄。
 
-    判据（对齐 rules 各卡的 availability 语义）：
-      - 字符串：strip 后非空；
-      - 数值：> 0（0/0.0 视为未回填）；
-      - 列表/元组：非空；
-      - 布尔：is True（保证关键哨兵如 isCriticalHeroAsset 真标记才点亮）。
+    单值判据见 `_key_value_usable`（本函数与 `_collect_key_coverage` 共用，杜绝双份口径）。
     任一键在**任一**样本中满足即视为该字段可用（数据宽粒度：不因个别切片缺该字段而休眠整卡，
     卡片 SCORE 本身对个别缺字段切片有中性放行守护）。
 
@@ -4582,22 +4773,48 @@ def _collect_available_keys(chunks, queries) -> set:
         if not isinstance(item, dict):
             continue
         for k, v in item.items():
-            if isinstance(v, str):
-                if v.strip():
-                    keys.add(k)
-            elif isinstance(v, (list, tuple)):
-                if v:
-                    keys.add(k)
-            elif isinstance(v, bool):
-                if v:
-                    keys.add(k)
-            elif v is not None:
-                try:
-                    if float(v) > 0:
-                        keys.add(k)
-                except (TypeError, ValueError):
-                    keys.add(k)
+            if _key_value_usable(v):
+                keys.add(k)
     return keys
+
+
+def _collect_key_coverage(chunks, queries, keys=None) -> dict:
+    """统计指定字段的 **命中数/分母**，让「点亮 ≠ 可信」在诊断行里可见（① 可观测性）。
+
+    单值判据复用 `_key_value_usable`（与 `_collect_available_keys` 逐字对齐，只多一层计数）。
+    分母口径分离、**不可混算成一个百分比**：
+      - 切片字段（primarySubject/shotScale/camera…）：分母 = 本轮 ctx.chunk_by_id 条数；
+      - 句级字段（silenceGapMs/characters/sceneGroup…）：分母 = 本轮 ctx.queries 条数。
+    某键在池内出现（`k in item`）才计入分母——契约 default_chunk/default_query 恒含字段，故
+    通常分母即池大小；个别样本缺该键时不虚增分母（不制造假覆盖率）。
+
+    Args:
+        chunks: 切片样本（ctx.chunk_by_id.values()）。
+        queries: 脚本句样本（ctx.queries）。
+        keys: 关心的字段名集合；None 时统计两个池里出现过的全部键。
+
+    Returns:
+        dict: {字段名: (命中数, 分母)}；keys 非 None 时对未出现的键也补 (0, 0) 占位。
+    """
+    pools = [
+        [it for it in (chunks or []) if isinstance(it, dict)],
+        [it for it in (queries or []) if isinstance(it, dict)],
+    ]
+    cov: dict = {k: (0, 0) for k in (keys or [])}
+    for pool in pools:
+        if not pool:
+            continue
+        pool_keys = set(keys) if keys is not None else {k for it in pool for k in it}
+        for k in pool_keys:
+            hit, total = cov.get(k, (0, 0))
+            for it in pool:
+                if k not in it:
+                    continue
+                total += 1
+                if _key_value_usable(it.get(k)):
+                    hit += 1
+            cov[k] = (hit, total)
+    return cov
 
 
 def _run_new_engine(req) -> dict:
@@ -4611,7 +4828,7 @@ def _run_new_engine(req) -> dict:
     from build_context import build_req_context
     from match_cost import build_match_cost
     from beam_search import solve as _beam_solve
-    from rules import build_rule_cards
+    from rules import build_rule_cards, partition_rule_cards
 
     seg_req = _kmmatch_to_segment_request(req)
     validate_request(seg_req)
@@ -4621,7 +4838,29 @@ def _run_new_engine(req) -> dict:
     # 真实可用字段集（守「不可造假门」）：从本批切片/句的实际数据样本收窄 available_keys，
     #   而非全量启用。依赖字段未回填（如 A 域 eyelineDirection 尚未进候选）的休眠卡经此真正休眠，
     #   绝不以缺字段数据伪造启用硬门禁。判据：对该键取到的值非空（str.strip、>0 数值、非空列表/真布尔）。
-    rules = build_rule_cards(_collect_available_keys(ctx.chunk_by_id.values(), ctx.queries))
+    avail_keys = _collect_available_keys(ctx.chunk_by_id.values(), ctx.queries)
+    rules = build_rule_cards(avail_keys)
+    # ① 点亮登记（零行为变化，纯可观测性）：一举回答「哪张卡点亮、为什么、字段是否真回填」，
+    #   并作为 ②③ A/B 的归因基线——没有它，改动后的指标变动无法归因到具体卡片。
+    #   点亮判据经 rules.partition_rule_cards 单一真源取得（禁止在此重写第二份子集判断）。
+    #   覆盖率分母分离：切片字段分母=chunk 条数，句级字段分母=queries 条数（不可混算）。
+    _active, _dormant = partition_rule_cards(avail_keys)
+    #   方向3 前置检查：并入探针额外覆盖 `_DESC_AUG_FIELDS` 的实体维（keyProps/costume/weatherEnv）——
+    #   这三键不在 default_chunk 契约里，只有上游真回填才有料；覆盖率恒 0 ⇒ desc_aug 等价 off，A/B 无意义。
+    _cov = _collect_key_coverage(
+        ctx.chunk_by_id.values(), ctx.queries,
+        ('primarySubject', 'shotScale', 'silenceGapMs', 'characters', 'sceneGroup',
+         'keyProps', 'costume', 'weatherEnv'))
+    _cov_txt = ' '.join(
+        (f'{k}={(100.0 * h / t):.0f}%({h}/{t})' if t else f'{k}=n/a(0/0)')
+        for k, (h, t) in _cov.items()
+    )
+    print(
+        f'[rules] 点亮卡 {len(_active)}/{len(_active) + len(_dormant)}: '
+        f'{[c["name"] for c in _active]} ｜ 休眠卡 {len(_dormant)}: {_dormant} ｜ '
+        f'关键字段覆盖: {_cov_txt}',
+        flush=True,
+    )
     solved = _beam_solve(ctx, cost, rules, tts)
 
     results = []

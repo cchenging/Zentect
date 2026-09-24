@@ -5,8 +5,10 @@ rules/beat_snap.py —— 补丁2 视听节拍器对齐（Tier2 软阻尼）
 强切点对齐 TTS 气口 / 句尾静音（Silence Gap≥200ms）并磁吸 BGM 强拍。本卡对「候选
 镜头入点与句尾气口错位」施加轻微罚，逼迫顺延强切点踩在呼吸节奏上。
 
-字段依赖：`query.silenceGapMs`（步骤1 ③ 气口时长）与 `bgmBeats`（已有 BPM 网格）。
-**两字段当前未回填（契约未含），本卡休眠（返回 0.0），A/B 回填后经 availability 点亮**。
+字段依赖：`query.silenceGapMs`（步骤1 ③ 气口时长，**契约已含** montage_contract L153）
+与 `bgmBeats`（BPM 强拍网格，**契约未含**，且 `_kmmatch_to_segment_request` 只透传 8 个顶层键，
+工程级字段一律丢失）。⇒ 本卡三重缺口：契约缺字段 + 适配器不透传 + SCORE 回填分支恒 0.0，
+在补丁18/契约补齐前**永久休眠**。
 """
 from __future__ import annotations
 

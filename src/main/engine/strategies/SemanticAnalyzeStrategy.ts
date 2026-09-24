@@ -318,6 +318,43 @@ function matchSegmentsHaveOwnCovers(segs: any[]): boolean {
   });
 }
 
+/** 🎬 补丁18 · 切片角色时序众数归约（Temporal Majority Pooling，评审稿 §13.1）。
+ *  开关：`ZENTECT_STEP2_ROLE_POOLING` ∈ `on|1|true|yes` 才启用；**缺省 off ⇒ 逐字节零行为变化**
+ *  （回退档 = 不设该 env，切片 primarySubject 仍取 VLM 帧级众数、characters 仍为并集）。 */
+export const ROLE_POOLING_ENV = 'ZENTECT_STEP2_ROLE_POOLING';
+/** 主控焦点最低出现帧率：最高频角色出现帧率 ≥ 50% 才认单焦点，否则置 MULTIPLE/EMPTY 哨兵 */
+export const PRIMARY_SUBJECT_MIN_FRAME_RATE = 0.5;
+/** 切片 characters 最低持续时长占比：低于 30% 的瞬时虚焦路人自动过滤 */
+export const CHARACTER_MIN_DURATION_SHARE = 0.3;
+/** 哨兵：多人戏（≥2 角色但无唯一 ≥50% 主控）——空/全景豁免焦点门禁 */
+export const PRIMARY_SUBJECT_MULTIPLE = 'MULTIPLE';
+/** 哨兵：空镜（切片涵盖帧内无任何角色）——空/全景豁免焦点门禁 */
+export const PRIMARY_SUBJECT_EMPTY = 'EMPTY';
+
+/** 补丁18 归约产物（切片级） */
+export interface ChunkRoleReduction {
+  /** 角色名 | MULTIPLE | EMPTY；**无覆盖帧时为 undefined**（无数据不改写，不造假值） */
+  primarySubject?: string;
+  /** 主控焦点置信度 = 最高频角色出现帧率（[0,1]；哨兵态为实际最高帧率/0） */
+  primarySubjectConf: number;
+  /** 仅保留持续时长占比 ≥ 30% 的角色；无角色时为 undefined（不造假值） */
+  characters?: string[];
+  /** 涵盖帧数（帧率分母） */
+  totalFrames: number;
+  /** 角色覆盖时长累计（ms，时长占比分母） */
+  coveredMs: number;
+}
+
+/** 补丁18 开关读取（缺省关闭；大小写不敏感）。 */
+export function isRolePoolingEnabled(): boolean {
+  try {
+    const raw = String(process.env[ROLE_POOLING_ENV] ?? '').trim().toLowerCase();
+    return raw === 'on' || raw === '1' || raw === 'true' || raw === 'yes';
+  } catch {
+    return false;
+  }
+}
+
 export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
   readonly nodeType = 'semantic-analyze';
 
@@ -904,6 +941,14 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       let winLeft = 0; // sortedDescs[winLeft..winRight-1] 属于当前 chunk 的 [start-500, end+500] 窗口
       let winRight = 0;
 
+      /** 🎬 补丁18 开关与诊断计数（缺省 off ⇒ 下面整块不执行，逐字节零行为变化） */
+      const rolePoolingOn = isRolePoolingEnabled();
+      let rpSingle = 0;   // 单焦点（≥50% 众数命中角色名）
+      let rpMultiple = 0; // MULTIPLE 哨兵（多人戏无唯一主控）
+      let rpEmpty = 0;    // EMPTY 哨兵（涵盖帧内无角色）
+      let rpNoFrames = 0; // 无涵盖帧（不改写，不计入三态）
+      let rpCharDropped = 0; // 被 30% 时长门槛滤掉的角色累计条数
+
       for (const chunk of chunks) {
         const start = Number(chunk.startMs) || 0;
         const end = Number(chunk.endMs) || start;
@@ -968,6 +1013,35 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (chunk.description && String(chunk.description).trim()) {
           VisionExtractStrategy.fillStructuredFromDescription(chunk, chunk.description);
         }
+        /** 🎬 补丁18（评审稿 §13.1）：帧级 `frameRoles` → 切片级确定性归约，覆盖上面两步的
+         *  "VLM 帧级 primarySubject 众数"与"characters 并集"（后者还会被上一步
+         *  `fillStructuredFromDescription` 从 description 正则并集回填，故必须压在其后执行）：
+         *  - `primarySubject` = 涵盖帧中出现帧率最高且 ≥50% 的单一角色，否则 MULTIPLE/EMPTY 哨兵；
+         *  - `primarySubjectConf` = 该出现帧率（落库供下游判"点亮 ≠ 可信"）；
+         *  - `characters[]` 仅留持续时长占比 ≥30% 的角色（瞬时虚焦路人过滤）。
+         *  涵盖帧 = 当前滑动窗口 `sortedDescs[winLeft..winRight-1]`（即 [start-500, end+500] 内的时间有序帧，
+         *  与既有聚合口径同源）。无涵盖帧 → 不改写任何字段（不造假值）。 */
+        if (rolePoolingOn) {
+          const winFrames = sortedDescs.slice(winLeft, winRight);
+          const rp = SemanticAnalyzeStrategy.reduceChunkRolesFromFrames(winFrames, start, end);
+          if (rp.primarySubject === undefined) {
+            rpNoFrames++;
+          } else {
+            chunk.primarySubject = rp.primarySubject;
+            (chunk as any).primarySubjectConf = rp.primarySubjectConf;
+            if (rp.primarySubject === PRIMARY_SUBJECT_MULTIPLE) rpMultiple++;
+            else if (rp.primarySubject === PRIMARY_SUBJECT_EMPTY) rpEmpty++;
+            else rpSingle++;
+            const before = Array.isArray(chunk.characters) ? chunk.characters.length : 0;
+            if (rp.characters && rp.characters.length > 0) {
+              chunk.characters = rp.characters;
+              rpCharDropped += Math.max(0, before - rp.characters.length);
+            } else {
+              delete chunk.characters;
+              rpCharDropped += before;
+            }
+          }
+        }
       }
       const withDesc = chunks.filter((c) => (c.description || '').trim().length > 0).length;
       const withEmotion = chunks.filter((c) => (c.emotion || '').trim().length > 0).length;
@@ -1004,6 +1078,18 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         `${withScene}/${chunks.length} 带场景scene，` +
         `${withCharacters}/${chunks.length} 带角色characters，` +
         `${withKeywords}/${chunks.length} 带关键词keywords`);
+      /** 🎬 补丁18 诊断（开关 off 时不打印，日志逐字节零变化）：三态分布 + 30% 时长过滤条数 +
+       *  置信度均值——让"点亮 ≠ 可信"（覆盖率/置信度）在日志里可见，作为 A/B 对账基线。 */
+      if (rolePoolingOn) {
+        const confs = chunks
+          .map((c: any) => Number(c.primarySubjectConf))
+          .filter((v) => Number.isFinite(v));
+        const avgConf = confs.length > 0 ? Math.round((confs.reduce((a, b) => a + b, 0) / confs.length) * 1000) / 1000 : 0;
+        AppLogger.info(LOG_TAGS.AI_AGENT,
+          `[镜头匹配] 🎭 补丁18 角色时序众数归约（${ROLE_POOLING_ENV}=on）：切片 ${chunks.length} 个 → `
+          + `单焦点 ${rpSingle}｜MULTIPLE哨兵 ${rpMultiple}｜EMPTY哨兵 ${rpEmpty}｜无涵盖帧(不改写) ${rpNoFrames}｜`
+          + `primarySubjectConf 均值 ${avgConf}｜characters 30%时长门槛滤除 ${rpCharDropped} 条`);
+      }
       /** 🎬 阶段 B：把镜头级语义字段 inherit 到匹配候选级 matchSegments。
        *  matchSegments 是 Python 侧按 3s 拆出的候选段（无独立 VLM 帧聚合），
        *  它们的 description/emotion/shotType/scene/keywords 继承自所属物理镜头的聚合结果，
@@ -1621,7 +1707,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
        *  旧逻辑静默退成单帧匹配，产出 timeline=0 的假结果（预览从头/牛头不对马嘴的根源之一），
        *  根因被掩盖。按"错就错"原则：KM 求解异常直接 fail-fast 暴露给 UI（黄条/失败态），便于修复。 */
       AppLogger.error(LOG_TAGS.AI_AGENT, `[镜头匹配] KM 求解失败（已按 fail-fast 抛出，不再回退帧匹配）: ${e?.message || e}`, e);
-      throw new Error(`镜头匹配失败（KM 求解异常）: ${e?.message || e}`);
+      throw new Error(`镜头匹配失败（求解器异常）: ${e?.message || e}`);
     } finally {
       // 🔧 R1 模型生命周期（PR-1）：步骤5 匹配阶段结束（成功/失败/finally 兜底）后释放 daemon 常驻模型，
       //   clip/chinese_clip/face 不再跨项目常驻（Python 侧 KM finally 已释放，此处 Node 兜底）
@@ -1718,6 +1804,88 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       }
     }
     return set.size > 0 ? Array.from(set) : undefined;
+  }
+
+  /** 🎬 补丁18 · 切片角色时序众数归约（评审稿 §13.1，纯统计、零模型依赖）。
+   *
+   *  数据源 = 切片**涵盖帧**（调用方传入本切片时间窗内的帧，须按 timeMs 升序）的帧级角色列表
+   *  （`FrameDetail.characters` ← 步骤1 `frameRoles` 帧级人脸锚定 ∪ VLM 帧内角色）。
+   *
+   *  两条判据（与评审稿逐字对齐）：
+   *   1. `primarySubject`：出现**帧率**最高的单一角色，且出现率 ≥ 50% 才认；
+   *      未达标时置哨兵 `MULTIPLE`（≥2 角色但无唯一主控）/ `EMPTY`（无任何角色）——
+   *      供焦点门禁识别"空/全景豁免"（哨兵非角色名，下游卡内 `subject == 期望角色` 自然不命中）。
+   *   2. `characters[]`：仅收录**持续时长占比 ≥ 30%** 的角色（覆盖区间 = [帧i, 帧i+1)，末帧延伸），
+   *      瞬时虚焦路人（凑不到 30%）自动过滤。
+   *
+   *  不可造假门：**无涵盖帧**时返回 `primarySubject: undefined`（不改写、不造 EMPTY）；
+   *  覆盖时长分母为 0（退化时间轴）时退回帧率口径，避免除零。
+   *
+   *  @param frames 切片涵盖帧（须按 timeMs 升序）
+   *  @param startMs 切片起始（与 frames[].timeMs 同坐标系）
+   *  @param endMs 切片结束
+   *  @returns 归约产物；`totalFrames === 0` 时各字段为空值
+   */
+  static reduceChunkRolesFromFrames(
+    frames: { timeMs: number; characters?: string[] }[],
+    startMs: number,
+    endMs: number,
+  ): ChunkRoleReduction {
+    const totalFrames = Array.isArray(frames) ? frames.length : 0;
+    if (totalFrames === 0) {
+      return { primarySubject: undefined, primarySubjectConf: 0, characters: undefined, totalFrames: 0, coveredMs: 0 };
+    }
+    const voteCounts = new Map<string, number>(); // 角色 → 出现帧数（帧率分子）
+    const roleDurMs = new Map<string, number>();  // 角色 → 覆盖时长累计（时长占比分子）
+    let coveredMs = 0;
+    for (let i = 0; i < totalFrames; i++) {
+      const fStart = Number(frames[i]?.timeMs) || 0;
+      /** 帧 i 的覆盖区间终点 = 帧 i+1 起点；末帧延伸到 +∞（尾部切片仍归属最后一帧） */
+      const fEnd = i + 1 < totalFrames ? (Number(frames[i + 1]?.timeMs) || fStart) : Number.POSITIVE_INFINITY;
+      const s = Math.max(fStart, startMs);
+      const e = Math.min(fEnd, Number.isFinite(endMs) ? endMs : fEnd);
+      const d = e > s ? e - s : 0;
+      coveredMs += d;
+      const chars = frames[i]?.characters;
+      if (!Array.isArray(chars) || chars.length === 0) continue;
+      const seen = new Set<string>(); // 同一帧内同名只计一次
+      for (const r of chars) {
+        const k = typeof r === 'string' ? r.trim() : '';
+        if (!k || seen.has(k)) continue;
+        seen.add(k);
+        voteCounts.set(k, (voteCounts.get(k) || 0) + 1);
+        if (d > 0) roleDurMs.set(k, (roleDurMs.get(k) || 0) + d);
+      }
+    }
+    /** 主控焦点：最高频角色的出现帧率（同票按名称定序，保证可复现） */
+    let bestRole: string | undefined;
+    let bestVotes = 0;
+    for (const [k, v] of voteCounts) {
+      if (v > bestVotes || (v === bestVotes && bestRole !== undefined && k < bestRole)) {
+        bestRole = k;
+        bestVotes = v;
+      }
+    }
+    const bestRate = bestVotes / totalFrames;
+    const primarySubject = voteCounts.size === 0
+      ? PRIMARY_SUBJECT_EMPTY
+      : (bestRate >= PRIMARY_SUBJECT_MIN_FRAME_RATE ? bestRole : PRIMARY_SUBJECT_MULTIPLE);
+    /** characters：持续时长占比 ≥ 30%（退化时间轴时退回帧率口径） */
+    const useDuration = coveredMs > 0;
+    const kept: string[] = [];
+    for (const [k, v] of voteCounts) {
+      const share = useDuration ? (roleDurMs.get(k) || 0) / coveredMs : v / totalFrames;
+      if (share >= CHARACTER_MIN_DURATION_SHARE) kept.push(k);
+    }
+    /** 保序：按出现帧数降序（高频角色置前，与切片其它众数字段同阅读口径） */
+    kept.sort((a, b) => (voteCounts.get(b) || 0) - (voteCounts.get(a) || 0) || (a < b ? -1 : 1));
+    return {
+      primarySubject,
+      primarySubjectConf: Math.round(bestRate * 1000) / 1000,
+      characters: kept.length > 0 ? kept : undefined,
+      totalFrames,
+      coveredMs,
+    };
   }
 
   /** 🔧 P2.0 碎片 seg 前置清洗：在 KM 预选与原声定位之前，将 <500ms 的碎片 seg 合并至相邻 seg（优先并入前段）。

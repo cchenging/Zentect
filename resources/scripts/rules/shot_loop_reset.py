@@ -6,8 +6,9 @@ rules/shot_loop_reset.py —— 补丁8 正反打视听环线（Tier2 软偏好�
 解除排他锁合法重入（A说→B惊恐→手部特写→再切回A冷笑）。本卡对「候选主控焦点 = 句
 期望角色主机位」且与本句目标一致的复用施轻微偏好。
 
-字段依赖：`cand.primarySubject` + `cand.characters`（A域）。**当前未回填，本卡休眠；
-完整环线状态（hero_pool/reentry 计数）随 A/B 回填在束搜索 `_advance_state` 推进**。
+字段依赖：`cand.primarySubject` + `cand.characters`（A域）。**已点亮**（步骤2 已聚合落库，补丁18
+`ZENTECT_STEP2_ROLE_POOLING=on` 起改由帧级时序众数归约，`MULTIPLE`/`EMPTY` 哨兵非角色名 → 本卡自然中性放行）。
+**仍缺**：完整环线状态（`hero_pool`/`reentry` 计数）随 `_advance_state` 推进，尚未实现。
 """
 from __future__ import annotations
 

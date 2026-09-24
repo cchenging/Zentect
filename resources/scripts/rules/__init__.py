@@ -102,6 +102,32 @@ _CARD_DEFS = [
 ]
 
 
+def partition_rule_cards(available_keys: Optional[set] = None):
+    """把卡片表切成「点亮 / 休眠」两份 —— 点亮判据的**单一真源**。
+
+    判据：`availability ⊆ available_keys` 才点亮；available_keys=None 视为契约全字段就绪。
+    `build_rule_cards` 与 `_run_new_engine` 的点亮诊断行都必须经本函数取结论，
+    **禁止在 timeline_solver 侧重写第二份子集判断**——双份判据必然漂移，
+    「点亮」定义会出现两个版本。
+
+    Args:
+        available_keys: 本轮输入里真实存在的切片/句字段名集合。
+
+    Returns:
+        (active_defs, dormant_names): 点亮的卡片定义 dict 列表（保持 _CARD_DEFS 原序）
+        与休眠卡片名列表（同序）。
+    """
+    strict = available_keys is not None
+    avail = {k for k in (available_keys or []) if k}
+    active, dormant = [], []
+    for c in _CARD_DEFS:
+        if strict and c['availability'] and not c['availability'] <= avail:
+            dormant.append(c['name'])  # 依赖字段本轮缺失 → 休眠（A/B 回填后自动点亮）
+        else:
+            active.append(c)
+    return active, dormant
+
+
 def build_rule_cards(available_keys: Optional[set] = None) -> List[object]:
     """装配束搜索可消费的 RuleCard 列表（可用字段不足的卡静默跳过）。
 
@@ -110,6 +136,7 @@ def build_rule_cards(available_keys: Optional[set] = None) -> List[object]:
             契约 `default_chunk` 全字段就绪（上文 6 卡均只依赖契约保证字段），启用全部；
             传入收窄集合时仅启用 `availability ⊆ available_keys` 的卡（未来 A 域字段如
             `eyelineDirection/isCriticalHeroAsset` 未落地即休眠，兑现「不可造假」）。
+            点亮判据由 `partition_rule_cards` 单点实现，本函数只负责装配。
 
     Returns:
         List[object]: RuleCard 实例列表（自 beam_search 运行时导入，规避循环依赖）。
@@ -117,11 +144,5 @@ def build_rule_cards(available_keys: Optional[set] = None) -> List[object]:
     # 运行时导入 RuleCard：beam_search 不在模块顶层 import rules，杜绝循环。
     from beam_search import RuleCard
 
-    strict = available_keys is not None
-    avail = {k for k in (available_keys or []) if k}
-    cards: List[object] = []
-    for c in _CARD_DEFS:
-        if strict and c['availability'] and not c['availability'] <= avail:
-            continue  # 依赖字段本轮缺失 → 该卡休眠（A/B 回填后自动点亮）
-        cards.append(RuleCard(c['name'], c['tier'], c['score']))
-    return cards
+    active, _dormant = partition_rule_cards(available_keys)
+    return [RuleCard(c['name'], c['tier'], c['score']) for c in active]

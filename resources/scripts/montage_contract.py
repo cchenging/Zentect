@@ -33,6 +33,14 @@ ROUTER_MODES = (ROUTER_MODE_OFF, ROUTER_MODE_SHADOW, ROUTER_MODE_ON)
 # 束搜索几何参数（§8.2-项4）：束宽上限；首版固定 3。
 BEAM_WIDTH = 3
 
+# 补丁18 角色时序众数归约的哨兵值（TS 侧 SemanticAnalyzeStrategy 落库，纯统计零模型）：
+#   MULTIPLE = 多人戏无唯一 ≥50% 主控焦点；EMPTY = 切片涵盖帧内无任何角色（空镜）。
+#   两者**均非角色名**，消费端须按「该维不可用」处理（不参与签名/门禁），
+#   这正是评审稿 §13.1 的"空/全景豁免焦点门禁"与不可造假门的落点。
+PRIMARY_SUBJECT_MULTIPLE = 'MULTIPLE'
+PRIMARY_SUBJECT_EMPTY = 'EMPTY'
+PRIMARY_SUBJECT_SENTINELS = frozenset({PRIMARY_SUBJECT_MULTIPLE, PRIMARY_SUBJECT_EMPTY})
+
 # ---------------------------------------------------------------------------
 # 剪辑规则常量（§13.4 补丁21 两级阻断 / §8.2 补丁5·13 阻尼权重）
 #   hard 卡违反 → 返回 float('inf')（一票否决）；soft 卡仅累加，权重固定写法。
@@ -205,6 +213,50 @@ def default_chunk() -> dict:
         'motionScore': 0.0,           # 动静分
         'colorHist': [],              # 色温直方图（补丁5 用）
     }
+
+
+# ---------------------------------------------------------------------------
+# 切片键名别名归一（契约键名 ← 生产者键名，摄入边界「补空」）
+#   生产者链（video_analyzer 产出 + A 域 v7 富化）沿用旧命名
+#   （shotType / scene / cameraMovement / colorHistogram），契约 default_chunk 用新命名
+#   （shotScale / location / camera / colorHist）。两套命名从未在同一层对齐，实测后果：
+#   规则卡点亮闸门（`_collect_available_keys` 只看真实非空值）把本可跑动的 4 张卡长期关死
+#   ——jump_cut / camera_continuity（{camera}）、scale_rhythm（{shotScale}）、
+#   color_continuity（{colorHist}）：卡内 SCORE 早已写了别名容错，却因闸门读不到契约键
+#   而进不了场。实测 605 切片：契约键 4 个命中率全 0%，生产者键 shotType/scene/
+#   cameraMovement 各 557、colorHistogram 605。
+#   归一规则：仅当**契约键为空**时用生产者键补全，绝不覆盖既有真实值；生产者键原样保留
+#   （_flag_critical_hero_assets 的稀有料签名用 shotType、_is_reusable_broll 用 shotType、
+#   env_medium_lock 的介质推导回落 visualAtmosphere），改动面收在「补空」这一处。
+# ---------------------------------------------------------------------------
+CHUNK_KEY_ALIASES = (
+    ('shotScale', 'shotType'),        # 景别：'特写'|'近景'|'中景'|'全景'|'空镜'（_shot_type_level 可直接判级）
+    ('camera', 'cameraMovement'),     # 机位/运镜：'固定'|'推'|'拉'……
+    ('colorHist', 'colorHistogram'),  # 色温直方图：等长浮点序列（color_continuity 按 L1 距离比对）
+    ('location', 'scene'),            # 地点：env_medium_of 吃场景文本推室内/室外介质
+)
+
+
+def normalize_chunk_aliases(chunk: dict) -> dict:
+    """把切片的「生产者键名」补全为「契约键名」（就地改写并返回同一 dict）。
+
+    本函数只做**补空**（契约键为空才填），不判断「是否算已回填」——该判据仍由
+    `timeline_solver._key_value_usable` 单独充任，此处不另立第二份口径。
+    守「不可造假门」的本意不变：生产者真没提供时（如无 shotType 的段级切片）契约键保持
+    空，卡片照旧休眠，绝不编造字段。
+
+    Args:
+        chunk: 已按 default_chunk 补齐缺省字段、并以 raw 覆盖后的切片。
+
+    Returns:
+        dict: 同一 dict（补全后的契约键就地生效）。
+    """
+    for contract_key, producer_key in CHUNK_KEY_ALIASES:
+        if not chunk.get(contract_key):
+            v = chunk.get(producer_key)
+            if v:
+                chunk[contract_key] = v
+    return chunk
 
 
 def default_segment() -> dict:

@@ -7,7 +7,10 @@ rules/focus_exemption.py —— 补丁3 反打/过肩焦点豁免（Tier2 软偏
 非硬门禁），缓解对话戏焦点单边化导致的戏感瘫痪。
 
 字段依赖：`query.characters`（期望角色）+ `cand.primarySubject`（A域 v7 单焦点）。
-**primarySubject 尚未按帧级众数回填，本卡休眠；回填后点亮**。
+**已点亮**（VLM 帧级 primarySubject 由步骤2 聚合落库）；补丁18
+（`ZENTECT_STEP2_ROLE_POOLING=on`）起改由帧级时序众数归约，可能写入 `MULTIPLE`/`EMPTY` 哨兵——
+哨兵非角色名，下面 `subject == 期望角色` 自然不命中 ⇒ 即"空/全景豁免焦点门禁"，无需特判。
+**仍缺**：docstring 要求的"句含多主体冲突意图"判据尚未落地（当前只要 `any(chars)` 命中即给软分）。
 """
 from __future__ import annotations
 
