@@ -26,6 +26,10 @@ export class ProcessSupervisor {
   private supervised = new Map<number, SupervisedProcess>()
   private labelIndex = new Map<string, number>()
   private restartCallbacks = new Map<string, RestartCallback>()
+  /** 函数级中文注释：放弃自动恢复时的通知回调（可选）。
+   *  调用方（如 AiRuntimeManager）需要据此收口自身状态——否则最后一次 close 把
+   *  online 置 false 后无人置回，业务层会永远看到"离线"，而端口上其实还有健康 daemon。 */
+  private giveUpCallbacks = new Map<string, () => void>()
   private isShuttingDown = false
 
   private constructor() {
@@ -39,8 +43,14 @@ export class ProcessSupervisor {
     return ProcessSupervisor.instance
   }
 
-  /** 注册受管进程，可选传入自动重启回调 */
-  supervise(proc: ChildProcess, label: string, maxRestarts = 3, onRestart?: RestartCallback): void {
+  /** 注册受管进程，可选传入自动重启回调与"放弃恢复"回调 */
+  supervise(
+    proc: ChildProcess,
+    label: string,
+    maxRestarts = 3,
+    onRestart?: RestartCallback,
+    onGiveUp?: () => void
+  ): void {
     if (!proc.pid) {
       AppLogger.error(LOG_TAGS.SYSTEM, `[ProcessSupervisor] 无法注册无 PID 的进程: ${label}`)
       return
@@ -60,6 +70,10 @@ export class ProcessSupervisor {
 
     if (onRestart) {
       this.restartCallbacks.set(label, onRestart)
+    }
+
+    if (onGiveUp) {
+      this.giveUpCallbacks.set(label, onGiveUp)
     }
 
     ProcessManager.register(proc, label)
@@ -111,6 +125,7 @@ export class ProcessSupervisor {
 
     AppLogger.info(LOG_TAGS.SYSTEM, `[ProcessSupervisor] 主动停止: ${label} (PID: ${pid})`)
     this.restartCallbacks.delete(label)
+    this.giveUpCallbacks.delete(label)
     ProcessManager.killTree(pid)
     this.supervised.delete(pid)
     this.labelIndex.delete(label)
@@ -122,6 +137,7 @@ export class ProcessSupervisor {
     const count = this.supervised.size
 
     this.restartCallbacks.clear()
+    this.giveUpCallbacks.clear()
 
     if (count > 0) {
       AppLogger.info(LOG_TAGS.SYSTEM, `[ProcessSupervisor] 清理 ${count} 个受管进程`)
@@ -140,6 +156,25 @@ export class ProcessSupervisor {
 
       this.supervised.clear()
       this.labelIndex.clear()
+    }
+  }
+
+  /**
+   * 放弃自动恢复：注销重启回调并通知调用方收口状态。
+   * 三个放弃点（达最大次数 / 重启回调返回空进程 / 重启回调抛错）都必须走这里，
+   * 否则调用方的 online 状态会停留在最后一次 close 设置的 false 上，且无处恢复。
+   */
+  private notifyGiveUp(label: string, reason: string): void {
+    this.restartCallbacks.delete(label)
+    const cb = this.giveUpCallbacks.get(label)
+    this.giveUpCallbacks.delete(label)
+    AppLogger.error(LOG_TAGS.SYSTEM, `[ProcessSupervisor] ${label} 放弃自动恢复: ${reason}`)
+    if (cb) {
+      try {
+        cb()
+      } catch (err) {
+        AppLogger.error(LOG_TAGS.SYSTEM, `[ProcessSupervisor] ${label} 放弃回调异常`, err)
+      }
     }
   }
 
@@ -174,8 +209,7 @@ export class ProcessSupervisor {
     const onRestart = this.restartCallbacks.get(label)
     if (!onRestart || restartCount >= maxRestarts) {
       if (restartCount >= maxRestarts) {
-        this.restartCallbacks.delete(label)
-        AppLogger.error(LOG_TAGS.SYSTEM, `[ProcessSupervisor] ${label} 已达最大重启次数 ${maxRestarts}，放弃自动恢复`)
+        this.notifyGiveUp(label, `已达最大重启次数 ${maxRestarts}`)
       }
       return
     }
@@ -187,8 +221,7 @@ export class ProcessSupervisor {
       onRestart(label, restartCount + 1)
         .then((newProc) => {
           if (!newProc || !newProc.pid) {
-            AppLogger.error(LOG_TAGS.SYSTEM, `[ProcessSupervisor] ${label} 重启回调返回空进程，放弃`)
-            this.restartCallbacks.delete(label)
+            this.notifyGiveUp(label, '重启回调返回空进程')
             return
           }
 
@@ -217,7 +250,7 @@ export class ProcessSupervisor {
         })
         .catch((err) => {
           AppLogger.error(LOG_TAGS.SYSTEM, `[ProcessSupervisor] ${label} 重启回调异常`, err)
-          this.restartCallbacks.delete(label)
+          this.notifyGiveUp(label, `重启回调异常: ${err?.message ?? err}`)
         })
     }, delayMs)
   }

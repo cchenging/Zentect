@@ -17,6 +17,8 @@ interface RuntimeStatus {
   pid: number | null
   modelStatus: string
   gpuEnabled: boolean
+  /** 最近一次 daemon 退出原因（正常运行时为 null） */
+  lastExitReason: string | null
 }
 
 /**
@@ -40,6 +42,12 @@ export class AiRuntimeManager {
    *  Node 侧解析到此值后通过 setHealthPort() 传递给 AIDaemon；undefined 则 fallback 到业务端口。 */
   private healthPort: number | undefined
   private isOnline = false
+  /** 函数级中文注释：在途启动 Promise（单飞）。并发调用 start() 时复用同一次启动，
+   *  避免同一进程内 spawn 出两个 daemon 抢同一端口（Errno 10048）后级联重启。 */
+  private startPromise: Promise<{ success: boolean; message: string }> | null = null
+  /** 函数级中文注释：最近一次 daemon 退出原因。业务层报错时带上它，
+   *  避免"端口上其实还有健康 daemon"却只报"请确认 AI Daemon 已启动"的误导文案。 */
+  private lastExitReason: string | null = null
 
   private constructor() {}
 
@@ -87,8 +95,25 @@ export class AiRuntimeManager {
     }
   }
 
-  /** 启动 AI 运行时（Python daemon） */
+  /**
+   * 启动 AI 运行时（Python daemon）—— 单飞入口。
+   * 并发调用（bootstrap 预热点火 + 管线首调 waitForReady 的自动点火）复用同一次启动。
+   * 否则会在同一进程内 spawn 出两个 daemon 抢同一端口（Errno 10048），
+   * 触发级联重启，直至 supervisor 放弃自动恢复。
+   */
   async start(): Promise<{ success: boolean; message: string }> {
+    if (this.startPromise) {
+      AppLogger.info(LOG_TAGS.AI_DAEMON, '[AiRuntimeManager] 启动已在进行中，复用同一次启动（单飞）')
+      return this.startPromise
+    }
+    this.startPromise = this.doStart().finally(() => {
+      this.startPromise = null
+    })
+    return this.startPromise
+  }
+
+  /** 启动实现 —— 只允许由 start() 单飞调用，不得直接调用 */
+  private async doStart(): Promise<{ success: boolean; message: string }> {
     if (this.isOnline && this.runtimePid) {
       return { success: true, message: 'AI 运行时已在运行中' }
     }
@@ -145,7 +170,18 @@ export class AiRuntimeManager {
       this.runtimePid = proc.pid
       ProcessManager.setBackground(proc.pid) // 🔧 R8（PR-3）：daemon 设 below-normal 优先级 + 限核亲和，避免抢占 UI
       ProcessManager.register(proc, 'AI_Daemon_Master')
-      this.supervisor.supervise(proc, 'ai-daemon', 3, this.createRestartCallback())
+      this.supervisor.supervise(proc, 'ai-daemon', 3, this.createRestartCallback(), () => {
+        // 函数级中文注释：supervisor 放弃自动恢复后显式收口状态。
+        //  否则最后一次 close 把 isOnline 置 false 后无人置回，业务层会永久看到"离线"，
+        //  而端口上可能还留着健康 daemon（现象：报"请确认 AI Daemon 已启动"）。
+        this.isOnline = false
+        this.runtimePid = null
+        this.lastExitReason = '已达最大重启次数，自动恢复已放弃'
+        AppLogger.error(
+          LOG_TAGS.AI_DAEMON,
+          '[AiRuntimeManager] ai-daemon 自动恢复已放弃，运行时已置为离线；请手动重启应用（残留 daemon 会在下次启动时被清理）'
+        )
+      })
 
       // 转发期 stdout 防刷屏：CLIP 高维特征数组（visionEmbedding/colorHistogram/clipZhEmbedding，可达 512 维）整行
       // 被 daemon 打印到 stdout 后原样转发，单行超长且含特征字段即判定为刷屏 dump，跳过全文打印
@@ -180,17 +216,22 @@ export class AiRuntimeManager {
         AppLogger.error(LOG_TAGS.AI_DAEMON, '[AiRuntimeManager] 进程启动失败', err)
       })
 
+      let exited = false
       proc.on('close', (code) => {
+        exited = true
         this.isOnline = false
         if (code !== 0) {
+          this.lastExitReason = `进程异常退出 (code: ${code})`
           AppLogger.warn(LOG_TAGS.AI_DAEMON, `[AiRuntimeManager] 进程异常退出 (code: ${code})`)
         }
       })
 
       // 函数级中文注释：就绪探测给足 90s，覆盖 torch(CPU) 冷启动 ~40s，避免 30s 窗口误杀 → isOnline 误报
-      await this.waitForHttpReady(90000)
+      //  并带上"自家进程是否还活着"的判据：端口上回 200 的不一定是自己 spawn 的那个 daemon。
+      await this.waitForHttpReady(90000, () => !exited)
       this.isOnline = true
 
+      this.lastExitReason = null
       AppLogger.info(LOG_TAGS.SYSTEM, `[AiRuntimeManager] AI 运行时已启动 (PID: ${this.runtimePid}, Port: ${this.runtimePort})`)
       return { success: true, message: `AI 运行时已启动 (PID: ${this.runtimePid})` }
     } catch (err: any) {
@@ -246,6 +287,10 @@ export class AiRuntimeManager {
 
   /** 重启 AI 运行时 */
   async restart(): Promise<{ success: boolean; message: string }> {
+    // 先等在途启动落定：否则单飞窗口内的 start() 会与重启新 spawn 的 daemon 抢同一端口
+    if (this.startPromise) {
+      await this.startPromise
+    }
     await this.stop()
     await new Promise((r) => setTimeout(r, 2000))
     return this.start()
@@ -258,7 +303,8 @@ export class AiRuntimeManager {
       port: this.runtimePort,
       pid: this.runtimePid,
       modelStatus: this.getModelStatusSummary(),
-      gpuEnabled: this.settings.get<boolean>('enableGPU', false)
+      gpuEnabled: this.settings.get<boolean>('enableGPU', false),
+      lastExitReason: this.lastExitReason
     }
   }
 
@@ -291,16 +337,26 @@ export class AiRuntimeManager {
     }
   }
 
-  /** HTTP 就绪探测 — 轮询 /health 端点直到返回 200 */
-  private waitForHttpReady(timeoutMs: number): Promise<void> {
+  /**
+   * HTTP 就绪探测 — 轮询 /health 端点直到返回 200。
+   * @param isAlive 自家进程存活判据。端口上回 200 的不一定是自己 spawn 的那个 daemon：
+   *   端口被占或进程已被杀时，别人的 /health 会被误判为"自己已就绪"
+   *   （历史现象：日志报到"已启动 (PID: xxx)"，而该 PID 早已退出，业务路由全 404）。
+   */
+  private waitForHttpReady(timeoutMs: number, isAlive: () => boolean = () => true): Promise<void> {
     return new Promise((resolve, reject) => {
       const start = Date.now()
       const check = (): void => {
+        // 自家进程已退出 → 立即失败，不再空等满超时
+        if (!isAlive()) {
+          return reject(new Error('AI 运行时进程已退出，/health 就绪探测中止'))
+        }
         if (Date.now() - start > timeoutMs) {
           return reject(new Error(`AI 运行时 /health 端点未在 ${timeoutMs}ms 内就绪`))
         }
         const req = http.get(`http://127.0.0.1:${this.runtimePort}/health`, (res: any) => {
-          if (res.statusCode === 200) {
+          // 200 且自家进程仍在 → 才算就绪；否则继续等（此时端口上应答的是别的进程）
+          if (res.statusCode === 200 && isAlive()) {
             res.resume()
             return resolve()
           }
@@ -355,17 +411,22 @@ export class AiRuntimeManager {
         }
       })
 
+      let exited = false
       proc.on('close', (code) => {
+        exited = true
         this.isOnline = false
         if (code !== 0) {
+          this.lastExitReason = `重启后进程异常退出 (code: ${code})`
           AppLogger.warn(LOG_TAGS.AI_DAEMON, `[AiRuntimeManager] 重启后进程异常退出 (code: ${code})`)
         }
       })
 
       // 函数级中文注释：就绪探测给足 90s，覆盖 torch(CPU) 冷启动 ~40s，避免 30s 窗口误杀 → isOnline 误报
-      await this.waitForHttpReady(90000)
+      //  同样带上"自家进程是否还活着"的判据（端口上回 200 的可能仍是旧 daemon）。
+      await this.waitForHttpReady(90000, () => !exited)
       this.isOnline = true
 
+      this.lastExitReason = null
       AppLogger.info(LOG_TAGS.SYSTEM, `[AiRuntimeManager] 重启就绪 (PID: ${proc.pid})`)
       return proc
     }

@@ -66,7 +66,8 @@ export class AIDaemon {
   public start() {
     this.port = Number(this.settingsRepo.get<number>('aiPort', 34567)) || 34567;
 
-    if (this.isReady) {
+    // 叠加 online 判据：isReady 可能在 daemon 死后仍为 true，此时必须重新点火
+    if (this.isReady && this.runtimeManager.online) {
       AppLogger.info(LOG_TAGS.AI_DAEMON, 'Daemon 已在运行中', { port: this.port });
       return;
     }
@@ -120,7 +121,10 @@ export class AIDaemon {
 
   /** 等待就绪 — 查询 AiRuntimeManager 状态；若离线则自动点火 */
   public async waitForReady(): Promise<void> {
-    if (this.isReady) return;
+    // isReady 是粘性标志，不会随 daemon 死亡自动失效，必须叠加 online 判据。
+    // 否则 supervisor 放弃自动恢复后，这里会直接返回、不再点火，
+    // 业务层永久报"离线"且无法自愈（端口上可能还留着健康 daemon）。
+    if (this.isReady && this.runtimeManager.online) return;
 
     if (!this.runtimeManager.online) {
       AppLogger.warn(LOG_TAGS.AI_DAEMON, '检测到 AI 运行时离线，执行自动点火...');
@@ -259,7 +263,8 @@ export class AIDaemon {
 
     const status = this.runtimeManager.getStatus();
     if (!status.online) {
-      throw new Error('AI 运行时处于离线状态，无法处理请求。请确认 AI Daemon 已启动（端口 ' + this.port + '）');
+      const reason = status.lastExitReason ? `，最近一次：${status.lastExitReason}` : '';
+      throw new Error('AI 运行时处于离线状态，无法处理请求。请确认 AI Daemon 已启动（端口 ' + this.port + '）' + reason);
     }
 
     /** 🔧 P1 #7：并发窗口信号量。
