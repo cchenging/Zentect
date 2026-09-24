@@ -1036,6 +1036,16 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
             seg.charactersSceneLevel = parent.characters;
           }
           if (Array.isArray(parent.keywords) && parent.keywords.length > 0) seg.keywords = parent.keywords;
+          /** 🎬 A 域 v7 字段继承：父镜头聚合出的结构化字段（主焦点/视线/陪体/道具/服装/环境等）
+           *  仅当父镜头该字段非空时才回填候选段 seg → 送入 daemon 的 beam 候选（chunk_by_id）。
+           *  缺失字段保持空（default_chunk 兜底），供新引擎 available_keys 收窄为真·休眠（守不可造假门）。 */
+          for (const ak of ['eyelineDirection', 'primarySubject', 'secondarySubjects', 'interaction',
+            'keyProps', 'costume', 'weatherEnv', 'shotStyle', 'dramaticConflict', 'spatialRelation', 'visualAtmosphere',
+          ]) {
+            const av = (parent as any)[ak];
+            const aNonEmpty = Array.isArray(av) ? av.length > 0 : typeof av === 'string' ? Boolean((av || '').trim()) : av != null;
+            if (aNonEmpty) (seg as any)[ak] = av;
+          }
         }
       }
     }

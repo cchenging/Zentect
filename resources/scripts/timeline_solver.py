@@ -1409,7 +1409,11 @@ def _compute_duration_score(t_audio_ms: float, t_chunk_ms: float) -> float:
         return 0.5
     ratio = t_chunk_ms / t_audio_ms
     if ratio >= 1.0:
-        return max(0.70, 0.95 - math.log2(ratio) * 0.08)
+        # 切片时长 >= 语音时长：可裁剪（裁剪 = 变速成片）。🛠️ 2026-09-23 收紧：不再纵容大幅裁剪。
+        #   旧曲线 0.95 - log2(ratio)*0.08 太平坦，裁剪 30% 仍 ~0.88，让 beam 宁可变速也不换段。
+        #   新曲线陡坡：裁剪每多 10% 多罚 0.10（→ 裁剪 30% 只剩 ~0.65），让"必须变速"的段明显失分。
+        excess = ratio - 1.0
+        return max(0.30, 0.95 - excess * 1.0 - math.log2(ratio) * 0.04)
     if ratio >= 0.85:
         return 0.80 + (ratio - 0.85) * 1.0
     if ratio >= 0.60:
@@ -1580,8 +1584,18 @@ def _compute_combined_score(sem_score: float, duration_penalty: float,
     让前端调参真正生效，不再依赖硬编码。
     """
     _default_weights = {
-        'sem': 0.71, 'emotion': 0.05, 'duration': 0.15, 'role': 0.09,
+        'sem': 0.64, 'emotion': 0.05, 'duration': 0.22, 'role': 0.09,
     }
+    # 🎛️ 2026-09-23 方向1：时长权重可调开关。环境变量 ZENTECT_KM_DUR_WEIGHT（如 0.30）覆盖缺省 0.22，
+    #   sem 同步让渡（sem = 1 - emotion - duration - role），保证总和恒 1.0、语义仍为第一主依据。
+    if os.environ.get('ZENTECT_KM_DUR_WEIGHT'):
+        try:
+            _dur_cfg = float(os.environ['ZENTECT_KM_DUR_WEIGHT'])
+            if 0.0 <= _dur_cfg <= 1.0:
+                _default_weights['duration'] = _dur_cfg
+                _default_weights['sem'] = max(0.0, 1.0 - _dur_cfg - _default_weights['emotion'] - _default_weights['role'])
+        except ValueError:
+            pass
     w = {key: float(weights.get(key, _default_weights[key]))
          for key in _default_weights} if isinstance(weights, dict) else dict(_default_weights)
     total = sum(w.values())
@@ -4545,6 +4559,47 @@ def _kmmatch_to_segment_request(req) -> dict:
     }
 
 
+def _collect_available_keys(chunks, queries) -> set:
+    """收集本轮数据里真实可用（非空）的字段名集合，用于规则卡 available_keys 收窄。
+
+    判据（对齐 rules 各卡的 availability 语义）：
+      - 字符串：strip 后非空；
+      - 数值：> 0（0/0.0 视为未回填）；
+      - 列表/元组：非空；
+      - 布尔：is True（保证关键哨兵如 isCriticalHeroAsset 真标记才点亮）。
+    任一键在**任一**样本中满足即视为该字段可用（数据宽粒度：不因个别切片缺该字段而休眠整卡，
+    卡片 SCORE 本身对个别缺字段切片有中性放行守护）。
+
+    Args:
+        chunks: 切片样本（可迭代，ctx.chunk_by_id.values()）。
+        queries: 脚本句样本（ctx.queries）。
+
+    Returns:
+        set: 非空字段名集合（兼容 build_rule_cards 的 available_keys）。
+    """
+    keys: set = set()
+    for item in list(chunks) + list(queries):
+        if not isinstance(item, dict):
+            continue
+        for k, v in item.items():
+            if isinstance(v, str):
+                if v.strip():
+                    keys.add(k)
+            elif isinstance(v, (list, tuple)):
+                if v:
+                    keys.add(k)
+            elif isinstance(v, bool):
+                if v:
+                    keys.add(k)
+            elif v is not None:
+                try:
+                    if float(v) > 0:
+                        keys.add(k)
+                except (TypeError, ValueError):
+                    keys.add(k)
+    return keys
+
+
 def _run_new_engine(req) -> dict:
     """新引擎整条管道（#8）：validate → build_context → build_match_cost → beam_search.solve。
 
@@ -4563,7 +4618,10 @@ def _run_new_engine(req) -> dict:
     ctx = build_req_context(seg_req)
     cost = build_match_cost(ctx.queries, ctx.chunk_by_id, ctx.cands_by_shotid, None)
     tts = {str(q['shotId']): float(q.get('audioDurationMs') or 0.0) for q in ctx.queries}
-    rules = build_rule_cards()  # available_keys=None → 全量规则卡启用（守「不可造假门」）
+    # 真实可用字段集（守「不可造假门」）：从本批切片/句的实际数据样本收窄 available_keys，
+    #   而非全量启用。依赖字段未回填（如 A 域 eyelineDirection 尚未进候选）的休眠卡经此真正休眠，
+    #   绝不以缺字段数据伪造启用硬门禁。判据：对该键取到的值非空（str.strip、>0 数值、非空列表/真布尔）。
+    rules = build_rule_cards(_collect_available_keys(ctx.chunk_by_id.values(), ctx.queries))
     solved = _beam_solve(ctx, cost, rules, tts)
 
     results = []

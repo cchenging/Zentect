@@ -9,8 +9,12 @@ match_cost.py —— 供给层 MatchCost（R1 两层次串行第一步：第一�
 
 复用口径（不重复实现，保持唯一打分来源）：
   - 语义主分：与旧 KM 同源的 **BGE 文本↔文本**（`AIModels.encode_texts` + 点积=余弦）。
-  - 综合分：复用旧 KM 的 `_compute_combined_score`（语义 0.71 / 时长 0.15 / 情绪 0.05 / 角色 0.09，
-    含动态权重让渡）+ 各标量助手（时长/情绪/角色，均从 timeline_solver import）。
+  - 综合分：复用旧 KM 的 `_compute_combined_score`（语义 0.64 / 时长 0.22 / 情绪 0.05 / 角色 0.09，
+    含动态权重让渡；时长权重可由 `ZENTECT_KM_DUR_WEIGHT` 覆盖）+ 各标量助手（时长/情绪/角色，
+    均从 timeline_solver import）。
+  - 量纲对齐（方向2，2026-09-23）：纯 text 精排语义分绝对值低（0.2~0.5），综合分里易被
+    高分时长/情绪项反超稀释；候选内 min-max 归一化把语义分拉到 [0,1] 重排相对权重，
+    让语义真正履行第一主依据（开关 `ZENTECT_KM_SEM_NORM`，缺省 minmax，off 回退）。
   - MVP 范围说明：先锁定「语义+时长+情绪+角色」四因子核心分；P3 时间锚、实体通道、C 两阶段
     语义等加性精修暂不并入本版（shadow 对账仪会如实标出 DIFF，不造假象）。
 
@@ -112,6 +116,108 @@ def _read_text_beta(override: Optional[float] = None) -> float:
     return max(0.0, min(1.0, beta))
 
 
+def _read_sem_norm_mode(override: Optional[str] = None) -> str:
+    """解析候选内语义量纲对齐模式（off | minmax）。
+
+    量纲对齐（2026-09-23 方向2 语义加强，依据 docs/agents/context.md §23.6「量纲副作用」）：
+      - 问题：纯 text 精排（β=1.0）的语义分绝对值低（0.2~0.5），而时长/情绪分普遍高（0.8~1.0）；
+        综合分里语义权重虽为第一主依据（0.64），但其量纲差距被高分他项稀释，
+        「时长恰好但画面泛泛」的切片容易反超「语义精确匹配」。
+      - 机制：候选内 min-max 归一化把语义分拉到 [0,1]，不改变语义排序（单调变换），
+        只重排语义与其他因子的相对权重，让 sem 真正履行第一主依据。
+      - 开关：`ZENTECT_KM_SEM_NORM`，缺省 `minmax`（方向2 主行为）；`off` 回退原量纲（A/B）。
+
+    Args:
+        override: 显式传入的模式（优先于环境变量）；None 时读环境。
+
+    Returns:
+        str: 'minmax' 或 'off'（非法值错就错：按主口径 minmax 落）。
+    """
+    import os
+    raw = override if override is not None else os.environ.get('ZENTECT_KM_SEM_NORM', 'minmax')
+    return str(raw).strip().lower() if str(raw).strip().lower() in ('minmax', 'off') else 'minmax'
+
+
+def _norm_cand_sem(scores: List[float]) -> List[float]:
+    """候选内语义分 min-max 量纲对齐（单调变换，不改候选内语义排序）。
+
+    Args:
+        scores: 本句候选的 β 融合后语义分列表。
+
+    Returns:
+        List[float]: 归一化后的语义分；候选数<2 或 max==min（无判别梯度）时保持原值。
+    """
+    if len(scores) < 2:
+        return list(scores)
+    lo, hi = min(scores), max(scores)
+    span = hi - lo
+    if span < 1e-9:
+        return list(scores)
+    return [(float(s) - lo) / span for s in scores]
+
+
+# 切片侧结构化实体字段 → 中文语义标签（方向3 描述增强并入用）。
+#   选型口径：仅取「文案↔画面」匹配中最具判别力的实体维（主体/景别/地点/运镜/道具/服装/天气），
+#   情绪/角色维度不走文本并入（已有独立打分因子，避免重复信号）。
+_DESC_AUG_FIELDS = (
+    ('primarySubject', '主体'),
+    ('shotScale', '景别'),
+    ('location', '地点'),
+    ('camera', '运镜'),
+    ('keyProps', '道具'),
+    ('costume', '服装'),
+    ('weatherEnv', '天气'),
+)
+
+
+def _read_desc_aug(override: Optional[bool] = None) -> bool:
+    """解析切片描述侧实体并入开关（方向3）：`ZENTECT_KM_DESC_AUG` ∈ 1/on/true/yes。
+
+    守「禁止未测量即上线」：默认关闭（零行为变化），A/B 显式开启。
+
+    Args:
+        override: 显式传入（优先于环境变量）；None 时读环境。
+
+    Returns:
+        bool: 是否并入结构化实体摘要到切片语义编码文本。
+    """
+    import os
+    if override is not None:
+        return bool(override)
+    raw = str(os.environ.get('ZENTECT_KM_DESC_AUG', '') or '').strip().lower()
+    return raw in ('1', 'on', 'true', 'yes')
+
+
+def _build_chunk_semantic_text(chunk: dict, desc_aug: bool) -> str:
+    """构造切片语义编码文本：默认仅 VLM 自然语言描述；desc_aug 时并入结构化实体摘要。
+
+    机制（方向3，2026-09-23）：切片侧 A 域结构化字段（主控主体/景别/地点/运镜/道具/服装/天气）
+    当前完全不参与语义编码，只吃 description 一个源；并入后给 BGE「文案↔画面」匹配
+    更多判别信号。与「实体通道加性权重」（2026-09-16 已证端到端负收益）机制不同——
+    这里是合成编码输入文本，不改任何打分权重。
+    实体摘要置前（BGE 对头部 token 更敏感），description 收尾，整体仍走截断防超 512。
+
+    Args:
+        chunk: 切片资产（含 description / primarySubject / shotScale 等）。
+        desc_aug: 是否并入结构化实体摘要。
+
+    Returns:
+        str: 语义编码文本（无实体字段时退化为纯 description，零行为变化）。
+    """
+    desc = _smart_truncate_desc(chunk.get('description') or '')
+    if not desc_aug:
+        return desc
+    parts = []
+    for field, label in _DESC_AUG_FIELDS:
+        v = str(chunk.get(field) or '').strip()
+        if v and v not in ('无', '未知'):
+            parts.append(f'{label}:{v}')
+    if not parts:
+        return desc
+    aug = ' | '.join(parts)
+    return _smart_truncate_desc(aug + (' | ' + desc if desc else ''))
+
+
 def build_match_cost(
     queries: List[dict],
     chunk_by_id: Dict[str, dict],
@@ -153,9 +259,10 @@ def build_match_cost(
     beta = _read_text_beta(text_beta)
 
     # ---- 1. 语义矩阵：全部句 × 全部切片，一次性 BGE 编码 ----
+    desc_aug = _read_desc_aug()
     query_concat_texts = [build_query_text(q) for q in queries]
     chunk_ids: List[str] = list(chunk_by_id.keys())
-    chunk_desc_texts = [_smart_truncate_desc(chunk_by_id[cid].get('description') or '')
+    chunk_desc_texts = [_build_chunk_semantic_text(chunk_by_id[cid], desc_aug)
                         for cid in chunk_ids]
     _c_emb = AIModels.encode_texts(chunk_desc_texts)  # 切片描述编码（行=切片，两路共享）
     _qc_emb = AIModels.encode_texts(query_concat_texts)  # 拼接句编码（行=句，α=1-β）
@@ -172,8 +279,34 @@ def build_match_cost(
     chunk_order = {cid: idx for idx, cid in enumerate(chunk_ids)}
 
     # ---- 2. 逐句逐候选算贴合分并转负向代价 ----
+    sem_norm = _read_sem_norm_mode()
     result: Dict[str, Dict[str, float]] = {}
-    _beta_changed_n = 0  # DIAG 统计：β>0 时相较纯拼接 Top-1 发生变更的句数
+    _beta_changed_n = 0        # DIAG 统计：β>0 时相较纯拼接 Top-1 发生变更的句数
+    _norm_changed_n = 0        # DIAG 统计：量纲对齐前后综合 Top-1 发生变更的句数
+    _comb_top1_sem_ranks = []  # DIAG 统计：综合 Top-1 切片的候选内语义名次（1=语义第一即综合第一）
+    _cand_pool_sizes = []      # DIAG 统计：候选池大小分布
+
+    def _calc_row(cands: list, sem_values: List[float]) -> tuple:
+        """按给定语义分序列算综合代价行（供原始/归一化两版复用）。
+
+        Args:
+            cands: 本句候选元组列表 (cid, sem, duration, emotion, role)。
+            sem_values: 与 cands 等长的语义分序列（原始或归一化）。
+
+        Returns:
+            tuple: (row {cid: cost}, 综合最优 cid)。
+        """
+        row: Dict[str, float] = {}
+        _best_cid = None
+        _best_cost = 1e9
+        for i, (cid, _s, _d, _e, _r) in enumerate(cands):
+            combined = _compute_combined_score(sem_values[i], _d, _e, _r, weights)
+            row[cid] = 1.0 - float(combined)  # 正向分 → 负向代价
+            if row[cid] < _best_cost:
+                _best_cost = row[cid]
+                _best_cid = cid
+        return row, _best_cid
+
     for qi, query in enumerate(queries):
         sid = str(query['shotId'])
         cand_ids = cands_by_shotid.get(sid) or []
@@ -195,9 +328,8 @@ def build_match_cost(
                     _concat_best_val = _v
                     _concat_best_cid = cid
 
-        row: Dict[str, float] = {}
-        _best_cid = None
-        _best_cost = 1e9
+        # 逐候选收集：β 融合语义分 + 时长/情绪/角色分（一次计算，供两版语义序列复用）。
+        cands: list = []
         for cid in cand_ids:
             chunk = chunk_by_id.get(cid)
             if chunk is None:
@@ -222,25 +354,45 @@ def build_match_cost(
             if str(chunk.get('charGrain') or 'ok') == 'union_suspect':
                 role_score = 0.5 + (role_score - 0.5) * 0.5
 
-            combined = _compute_combined_score(
-                sem_score, duration_penalty, emotion_score, role_score, weights,
-            )
-            row[cid] = 1.0 - float(combined)  # 正向分 → 负向代价
-            if row[cid] < _best_cost:
-                _best_cost = row[cid]
-                _best_cid = cid
+            cands.append((cid, sem_score, duration_penalty, emotion_score, role_score))
+
+        # 方向2 量纲对齐：候选内 min-max 归一化后参与综合分（不改语义排序，只重排相对权重）。
+        raw_sems = [c[1] for c in cands]
+        norm_sems = _norm_cand_sem(raw_sems) if sem_norm != 'off' else raw_sems
+        row, _best_cid = _calc_row(cands, norm_sems)
         result[sid] = row
+
         # DIAG：β 融合后语义主分 Top-1 相对纯拼接发生变更的句数（可测量精排是否翻盘）。
         if beta > 0.0 and _concat_best_cid is not None and _best_cid is not None \
                 and _best_cid != _concat_best_cid:
             _beta_changed_n += 1
+        # DIAG：量纲对齐前后综合 Top-1 变更 + 综合 Top-1 的候选内语义名次分布（回答「墙在哪」：
+        #   r1 占比高 ⇒ 语义第一即综合第一，墙在语义判别本身；占比低 ⇒ 被其他因子翻盘，量纲/权重可调）。
+        if sem_norm != 'off':
+            _row_raw, _best_raw = _calc_row(cands, raw_sems)
+            if _best_raw != _best_cid:
+                _norm_changed_n += 1
+        _cand_pool_sizes.append(len(cand_ids))
+        _best_sem = next(c[1] for c in cands if c[0] == _best_cid)
+        _comb_top1_sem_ranks.append(1 + sum(1 for s in raw_sems if s > _best_sem))
 
-    # DIAG 对账（P1′-a 精排可测量性）：落盘 β 与 Top-1 变更统计，供离线核对精排是否生效。
-    if beta > 0.0:
-        import sys
-        _diag = (f"[text-rerank] β={beta:.3f} 候选内语义主分融合生效",
-                 f"_beta_changed_top1={_beta_changed_n}/{len(result)}")
-        print(" ".join(_diag), file=sys.stderr)
+    # DIAG 对账（P1′-a 精排 + 方向2 量纲对齐可测量性）：落盘开关生效统计，供离线核对。
+    import sys
+    import statistics as _stats
+    _diag_parts = [f"[text-rerank] β={beta:.3f} desc_aug={'on' if desc_aug else 'off'} "
+                   f"候选内语义主分融合生效",
+                   f"_beta_changed_top1={_beta_changed_n}/{len(result)}"]
+    if _cand_pool_sizes:
+        _pool_med = _stats.median(_cand_pool_sizes)
+        _rank1 = sum(1 for r in _comb_top1_sem_ranks if r == 1)
+        _rank3 = sum(1 for r in _comb_top1_sem_ranks if r <= 3)
+        _diag_parts.append(
+            f"[sem-norm] mode={sem_norm} 候选池len: min={min(_cand_pool_sizes)} "
+            f"med={_pool_med:.0f} max={max(_cand_pool_sizes)} | 综合Top1语义名次: "
+            f"r1={_rank1}/{len(_comb_top1_sem_ranks)} r<=3={_rank3}/{len(_comb_top1_sem_ranks)}"
+            + (f" | 归一化前后综合Top1变更={_norm_changed_n}/{len(result)}"
+               if sem_norm != 'off' else ""))
+    print(" ".join(_diag_parts), file=sys.stderr)
 
     # 及时释放大矩阵引用，缓解常驻内存。
     del semantic_sim, _qc_emb, _c_emb
