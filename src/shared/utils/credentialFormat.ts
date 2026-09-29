@@ -60,3 +60,79 @@ export function classifyCredential(raw: string, decrypted: string): CredentialRe
   }
   return { status: 'decrypt_failed', reason: 'key_mismatch' };
 }
+
+/**
+ * 凭据解密失败（fail-closed 专用异常，ADR-004 §4.3 / §4.4 G1·G2）
+ *
+ * 读路径（`CredentialManager.decrypt` → 各仓储 `safeDecrypt`）在遇到 `decrypt_failed` 时**抛本异常**，
+ * 不再静默降级为空串 —— 空串会被上层当成「未配置」继续外发（本次 429 事故的形态）。
+ * 调用方**禁止** catch 后继续外发；正确处置 = 告警 + 要求用户到 设置 → AI 重新填写。
+ */
+export class CredentialDecryptError extends Error {
+  readonly reason: CredentialFailureReason;
+  /** 出错的设置键名（密码学层不知道键名，故可选；仓储层抛出时必填） */
+  readonly key?: string;
+
+  constructor(reason: CredentialFailureReason, key?: string) {
+    super(
+      `凭据${key ? ` [${key}]` : ''}解密失败（reason=${reason}）：疑似跨 Electron 版本的旧数据或密钥不可用，` +
+      '请到 设置 → AI 重新填写（已按 fail-closed 处理，绝不放行密文/空值）',
+    );
+    this.name = 'CredentialDecryptError';
+    this.reason = reason;
+    this.key = key;
+  }
+}
+
+/**
+ * 出站前 preflight 拦截异常（ADR-004 §4.4 G3）
+ *
+ * AI 服务客户端构造点（VLM/LLM）拿到凭据后、构造 adapter / 进批次循环前，
+ * 凭据状态不是 `ok` 时**立即抛本异常** ⇒ ExceptionHub 归一化为 AI_AUTH_FAILED。
+ * 绝不带着空 Key / 密文进批次循环（2026-09-25 连打 665 帧 → 429 封禁的教训）。
+ */
+export class AIAuthError extends Error {
+  /** 出错的通道（deepseek / qwen / doubao / tencent / proxy …） */
+  readonly provider: string;
+  /** 任务场景标签（visual / script / translate / chat …），用于日志定位 */
+  readonly taskLabel: string;
+  /** 拦截时的凭据状态（decrypt_failed=已失效需重填；missing=从未配置） */
+  readonly status: CredentialStatus;
+
+  constructor(options: { provider: string; taskLabel: string; status: CredentialStatus }) {
+    const { provider, taskLabel, status } = options;
+    super(
+      status === 'decrypt_failed'
+        ? `AI 凭据已失效（provider=${provider}, ${taskLabel}）：解密失败，请到 设置 → AI 重新填写 API Key（出站前已拦截，未发起请求）`
+        : `AI 凭据未配置（provider=${provider}, ${taskLabel}）：请在 设置 → AI 填写 API Key（出站前已拦截，未发起请求）`,
+    );
+    this.name = 'AIAuthError';
+    this.provider = provider;
+    this.taskLabel = taskLabel;
+    this.status = status;
+  }
+}
+
+/**
+ * 出站前凭据断言（ADR-004 §4.4 G3，纯函数）
+ *
+ * 构造点调用方（`createAdapter` / `createFromConfig` / `ProviderManager.getLLMConfig`）
+ * 在构造 AI 客户端**之前**调用，凭据非 `ok` 立即抛 `AIAuthError`、不进批次循环：
+ * - `status === 'decrypt_failed'` ⇒ 抛（「已失效需重填」，**禁止**静默换通道/当未配置处理）
+ * - `apiKey` 为空 ⇒ 抛（「未配置」，即使 status 未知也拦）
+ * - status 未知但 Key 非空 ⇒ 放行（避免误伤显式填 Key 的自定义端点）
+ */
+export function assertOutboundCredential(opts: {
+  provider: string;
+  taskLabel: string;
+  apiKey?: string | null;
+  status?: CredentialStatus;
+}): void {
+  const { provider, taskLabel, apiKey, status } = opts;
+  if (status === 'decrypt_failed') {
+    throw new AIAuthError({ provider, taskLabel, status: 'decrypt_failed' });
+  }
+  if (!apiKey || apiKey.trim() === '') {
+    throw new AIAuthError({ provider, taskLabel, status: status ?? 'missing' });
+  }
+}

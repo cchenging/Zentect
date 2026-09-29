@@ -3,6 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import { ExceptionHub } from '../ExceptionHub';
 import { ErrorCode } from '@modules/infra/error/AppError';
+import { AIAuthError, CredentialDecryptError } from '../../../shared/utils/credentialFormat';
 
 describe('ExceptionHub', () => {
   it('401 错误应归一化为鉴权失败', () => {
@@ -76,5 +77,34 @@ describe('ExceptionHub', () => {
     expect(ipc.code).toBe(ErrorCode.SYS_ENV_ERROR);
     expect(ipc.titleKey).toBe('engine_errors.AI_AUTH_FAILED_TITLE');
     expect(typeof ipc.rawMessage).toBe('string');
+  });
+
+  // === ADR-004 G3：出站前凭据拦截必须归为「鉴权失败」，不能被兜底误判为「契约破损」 ===
+  it('AIAuthError（凭据未配置）⇒ 鉴权失败，不得落契约破损兜底', () => {
+    const err = new AIAuthError({ provider: 'deepseek', taskLabel: 'script', status: 'missing' });
+    const payload = ExceptionHub.normalize(err);
+    expect(payload.code).toBe(ErrorCode.SYS_ENV_ERROR);
+    expect(payload.titleKey).toBe('engine_errors.AI_AUTH_FAILED_TITLE');
+    expect(payload.promptKey).toBe('engine_errors.AI_AUTH_FAILED_PROMPT');
+  });
+
+  it('AIAuthError（凭据已失效需重填）⇒ 鉴权失败', () => {
+    const err = new AIAuthError({ provider: 'visual', taskLabel: 'visual', status: 'decrypt_failed' });
+    const payload = ExceptionHub.normalize(err);
+    expect(payload.code).toBe(ErrorCode.SYS_ENV_ERROR);
+    expect(payload.titleKey).toBe('engine_errors.AI_AUTH_FAILED_TITLE');
+  });
+
+  it('CredentialDecryptError ⇒ 鉴权失败（消息不含 api key，靠 name/特征词识别）', () => {
+    const payload = ExceptionHub.normalize(new CredentialDecryptError('key_mismatch', 'deepseekKey'));
+    expect(payload.code).toBe(ErrorCode.SYS_ENV_ERROR);
+    expect(payload.titleKey).toBe('engine_errors.AI_AUTH_FAILED_TITLE');
+    expect(payload.titleKey).not.toBe('engine_errors.DAEMON_CONTRACT_BROKEN_TITLE');
+  });
+
+  it('被上层包裹后丢掉 name 的凭据异常，仍靠消息特征归为鉴权失败', () => {
+    const wrapped = new Error('LLM 处理异常: AI 凭据未配置（provider=deepseek, script）：请在 设置 → AI 填写 API Key（出站前已拦截，未发起请求）');
+    const payload = ExceptionHub.normalize(wrapped);
+    expect(payload.titleKey).toBe('engine_errors.AI_AUTH_FAILED_TITLE');
   });
 });

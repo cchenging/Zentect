@@ -11,6 +11,8 @@ import {
   ENCRYPTED_PREFIXES,
   looksEncryptedValue,
   classifyCredential,
+  AIAuthError,
+  assertOutboundCredential,
 } from '../credentialFormat';
 
 describe('looksEncryptedValue — 密文形态判定（sanity check）', () => {
@@ -80,5 +82,56 @@ describe('classifyCredential — 解密结果归类（G2 同口径）', () => {
     const legacy = 'aabbccdd:11223344:ffeeddcc';
     expect(classifyCredential(legacy, legacy))
       .toEqual({ status: 'decrypt_failed', reason: 'key_mismatch' });
+  });
+});
+
+describe('assertOutboundCredential — 出站前 preflight（ADR-004 G3）', () => {
+  it('凭据 ok 且有 Key ⇒ 放行', () => {
+    expect(() => assertOutboundCredential({
+      provider: 'deepseek', taskLabel: 'script', apiKey: 'sk-real-key', status: 'ok',
+    })).not.toThrow();
+  });
+
+  it('status 未知但 Key 非空 ⇒ 放行（不误伤显式填 Key 的自定义端点）', () => {
+    expect(() => assertOutboundCredential({
+      provider: 'proxy', taskLabel: 'chat', apiKey: 'sk-custom',
+    })).not.toThrow();
+  });
+
+  it('decrypt_failed ⇒ 抛 AIAuthError，状态标记为「已失效」（禁止静默换通道）', () => {
+    try {
+      assertOutboundCredential({
+        provider: 'deepseek', taskLabel: 'visual', apiKey: '', status: 'decrypt_failed',
+      });
+      expect.unreachable('应当抛 AIAuthError');
+    } catch (err) {
+      const e = err as AIAuthError;
+      expect(e).toBeInstanceOf(AIAuthError);
+      expect(e.name).toBe('AIAuthError');
+      expect(e.provider).toBe('deepseek');
+      expect(e.taskLabel).toBe('visual');
+      expect(e.status).toBe('decrypt_failed');
+      expect(e.message).toContain('解密失败');
+      // 消息必须让 ExceptionHub 能判为 AI_AUTH_FAILED（而不是契约破损兜底）
+      expect(e.message.toLowerCase()).toMatch(/出站前已拦截/);
+    }
+  });
+
+  it('空 Key ⇒ 抛 AIAuthError，状态标记为「未配置」', () => {
+    try {
+      assertOutboundCredential({ provider: 'qwen', taskLabel: 'script', apiKey: '   ', status: 'missing' });
+      expect.unreachable('应当抛 AIAuthError');
+    } catch (err) {
+      const e = err as AIAuthError;
+      expect(e).toBeInstanceOf(AIAuthError);
+      expect(e.status).toBe('missing');
+      expect(e.message).toContain('未配置');
+      expect(e.message).toContain('qwen');
+    }
+  });
+
+  it('undefined Key 同样拦截（防止 apiKey 缺失被当放行）', () => {
+    expect(() => assertOutboundCredential({ provider: 'doubao', taskLabel: 'helper' }))
+      .toThrow(AIAuthError);
   });
 });

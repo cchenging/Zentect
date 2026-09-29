@@ -1,5 +1,6 @@
 import { encryptData, decryptData } from '../../../main/utils/crypto';
 import { SENSITIVE_CONFIG_KEYS, isSensitiveConfig } from '../../../shared/config/keys';
+import { classifyCredential, type CredentialResult } from '../../../shared/utils/credentialFormat';
 import { AppLogger } from '../logger/AppLogger';
 import { LOG_TAGS } from '../logger/LogConstants';
 
@@ -25,21 +26,33 @@ export class CredentialManager {
     }
   }
 
-  decrypt(encrypted: string): string {
-    if (!encrypted || encrypted.trim() === '') return encrypted;
+  /**
+   * 解密凭据（ADR-004 §4.4 **G1：解密失败绝不放行**）
+   *
+   * 返回判别联合 `CredentialResult`，**失败时不返回任何字符串**：
+   * 旧实现「解不出就把密文原样返回」曾让密文被当 Bearer 外发（401 → 连打 429 封禁），
+   * 故此处改为归类为 `missing` / `decrypt_failed`。调用方**禁止** `if (!value)` 式模糊判断，
+   * 必须显式分支处置（未配置 ≠ 配了但解不开）。
+   */
+  decrypt(encrypted: string): CredentialResult {
+    if (!encrypted || encrypted.trim() === '') return { status: 'missing' };
+
+    // decryptData 在 v1/v2 失败时**原样返回密文**（不抛错），故此处 catch 只为兜住解析异常；
+    // 两条失败路径最终都由 classifyCredential 统一归到 decrypt_failed。
+    let decrypted = '';
     try {
-      const result = decryptData(encrypted);
-      if (!result || result.trim() === '' || result === encrypted) {
-        if (encrypted.startsWith('v1:') || encrypted.startsWith('v2:')) {
-          AppLogger.warn(LOG_TAGS.SYSTEM, '凭据解密未产生有效结果，返回原密文（调用方应降级处理）');
-        }
-        return encrypted;
-      }
-      return result;
+      decrypted = decryptData(encrypted);
     } catch (err) {
-      AppLogger.error(LOG_TAGS.SYSTEM, '解密凭据失败', err);
-      return encrypted;
+      AppLogger.warn(LOG_TAGS.SYSTEM, '凭据解密抛出异常', err);
     }
+
+    const result = classifyCredential(encrypted, decrypted);
+    if (result.status === 'decrypt_failed') {
+      AppLogger.error(LOG_TAGS.SYSTEM,
+        `凭据解密失败（reason=${result.reason}）：疑似跨 Electron 版本旧数据或密钥不可用，` +
+        '已按 fail-closed 处理，绝不外发密文');
+    }
+    return result;
   }
 
   isSensitive(key: string): boolean {

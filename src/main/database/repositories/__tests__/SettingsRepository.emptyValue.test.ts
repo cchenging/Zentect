@@ -23,7 +23,8 @@ vi.mock('@modules/infra/security/CredentialManager', () => ({
     getInstance: () => ({
       // 与生产同构：敏感值落库前被加密（此处用可辨识前缀代替真实密文）
       encrypt: (v: string) => `v2:${v}`,
-      decrypt: (v: string) => v,
+      // ADR-004 G1：decrypt 返回判别联合 CredentialResult（不再返回字符串）
+      decrypt: (v: string) => (v.startsWith('v2:') ? { status: 'ok', value: v.slice(3) } : { status: 'ok', value: v }),
     }),
   },
 }));

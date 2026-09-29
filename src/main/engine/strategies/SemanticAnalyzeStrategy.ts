@@ -3597,6 +3597,13 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
   private static readonly UNIT_WINDOW_CONTINUITY_MS = 100;
 
   /**
+   * 📊 「组变速分布」判定上界（±8% 铁律）：与导出层 `MaterialsAssembler.SPEED_MAX` 及契约
+   * `montage.ts` 字段注释「[1/1.08, 1.08]」同口径。多成员合并组变速 = Σ源/Σ目标 且**无 clamp**
+   * ⇒ 越过下界即慢放、越过上界即放快（仅诊断读数用，不参与决策）。
+   */
+  private static readonly SPEED_MAX_RATIO = 1.08;
+
+  /**
    * 建「物理镜头 → 该镜头内全部子切片」索引（按 startMs 升序、(parent,id,startMs) 去重）。
    * 仅供单位内碎片画面窗分配取料；传入多个池时按并集去重（daemon 侧 kmVideoChunks 可能被裁剪）。
    *
@@ -3649,7 +3656,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     /** 🎬 方案甲：同单位内最多顺延几个候选镜头（上限抑制硬切数；候选按语义排名取前 N） */
     const MAX_EXTRA_SHOTS = 3;
     const out = new Map<string, UnitFragmentWindow>();
-    const stats = { extraUnits: 0 };
+    const stats = { extraUnits: 0, degradedUnits: 0 };
     const fragsByUnit = new Map<string, any[]>();
     for (const q of Array.isArray(shotLevelQueries) ? shotLevelQueries : []) {
       const key = String((q as any)?.matchUnitId || (q as any)?.shotId || '');
@@ -3828,6 +3835,62 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         `${stats.extraUnits} 个单位因命中镜头料不足顺延了候选镜头（跨镜头取满窗，不再拉长唯一镜头）/ ` +
         `${collapsedGroups} 个同母句子组因同父窗不相接已重切为连续窗（不同父/已相接者不动）`);
     }
+
+    /**
+     * 📊 「组变速分布」诊断（方案档 v1.20 硬指标；2026-09-29 落码，**零行为变化、仅读数**）：
+     *   多碎片母句在导出层会因「同父 + 源时间连续 <100ms」合成一个 clip，而**多成员合并组变速
+     *   = Σ源/Σ目标 且无 clamp**（MaterialsAssembler L730-731 / TracksAssembler L98-99）
+     *   ⇒ 该比值即真实播放倍率：越过下界 = 慢放、越过上界 = 放快（v1.19 实测 6/7 单位慢放即此口径）。
+     *   分组键与「同母句收敛」同源（sentence 档 = matchUnitId；legacy 档 = 碎片 id 去 `_sub_N`）
+     *   ⇒ 与 v1.19 实测表（`seg_1=0.225` 等）逐字可比；**单碎片母句不计**（导出层单成员 clamp 兜底，
+     *   非本分布的风险项）；未命中/时长缺失/窗无效一律跳过（不造假）。
+     */
+    {
+      const lo = 1 / SemanticAnalyzeStrategy.SPEED_MAX_RATIO;
+      const hi = SemanticAnalyzeStrategy.SPEED_MAX_RATIO;
+      let groupCount = 0; let inRange = 0; let slow = 0; let faster = 0; let splitGroups = 0;
+      const outOfRange: string[] = [];
+      for (const [famKey, famFrags] of fragsByFamily) {
+        if (famFrags.length <= 1) continue;                                      // 单碎片母句 ⇒ 单成员 clamp
+        if (famFrags.some((f: any) => f?.keepOriginalAudio === true)) continue;   // 原声段变速恒 1.0
+        let srcSum = 0; let tgtSum = 0; let valid = true; let joined = true;
+        let prevParent = ''; let prevEnd = NaN;
+        for (const q of famFrags) {
+          const sid = String((q as any)?.shotId || '');
+          const matched = matchById.get(String((q as any)?.matchUnitId || sid));
+          if (!matched) { valid = false; break; }                                // 未命中 ⇒ 不参与
+          const chunk: any = matched.chunkData
+            || originalChunksById.get(String(matched.chunkId || matched.mediaId || '')) || null;
+          const w = out.get(sid);
+          const s = w ? w.startMs : Number(chunk?.startMs ?? NaN);
+          const e = w ? w.endMs : Number(chunk?.endMs ?? NaN);
+          const aud = Number((q as any)?.audioDurationMs) || 0;
+          if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s || !(aud > 0)) { valid = false; break; }
+          const parent = String(w?.srcParent || chunk?.parentChunkId || '');
+          if (prevParent && (parent !== prevParent
+            || Math.abs(s - prevEnd) >= SemanticAnalyzeStrategy.UNIT_WINDOW_CONTINUITY_MS)) joined = false;
+          prevParent = parent; prevEnd = e;
+          srcSum += e - s; tgtSum += aud;
+        }
+        if (!valid) continue;
+        if (!joined) { splitGroups += 1; continue; }   // 不同父/窗不相接 ⇒ 导出层硬切（各片单成员 clamp）
+        const ratio = srcSum / tgtSum;
+        groupCount += 1;
+        if (ratio > hi) { faster += 1; outOfRange.push(`${famKey}=${ratio.toFixed(3)}(放快)`); }
+        else if (ratio < lo) { slow += 1; outOfRange.push(`${famKey}=${ratio.toFixed(3)}(慢放)`); }
+        else inRange += 1;
+      }
+      // 🔎 与上一行「单位画面窗切分」同闸：本次匹配确实做过窗切分就必报。
+      // 故「本行缺失」= 根本没跑匹配，「本行 0 组」= 跑了但无多碎片母句 —— 两者可区分，验收才不会静默。
+      if (frags > 0 || collapsedGroups > 0 || groupCount > 0 || splitGroups > 0) {
+        AppLogger.info(LOG_TAGS.AI_AGENT,
+          `[镜头匹配] 组变速分布（多碎片母句合并组）：${groupCount} 组 ｜ ` +
+          `落 [${lo.toFixed(3)},${hi.toFixed(2)}] = ${inRange} ｜ 慢放 = ${slow} ｜ 放快 = ${faster} ｜ ` +
+          `未成组(硬切/各片单成员 clamp) = ${splitGroups} ｜ 料荒(比例切分兜底调用) = ${stats.degradedUnits}` +
+          `${groupCount + splitGroups === 0 ? ' ｜ 本次无多碎片母句（组变速不适用）' : ''}` +
+          `${outOfRange.length > 0 ? ` ｜ 越界明细 ${outOfRange.join(' ')}` : ''}`);
+      }
+    }
     return out;
   }
 
@@ -3981,7 +4044,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     hitChunkData: Record<string, unknown> | null | undefined,
     siblingPool: Map<string, Array<Record<string, unknown>>>,
     extraChunks?: ReadonlyArray<Record<string, unknown>>,
-    stats?: { extraUnits: number },
+    stats?: { extraUnits: number; degradedUnits?: number },
     cursor?: Map<string, number>,
     reservedHitIds?: ReadonlySet<string>,
   ): Map<string, UnitFragmentWindow> {
@@ -4164,6 +4227,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       }
       // 块被单调守卫切分耗尽 → 落入下方比例切分兜底
     }
+
+    /** 📊 诊断读数（零行为变化）：走到比例切分兜底 ⇒ 该单位必慢放（供末端「组变速分布」计料荒数） */
+    if (stats) stats.degradedUnits = (stats.degradedUnits ?? 0) + 1;
 
     /** 比例切分兜底（料不足 ⇒ 必然慢放）：切首个可用块，首尾相接且总和 = min(块长, 碎片总时长) */
     const fb = blocks[0];

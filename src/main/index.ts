@@ -7,7 +7,7 @@ if (process.platform === 'win32') {
   if (process.stderr) { try { (process.stderr as any).setEncoding('utf8'); } catch {} }
 }
 
-import { app, shell, BrowserWindow, ipcMain, protocol, screen, safeStorage, session } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, protocol, screen, session } from 'electron'
 import path from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -19,6 +19,7 @@ import { PathManager } from './utils/pathManager'
 import { handleMagicProtocol } from './protocols/magic'
 import { SQLiteConnection } from './database/core/SQLiteConnection'
 import { AIDaemon } from './core/AIDaemon'
+import { runCredentialSelfCheck } from './core/CredentialSelfCheck'
 import { AiRuntimeManager } from './core/AiRuntimeManager'
 import { ProcessSupervisor } from './core/ProcessSupervisor'
 import { ComputeResourceManager } from './core/ComputeResourceManager'
@@ -541,11 +542,23 @@ process.on('unhandledRejection', (reason: any) => {
 app.whenReady().then(async () => {
   AppLogger.info(LOG_TAGS.SYSTEM, '=== Zentect 核心引擎启动 ===')
 
-  // V1.1: safeStorage 可用性诊断 — 影响所有 API Key 加解密
+  // ADR-004 G5：凭据自检 — userData 路径 + safeStorage 可用性 + 一次加解密往返 + 现役通道 + v3 状态
+  // （原来只打印 safeStorage 布尔值；任一异常现在会以 warn 形式暴露在第一屏日志里）
   try {
-    const ssAvailable = safeStorage.isEncryptionAvailable();
-    AppLogger.info(LOG_TAGS.BOOTSTRAP, `safeStorage 可用: ${ssAvailable} | 平台: ${process.platform}`);
-  } catch { AppLogger.warn(LOG_TAGS.BOOTSTRAP, 'safeStorage 状态检测异常'); }
+    const credCheck = runCredentialSelfCheck();
+    const osWrap = credCheck.safeStorageAvailable
+      ? (credCheck.safeStorageRoundTripOk ? '可用' : '异常')
+      : '不可用';
+    AppLogger.info(LOG_TAGS.BOOTSTRAP, `[凭据自检] userData: ${credCheck.userDataPath} | 平台: ${process.platform}`);
+    AppLogger.info(
+      LOG_TAGS.BOOTSTRAP,
+      `[凭据自检] OS 级通道(safeStorage): ${osWrap} | 现役通道: ${credCheck.activeChannel} | ` +
+      `加解密往返: ${credCheck.roundTripOk ? '成功' : '失败'} | v3(KeyStore, P1): ${credCheck.v3Available ? '已落' : '未落'}`,
+    );
+    for (const problem of credCheck.problems) AppLogger.warn(LOG_TAGS.BOOTSTRAP, `[凭据自检] ${problem}`);
+  } catch (err) {
+    AppLogger.warn(LOG_TAGS.BOOTSTRAP, `凭据自检执行异常: ${(err as Error)?.message ?? err}`);
+  }
 
   // — 注册 magic:// 协议处理器（实现见 ./protocols/magic.ts）
   session.defaultSession.protocol.handle('magic', handleMagicProtocol);

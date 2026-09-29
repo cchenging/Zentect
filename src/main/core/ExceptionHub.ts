@@ -21,6 +21,24 @@ export class ExceptionHub {
   public static normalize(error: any): I18NErrorPayload {
     const rawMsg = String(error?.message || error || '').toLowerCase();
 
+    // 0. 凭据失效 / 未配置（ADR-004 G1·G3）—— 必须排在 401/「api key」规则**之前**，
+    //    否则「凭据解密失败」不含 api key 字样，会被第 7 条兜底误判为「契约破损」。
+    //    兜底同时也认消息特征：异常被上层 `new Error(\`…: ${e.message}\`)` 包裹后会丢 name。
+    const errName = String(error?.name || '');
+    const isCredentialBlock =
+      errName === 'AIAuthError' ||
+      errName === 'CredentialDecryptError' ||
+      rawMsg.includes('出站前已拦截') ||
+      rawMsg.includes('解密失败');
+    if (isCredentialBlock) {
+      return {
+        code: ErrorCode.SYS_ENV_ERROR,
+        titleKey: 'engine_errors.AI_AUTH_FAILED_TITLE',
+        promptKey: 'engine_errors.AI_AUTH_FAILED_PROMPT',
+        rawMessage: rawMsg,
+      };
+    }
+
     // 1. 鉴权失败 (401 / 密钥错误)
     if (rawMsg.includes('401') || rawMsg.includes('unauthorized') || rawMsg.includes('api key')) {
       return {

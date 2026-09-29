@@ -4,6 +4,7 @@
 import { SQLiteConnection } from '@modules/infra/database/SQLiteConnection';
 import { CredentialManager } from '@modules/infra/security/CredentialManager';
 import { isSensitiveConfig } from '../../../../shared/config/keys';
+import { CredentialDecryptError, looksEncryptedValue } from '../../../../shared/utils/credentialFormat';
 import { AppLogger } from '@modules/infra/logger/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
 
@@ -19,36 +20,21 @@ export class SettingsRepo {
 
   private get db() { return SQLiteConnection.getInstance().getDB(); }
 
-  /** 加密值前缀检测 */
-  private static ENCRYPTED_PREFIXES = ['v1:', 'v2:'];
-
-  /** 判断值是否看起来像加密格式 */
-  private looksEncrypted(val: string): boolean {
-    if (SettingsRepo.ENCRYPTED_PREFIXES.some(p => val.startsWith(p))) return true;
-    const parts = val.split(':');
-    return parts.length === 3 && parts.every(p => /^[0-9a-f]+$/i.test(p));
-  }
-
-  /** 安全解密 */
+  /** 安全解密（ADR-004 §4.4 **G2：密文守卫 + 失败可感知**）
+   *
+   *  与 `main/database/repositories/SettingsRepository` 同口径（形态判定走 shared SSOT）：
+   *  - 不像密文 ⇒ 原样放行（普通设置项不做解密尝试）
+   *  - `ok` / `missing` ⇒ 明文 / 原值
+   *  - `decrypt_failed` ⇒ **抛 `CredentialDecryptError`**（fail-closed，绝不返回空串让上层当「未配置」）
+   */
   private safeDecrypt(key: string, val: any): any {
     if (typeof val !== 'string' || val.trim().length === 0) return val;
+    if (!looksEncryptedValue(val)) return val;
 
-    if (!isSensitiveConfig(key) && !this.looksEncrypted(val)) return val;
-
-    try {
-      const decrypted = this.credentialManager.decrypt(val);
-      if (decrypted && decrypted !== val) return decrypted;
-    } catch {
-      /* CredentialManager.decrypt 内部已做降级处理 */
-    }
-
-    if (this.looksEncrypted(val)) {
-      AppLogger.warn(LOG_TAGS.SYSTEM,
-        `设置 [${key}] 包含无法解密的旧格式数据（跨 Electron 版本），已降级返回空值`);
-      return '';
-    }
-
-    return val;
+    const result = this.credentialManager.decrypt(val);
+    if (result.status === 'ok') return result.value;
+    if (result.status === 'missing') return val;
+    throw new CredentialDecryptError(result.reason, key);
   }
 
   public get<T>(key: string, defaultValue: T): T {
@@ -70,8 +56,18 @@ export class SettingsRepo {
     const rows = this.db.prepare(SETTINGS_SQL.GET_ALL).all() as { key: string; value: string }[];
 
     const result: Record<string, any> = {};
+    /** G2：坏凭据键名，单个键解密失败不能炸掉整页设置读取 */
+    const badKeys: string[] = [];
+
     rows.forEach(row => {
-      let val = this.safeDecrypt(row.key, row.value);
+      let val: any;
+      try {
+        val = this.safeDecrypt(row.key, row.value);
+      } catch (err) {
+        if (!(err instanceof CredentialDecryptError)) throw err;
+        val = '';   // 置空而非回显密文（G4）
+        badKeys.push(row.key);
+      }
       try {
         if (typeof val === 'string' && (val.startsWith('[') || val.startsWith('{'))) {
           val = JSON.parse(val);
@@ -79,6 +75,12 @@ export class SettingsRepo {
       } catch { /* 非 JSON 字符串保持原样 */ }
       result[row.key] = val;
     });
+
+    if (badKeys.length > 0) {
+      AppLogger.error(LOG_TAGS.SYSTEM,
+        `设置读取：${badKeys.length} 个凭据解密失败已置空（${badKeys.join(', ')}）——` +
+        '疑似跨 Electron 版本旧数据或密钥不可用，请到 设置 → AI 重新填写');
+    }
 
     return result;
   }
@@ -115,12 +117,11 @@ export class SettingsRepo {
 
     const transaction = this.db.transaction(() => {
       for (const row of rows) {
-        if (!this.looksEncrypted(row.value)) continue;
+        if (!row.value) continue;
 
-        try {
-          const decrypted = this.credentialManager.decrypt(row.value);
-          if (decrypted && decrypted !== row.value) continue;
-        } catch { /* 解密失败，确认为失效数据 */ }
+        // G2：按 CredentialResult 判定（ok / missing 跳过，decrypt_failed 才清空）
+        const result = this.credentialManager.decrypt(row.value);
+        if (result.status !== 'decrypt_failed') continue;
 
         clearStmt.run({ key: row.key, value: '' });
         staleKeys.push(row.key);

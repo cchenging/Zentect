@@ -1,7 +1,20 @@
 import { SettingsRepository } from '../../database/repositories/SettingsRepository';
 import { ApiProfileRepository } from '../../database/repositories/ApiProfileRepository';
+import {
+  AIAuthError,
+  assertOutboundCredential,
+  type CredentialStatus,
+} from '../../../shared/utils/credentialFormat';
 
-export interface LLMConfig { provider: string; model: string; baseURL: string; apiKey: string; temperature: number; }
+export interface LLMConfig {
+  provider: string;
+  model: string;
+  baseURL: string;
+  apiKey: string;
+  temperature: number;
+  /** 凭据读取状态（ADR-004 G3）——构造 adapter 前用它做 preflight，不用 `if (!apiKey)` 模糊判断 */
+  apiKeyStatus?: CredentialStatus;
+}
 export interface TTSConfig { provider: string; appId?: string; token?: string; voice?: string; }
 
 export class ProviderManager {
@@ -19,6 +32,11 @@ export class ProviderManager {
     // 2. 纯粹的查表逻辑：你要哪个通道，我就去数据库拿哪个通道的钥匙！
     // Check api_profiles first (multi-API support)
     const activeProfile = ApiProfileRepository.getActive(provider);
+    // ADR-004 G3：激活 profile 的凭据已失效（解不开被置空）时立即拦截，
+    // 绝不带着空 Key 落到下面的 switch 兜底 —— 那会静默换通道 / 发空请求（429 事故形态）
+    if (activeProfile?.apiKeyStatus === 'decrypt_failed') {
+      throw new AIAuthError({ provider, taskLabel: _taskType, status: 'decrypt_failed' });
+    }
     if (activeProfile && activeProfile.apiKey) {
       let profileBaseURL = activeProfile.baseUrl || '';
       if (provider === 'proxy' && profileBaseURL) {
@@ -36,7 +54,7 @@ export class ProviderManager {
         }
       }
       const profileModel = activeProfile.models?.[0] || '';
-      return { provider, model: profileModel, baseURL: profileBaseURL, apiKey: activeProfile.apiKey, temperature: 0.5 };
+      return { provider, model: profileModel, baseURL: profileBaseURL, apiKey: activeProfile.apiKey, apiKeyStatus: 'ok', temperature: 0.5 };
     }
 switch (provider) {
       case 'deepseek':
@@ -82,10 +100,8 @@ switch (provider) {
         throw new Error(`不支持的引擎通道: ${provider}`);
     }
 
-    // 3. 极其严酷的防呆校验：没配置直接拦截，绝不瞎撞！
-    if (!apiKey || apiKey.trim() === '') {
-      throw new Error(`【拦截】您选择了 [${provider}] 通道，但未在全局设置中配置 API Key！`);
-    }
+    // 3. 极其严酷的防呆校验：没配置直接拦截，绝不瞎撞！（ADR-004 G3 统一走 preflight，保证异常可被归类为 AI_AUTH_FAILED）
+    assertOutboundCredential({ provider, taskLabel: _taskType, apiKey, status: 'missing' });
     
     if (provider === 'proxy') {
       if (!baseURL || baseURL.trim() === '') {
@@ -100,7 +116,7 @@ switch (provider) {
     // 4. 清洗 URL（防止用户在设置里多写了后缀）
     baseURL = baseURL.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
 
-    return { provider, model: modelName, baseURL, apiKey, temperature: 0.5 };
+    return { provider, model: modelName, baseURL, apiKey, apiKeyStatus: 'ok', temperature: 0.5 };
   }
 
   // TTS 配置保持不变

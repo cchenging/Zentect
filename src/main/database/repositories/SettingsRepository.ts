@@ -2,6 +2,7 @@
 import { SQLiteConnection } from '../core/SQLiteConnection';
 import { SETTINGS_SQL } from '../queries/SystemQueries';
 import { CredentialManager } from '@modules/infra/security/CredentialManager';
+import { CredentialDecryptError, looksEncryptedValue } from '../../../shared/utils/credentialFormat';
 import { isSensitiveConfig } from '../../../shared/config/keys';
 import { AppLogger } from '@modules/infra/logger/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
@@ -12,54 +13,25 @@ export class SettingsRepository {
 
   private get db() { return SQLiteConnection.getInstance().getDB(); }
 
-  /** 加密值前缀检测 */
-  private static ENCRYPTED_PREFIXES = ['v1:', 'v2:'];
-
-  /** 判断值是否看起来像加密格式
+  /** 安全解密（ADR-004 §4.4 **G2：密文守卫 + 失败可感知**）
    *
-   *  支持以下格式：
-   *  - v1:... / v2:...  (当前版本前缀格式)
-   *  - xxx:yyy:zzz      (旧版无前缀 AES-256-GCM: iv:authTag:ciphertext)
-   */
-  private looksEncrypted(val: string): boolean {
-    if (SettingsRepository.ENCRYPTED_PREFIXES.some(p => val.startsWith(p))) return true;
-    // 兼容旧版无前缀 AES-256-GCM 格式（三段 hex 以冒号分隔）
-    const parts = val.split(':');
-    return parts.length === 3 && parts.every(p => /^[0-9a-f]+$/i.test(p));
-  }
-
-  /** 安全解密
+   *  形态判定统一交给 shared SSOT（与 ApiProfileRepository / UI 同一份实现，禁止本地正则漂移）：
+   *  - 不像密文 ⇒ 原样放行（大量普通设置项走此路径，不做解密尝试）
+   *  - `ok`      ⇒ 返回明文
+   *  - `missing` ⇒ 返回原值（空值语义不变）
+   *  - `decrypt_failed` ⇒ **抛 `CredentialDecryptError`**（fail-closed）
    *
-   *  保护逻辑（三层保险）：
-   *  1. key 在敏感列表 → 主动解密
-   *  2. 值本身以 v1:/v2: 开头（即使 key 不在敏感列表）→ 主动尝试解密
-   *     —— 兼容旧版代码误加密 / 手动导入的加密数据
-   *  3. 解密失败（返回原样密文）→ 降级返回空字符串，防止 v2:密文 泄露到前端 UI
-   *
-   *  CredentialManager.decrypt 内置降级，解密失败返回原值。
+   *  为什么必须抛：旧实现「解不开 ⇒ 降级返回空串」，空串会被上层当「未配置」继续发请求
+   *  ——2026-09-25 事故正是密文被当 Bearer 外发 ⇒ 401 ⇒ 连打 665 帧 ⇒ 429 封禁。
    */
   private safeDecrypt(key: string, val: any): any {
     if (typeof val !== 'string' || val.trim().length === 0) return val;
+    if (!looksEncryptedValue(val)) return val;
 
-    // 跳过：既不是敏感 key，值也不像加密格式
-    if (!isSensitiveConfig(key) && !this.looksEncrypted(val)) return val;
-
-    try {
-      const decrypted = this.credentialManager.decrypt(val);
-      // 解密成功：返回值与原值不同
-      if (decrypted && decrypted !== val) return decrypted;
-    } catch {
-      /* CredentialManager.decrypt 内部已做降级处理 */
-    }
-
-    // 值看起来是加密格式，但解密失败 → 可能是跨版本旧数据
-    if (this.looksEncrypted(val)) {
-      AppLogger.warn(LOG_TAGS.SYSTEM,
-        `设置 [${key}] 包含无法解密的旧格式数据（跨 Electron 版本），已降级返回空值`);
-      return '';
-    }
-
-    return val;
+    const result = this.credentialManager.decrypt(val);
+    if (result.status === 'ok') return result.value;
+    if (result.status === 'missing') return val;
+    throw new CredentialDecryptError(result.reason, key);
   }
 
   public get<T>(key: string, defaultValue: T): T {
@@ -90,9 +62,19 @@ export class SettingsRepository {
   public getAllSettings(): Record<string, any> {
     const rows = this.db.prepare(SETTINGS_SQL.GET_ALL).all() as { key: string; value: string }[];
     const settings: Record<string, any> = {};
+    /** G2：坏凭据键名（解密失败），单键失败不能炸掉整页设置 */
+    const badKeys: string[] = [];
 
     rows.forEach(row => {
-      let val = this.safeDecrypt(row.key, row.value);
+      let val: any;
+      try {
+        val = this.safeDecrypt(row.key, row.value);
+      } catch (err) {
+        if (!(err instanceof CredentialDecryptError)) throw err;
+        // 置空而非回显密文（G4），失败由下方 error 级日志显式暴露
+        val = '';
+        badKeys.push(row.key);
+      }
       try {
         if (typeof val === 'string' && (val.startsWith('[') || val.startsWith('{'))) {
           val = JSON.parse(val);
@@ -100,6 +82,12 @@ export class SettingsRepository {
       } catch { /* 非 JSON 字符串保持原样 */ }
       settings[row.key] = val;
     });
+
+    if (badKeys.length > 0) {
+      AppLogger.error(LOG_TAGS.SYSTEM,
+        `设置读取：${badKeys.length} 个凭据解密失败已置空（${badKeys.join(', ')}）——` +
+        '疑似跨 Electron 版本旧数据或密钥不可用，请到 设置 → AI 重新填写');
+    }
 
     return settings;
   }
@@ -149,12 +137,12 @@ export class SettingsRepository {
 
     const transaction = this.db.transaction(() => {
       for (const row of rows) {
-        if (!this.looksEncrypted(row.value)) continue;
+        if (!row.value) continue;
 
-        try {
-          const decrypted = this.credentialManager.decrypt(row.value);
-          if (decrypted && decrypted !== row.value) continue;
-        } catch { /* 解密失败，确认为失效数据 */ }
+        // G2：用 CredentialResult 判定，而非「返回值是否等于原值」的模糊比较
+        //   ok / missing ⇒ 非失效数据，跳过；decrypt_failed ⇒ 无法解密，清空并登记
+        const result = this.credentialManager.decrypt(row.value);
+        if (result.status !== 'decrypt_failed') continue;
 
         // 无法解密 → 清空该值
         clearStmt.run({ key: row.key, value: '' });

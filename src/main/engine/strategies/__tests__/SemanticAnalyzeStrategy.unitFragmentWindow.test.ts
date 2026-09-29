@@ -37,6 +37,15 @@ vi.mock('@modules/infra/logger/LogConstants', () => ({
 }));
 
 import { SemanticAnalyzeStrategy } from '../SemanticAnalyzeStrategy';
+import { AppLogger } from '../../../core/AppLogger';
+
+/** 取本次调用后新增的「组变速分布」诊断行（同文件其他用例也会打该行 ⇒ 必须按调用序号切片，避免串味） */
+function speedLineSince(callsBefore: number): string {
+  const calls = (AppLogger.info as any).mock.calls.slice(callsBefore);
+  const hit = calls.map((c: any[]) => String(c[1])).find((t: string) => t.includes('组变速分布'));
+  if (!hit) throw new Error('未打出「组变速分布」诊断行');
+  return hit;
+}
 
 /** 私有静态方法测试入口（TS private 仅编译期可见，运行期按既有测试惯例直取） */
 const S = SemanticAnalyzeStrategy as any;
@@ -859,5 +868,47 @@ describe('单位内碎片画面窗切分（治重复重放 + 前后不衔接）'
     const pool = S.buildSiblingPool([c('scene_494_seg0', 3416376, 3418061)]);
     const table = S.buildUnitWindowTable(shotLevelQueries, matchById, new Map(), pool);
     expect(table.size).toBe(0);
+  });
+
+  it('📊 组变速分布：同母句三片同父相接且料足 ⇒ 落 [1/1.08,1.08]、无慢放（零行为变化仅读数）', () => {
+    /** legacy 档：各碎片独立命中，三片同父且窗已首尾相接（导出层会合并成组、无 clamp） */
+    const shotLevelQueries = [
+      { shotId: 'seg_v1_sub_1', audioDurationMs: 1000 },
+      { shotId: 'seg_v1_sub_2', audioDurationMs: 500 },
+      { shotId: 'seg_v1_sub_3', audioDurationMs: 500 },
+    ];
+    const c = (id: string, s: number, e: number) => ({
+      id, parentChunkId: 'scene_v', filePath: 'a.mp4', startMs: s, endMs: e,
+    });
+    const matchById = new Map<string, any>([
+      ['seg_v1_sub_1', { chunkData: c('scene_v_seg0', 0, 1000) }],
+      ['seg_v1_sub_2', { chunkData: c('scene_v_seg1', 1000, 1500) }],
+      ['seg_v1_sub_3', { chunkData: c('scene_v_seg2', 1500, 2000) }],
+    ]);
+    const before = (AppLogger.info as any).mock.calls.length;
+    S.buildUnitWindowTable(shotLevelQueries, matchById, new Map(), S.buildSiblingPool([]));
+    const line = speedLineSince(before);
+    expect(line).toContain('1 组');
+    expect(line).toContain('慢放 = 0');
+    expect(line).toContain('料荒(比例切分兜底调用) = 0');
+    expect(line).not.toContain('越界明细');            // Σ源 2000 / Σ目标 2000 ⇒ 1.000
+  });
+
+  it('📊 组变速分布：料荒走比例切分兜底 ⇒ 明细落「慢放」（实机 seg_1 形态：1067ms 料 / 4744ms 配音）', () => {
+    const shotLevelQueries = [
+      { shotId: 'seg_1_sub_1', matchUnitId: 'seg_1', audioDurationMs: 2233 },
+      { shotId: 'seg_1_sub_2', matchUnitId: 'seg_1', audioDurationMs: 1676 },
+      { shotId: 'seg_1_sub_3', matchUnitId: 'seg_1', audioDurationMs: 835 },
+    ];
+    const matchById = new Map<string, any>([
+      ['seg_1', { chunkData: { id: 'scene_001_seg0', parentChunkId: 'scene_001', filePath: 'a.mp4', startMs: 65229, endMs: 66296 } }],
+    ]);
+    const before = (AppLogger.info as any).mock.calls.length;
+    S.buildUnitWindowTable(shotLevelQueries, matchById, new Map(), S.buildSiblingPool([]));
+    const line = speedLineSince(before);
+    expect(line).toContain('1 组');
+    expect(line).toContain('慢放 = 1');
+    expect(line).toContain('料荒(比例切分兜底调用) = 1');
+    expect(line).toContain('seg_1=0.225(慢放)');        // 与 v1.19 实测读数逐字一致
   });
 });
