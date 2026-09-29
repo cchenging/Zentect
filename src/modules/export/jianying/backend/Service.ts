@@ -33,8 +33,10 @@ let binDeps: ExportBinDeps = {
   getFfprobePath: () => {
     if (process.env.FFPROBE_PATH) return process.env.FFPROBE_PATH;
     // 兜底 Windows 打包目录下的相对路径；若真实不存在，probeVideoSync 会抛 FFPROBE_MISSING
+    // 注意：必须指向资源根 bin/<platform>/ 下的完整发行版（与 PathManager.getBinPath 同一致），
+    // 不可指向 bin/win/shared/（该目录只有阉割的 ffprobe/ffmpeg、无配套 DLL，执行即 STATUS_DLL_NOT_FOUND）
     const root = process.cwd();
-    return path.join(root, 'resources', 'bin', 'win', 'shared',
+    return path.join(root, 'resources', 'bin', 'win',
       process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
   },
 };

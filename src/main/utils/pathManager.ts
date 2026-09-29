@@ -36,6 +36,11 @@ export class PathManager {
       if (!fs.existsSync(fullPath)) fs.mkdirSync(fullPath, { recursive: true });
     }
 
+    // 🔧 日志默认目录前置注入：此刻（点火序列第 1 步）数据根与 logs 子目录已就绪，远早于 DB 就绪，
+    //   确保启动头几行日志也写入 data/logs，而非 app.getPath('logs')——后者在受限环境下不可写，
+    //   曾报 EBADF 导致启动期日志整段丢失。用户配置的 logPath 仍在其后由 main 进程读 DB 覆盖（优先级更高）。
+    AppLogger.setDefaultLogDir(this.getLogsPath());
+
     // 💥 终极注入：跨端环境保护墙！
     this.injectArsenalEnvironment();
   }

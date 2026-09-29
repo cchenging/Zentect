@@ -17,16 +17,20 @@ import { LogSanitizer } from './LogSanitizer';
 log.transports.file.level = 'info';
 log.transports.file.maxSize = 1024 * 1024;
 
-/** 🔧 用户配置的日志目录（null 表示使用默认 userData/logs）。由 main 进程在 DB 就绪后通过 setLogDir 注入。
+/** 🔧 用户配置的日志目录（null 表示使用默认日志目录）。由 main 进程在 DB 就绪后通过 setLogDir 注入。
  *  electron-log 的 file transport 每次写日志都会重新调用 resolvePathFn 求值路径，
  *  因此运行时切换日志目录无需重启、对下一条日志立即生效。 */
 let configuredLogDir: string | null = null;
 
-/** 🔧 计算当前生效的日志目录：优先取用户配置，缺省回退默认 userData/logs。 */
+/** 🔧 默认日志目录（null 表示尚未注入）。由 PathManager.initialize()（点火序列第 1 步，先于窗口与 DB）
+ *  注入 data/logs，使启动头几行日志也落入数据目录；未注入时回退 Electron 约定目录 app.getPath('logs')。 */
+let defaultLogDir: string | null = null;
+
+/** 🔧 计算当前生效的日志目录：优先取用户配置，其次取已注入的默认目录，最后回退 app.getPath('logs')。 */
 function getEffectiveLogDir(): string {
-  return (configuredLogDir && configuredLogDir.trim())
-    ? configuredLogDir.trim()
-    : app.getPath('logs');
+  if (configuredLogDir && configuredLogDir.trim()) return configuredLogDir.trim();
+  if (defaultLogDir && defaultLogDir.trim()) return defaultLogDir.trim();
+  return app.getPath('logs');
 }
 
 /** 🔧 动态日志路径：本地文件回车时每次求值（依赖 configuredLogDir，切目录立即生效，无需重启）。 */
@@ -73,11 +77,27 @@ if (app.isReady()) {
 /**
  * 🔧 由 main 进程在 DB 就绪后注入用户配置的日志目录；并立即对新目录执行一次清理（防堆积）。
  *  electron-log file transport 每次写日志重新求值路径，因此切换目录对下一条日志立即生效，无需重启。
- * 传入空/无效值则回退默认 userData/logs（等效"使用默认位置"）。
+ * 传入空/无效值则回退默认日志目录（data/logs，等效"使用默认位置"）。
  * @param dir 用户配置的日志目录；为空时回退默认
  */
 function setLogDir(dir: string | null | undefined): void {
   configuredLogDir = (dir && dir.trim()) ? dir.trim() : null;
+  if (app.isReady()) {
+    cleanupLogFiles();
+  } else {
+    app.whenReady().then(() => cleanupLogFiles());
+  }
+}
+
+/**
+ * 🔧 由 PathManager 在点火序列第 1 步注入默认日志目录（data/logs）。
+ *  比 DB 就绪早得多，因此启动头几行日志不会再落到 app.getPath('logs')
+ *  （该目录在受限环境下不可写，曾报 EBADF 导致启动期日志整段丢失）。
+ *  与 setLogDir 的优先级：用户配置 > 本默认目录 > app.getPath('logs')。
+ * @param dir 默认日志目录；为空视为未注入，回退 app.getPath('logs')
+ */
+function setDefaultLogDir(dir: string | null | undefined): void {
+  defaultLogDir = (dir && dir.trim()) ? dir.trim() : null;
   if (app.isReady()) {
     cleanupLogFiles();
   } else {
@@ -134,6 +154,11 @@ export class AppLogger {
   /** 🔧 注入/更新日志目录（委托模块级 setLogDir）。DB 就绪后由 main 进程调用，切换目录立即生效无需重启。 */
   public static setLogDir(dir: string | null | undefined): void {
     setLogDir(dir);
+  }
+
+  /** 🔧 注入默认日志目录（委托模块级 setDefaultLogDir）。由 PathManager.initialize() 在点火第 1 步调用。 */
+  public static setDefaultLogDir(dir: string | null | undefined): void {
+    setDefaultLogDir(dir);
   }
 
   private static formatMessage(message: string, meta?: any): string {

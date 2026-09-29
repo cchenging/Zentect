@@ -14,6 +14,8 @@ import { ProjectRepository } from '../database/repositories/ProjectRepository';
 import { SettingsService } from './SettingsService';
 import { AppError, ErrorCode } from '../../modules/infra/error/AppError';
 import type { JianyingExportInput } from '../../modules/export/jianying/types';
+import { setExportBinDeps } from '../../modules/export/jianying';
+import { PathManager } from '../utils/pathManager';
 import type { JianyingExportPayload } from '../../modules/export/jianying/backend/JianyingExporter';
 import type { ExportJob } from '../../modules/export/contracts/ExportJob';
 import { buildExportRegistry } from '../../modules/export/createExportRegistry';
@@ -111,6 +113,10 @@ export class ExportService {
     const { projectId, customPath, exportRange, selectedShotIds } = payload;
     try {
       if (!projectId) throw new AppError(ErrorCode.SYS_INVALID_INPUT, '缺少 projectId');
+
+      // 注入剪映导出侧的 ffprobe 依赖：走 PathManager（区分 dev / 打包 resources 根），
+      // 避免落到模块内 process.cwd() 兜底路径（历史上曾指向不可执行的 shared/ffprobe.exe）
+      setExportBinDeps({ getFfprobePath: () => PathManager.getBinPath('ffprobe.exe') });
 
       // 真模块化：统一装配（DB读取 + 镜头 + BGM + 字幕样式 + S8 过滤）一处完成
       // 剪映端需要 scriptParagraphs/shots/matchResults/ttsResults 额外字段 → 走 extras 透传

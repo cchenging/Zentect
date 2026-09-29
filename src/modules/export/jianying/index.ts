@@ -9,4 +9,5 @@ export type {
 
 export {
   JianyingExportService,
+  setExportBinDeps,
 } from './backend/Service';
