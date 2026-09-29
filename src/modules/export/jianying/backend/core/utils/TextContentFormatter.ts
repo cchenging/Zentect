@@ -3,6 +3,8 @@
 
 import type { SubtitleStyle } from '../../../types';
 import { DEFAULT_SUBTITLE_STYLE } from '../../../types';
+// 🎬 行宽折行 SSOT：按等效显示宽度拆行（与 MP4 烧录字幕同一口径）
+import { splitSubtitleByWidth } from '../../../../../../shared/utils/subtitleLayout';
 
 /**
  * 生成符合剪映标准的文本内容 JSON 字符串。
@@ -60,4 +62,21 @@ export function sanitizeSubtitleText(text: string): string {
     .replace(/\s+/g, ' ')
     .replace(/[\p{P}\p{S}]/gu, '')
     .trim();
+}
+
+/**
+ * 🎬 字幕行宽独立折行：把一条字幕按显示行宽拆成多行（行间以换行符连接）。
+ *
+ * 字幕是**渲染单位**，与 TTS 承载 / 画面匹配单位解耦：断句器切出的碎片（≤24 字）承载 TTS 与匹配，
+ * 字幕则按自身行宽规则折行（16 等效宽/行，见 @shared/utils/subtitleLayout）——
+ * 24 字碎片折成两行，不再整条挤在一行、挤出安全框。
+ *
+ * ⚠️ 必须在 {@link sanitizeSubtitleText} 之后调用：清洗会把换行折叠为空格，先折行会被抹平。
+ *
+ * @param text 已清洗（无标点）的字幕文案
+ * @param limit 单行等效宽度上限（缺省 16 等效宽，Netflix 中文安全行宽）
+ * @returns 折行后的文案（多行时以 \n 分隔）
+ */
+export function wrapSubtitleText(text: string, limit?: number): string {
+  return splitSubtitleByWidth(text, limit).join('\n');
 }

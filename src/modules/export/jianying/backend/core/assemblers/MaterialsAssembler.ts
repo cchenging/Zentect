@@ -12,7 +12,11 @@ import * as path from 'path';
 import type { CompileShot, SubtitleStyle } from '../../../types';
 import { DEFAULT_SUBTITLE_STYLE } from '../../../types';
 import { genHexId } from '../utils/IdUtils';
-import { formatTextContent, sanitizeSubtitleText } from '../utils/TextContentFormatter';
+import { formatTextContent, sanitizeSubtitleText, wrapSubtitleText } from '../utils/TextContentFormatter';
+import {
+  SUBTITLE_LINE_WIDTH_LIMIT,
+  SUBTITLE_LINE_WIDTH_LIMIT_PORTRAIT,
+} from '../../../../../../shared/utils/subtitleLayout';
 import type { VideoProbeResult } from '../utils/FfprobeProber';
 
 /** 单个镜头的素材装配结果（供 TracksAssembler 消费，解耦素材与轨道） */
@@ -451,7 +455,8 @@ function buildTextMaterial(
     id: textId,
     local_material_id: textId,
     type: 'text',
-    name: text.slice(0, 20),
+    // 素材名取单行（折行后的 \n 会污染剪映素材名显示）
+    name: text.replace(/\n+/g, ' ').slice(0, 20),
     content: formatTextContent(text, subtitleStyle),
     font_path: '',
     font_size: Number(fontSize) || 8.0,
@@ -677,6 +682,12 @@ export function assembleMaterials(
   } = {},
 ): MaterialsResult {
   const subtitleStyle = options.subtitleStyle ?? DEFAULT_SUBTITLE_STYLE;
+  // 🎬 字幕行宽随画幅取向：竖屏画布更窄，行宽收紧到 12 等效宽（横屏 16）。
+  // 与 DraftContentAssembler 的 isPortrait 同判据（宽 < 高即竖屏）；无画布尺寸时按横屏处理。
+  const subtitleLineLimit =
+    options.canvasSize && options.canvasSize.height > options.canvasSize.width
+      ? SUBTITLE_LINE_WIDTH_LIMIT_PORTRAIT
+      : SUBTITLE_LINE_WIDTH_LIMIT;
   const safeMediaPath = (mediaPath || '').replace(/\\/g, '/');
   const videos: unknown[] = [];
   const audios: unknown[] = [];
@@ -834,11 +845,14 @@ export function assembleMaterials(
     // E. AI 字幕（80+ 字段）
     // 原声段（keepOriginalAudio）：字幕只显示原声台词（originalText=段落文本，分析阶段已剥"原声："前缀），
     //   不显示 AI 解说词；解说段维持 AI 文案优先（aiText）。
-    // 统一按行业规范清洗标点（sanitizeSubtitleText），素材 name 与 content 同步干净。
+    // 统一按行业规范清洗标点（sanitizeSubtitleText），素材 name 与 content 同步干净；
+    // 再按字幕自身行宽独立折行（wrapSubtitleText）——字幕是渲染单位，与 TTS 承载/匹配单位
+    // （断句器 ≤24 字碎片）解耦：24 字碎片折成两行，不整条挤一行挤出安全框。
     const rawSubtitleText = shot.keepOriginalAudio === true
       ? (shot.originalText || shot.text || '')
       : (shot.aiText || shot.originalText || '');
-    const contentText = rawSubtitleText ? sanitizeSubtitleText(rawSubtitleText) : '';
+    const cleanSubtitleText = rawSubtitleText ? sanitizeSubtitleText(rawSubtitleText) : '';
+    const contentText = cleanSubtitleText ? wrapSubtitleText(cleanSubtitleText, subtitleLineLimit) : '';
     if (contentText) {
       const tMatId = genHexId();
       texts.push(buildTextMaterial(tMatId, contentText, subtitleStyle, durationUs));

@@ -112,6 +112,21 @@ function hardSplit(text: string, max: number): string[] {
 }
 
 /**
+ * 硬切产物补「延续」标点（服务于步骤4 TTS 韵律）。
+ *
+ * 硬切点本身没有任何标点可用，切出的中间碎片会变成"没有任何标点的独立短句"，
+ * TTS 只能按句末收尾（降调 + 长停顿），一段话被读成几个各自收尾的短句、语气断裂。
+ * 规则：非末片补「，」（延续信号，短停顿不收尾）；末片不补——它已带原文的句末标点（若有），
+ * 无则保持原文，不擅自加句号（不凭空改写文案语义）。
+ *
+ * @param parts 硬切产物（≥1 片）
+ * @returns 补齐延续标点的碎片数组（末片原样）
+ */
+function appendContinuationPunct(parts: string[]): string[] {
+  return parts.map((part, i) => (i < parts.length - 1 ? `${part}，` : part));
+}
+
+/**
  * 函数级中文注释：长段落承载拆分器（TTS / 字幕安全框）。
  *
  * @param rawShots LLM 原始分镜数组（母段落）
@@ -205,18 +220,25 @@ export function breakLongParagraphs(
       if (new RegExp(`[${COMMA_PUNCT}]`).test(sent)) {
         const commaParts = splitByPunct(sent, COMMA_PUNCT);
         for (const part of commaParts) {
-          // 逗号切出的段仍超框（即该段无逗号可再切）→ 硬按安全框容量截断兜底。
-          const hardParts = part.length > SUB_MAX ? hardSplit(part, SUB_MAX) : [part];
+          // 逗号切出的段仍超框（即该段无逗号可再切）→ 硬按安全框容量截断兜底，中间片补延续逗号。
+          const hardParts = part.length > SUB_MAX ? appendContinuationPunct(hardSplit(part, SUB_MAX)) : [part];
           pieces.push(...hardParts);
           for (let k = 0; k < hardParts.length; k++) pieceUnitIdx.push(si);
         }
       } else {
-        // 超框且无任何逗号级标点 → 硬按安全框容量截断兜底。
-        const hardParts = hardSplit(sent, SUB_MAX);
+        // 超框且无任何逗号级标点 → 硬按安全框容量截断兜底，中间片补延续逗号。
+        const hardParts = appendContinuationPunct(hardSplit(sent, SUB_MAX));
         pieces.push(...hardParts);
         for (let k = 0; k < hardParts.length; k++) pieceUnitIdx.push(si);
       }
     }
+
+    // ⚠️ 碎片末尾标点**保留**（不剥、不改写）：碎片标点如今只流向步骤4 TTS。
+    //   - 字幕已在导出层独立清标点（行业规范）并按行宽折行（见 shared/utils/subtitleLayout），
+    //     故"残句标点污染字幕"的顾虑不复存在；
+    //   - 标点是 TTS 韵律的唯一输入：被拆开的中间碎片若末尾标点被剥掉，就成了"没有任何标点的独立短句"，
+    //     引擎只能按句末收尾（降调 + 长停顿），一段话被读成几个各自收尾的短句、语气断裂；
+    //   - 保留切分标点后，碎片拼回去等于原文（原文的无损切片），UI 上的文案也是原文标点。
 
     // 按字数比例分配时长，每个子句至少 1.2 秒
     const totalChars = rawText.length || 1;

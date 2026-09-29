@@ -7,6 +7,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ExportProject } from '../../contracts/ExportProject';
 import type { SubtitleStyle } from '../../jianying/types';
+// 🎬 行宽折行 SSOT：按等效显示宽度拆行（剪映导出与 MP4 烧录共用同一口径）
+import { splitSubtitleByWidth } from '../../../../shared/utils/subtitleLayout';
 
 /**
  * 🔤 字幕标点清洗：字幕文本不保留标点符号，标点统一转为空格。
@@ -23,75 +25,6 @@ export function sanitizeSubtitlePunctuation(raw: string): string {
   const replaced = raw.replace(/[，。！？；：、,\.!?;:""''`「」『』《》〈〉（）【】\[\]{}<>…—·～~=|…]/g, ' ');
   // 合并连续空格为单个（含全角空格），避免间距堆积
   return replaced.replace(/[ \u3000]+/g, ' ');
-}
-
-/**
- * 🎬 字幕行宽安全框：按"等效显示宽度"把长文案拆成单行不超过 limit 的多行字幕。
- *
- * 遵循 Netflix 中文 Timed Text 标准建议的安全行宽：中文字符宽度算 1，英文/数字/空格算 0.5。
- * 拆行优先在空格处断开（保留词边界），无空格（纯中文连续）则按宽度硬切。
- *
- * @param text 去标点后的文案
- * @param limit 单行等效宽度上限（默认 16，Netflix 中文安全框）
- * @returns 拆分后的多行数组（每行宽度 <= limit）
- */
-export function splitSubtitleByWidth(text: string, limit = 16): string[] {
-  if (!text) return [''];
-  // 先按显式换行分段，再对每段按宽度拆
-  const segments = text.split(/\n+/).map((s) => s.trim()).filter(Boolean);
-  const lines: string[] = [];
-  for (const seg of segments) {
-    // 从空白处预拆成长度受控的候选块，再逐块转字符宽度校验
-    const words = seg.split(/(\s+)/);
-    let current = '';
-    let currentW = 0;
-    const flush = () => {
-      if (current) lines.push(current.trim());
-      current = '';
-      currentW = 0;
-    };
-    for (const w of words) {
-      const wW = charWidth(w);
-      if (currentW + wW > limit) {
-        flush();
-        // 单个词/无空白块也超宽时，按可显示字符强行截断
-        if (wW > limit) {
-          const chunks = hardChunk(w, limit);
-          for (const c of chunks) lines.push(c);
-          continue;
-        }
-      }
-      current += w;
-      currentW += wW;
-    }
-    flush();
-  }
-  return lines.length ? lines : [text];
-}
-
-/** 中文字符=1，字母/数字/空格/半角符号=0.5（Netflix 中文宽度近似） */
-function charWidth(ch: string): number {
-  // 非 ASCII（中文字为主）按 1；ASCII 按 0.5
-  return /[\u0000-\u00ff]/.test(ch) ? 0.5 : 1;
-}
-
-/** 对明显超宽的连续无空白段按可显示宽度强行切块 */
-function hardChunk(text: string, limit: number): string[] {
-  const out: string[] = [];
-  let cur = '';
-  let curW = 0;
-  for (const ch of text) {
-    const w = charWidth(ch);
-    if (curW + w > limit && cur) {
-      out.push(cur);
-      cur = '';
-      curW = 0;
-    }
-    cur += ch;
-    curW += w;
-  }
-  if (cur) out.push(cur);
-  return out;
 }
 
 /** SRT 时间戳格式：毫秒 → "HH:MM:SS,mmm" */

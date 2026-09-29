@@ -9,7 +9,7 @@ import type { CompileShot } from '../../../../types';
 import { assembleMaterials, type ShotMaterialRef } from '../MaterialsAssembler';
 import { assembleTracks } from '../TracksAssembler';
 import { buildVideoSegment } from '../../builders/VideoSegmentBuilder';
-import { sanitizeSubtitleText } from '../../utils/TextContentFormatter';
+import { sanitizeSubtitleText, wrapSubtitleText } from '../../utils/TextContentFormatter';
 import type { VideoProbeResult } from '../../utils/FfprobeProber';
 
 const SOURCE_PATH = '/media/source.mp4';
@@ -104,6 +104,65 @@ describe('字幕去标点（行业规范）', () => {
     expect(content.text).toBe('这是一段带标点的文案');
     // 素材 name 同步干净
     expect(material.name).not.toMatch(/[\p{P}\p{S}]/u);
+  });
+});
+
+describe('字幕行宽独立折行（渲染单位与 TTS/匹配单位解耦）', () => {
+  const probeMap = new Map<string, VideoProbeResult>([[SOURCE_PATH, sourceProbe]]);
+
+  it('wrapSubtitleText：安全宽内整条不折行', () => {
+    expect(wrapSubtitleText('我爷爷不行了')).toBe('我爷爷不行了');
+  });
+
+  it('wrapSubtitleText：24 字碎片折成两行（16 + 8），不再挤一行', () => {
+    // 断句器上限 24 字（TTS/匹配承载单位），字幕按 16 等效宽独立折行
+    const s = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯';
+    expect(s.length).toBe(24);
+    expect(wrapSubtitleText(s)).toBe('一二三四五六七八九十甲乙丙丁戊己\n庚辛壬癸子丑寅卯');
+  });
+
+  it('wrapSubtitleText：英文优先在空格处断行（不切碎单词）', () => {
+    const lines = wrapSubtitleText('hello world foo bar baz qux quux corge grault').split('\n');
+    expect(lines).toEqual(['hello world foo bar baz qux quux', 'corge grault']);
+  });
+
+  it('集成：24 字解说文案进入剪映 content 后为两行，range 覆盖含换行符全长', () => {
+    const aiText = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯';
+    const { texts } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: false, aiText })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    const material = texts[0] as any;
+    const content = JSON.parse(material.content);
+    expect(content.text).toBe('一二三四五六七八九十甲乙丙丁戊己\n庚辛壬癸子丑寅卯');
+    expect(content.styles[0].range).toEqual([0, content.text.length]);
+    // 素材名保持单行，不被换行符污染
+    expect(material.name).not.toContain('\n');
+  });
+
+  it('集成：竖屏画布（1080×1920）行宽收紧到 12 等效宽，24 字恰好两行', () => {
+    const aiText = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯';
+    const { texts } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: false, aiText })],
+      SOURCE_PATH,
+      probeMap,
+      { canvasSize: { width: 1080, height: 1920 } },
+    );
+    const content = JSON.parse((texts[0] as any).content);
+    expect(content.text).toBe('一二三四五六七八九十甲乙\n丙丁戊己庚辛壬癸子丑寅卯');
+  });
+
+  it('集成：原声段短台词（≤16 等效宽）保持单行，不回归', () => {
+    const { texts } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: true, originalText: '我爷爷不行了' })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    const content = JSON.parse((texts[0] as any).content);
+    expect(content.text).toBe('我爷爷不行了');
   });
 });
 
