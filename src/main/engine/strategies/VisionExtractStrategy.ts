@@ -1509,7 +1509,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
             cacheRecords.push({
               frameHash: contentHash,
               modelName: model,
-              // 🔧 与 VlmFrameCacheRepository.PROMPT_VERSION 引用同一常量（v4），
+              // 🔧 与 VlmFrameCacheRepository.PROMPT_VERSION 引用同一常量（当前 v8），
               // 避免此前"查询用v2/写入用v3"不一致导致重跑命中旧短场景缓存
               promptVersion: VlmFrameCacheRepository.PROMPT_VERSION,
               resultJson: JSON.stringify(parsedItem),

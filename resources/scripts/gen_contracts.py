@@ -83,6 +83,7 @@ _DEFS = [
             'videoChunks': 'VideoChunkAsset[]',
             'segments': 'Segment[]',
             'bgm': '{ bpm?: number; filePath: string; name?: string } | null',
+            'bgmBeats': 'number[]',                   # BGM 强拍网格（输出时间轴 ms）
         },
     ),
     (

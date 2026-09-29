@@ -73,6 +73,73 @@ CAMERA_CHANGE_PENALTY = 0.10
 # 不一致 → 微罚（仅加分项，绝不作硬门禁，守「软排」）。
 PREFERRED_SHOT_REWARD = -0.10
 PREFERRED_SHOT_MISS_PENALTY = 0.10
+# 首选景别词表归一（ShotSpec.preferredShot ↔ 切片侧标签）——两侧归一唯一真源。
+#   工单侧（shot_spec.py PREFERRED_SHOT）用英文枚举（EXTREME_CLOSE…EXTREME_LONG），
+#   切片侧（A 域 shotType / shotScale）用中文标签（特写/近景/中景/全景/空镜）。
+#   两套词表此前从未在同一层对齐，裸字符串比较恒不等 ⇒ 门禁与贴合卡双双空转。
+#   本表按「精确等值」归一（切片标签是受控小词表，不做子串包含，避免「中全景」被「全景」抢先命中）。
+PREFERRED_SHOT_BY_LABEL = {
+    '特写': 'EXTREME_CLOSE',
+    '近景': 'CLOSE_SHOT',
+    '中近景': 'MEDIUM_CLOSE',
+    '中景': 'MEDIUM_SHOT',
+    '中全景': 'FULL_SHOT',
+    '全景': 'LONG_SHOT',
+    '远景': 'EXTREME_LONG',
+    '大全景': 'EXTREME_LONG',
+    '空镜': '',  # 空镜非景别档位：不参与景别门禁（返回空 = 中性放行）
+}
+# 逆向：英文枚举 → 中文关键词元组（供 scene 文本关键词兜底匹配，保留旧口径）
+PREFERRED_SHOT_TOKENS = (
+    ('EXTREME_LONG', ('大全景', '远景')),
+    ('LONG_SHOT', ('全景',)),
+    ('FULL_SHOT', ('中全景',)),
+    ('MEDIUM_SHOT', ('中景',)),
+    ('MEDIUM_CLOSE', ('中近景',)),
+    ('CLOSE_SHOT', ('近景',)),
+    ('EXTREME_CLOSE', ('特写',)),
+)
+
+
+def preferred_shot_from_label(label: str) -> str:
+    """切片中文景别标签（shotScale / shotType）→ 契约英文枚举。
+
+    精确等值归一；未识别（含空串、自由文本）返回 '' ⇒ 该切片不参与景别门禁，
+    避免无景别信号时误否决候选（与 `_shot_of_chunk` 的「未命中返回空」口径一致）。
+
+    Args:
+        label: 切片景别标签，如「近景」「中景」「全景」「特写」。
+
+    Returns:
+        str: 契约英文枚举（如 'CLOSE_SHOT'）；未识别返回 ''。
+    """
+    return PREFERRED_SHOT_BY_LABEL.get(str(label or '').strip(), '')
+
+
+# 英文枚举集合：用于区分「已是契约枚举」与「切片中文标签」，避免二次归一丢值。
+PREFERRED_SHOT_CODES = frozenset(_code for _code, _ in PREFERRED_SHOT_TOKENS)
+
+
+def normalize_preferred_shot(value: str) -> str:
+    """景别信号双向归一 → 契约英文枚举（两侧归一的唯一入口）。
+
+    工单侧 `ShotSpec.preferredShot` 已是英文枚举，切片侧 `shotScale / shotType` 是中文标签
+    ⇒ 两侧必须经本函数归一到同一层再比较，否则裸字符串比较恒不等（贴合卡与动态门禁双双空转）。
+
+    Args:
+        value: 景别信号，可为英文枚举（'CLOSE_SHOT'）或中文标签（'近景'）。
+
+    Returns:
+        str: 契约英文枚举；无法识别（空串 / 自由文本 / 「空镜」）返回 ''（不参与门禁）。
+    """
+    _v = str(value or '').strip()
+    if not _v:
+        return ''
+    if _v in PREFERRED_SHOT_CODES:
+        return _v
+    return preferred_shot_from_label(_v)
+
+
 # 补丁7 气口弹性腔（gap_padding）：句尾必须保留的安全静音红线与判定常量（物理不足即罚）。
 #   唯一允许的时间弹性 = 句尾 ASR 静音气口（silenceGapMs）：两者俱备则出点不侵入发音区。
 GAP_SAFE_SILENCE_MS = 80.0      # 安全静音红线条（ms）：出点落点须 ≥ 说话结尾 + 本线
@@ -285,6 +352,12 @@ def default_request() -> dict:
         'videoChunks': [],            # List[VideoChunkAsset]
         'segments': [],               # List[Segment]
         'bgm': None,                  # {bpm, filePath, name} 或 None
+        # BGM 强拍网格（**BGM/输出时间轴**毫秒，非源 PTS；补丁2 节拍器对齐消费）。
+        #   ⚠️ 时间轴归属：检测源是 BGM 文件（AIService/SemanticAnalyzeStrategy #L95 段），
+        #   其 0 点=成片 BGM 起点 ⇒ 只在**输出装配层**有意义，与切片 startMs（源 PTS）不同轴，
+        #   故**不可**作候选打分卡的判据（同句所有候选的输出切点恒同 ⇒ 零排序影响）。
+        #   空数组 = 无 BGM / 未检测（中性，不造假）。
+        'bgmBeats': [],               # BGM 强拍网格（输出时间轴 ms，非源 PTS；空=无 BGM/未检测）
         'taskId': '',
         # -- 引擎开关（router 注入）--
         'routerMode': ROUTER_MODE_OFF,  # on | shadow | off
@@ -306,7 +379,9 @@ def default_result() -> dict:
         'shotId': '',                 # 段落 id（与 id 同值兼容）
         'mediaId': '',
         'thumbnail': '',
-        'score': 0.0,                 # 综合匹配得分（越大越好 / 排序键）
+        'score': 0.0,                 # 综合匹配得分（越大越好 / 排序键；= confidence 同值口径）
+        'confidence': 0.0,            # 综合匹配置信度（= 供给层综合分 1−base_cost，[0,1] 越大越贴；
+                                      #   熔断降级段封顶 0.85、顺延段继承上一镜，Node 侧据此派生 score/confirmed）
         'confirmed': False,
         'isUserLocked': False,        # K2：用户手动微调/确认后置 True（确定性锚点，重新匹配冻结）
         # -- 选中切片与裁点 --
@@ -402,7 +477,9 @@ def validate_queries(normalized_queries: List[dict]) -> None:
 #   缺字段即 fail-fast，守「错就错」——输出漂移在求解内暴露，不打到消费端才砸脸。
 # ---------------------------------------------------------------------------
 # 输出项必填字段：缺任一即判 schema 漂移抛错（其余字段 default_result 自带缺省）。
-REQUIRED_RESULT_FIELDS = ('id', 'shotId')
+#   confidence 入列（落码点2）：新引擎曾漏产该字段 ⇒ Node 侧 matched.confidence 恒 undefined、
+#   全片 score=0/confirmed=false，「匹配度差」不可观测。入必填以在求解内 fail-fast 暴露漂移。
+REQUIRED_RESULT_FIELDS = ('id', 'shotId', 'confidence')
 
 
 def validate_result(result: dict) -> dict:

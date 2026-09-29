@@ -165,6 +165,41 @@ def test_primary_subject_sentinel_excluded_from_hero_signature():
     print("✓ test_primary_subject_sentinel_excluded_from_hero_signature: 哨兵不入稀有料签名")
 
 
+def test_coverage_double_pool_key_not_summed():
+    """回归（2026-09-25 分母口径缺陷）：两池皆有的键**只归切片池**计分母，绝不跨池相加。
+
+    修前实测 `characters=79%(555/706)`，706 = 605(chunks) + 101(queries) ⇒ 分子分母都跨池混算，
+    与「切片/句分母不可混算」自相矛盾且量纲不同（切片=实体观测，句级=需求期望）。
+    """
+    chunks = [{'id': 'c1', 'characters': ['女主']}, {'id': 'c2', 'characters': []}]
+    queries = [
+        {'shotId': 's1', 'characters': ['女主']},
+        {'shotId': 's2', 'characters': ['男配']},
+        {'shotId': 's3', 'characters': []},
+    ]
+    cov = _collect_key_coverage(chunks, queries, ('characters',))
+    # 切片池 2 条（1 条非空）+ 句池 3 条 ⇒ 修前会是 (4, 5)（跨池相加）；修后只认切片池
+    assert cov['characters'] == (1, 2), f"双池键只归切片池，实际 {cov['characters']}"
+    print("✓ test_coverage_double_pool_key_not_summed: 双池键不跨池相加")
+
+
+def test_coverage_noncontract_key_denominator_is_pool_size():
+    """回归（2026-09-25 分母口径缺陷）：非契约键分母 = **池大小**，非「含键样本数」。
+
+    修前 `weatherEnv=100%(477/477)` 读起来像全池覆盖，实为 477/605=79%（分母只数含键样本）。
+    """
+    chunks = [
+        {'id': 'c1', 'weatherEnv': '晴'},
+        {'id': 'c2', 'weatherEnv': '雨'},
+        {'id': 'c3'},  # 生产者未回填该键
+        {'id': 'c4'},
+    ]
+    cov = _collect_key_coverage(chunks, [], ('weatherEnv', 'keyProps'))
+    assert cov['weatherEnv'] == (2, 4), f"非契约键分母应为池大小 4，实际 {cov['weatherEnv']}"
+    assert cov['keyProps'] == (0, 0), "全池无该键 ⇒ n/a(0/0) 占位，不虚增分母"
+    print("✓ test_coverage_noncontract_key_denominator_is_pool_size: 分母=池大小（不虚高）")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("📊 步骤5 新引擎 · 点亮判据与覆盖率采集（① 单测骨架）")
@@ -174,6 +209,8 @@ if __name__ == "__main__":
     test_collect_key_coverage_denominators_separate()
     test_coverage_consistent_with_available_keys()
     test_coverage_keys_none_covers_all_seen_keys()
+    test_coverage_double_pool_key_not_summed()
+    test_coverage_noncontract_key_denominator_is_pool_size()
     test_chunk_alias_normalization_lights_gate()
     test_primary_subject_sentinel_excluded_from_hero_signature()
     print("=" * 60)

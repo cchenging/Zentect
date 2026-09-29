@@ -162,6 +162,8 @@ export interface SegmentRequest {
   segments: Segment[];
   /** {bpm, filePath, name} 或 None */
   bgm: { bpm?: number; filePath: string; name?: string } | null;
+  /** BGM 强拍网格（输出时间轴 ms，非源 PTS；空=无 BGM/未检测） */
+  bgmBeats: number[];
   taskId: string;
   /** on | shadow | off */
   routerMode: string;
@@ -175,8 +177,10 @@ export interface MatchResult {
   shotId: string;
   mediaId: string;
   thumbnail: string;
-  /** 综合匹配得分（越大越好 / 排序键） */
+  /** 综合匹配得分（越大越好 / 排序键；= confidence 同值口径） */
   score: number;
+  /** 综合匹配置信度（= 供给层综合分 1−base_cost，[0,1] 越大越贴； */
+  confidence: number;
   confirmed: boolean;
   /** K2：用户手动微调/确认后置 True（确定性锚点，重新匹配冻结） */
   isUserLocked: boolean;

@@ -76,7 +76,7 @@ vi.mock('../../prompts/constraints', () => ({
   },
 }));
 
-import { ScriptGenStrategy } from '../ScriptGenStrategy';
+import { ScriptGenStrategy, dedupeAdjacentParagraphs } from '../ScriptGenStrategy';
 import { AppLogger } from '../../../core/AppLogger';
 
 // ---------- 测试用例 ----------
@@ -637,5 +637,99 @@ describe('ScriptGenStrategy - 碎片化质量校验（assertChapterQuality）', 
     ]);
     const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
     expect(extractTexts(result).length).toBe(2);
+  });
+
+  // ========== 🧩 断句子句级相邻去重（补层）回归测试 ==========
+  // 覆盖用户实际投诉：母段落被断句后，其首个子句与上一段逐字相同 ⇒ 该子句被删除（否则 TTS 念 2 遍）。
+
+  it('母段落断句后首个子句与上一段逐字相同 → 该子句被删除，保留后一个子句', async () => {
+    mockStageB([
+      { shotId: 's_01', text: '电话打不通，接待方人间蒸发，她彻底慌了。', duration: 3.0 },
+      { shotId: 's_02', text: '电话打不通，接待方人间蒸发，她彻底慌了。而同一座城里，另一个人的麻烦才刚刚开始。', duration: 5.0 },
+    ]);
+    const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    // 断句后 seg_1 拆成 seg_1_sub_1(=上一段原文) + seg_1_sub_2；首个子句因逐字重复被删
+    expect(extractTexts(result)).toEqual([
+      '电话打不通，接待方人间蒸发，她彻底慌了。',
+      '而同一座城里，另一个人的麻烦才刚刚开始。',
+    ]);
+    // id 不重排：保留原有的 seg_1_sub_2（跳号属预期），母句 id 体系与 matchUnitId 语义不变
+    const ids = (result.shots || []).map((s: any) => s.id);
+    expect(ids).toEqual(['seg_0', 'seg_1_sub_2']);
+  });
+
+  it('原声段不受断句子句去重影响（空文本上游即剔除；带文本原声段原样保留）', async () => {
+    mockStageB([
+      { shotId: 's_01', text: '正常解说第一句。', duration: 3.0 },
+      { shotId: 's_02', text: '', duration: 3.0, keepOriginalAudio: true },
+      { shotId: 's_03', text: '「你给我站住。」', duration: 3.0, keepOriginalAudio: true },
+      { shotId: 's_04', text: '正常解说第二句。', duration: 3.0 },
+    ]);
+    const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    // 空文本占位段（原声段空文本）在 normalizeRawShots（deduplicatePrefixIterations）阶段已剔除，
+    // 根本不会进入断句去重；带文本的原声段与解说段均原样保留、不受子句去重影响。
+    expect(extractTexts(result)).toEqual(['正常解说第一句。', '「你给我站住。」', '正常解说第二句。']);
+    const orig = (result.shots || []).filter((s: any) => s.keepOriginalAudio === true);
+    expect(orig.length).toBe(1);
+  });
+});
+
+// ========== 🔇 相邻重复段落去重（dedupeAdjacentParagraphs）回归测试 ==========
+// 覆盖生产 bug「台词重复念」：LLM 把同一句解说写进相邻多段，TTS 真的念 2~3 遍。
+// 判定：相邻且归一化后完全相同 → 只保留首次出现的那段。
+
+describe('ScriptGenStrategy - 相邻重复段落去重（dedupeAdjacentParagraphs）', () => {
+  it('相邻完全相同段落（复读三连）只保留首次出现，返回保留下标', () => {
+    const input = [
+      { text: '同乡两个字，成了她最后的筹码。' },
+      { text: '同乡两个字，成了她最后的筹码。' },
+      { text: '同乡两个字，成了她最后的筹码。' },
+    ];
+    const { paragraphs, keptIndexes } = dedupeAdjacentParagraphs(input);
+    expect(paragraphs.map((p) => p.text)).toEqual(['同乡两个字，成了她最后的筹码。']);
+    expect(keptIndexes).toEqual([0]);
+  });
+
+  it('归一化（trim + 去空白）后相同即视为重复', () => {
+    const input = [
+      { text: '  电话打不通，接待方人间蒸发，她彻底慌了。  ' },
+      { text: '电话打不通，接待方人间蒸发，她彻底慌了。' },
+    ];
+    const { paragraphs } = dedupeAdjacentParagraphs(input);
+    expect(paragraphs.length).toBe(1);
+    // 保留下的是首次出现者（含其原始空白形态）
+    expect(paragraphs[0].text.trim()).toBe('电话打不通，接待方人间蒸发，她彻底慌了。');
+  });
+
+  it('空文本一律保留且不参与比较（连续空原声段不被塌缩）', () => {
+    const input = [
+      { text: '' },
+      { text: '   ' },
+      { text: '' },
+    ];
+    const { paragraphs, keptIndexes } = dedupeAdjacentParagraphs(input);
+    expect(paragraphs.length).toBe(3);
+    expect(keptIndexes).toEqual([0, 1, 2]);
+  });
+
+  it('空文本对相邻判定透明：A / 空 / A 中后一个 A 判为重复被删', () => {
+    const input = [{ text: 'A句。' }, { text: '' }, { text: 'A句。' }];
+    const { paragraphs, keptIndexes } = dedupeAdjacentParagraphs(input);
+    expect(paragraphs.map((p) => p.text)).toEqual(['A句。', '']);
+    expect(keptIndexes).toEqual([0, 1]);
+  });
+
+  it('非相邻的相同文本不误删（A / B / A 全部保留）', () => {
+    const input = [{ text: 'A句。' }, { text: 'B句。' }, { text: 'A句。' }];
+    const { paragraphs, keptIndexes } = dedupeAdjacentParagraphs(input);
+    expect(paragraphs.map((p) => p.text)).toEqual(['A句。', 'B句。', 'A句。']);
+    expect(keptIndexes).toEqual([0, 1, 2]);
+  });
+
+  it('无重复时原样返回，keptIndexes 与入参下标一致', () => {
+    const input = [{ text: '第一句。' }, { text: '第二句。' }];
+    const { paragraphs, keptIndexes } = dedupeAdjacentParagraphs(input);
+    expect(paragraphs.map((p) => p.text)).toEqual(['第一句。', '第二句。']);
+    expect(keptIndexes).toEqual([0, 1]);
   });
 });

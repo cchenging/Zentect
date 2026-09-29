@@ -221,6 +221,11 @@ class KMMatchQuery(BaseModel):
     refFrameSource: str = ''
     """📗 步骤1 ③ 句尾静音气口毫秒（原声段磁吸，补丁2/7 消费；None=无 ASR 气口数据，规则卡中性放行不造假）。"""
     silenceGapMs: Optional[float] = None
+    """📗 补丁20（ISSUE-7）：原声段 ASR 台词边界（源坐标；Node 侧按「原声时间窗 ↔ ASR 行」
+    最大重叠匹配透传，仅原声段写出，其余恒 None）。供裁剪侧「光学净画出入点」对齐台词边界，
+    绝不在台词中途腰斩。None=无料 ⇒ 退化为纯 200ms 内缩（错就错，不猜默认值）。"""
+    asrAnchorStartMs: Optional[float] = None
+    asrAnchorEndMs: Optional[float] = None
     """🎬 S3 分镜师工单（§24.15-B1）：由 S2/β 自动开单注入的段域契约字段。
     α 真工单由 Node 透传；β 过渡由 daemon 按视觉内容选段合成。
     默认 0/'' ⇒ 未开单时不触发段域硬候选（off/legacy 零行为变化，P6）。"""
@@ -816,23 +821,25 @@ def _spatial_gate(contract_spatial: str, seg_purity: float, candidates: list,
 #   每降一级只放宽一类约束，并只在该级新增的非空候选上停步；`fallbackLevel`=允许降到的最低级。
 #   ⚠️ P1 铁律：人物永不进硬门禁；β 过渡探测项为空 → 不做动态硬卡（避免假信号否决正确切片）。
 # ═══════════════════════════════════════════════════════════════════════════
-# 景别契约枚举 ↔ 切片 scene 关键词（收敛映射，与 shot_spec.py PREFERRED_SHOT 对齐）。
-_SHOT_KEYWORDS = (
-    ('EXTREME_LONG', ('大全景', '远景')),
-    ('LONG_SHOT', ('全景',)),
-    ('FULL_SHOT', ('中全景',)),
-    ('MEDIUM_SHOT', ('中景',)),
-    ('MEDIUM_CLOSE', ('中近景',)),
-    ('CLOSE_SHOT', ('近景',)),
-    ('EXTREME_CLOSE', ('特写',)),
-)
-
-
+# 景别归一唯一真源在契约（montage_contract.PREFERRED_SHOT_BY_LABEL / PREFERRED_SHOT_TOKENS）：
+# 本模块不再维护本地副本（原 `_SHOT_KEYWORDS` 与契约各写一套，已删）。
 def _shot_of_chunk(chunk: dict) -> str:
-    """函数级中文注释：切片 scene 文本 → 景别契约枚举（B3 探测用）。
-    未命中返回 ''（不参与景别门禁，避免无景别信号时误否决）。"""
+    """函数级中文注释：切片景别 → 景别契约枚举（B3 探测用）。
+
+    口径（2026-09-27 修正）：切片景别实际落在 `shotScale / shotType`（中文标签：特写/近景/
+    中景/全景/空镜），而旧实现只从 `scene`（地点自由文本，如「餐厅餐桌」）里找景别关键词
+    ⇒ 恒返回 '' ⇒ 动态门禁 `_dynamic_gate` 的景别项恒判不可满足（L0 恒空、降级空转）。
+    现改为「优先精确归一 shotScale/shotType，未识别再退回 scene 关键词兜底」。
+    未命中返回 ''（不参与景别门禁，避免无景别信号时误否决）。
+    """
+    from montage_contract import preferred_shot_from_label, PREFERRED_SHOT_TOKENS
+    _lab = str(chunk.get('shotScale') or chunk.get('shotType') or '').strip()
+    if _lab:
+        _code = preferred_shot_from_label(_lab)
+        if _code:
+            return _code
     _t = str(chunk.get('scene') or '')
-    for _code, _toks in _SHOT_KEYWORDS:
+    for _code, _toks in PREFERRED_SHOT_TOKENS:
         for _tok in _toks:
             if _tok in _t:
                 return _code
@@ -841,20 +848,42 @@ def _shot_of_chunk(chunk: dict) -> str:
 
 def _prop_of_chunk(chunk: dict) -> str:
     """函数级中文注释：切片 描述/关键词 → 命中道具类别（ENTITY_CLASSES，B3 探测用）。
-    取命中类别之一；未命中返回 ''。"""
+    多类别同命中时按字典序取首（**确定性**：set 迭代序受 str 哈希随机化影响，用
+    next(iter(...)) 会让同一输入在不同进程下给出不同门禁结果）。未命中返回 ''。"""
     _s = (str(chunk.get('description') or '') + ' ' + ' '.join(
         str(k) for k in (chunk.get('keywords') or []) if k)).strip()
     _hit = _classes_hit(_s, ENTITY_CLASSES)
-    return next(iter(_hit)) if _hit else ''
+    return sorted(_hit)[0] if _hit else ''
 
 
 def _action_of_chunk(chunk: dict) -> str:
     """函数级中文注释：切片 描述/关键词 → 命中动作类别（ACTION_CLASSES，B3 探测用）。
-    取命中类别之一；未命中返回 ''。"""
+    多类别同命中时按字典序取首（确定性，理由同 `_prop_of_chunk`）。未命中返回 ''。"""
     _s = (str(chunk.get('description') or '') + ' ' + ' '.join(
         str(k) for k in (chunk.get('keywords') or []) if k)).strip()
     _hit = _classes_hit(_s, ACTION_CLASSES)
-    return next(iter(_hit)) if _hit else ''
+    return sorted(_hit)[0] if _hit else ''
+
+
+def _class_of_query(text: str, table: dict) -> str:
+    """函数级中文注释：query 侧自由文本 → 契约类别名（B3 动态门禁两侧归一）。
+    分镜单 `actionType / keyProp` 是 LLM 自由文本（「递给对方」/「行囊」），而切片侧
+    `_action_of_chunk / _prop_of_chunk` 返回的是**同表类别名**（「递物」/「行李」）——
+    不先归一到同一张表，裸字符串比较恒不等（探测项恒不可满足 ⇒ L0 恒空、门禁空转，
+    与景别「中文标签 vs 英文枚举」同类缺陷）。
+    归一：先取「类别名字面出现」者，否则取字典序首（确定性）；未命中返回 ''
+    （不参与该维门禁，避免无信号时误否决）。
+    """
+    _t = str(text or '').strip()
+    if not _t:
+        return ''
+    _hit = _classes_hit(_t, table)
+    if not _hit:
+        return ''
+    for _cls in sorted(_hit):
+        if _cls in _t:
+            return _cls
+    return sorted(_hit)[0]
 
 
 def _dynamic_gate(q_action: str, q_keyprop: str, q_shot: str, fallback_level: int,
@@ -866,6 +895,13 @@ def _dynamic_gate(q_action: str, q_keyprop: str, q_shot: str, fallback_level: in
     - L4：同段任意（环境/空镜）；
     - L5：段内复用（额度 ≤2，由 B5/BROLL_MAX_REUSE 消费，本函数仅标记）。
     ⚠️ 实降级 level > fallbackLevel（允许最低级）→ 仍返回空候选（上层走 soft 兜底/空池回退）。"""
+    # 两侧词表归一（与景别同类缺陷）：入参是 query 侧原始值（工单英文枚举 / LLM 自由文本），
+    # 切片侧是同表类别名 / 中文标签 —— 不归一则裸比较恒不等（探测项恒不可满足 ⇒ L0 恒空、
+    # 门禁逐级空降到 L3）。归一是本函数的前置条件，故放在函数入口而非调用点。
+    from montage_contract import normalize_preferred_shot
+    q_action = _class_of_query(q_action, ACTION_CLASSES)
+    q_keyprop = _class_of_query(q_keyprop, ENTITY_CLASSES)
+    q_shot = normalize_preferred_shot(q_shot)
     _need_action = bool(q_action)
     _need_prop = bool(q_keyprop)
     _need_shot = bool(q_shot)
@@ -1709,6 +1745,378 @@ def _is_temporal_exempt(query) -> bool:
 MAX_EXTRA_SHOTS = 3
 WINDOWIZE_COVER_MIN = 0.97
 WINDOWIZE_TAIL_MAX_RATIO = 1.03
+
+# 🎬 补丁20（2026-09-24 · ISSUE-7）：光学净画出入点（Clean Optical In/Out）。
+#   设计（评审稿 §13.3）：截取子窗口强制 `startMs+200ms ≤ t_in < t_out ≤ endMs−200ms`，
+#   掐头去尾各剔 200ms 光学转场残影（黑场/淡入淡出/硬字幕半切）；含硬字幕的切片
+#   （`hasHardSub` / 原声段命中 ASR）出入点优先对齐步骤1 ASR 台词边界，绝不在台词中途腰斩。
+#   边界策略（源窗不足，评审稿未定 ⇒ 本轮显式定义）：avail=切片物理窗长、target=目标时长、
+#   slack=avail−target ——
+#     · slack ≤ 0（素材不比目标长）⇒ 不动（交现存变速/级联链）；
+#     · slack ≥ 2×EDGE ⇒ 两端各内缩 EDGE（标准档）；
+#     · 0 < slack < 2×EDGE ⇒ 两端均分 slack/2（保证仍放得下 target，绝不越界）。
+#   纯统计零模型；**子窗口时长恒 = target**（仅平移入点，变速 1.0 前提不变）。
+#   开关 `ZENTECT_KM_CLEAN_INOUT`（缺省 '0' = 关闭 = 零行为变化 = 一键回退）。
+CLEAN_INOUT_EDGE_MS = 200.0
+
+
+def _read_clean_inout() -> float:
+    """读补丁20「光学净画出入点」开关（env `ZENTECT_KM_CLEAN_INOUT`，缺省 0）。
+
+    0 → 关闭（缺省档，零行为变化、一键回退）；>0 → 启用。非法值错就错落 0（不启用、不造假）。
+
+    Returns:
+        float: [0, +∞) 的开关权重（0 表示关闭）。
+    """
+    import os as _os
+    raw = _os.environ.get('ZENTECT_KM_CLEAN_INOUT', '0')
+    try:
+        w = float(raw)
+    except (TypeError, ValueError):
+        w = 0.0  # 非法值：按关闭处理（不豁免也不造假）
+    return max(0.0, w)
+
+
+def _q_field(q, key: str, default=None):
+    """容错取 query 字段（legacy 为 BaseModel 对象、新引擎为 dict），缺失一律返回 default。"""
+    if q is None:
+        return default
+    v = q.get(key, default) if isinstance(q, dict) else getattr(q, key, default)
+    return default if v is None else v
+
+
+def _clean_inout_window(chunk_start: float, chunk_end: float, target_ms: float,
+                        has_hard_sub: bool = False,
+                        anchor_start: Optional[float] = None,
+                        anchor_end: Optional[float] = None):
+    """补丁20 纯函数：算出「光学净画」子窗口入点与时长（无副作用，可单测）。
+
+    子窗口时长**恒等于 target_ms**（仅平移入点，不改变速口径）；t_in 恒落在可行域
+    `[start+inset, end−inset−target]` 内；可行域为空（素材不比目标长）则原样返回入点。
+
+    ASR 对齐（仅 `has_hard_sub` 为真时启用，守「不可造假门」）：先试「出点=台词结尾」
+    （`t_in = anchor_end − target`，实现出入点双端对齐），再试「入点=台词开头」；
+    两者都不可行则退化为纯 200ms 内缩（不猜、不越界）。
+
+    Args:
+        chunk_start: 切片物理入点（源坐标）。
+        chunk_end: 切片物理出点（源坐标）。
+        target_ms: 目标时长（本句音频时长）。
+        has_hard_sub: 切片是否含硬字幕（`chunk.hasHardSub`）或原声段命中 ASR。
+        anchor_start: ASR 台词起始（源坐标；None=无料）。
+        anchor_end: ASR 台词结束（源坐标；None=无料）。
+
+    Returns:
+        tuple: `(t_in, dur)`；`dur` 恒为 `target_ms`（target ≤ 0 或窗无效时不收窄）。
+    """
+    start = float(chunk_start or 0.0)
+    end = float(chunk_end or 0.0)
+    target = float(target_ms or 0.0)
+    avail = end - start
+    if target <= 0 or avail <= 0:
+        return start, target
+    slack = avail - target
+    if slack <= 0:
+        return start, target  # 素材不比目标长：不动（交现存变速/级联链，绝不造假收窄）
+    inset = CLEAN_INOUT_EDGE_MS if slack >= 2 * CLEAN_INOUT_EDGE_MS else slack / 2.0
+    lo = start + inset
+    hi = end - inset - target      # 恒 ≥ lo（inset 由 slack 派生）
+    t_in = lo
+    if has_hard_sub:
+        cand = None
+        if anchor_end is not None:
+            _c = float(anchor_end) - target
+            if lo <= _c <= hi:
+                cand = _c          # 优先「出点=台词结尾」：出入点双端对齐
+        if cand is None and anchor_start is not None:
+            _c = float(anchor_start)
+            if lo <= _c <= hi:
+                cand = _c          # 次选「入点=台词开头」
+        if cand is not None:
+            t_in = cand
+    return t_in, target
+
+
+def _apply_clean_inout(chunk: dict, target_ms: float, query,
+                       site: str = '', stats: Optional[dict] = None) -> dict:
+    """补丁20 接线层：按开关把切片子窗口收窄为「光学净画」范围（返回 dict，不改入参对象）。
+
+    off 档（缺省）**原样返回入参对象** ⇒ 零拷贝、零行为变化、一键回退；on 档仅在可行域内
+    平移入点（时长不变），并落一条 `[clean-inout]` 诊断（经 `_km_diag`，便于跑完核对）。
+
+    Args:
+        chunk: 切片 dict（含 startMs/endMs/durationMs/hasHardSub）。
+        target_ms: 目标时长（本句音频时长）。
+        query: 本句 query（对象或 dict；读 asrAnchor*）。
+        site: 调用点标记（诊断用：legacy_main / legacy_merge / continuation / new_engine）。
+        stats: 可选计数容器（{'hit': n, 'asr': n}），仅 on 档累加。
+
+    Returns:
+        dict: 收窄后的切片（on 档为新 dict；off 档为原对象）。
+    """
+    if _read_clean_inout() <= 0.0:
+        return chunk  # off 档：零行为变化（不拷贝、不诊断、不计数）
+    _s = float(chunk.get('startMs') or 0.0)
+    _e = float(chunk.get('endMs') or 0.0)
+    _a_s = _q_field(query, 'asrAnchorStartMs')
+    _a_e = _q_field(query, 'asrAnchorEndMs')
+    _hard = bool(chunk.get('hasHardSub')) or (_a_s is not None) or (_a_e is not None)
+    t_in, dur = _clean_inout_window(_s, _e, target_ms, _hard,
+                                    _a_s if _a_s is None else float(_a_s),
+                                    _a_e if _a_e is None else float(_a_e))
+    if abs(t_in - _s) < 0.05:
+        return chunk  # 未发生位移（素材不比目标长/无 slack）：保持原对象，不留假诊断
+    new_chunk = dict(chunk)
+    new_chunk['startMs'] = round(t_in, 1)
+    new_chunk['endMs'] = round(t_in + dur, 1)
+    new_chunk['durationMs'] = round(dur, 1)
+    if isinstance(stats, dict):
+        stats['hit'] = stats.get('hit', 0) + 1
+        if _hard:
+            stats['asr'] = stats.get('asr', 0) + 1
+    _km_diag(f'[clean-inout] {site} {_q_field(query, "shotId", "")} {chunk.get("id", "")} '
+             f'源窗 {_s:.0f}~{_e:.0f} → 净画 {t_in:.0f}~{t_in + dur:.0f}（目标 {dur:.0f}ms，'
+             f'内缩 {t_in - _s:.0f}ms，ASR对齐={"是" if _hard else "否"}）')
+    return new_chunk
+
+
+# 🎬 补丁15（2026-09-24 · ISSUE-6）：动量高光安全裁剪律（Action Climax Alignment）。
+#   病灶：物理自由裁剪（补丁12/20）只按「时长 + 光学边距」定窗，全程不看动静 ⇒ 出点可能落在动作
+#   高潮中部（腰斩肢体动作 = 死肉断头）；入点可能压在动作前的平淡准备段（起手僵直）。
+#   设计（评审稿 §9.4 / §10.2.6 动作1）：
+#     · 出点禁落 `motionScore > MOTION_HOT` 的高动态区间**中段**——出点若落在热段内部，先试右移
+#       ≤ `MOTION_OUT_SHIFT_MAX_MS` 到热段终点（动作完整收束在出点，超出量并入句尾气口，叠补丁7
+#       弹性腔）；右移不可行再前移到热段起点（弃未完结动作，绝不腰斩）；
+#     · 入点优先 Drop Lead-in（弃动作前平淡准备段）——入点落在冷段内、且紧邻热段（动作起点）仅需
+#       前移 ≤ `MOTION_OUT_SHIFT_MAX_MS` 即可落入窗内时，入点前移到热段起点，同时出点右移同量并入
+#       句尾气口。
+#   物理连续跨度：出入点可平移出本段窗，但**只许落在物理连续的兄弟段**（|邻段边界−本段边界| ≤
+#   `MOTION_CELL_CONTINUITY_MS`，同 `_try_merge_contiguous_segs` / 导出层 TIME_CONTINUITY_MS 口径）
+#   ——同一物理镜头内平移无接缝，跨镜头平移必造成时间轴瞬移（禁止）。
+#   motion 粒度（实测）：KM 消费候选级 matchSegments，每段自带**绝对源坐标** motionScore；同
+#   `parentChunkId` 的兄弟段构成「段级 motion 序列」⇒ 热/冷段边界可判。**窗内更细的高动态子区间
+#   无数据源（段级仅一标量均值）⇒ 本律只在段边界粒度生效，不臆造子段 motion。**
+#   不可造假门：无兄弟 profile / 段无 motionScore（缺料）⇒ 原对象直通，不猜不造。
+#   时长口径：窗长恒 = target（与补丁20 同口径，仅平移入/出点）；可行域不足即 no-op。
+#   开关 `ZENTECT_KM_MOTION_CUT`（缺省 '0' = 关闭 = 零行为变化 = 一键回退）。
+MOTION_HOT = 0.7
+MOTION_OUT_SHIFT_MAX_MS = 300.0
+MOTION_CELL_CONTINUITY_MS = 100.0
+
+
+def _read_motion_cut() -> float:
+    """读补丁15「动量高光安全裁剪」开关（env `ZENTECT_KM_MOTION_CUT`，缺省 0）。
+
+    0 → 关闭（缺省档，零行为变化、一键回退）；>0 → 启用。非法值错就错落 0（不启用、不造假）。
+
+    Returns:
+        float: [0, +∞) 的开关权重（0 表示关闭）。
+    """
+    import os as _os
+    raw = _os.environ.get('ZENTECT_KM_MOTION_CUT', '0')
+    try:
+        w = float(raw)
+    except (TypeError, ValueError):
+        w = 0.0  # 非法值：按关闭处理（不避让也不造假）
+    return max(0.0, w)
+
+
+def _build_motion_cells(video_chunks) -> dict:
+    """补丁15：按 `parentChunkId` 归并兄弟段为「段级 motion 序列」（本律唯一 motion 信息源）。
+
+    每格 = `{'start','end','motion'}`（源坐标 ms；`motion` 为 None 表示该段无 motionScore 料）。
+    缺 `parentChunkId` / 无有效时间窗的切片一律跳过（不可造假门：缺料不进序列，也不补 0）。
+
+    Args:
+        video_chunks: 切片池（候选级 matchSegments 或镜头级 chunks 均可，按字段取用）。
+
+    Returns:
+        dict: `parentChunkId → [cell, ...]`，按 start 升序。
+    """
+    cells: dict = {}
+    for c in (video_chunks or []):
+        if not isinstance(c, dict):
+            continue
+        pid = str(c.get('parentChunkId') or '')
+        if not pid:
+            continue
+        try:
+            s = float(c.get('startMs') or 0.0)
+            e = float(c.get('endMs') or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if e <= s:
+            continue
+        raw_m = c.get('motionScore')
+        motion = None
+        if raw_m is not None:
+            try:
+                motion = float(raw_m)
+            except (TypeError, ValueError):
+                motion = None
+        cells.setdefault(pid, []).append({'start': s, 'end': e, 'motion': motion})
+    for pid in cells:
+        cells[pid].sort(key=lambda x: (x['start'], x['end']))
+    return cells
+
+
+def _motion_cell_index(cells, t: float):
+    """取时刻 t 所属格下标（t 落在格内，含边界）；无归属返回 None。"""
+    for i, c in enumerate(cells):
+        if c['start'] - 0.5 <= t <= c['end'] + 0.5:
+            return i
+    return None
+
+
+def _motion_contig_span(cells, chunk_start: float, chunk_end: float):
+    """补丁15：以本段覆盖的格为锚，向左右扩出**物理连续**兄弟段跨度（源坐标）。
+
+    先取与本段 `[chunk_start, chunk_end]` **有交叠**的格（含本段跨多格的情形）求并集跨度，再按
+    连续性判据 `|邻段边界 − 跨度边界| ≤ MOTION_CELL_CONTINUITY_MS` 逐格外扩（与
+    `_try_merge_contiguous_segs` 及导出层 TIME_CONTINUITY_MS 同口径）。不可跳段（跳过会造成瞬移）。
+
+    Returns:
+        tuple: `(left, right)`；无交叠格时为 `(chunk_start, chunk_end)`。
+    """
+    lo, hi = float(chunk_start), float(chunk_end)
+    first = last = None
+    for i, c in enumerate(cells):
+        if c['end'] > lo + 0.5 and c['start'] < hi - 0.5:   # 与本段有交叠
+            if first is None:
+                first = i
+            last = i
+            lo = min(lo, c['start'])
+            hi = max(hi, c['end'])
+    if first is None:
+        return float(chunk_start), float(chunk_end)
+    i = first - 1
+    while i >= 0 and lo - cells[i]['end'] <= MOTION_CELL_CONTINUITY_MS:
+        lo = cells[i]['start']
+        i -= 1
+    j = last + 1
+    while j < len(cells) and cells[j]['start'] - hi <= MOTION_CELL_CONTINUITY_MS:
+        hi = cells[j]['end']
+        j += 1
+    return lo, hi
+
+
+def _motion_cut_window(chunk_start: float, chunk_end: float, target_ms: float, cells):
+    """补丁15 纯函数：按「段级 motion 序列」修正裁剪窗出入点（无副作用，可单测）。
+
+    窗长**恒等于** `target_ms`（仅平移入/出点，不改时长口径）。两条规则按序生效：
+
+    1. **出点避让热段中段**（出点落在热段 `motion > MOTION_HOT` 内部 ⇒ 绝不腰斩动作）：
+       先试 **A 出点右移**至热段终点（`H.end − t_out ≤ MOTION_OUT_SHIFT_MAX_MS`，动作完整收束在出点，
+       超出量并入句尾气口）；A 不可行再试 **B 出点前移**至热段起点（弃未完结动作，绝不切在动作中段）。
+    2. **Drop Lead-in**（仅规则1 未触发）：入点落在冷段内且紧邻热段（动作起点）仅需前移
+       ≤ `MOTION_OUT_SHIFT_MAX_MS` ⇒ 入点前移到热段起点，出点右移同量；右移须仍在物理连续跨度内，
+       且位移后出点不得落入热段内部（否则回退 = 不腰斩）。
+
+    不可造假门：目标≤0 / 素材短于目标 / 相关段 motion 缺失 / 位移越出物理连续跨度 ⇒ 一律 no-op
+    （返回默认右对齐窗）。
+
+    Args:
+        chunk_start: 本段物理入点（源坐标）。
+        chunk_end: 本段物理出点（源坐标）。
+        target_ms: 目标时长（本句音频时长）。
+        cells: 同 parentChunkId 的兄弟段序列（`_build_motion_cells` 的单个 value）。
+
+    Returns:
+        tuple: `(t_in, t_out, reason)`；
+        reason ∈ `{'noop', 'out_shift_right', 'out_avoid', 'drop_leadin'}`。
+    """
+    target = float(target_ms or 0.0)
+    s0 = float(chunk_start or 0.0)
+    e0 = float(chunk_end or 0.0)
+    # 默认窗：句尾右对齐（与补丁20 同口径）
+    if target <= 0 or e0 - s0 < target or not cells:
+        return s0, e0, 'noop'
+    left, right = _motion_contig_span(cells, s0, e0)
+    t_out = e0
+    t_in = t_out - target
+    reason = 'noop'
+
+    def _hot_cell(t: float):
+        """t 落在某热段**内部**（留 0.5ms 容差，边界不算）⇒ 返回该格，否则 None。"""
+        i = _motion_cell_index(cells, t)
+        if i is None:
+            return None
+        c = cells[i]
+        if c['motion'] is not None and c['motion'] > MOTION_HOT \
+                and c['start'] + 0.5 < t < c['end'] - 0.5:
+            return c
+        return None
+
+    # —— 规则1：出点避让热段中段（A 右移保动作 > B 前移弃动作）——
+    _hc = _hot_cell(t_out)
+    if _hc is not None:
+        if _hc['end'] - t_out <= MOTION_OUT_SHIFT_MAX_MS + 0.5 \
+                and _hc['end'] <= right + 0.5 and _hc['end'] - target >= left - 0.5:
+            t_out = _hc['end']
+            t_in = t_out - target
+            reason = 'out_shift_right'
+        elif _hc['start'] - target >= left - 0.5:
+            t_out = _hc['start']
+            t_in = t_out - target
+            reason = 'out_avoid'
+
+    # —— 规则2：Drop Lead-in（弃动作前平淡准备段；仅规则1 未触发）——
+    if reason == 'noop':
+        _ii = _motion_cell_index(cells, t_in)
+        if _ii is not None:
+            _c_in = cells[_ii]
+            if _c_in['motion'] is not None and _c_in['motion'] <= MOTION_HOT:
+                _nxt = cells[_ii + 1] if _ii + 1 < len(cells) else None
+                if _nxt is not None and _nxt['motion'] is not None and _nxt['motion'] > MOTION_HOT:
+                    _shift = _nxt['start'] - t_in
+                    if 0.0 < _shift <= MOTION_OUT_SHIFT_MAX_MS + 0.5 and t_out + _shift <= right + 0.5:
+                        _t_out2 = t_out + _shift
+                        if _hot_cell(_t_out2) is None:
+                            t_in = _nxt['start']
+                            t_out = _t_out2
+                            reason = 'drop_leadin'
+    return t_in, t_out, reason
+
+
+def _apply_motion_cut(chunk: dict, target_ms: float, query, cells_map,
+                      site: str = '', stats: Optional[dict] = None) -> dict:
+    """补丁15 接线层：按开关把裁剪窗出入点按「段级 motion 序列」修正（返回 dict，不改入参对象）。
+
+    off 档（缺省）**原样返回入参对象** ⇒ 零拷贝、零行为变化、一键回退；on 档仅在可行域内平移
+    入/出点（时长不变），并落一条 `[motion-cut]` 诊断（经 `_km_diag`，便于跑完核对）。
+
+    Args:
+        chunk: 切片 dict（含 startMs/endMs/parentChunkId）。
+        target_ms: 目标时长（本句音频时长）。
+        query: 本句 query（对象或 dict；仅用于诊断取 shotId）。
+        cells_map: `_build_motion_cells` 的输出（按 parentChunkId 索引的段级 motion 序列）。
+        site: 调用点标记（诊断用：legacy_main / legacy_merge / continuation / new_engine）。
+        stats: 可选计数容器（`{'hit','out_avoid','drop_leadin'}`），仅 on 档累加。
+
+    Returns:
+        dict: 修正后的切片（on 档且发生位移时为新 dict；否则为原对象）。
+    """
+    if _read_motion_cut() <= 0.0:
+        return chunk  # off 档：零行为变化（不拷贝、不诊断、不计数）
+    pid = str(chunk.get('parentChunkId') or '')
+    cells = (cells_map or {}).get(pid) if pid else None
+    if not cells:
+        return chunk  # 不可造假门：无兄弟 profile（缺料）⇒ 不猜
+    _s = float(chunk.get('startMs') or 0.0)
+    _e = float(chunk.get('endMs') or 0.0)
+    t_in, t_out, reason = _motion_cut_window(_s, _e, target_ms, cells)
+    if reason == 'noop' or abs(t_in - _s) < 0.05:
+        return chunk  # 未发生位移：保持原对象，不留假诊断
+    new_chunk = dict(chunk)
+    new_chunk['startMs'] = round(t_in, 1)
+    new_chunk['endMs'] = round(t_out, 1)
+    new_chunk['durationMs'] = round(t_out - t_in, 1)
+    if isinstance(stats, dict):
+        stats['hit'] = stats.get('hit', 0) + 1
+        stats[reason] = stats.get(reason, 0) + 1
+    _km_diag(f'[motion-cut] {site} {_q_field(query, "shotId", "")} {chunk.get("id", "")} '
+             f'{reason} 源窗 {_s:.0f}~{_e:.0f} → {t_in:.0f}~{t_out:.0f}（目标 {target_ms:.0f}ms）')
+    return new_chunk
 
 
 def _try_merge_contiguous_segs(ci, video_chunks, used_chunks, target_dur_ms):
@@ -3258,6 +3666,13 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
         'sb_exempt_cells': 0,       # 🎬 实际靠"段内"逃过窗口死刑的格数
         'sb_out_seg_cells': 0,      # 🎬 段外格被段域门禁压制（仅 on 档生效）
     }
+    # 🎬 补丁20（ISSUE-7）光学净画出入点：本次求解的收窄段数计数（off 档恒 0 且不打印汇总）。
+    _clean_stats = {'hit': 0, 'asr': 0}
+    # 🎬 补丁15（ISSUE-6）动量高光安全裁剪：本次求解的段级 motion 序列（父镜头 → 兄弟段）；
+    #   off 档不构建（None）= 零开销，on 档构建一次全趟复用。
+    _motion_cells = _build_motion_cells(video_chunks) if _read_motion_cut() > 0.0 else None
+    # 🎬 补丁15（ISSUE-6）动量高光安全裁剪：本次求解的位移段数计数（off 档恒 0 且不打印汇总）。
+    _motion_stats = {'hit': 0, 'out_shift_right': 0, 'out_avoid': 0, 'drop_leadin': 0}
     # 🎬 S3 段域（§24.12-I 步骤 1）：off=零行为变化｜shadow=只算不用（验收仪器）｜on=替换候选域
     _SB = load_storyboard()
     _SB_STATS = {'q_no_seg': 0, 'q_total': 0, 'dom_size': [], 'hit_in_seg': 0, 'miss_out_seg': 0,
@@ -3526,6 +3941,13 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                 return False
         # 3) 原速截尾定窗：承接段长于目标时按目标截尾（变速 1.0），与档1 同口径，弃长尾防字幕帧
         _chunk = dict(_chunk)
+        # 🎬 补丁20（ISSUE-7）光学净画出入点：开启档先把源窗收窄为「净画」子窗（两端各内缩
+        #   光学转场残影；原声段命中 ASR 时优先对齐台词边界，绝不在台词中途腰斩）。子窗时长
+        #   恒=目标时长（仅平移入点）⇒ 下方"原速截尾"自然不再命中；关闭档原对象直通（零行为变化）。
+        _chunk = _apply_clean_inout(_chunk, _audio, _q, 'continuation', _clean_stats)
+        # 🎬 补丁15（ISSUE-6）动量高光安全裁剪：承接窗再按「段级 motion 序列」避让热段中段
+        #   （出点右移保动作 > 前移弃未完结动作）+ 弃起手平淡准备段；关闭档原对象直通（零行为变化）。
+        _chunk = _apply_motion_cut(_chunk, _audio, _q, _motion_cells, 'continuation', _motion_stats)
         _s0 = float(_chunk.get('startMs') or 0)
         _e0 = float(_chunk.get('endMs') or _s0)
         if (_e0 - _s0) > _audio * WINDOWIZE_TAIL_MAX_RATIO:
@@ -4051,6 +4473,28 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
             if final_video_duration_ms > 0 and video_dur_ms > 0:
                 raw_speed_factor = video_dur_ms / final_video_duration_ms
 
+            # 🎬 补丁20（ISSUE-7）光学净画出入点：开启档把源窗收窄为「净画」子窗——两端各内缩
+            #   CLEAN_INOUT_EDGE_MS（掐头去尾光学转场残影）；原声段命中 ASR 台词边界时优先对齐
+            #   （绝不在台词中途腰斩）。子窗时长恒=目标时长（仅平移入点，变速口径不变）⇒ 收窄后
+            #   raw_speed_factor 自然归 1.0，下方"原速截尾"不再命中（二者等效，净画为更优版）。
+            #   关闭档（缺省）原对象直通 ⇒ 零行为变化、一键回退。
+            chunk = _apply_clean_inout(chunk, final_video_duration_ms, query, 'legacy_main', _clean_stats)
+            _ci_dur = float(chunk.get("durationMs") or 0.0)
+            if _ci_dur > 0:
+                video_dur_ms = _ci_dur
+                if final_video_duration_ms > 0:
+                    raw_speed_factor = video_dur_ms / final_video_duration_ms
+            # 🎬 补丁15（ISSUE-6）动量高光安全裁剪：定窗后按「段级 motion 序列」修正出入点——
+            #   出点避让热段中段（禁腰斩动作；右移保动作 > 前移弃未完结动作）+ 弃起手平淡准备段。
+            #   窗长恒=目标时长（仅平移，变速口径不变）；关闭档（缺省）原对象直通 ⇒ 零行为变化。
+            chunk = _apply_motion_cut(chunk, final_video_duration_ms, query, _motion_cells,
+                                      'legacy_main', _motion_stats)
+            _mc_dur = float(chunk.get("durationMs") or 0.0)
+            if _mc_dur > 0:
+                video_dur_ms = _mc_dur
+                if final_video_duration_ms > 0:
+                    raw_speed_factor = video_dur_ms / final_video_duration_ms
+
             # 🎬 档1（2026-09-05）剪辑师原速窗口【素材≥目标】：素材不比目标短 → 直接截尾到目标（变速 1.0）。
             #    专业剪辑是"裁到正好长度"：素材长于目标一律裁剪（多余尾部还常是下一动作/字幕帧，弃之更干净），
             #    绝不为了"对齐"去变速快进素材。轻微超出(≤3%)由下方 speed clamp 微调，无感。
@@ -4120,6 +4564,19 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
                         chunk["endMs"] = round(_mcs + final_video_duration_ms, 1)
                         chunk["durationMs"] = round(final_video_duration_ms, 1)
                         video_dur_ms = float(chunk["durationMs"] or 0)
+                    # 🎬 补丁20（ISSUE-7）光学净画出入点：级联拼接窗同样收窄（子窗时长恒=目标，
+                    #   两端内缩光学残影）；关闭档原对象直通 ⇒ 零行为变化。
+                    chunk = _apply_clean_inout(chunk, final_video_duration_ms, query, 'legacy_merge', _clean_stats)
+                    _cm_dur = float(chunk.get("durationMs") or 0.0)
+                    if _cm_dur > 0:
+                        video_dur_ms = _cm_dur
+                    # 🎬 补丁15（ISSUE-6）动量高光安全裁剪：级联拼接窗同口径修正出入点
+                    #   （窗长恒=目标；关闭档原对象直通 ⇒ 零行为变化）。
+                    chunk = _apply_motion_cut(chunk, final_video_duration_ms, query, _motion_cells,
+                                              'legacy_merge', _motion_stats)
+                    _mmc_dur = float(chunk.get("durationMs") or 0.0)
+                    if _mmc_dur > 0:
+                        video_dur_ms = _mmc_dur
                     best_sem = cur_sem
                     best_dur_pen = _compute_duration_score(audio_dur_ms, video_dur_ms)
                     best_emotion = cur_emotion
@@ -4514,6 +4971,17 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
           f"（另有 {_ABL_STATS['entity_kept_cells']} 格免于窗口收窄）"
           f"｜未被 KM 分配={_abl_unmatched}/{n_queries} 段",
           file=sys.stderr)
+    # 🎬 补丁20（ISSUE-7）光学净画出入点汇总：仅 on 档打印（off 档日志零变化）
+    if _read_clean_inout() > 0.0:
+        _km_diag(f"[clean-inout] 汇总 收窄段={_clean_stats['hit']}（其中 ASR 台词对齐={_clean_stats['asr']}）"
+                 f"｜开关权重={_read_clean_inout():g}｜边距={CLEAN_INOUT_EDGE_MS:.0f}ms")
+    # 🎬 补丁15（ISSUE-6）动量高光安全裁剪汇总：仅 on 档打印（off 档日志零变化）
+    if _read_motion_cut() > 0.0:
+        _km_diag(f"[motion-cut] 汇总 位移段={_motion_stats['hit']}"
+                 f"（出点右移保动作={_motion_stats['out_shift_right']}／出点前移弃动作={_motion_stats['out_avoid']}"
+                 f"／弃起手准备段={_motion_stats['drop_leadin']}）"
+                 f"｜开关权重={_read_motion_cut():g}｜热段阈={MOTION_HOT:g}"
+                 f"｜出点右移上限={MOTION_OUT_SHIFT_MAX_MS:.0f}ms")
 
     # 🎬 S3 段域诊断（§24.12-I 步骤 1 的验收仪器，**视觉 Top-3 选段版**）：
     #   ① 优先域规模：每 query 优先域段数（目标 3）与切片数 min/中位/max；
@@ -4684,6 +5152,121 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
 
 
 # ===========================================================================
+# 🎵 补丁2 视听节拍器对齐（**输出装配层**，ISSUE-10 层位纠正）
+#   为什么不在规则卡层：BGM 强拍网格的 0 点 = 成片 BGM 起点（输出时间轴），而切片 startMs
+#   是源视频 PTS，两者**不同轴**；且新引擎每段画面时长由**刚性音频时长**决定（净画收窄后
+#   窗长恒 = audioDurationMs）⇒ 同一句所有候选的输出切点**恒同**，写进候选打分卡对排序
+#   零影响（可证明的 no-op）。故本律落在「结果装配」处：按输出游标 + 本句音频时长求切点，
+#   最近强拍在容差内时整段按 σ=aud/D 等量伸缩（A/V 同步变速，守 ±8% 铁律），使画切踩强拍。
+#   等效 legacy 的 `target_end_time_ms` 磁吸（见本文件「BGM 节拍」段的 `req.bgmBeats` 分支）。
+#   开关 `ZENTECT_BEAT_SNAP`（缺省 '0' = 关闭 = 零行为变化 = 一键回退）。
+BEAT_SNAP_TOLERANCE_MS = 250.0   # 磁吸容差（对齐 legacy：|δ|<250ms 才吸附）
+BEAT_SNAP_DEAD_ZONE_MS = 40.0    # 已对齐死区（≈1 帧@25fps）：不为此量级改动变速
+BEAT_SNAP_MAX_RATE = 0.03        # ±3% 变速带（与装配层 clamp `_spd` 的 [0.97,1.03] 同源）
+BEAT_SNAP_MIN_RATE = 1.0 / 1.03  # 变速带下沿：与上界对称取 ±3%（仍在导出端 SPEED_MIN=1/1.08 之内）。
+#   ⚠️ 2026-09-27 由 0.08/1.08 收紧至 0.03/1.03。理由（插桩实测）：`base` 只有 1.0 与 0.97、
+#   `base=1.03` 零命中 ⇒ clean-inout 收窄后窗长恒 = 配音时长，「富余」不存在；所有 spd>1.03 的
+#   「快放」全部出自本补丁的等量伸缩（原 ±8% 使 26/38 段被变速、最快 1.073 ⇒ 观感整片快放）。
+#   磁吸只是「画切踩强拍」的顺带收益，不该为踩拍把整段拉出可感知快/慢放；越出 ±3% 即弃吸附
+#   （`_beat_snap_plan` 返回 None ⇒ 该段恒速 1.0，切点不踩拍，属可接受让步）。
+
+
+def _read_beat_snap() -> float:
+    """读补丁2「视听节拍器对齐」开关（env `ZENTECT_BEAT_SNAP`，缺省 0）。
+
+    0 → 关闭（缺省档，零行为变化、一键回退）；>0 → 启用。非法值错就错落 0（不启用、不造假）。
+
+    Returns:
+        float: [0, +∞) 的开关权重（0 表示关闭）。
+    """
+    import os as _os
+    raw = _os.environ.get('ZENTECT_BEAT_SNAP', '0')
+    try:
+        w = float(raw)
+    except (TypeError, ValueError):
+        w = 0.0  # 非法值：按关闭处理（不磁吸也不造假）
+    return max(0.0, w)
+
+
+def _beat_snap_plan(cursor_ms: float, aud_ms: float, beats_ms, keep_original: bool = False):
+    """补丁2 纯函数：算出「本段能否磁吸强拍」及其等量伸缩系数（无副作用，可单测）。
+
+    判据（守「不可造假门」：任一前置不成立即 no-op）：
+      1. 无强拍网格 / 音频时长 ≤ 0 → 不可磁吸；
+      2. 原声段 → 不可磁吸：导出端对原声段强制 speed=1.0（RenderShotsAssembler L28），
+         设了也被忽略，属死开关；故此处提前中性放行；
+      3. 切点 = `cursor + aud`（输出时间轴）；最近强拍距离 |δ| > 容差 → 不可磁吸；
+      4. |δ| ≤ 死区 → 视为已对齐：不改变速（避免 0.1% 级无意义拉伸）；
+      5. 所需速率 σ = aud / (aud + δ) 越出变速带 `[1/1.03, 1.03]`（±3%，与装配层 clamp 同源）
+         → 不可磁吸（宁可不吸附，也不把整段拉出可感知快/慢放）。
+
+    Args:
+        cursor_ms: 本段画面起点在**输出时间轴**上的位置（前序各段时长累加）。
+        aud_ms: 本句刚性音频时长（ms）。
+        beats_ms: BGM 强拍网格（输出时间轴 ms 列表）。
+        keep_original: 是否原声段（原声段导出端强制 1.0x）。
+
+    Returns:
+        tuple | None: `(D_ms, sigma)`；`D_ms` = 磁吸后本段占用输出时间线的时长，`sigma` = 所需
+        变速系数（1.0 表示落在死区内、无需变速）；不可磁吸时返回 None。
+    """
+    aud = float(aud_ms or 0.0)
+    if keep_original or aud <= 0 or not beats_ms:
+        return None
+    cut = float(cursor_ms or 0.0) + aud
+    nearest = min(beats_ms, key=lambda b: abs(float(b) - cut))
+    delta = float(nearest) - cut
+    if abs(delta) > BEAT_SNAP_TOLERANCE_MS:
+        return None
+    if abs(delta) <= BEAT_SNAP_DEAD_ZONE_MS:
+        return aud, 1.0
+    d = aud + delta
+    if d <= 0:
+        return None
+    rate = aud / d
+    if not (BEAT_SNAP_MIN_RATE <= rate <= 1.0 + BEAT_SNAP_MAX_RATE):
+        return None  # 越出导出端同源变速带：宁可不吸附，也不超限硬拉（错就错）
+    return d, rate
+
+
+def _apply_beat_snap(item: dict, query, beats_ms, cursor_ms: float, stats=None) -> float:
+    """补丁2 接线层：把磁吸结论写进结果项（`appliedSpeedFactor` / `isExactSpeed`）。
+
+    off 档（env 缺省）**原对象直通、零计数**（零行为变化）；on 档仅在「可磁吸且需变速」时改写，
+    并把本段输出时长返还调用方推进游标（不可磁吸 ⇒ 返回刚性时长 aud，游标口径不变）。
+
+    Args:
+        item: 已装配的结果项（default_result 骨架 + chunkData + 已算的变速哨兵）。
+        query: 本句（dict 或 legacy 对象），用于读 keepOriginalAudio。
+        beats_ms: BGM 强拍网格（输出时间轴 ms 列表）。
+        cursor_ms: 本段画面起点在输出时间轴上的位置。
+        stats: 计数容器 {'hit','speed','max_delta_ms'}（None ⇒ 不计数）。
+
+    Returns:
+        float: 本段占用输出时间线的时长（ms）。
+    """
+    aud = float(item.get('audioDurationMs') or 0.0)
+    if _read_beat_snap() <= 0.0:
+        return aud
+    keep_original = bool(_q_field(query, 'keepOriginalAudio', False)) \
+        or bool(item.get('keepOriginalAudio'))
+    plan = _beat_snap_plan(cursor_ms, aud, beats_ms, keep_original)
+    if plan is None:
+        return aud
+    d, rate = plan
+    if stats is not None:
+        stats['hit'] += 1
+    if rate != 1.0:
+        item['appliedSpeedFactor'] = round(rate, 3)
+        # isExactSpeed=True 会被导出端强制 1.0x（jianying types.ts L135）⇒ 变速段必须显式置 False
+        item['isExactSpeed'] = False
+        if stats is not None:
+            stats['speed'] += 1
+            stats['max_delta_ms'] = max(float(stats.get('max_delta_ms', 0.0)), abs(d - aud))
+    return d
+
+
+# ===========================================================================
 # #8 新引擎接入（montage_router 接通真实 KMMatchReq）
 #   legacy_run = 旧 KM（_kuhn_munkres_match_sync，含 finally 释放句柄/模型）
 #   new_run    = 新引擎整条管道（validate→build_context→build_match_cost→beam_search.solve）
@@ -4724,6 +5307,10 @@ def _kmmatch_to_segment_request(req) -> dict:
         #   段域漏斗（query.segmentId vs chunk.segmentId）在此数据形态下恒空。注入后由
         #   build_context 优先以此为候选池，让 shadow A/B 与 legacy 在同一批真实候选上对账。
         'candidateIds': payload.get('candidateIds') or {},
+        # BGM 强拍网格（补丁2 输出层节拍磁吸消费）：KMMatchReq 侧为**秒级**（BgmBeatRepository
+        #   统一口径，见 AIService.ts L770），契约口径统一为**毫秒**（default_request.bgmBeats），
+        #   故在此摄入边界一次性 ×1000 归一；空数组=无 BGM/未检测（消费端中性放行，不造假）。
+        'bgmBeats': [float(b) * 1000.0 for b in (payload.get('bgmBeats') or [])],
         'routerMode': 'on',
     }
 
@@ -4782,11 +5369,16 @@ def _collect_key_coverage(chunks, queries, keys=None) -> dict:
     """统计指定字段的 **命中数/分母**，让「点亮 ≠ 可信」在诊断行里可见（① 可观测性）。
 
     单值判据复用 `_key_value_usable`（与 `_collect_available_keys` 逐字对齐，只多一层计数）。
-    分母口径分离、**不可混算成一个百分比**：
-      - 切片字段（primarySubject/shotScale/camera…）：分母 = 本轮 ctx.chunk_by_id 条数；
-      - 句级字段（silenceGapMs/characters/sceneGroup…）：分母 = 本轮 ctx.queries 条数。
-    某键在池内出现（`k in item`）才计入分母——契约 default_chunk/default_query 恒含字段，故
-    通常分母即池大小；个别样本缺该键时不虚增分母（不制造假覆盖率）。
+    分母口径分离、**绝不相加**（2026-09-25 修正，原实现在两处高估实体维覆盖）：
+      - **归属池唯一**：一个键只在一个池里计分母 —— 只出现在一个池 ⇒ 该池；两池皆有
+        （如 `characters`/`charIds`/`emotion` 双契约键）⇒ 归**切片池**（`pools[0]`，
+        实体观测主载体；句级同名键是需求侧期望值，与实体覆盖不同量纲，混算＝虚高）；
+      - **分母恒 = 归属池大小**，非「含该键的样本数」——原实现按含键样本计分母，使
+        非契约键（`keyProps`/`costume`/`weatherEnv`）读成 `100%(477/477)`，实为 `477/605`;
+      - 两池皆无该键 ⇒ 补 `(0, 0)` 占位（不虚增分母，诊断行印 `n/a`）。
+
+    修前实测两处失真：`characters=79%(555/706)`（706 = 605+101 跨池相加）；
+    `weatherEnv=100%(477/477)`（分母只数含键样本，实为 477/605=79%）。读数须以本口径为准。
 
     Args:
         chunks: 切片样本（ctx.chunk_by_id.values()）。
@@ -4800,21 +5392,529 @@ def _collect_key_coverage(chunks, queries, keys=None) -> dict:
         [it for it in (chunks or []) if isinstance(it, dict)],
         [it for it in (queries or []) if isinstance(it, dict)],
     ]
-    cov: dict = {k: (0, 0) for k in (keys or [])}
-    for pool in pools:
-        if not pool:
-            continue
-        pool_keys = set(keys) if keys is not None else {k for it in pool for k in it}
-        for k in pool_keys:
-            hit, total = cov.get(k, (0, 0))
-            for it in pool:
-                if k not in it:
-                    continue
-                total += 1
-                if _key_value_usable(it.get(k)):
-                    hit += 1
-            cov[k] = (hit, total)
+    pool_keys = [{k for it in pool for k in it} for pool in pools]  # 各池「真实出现」的键
+    wanted = set(keys) if keys is not None else (pool_keys[0] | pool_keys[1])
+    cov: dict = {k: (0, 0) for k in wanted}
+    for k in wanted:
+        owning = [i for i, pk in enumerate(pool_keys) if k in pk]
+        if not owning:
+            continue  # 两池皆无该键 ⇒ (0, 0) 占位（n/a），不虚增分母
+        pool = pools[owning[0]]  # 只在一个池 ⇒ 该池；两池皆有 ⇒ pools[0] = 切片池
+        hit = sum(1 for it in pool if _key_value_usable(it.get(k)))
+        cov[k] = (hit, len(pool))
     return cov
+
+
+# ===========================================================================
+# 乙案② 交付端：可供给链「交付覆盖配音」（开关 `ZENTECT_KM_SUPPLY_DUR`，缺省 off = 零行为变化）
+#   打分期（match_cost.build_supply_ms）已按「同母块源时间连续后继链」评候选容量，但命中后
+#   交付的 `chunkData` 若仍是单片，就会出现「打分说够、实发不够」⇒ 主路 ±3% clamp 补不上缺口、
+#   画面必然短于配音（实测 16 个解说段 源窗/配音 = 0.475~0.93）。本函数把交付窗沿同一条链
+#   扩到**恰好覆盖配音时长**（供得起 ⇒ 取子窗即 1.0×，无需变速）；链不足则尽力覆盖，
+#   由调用方按实际窗长如实重算变速（不造假）。
+#   🩹 2026-09-27 向前补足：旧口径只沿「源时间正方向」取后继片 ⇒ 命中「母块尾片」的段必然判荒，
+#   与料量多少无关（实测 seg_19 / seg_21_sub_2 / seg_26_sub_2 的命中片都是其母块**最后一片**，
+#   而母块前方尚有 2419 / 1735 / 9636ms 完全未被任何段使用）。改为「向后优先，不足时沿前驱链
+#   回吃补足差额」，窗改为 [尾 − 配音, 尾]；回吃左界受独占约束。
+#   独占消费：链上被本次交付吃掉的兄弟片记入 used_ids，后续碎片不可再跨（治重复占用/源窗重叠）；
+#   回吃时额外排除 reserved_ids（他段命中片），避免与相邻段抢同一画面。
+# ===========================================================================
+
+def _chain_cover_window(chunk: Optional[dict], target_ms: float, chunk_by_id: dict,
+                        used_ids: set, reserved_ids: Optional[set] = None) -> Optional[dict]:
+    """沿「同母块源时间连续兄弟链」把命中切片的交付窗扩到覆盖 target_ms。
+
+    取料顺序：先向源时间**正方向**取后继片（窗尾优先），不足时再向**负方向**回吃前驱片补足差额
+    ⇒ 最终窗 = [尾 − target, 尾]（窗长补齐到 target，该段变速归 1.0；链不足则如实尽力）。
+
+    纯计算 + 独占登记（唯一副作用：把吃掉的兄弟片 id 写入 used_ids）。
+
+    Args:
+        chunk: 命中切片（读 startMs/endMs/durationMs/filePath/parentChunkId）。
+        target_ms: 目标覆盖时长（= 本段配音时长 ms）。
+        chunk_by_id: 本批切片资产索引 {chunkId: chunk}。
+        used_ids: 独占消费集合（原地更新）。
+        reserved_ids: 保留集合（他段命中片 id）；回吃时额外排除，避免与相邻段抢同一画面。
+
+    Returns:
+        Optional[dict]: 扩链后的切片副本；返回 None 表示「原样直通、零行为变化」——
+        自身已够长 / 无素材文件 / 无父块 / 两个方向都无可吃兄弟片 / 总之未扩到料。
+    """
+    if not chunk or not (target_ms > 0) or not isinstance(chunk_by_id, dict):
+        return None
+    fpath = str(chunk.get('filePath') or '')
+    pid = str(chunk.get('parentChunkId') or '')
+    if not fpath or not pid:
+        return None
+    s = float(chunk.get('startMs') or 0.0)
+    e = float(chunk.get('endMs') or 0.0)
+    if e <= s:
+        e = s + float(chunk.get('durationMs') or 0.0)
+    if e - s >= target_ms:
+        return None  # 自身够长：直通
+    # 延迟 import：match_cost 顶部 import 本模块，模块级 import 会成环
+    from match_cost import SUPPLY_CHAIN_GAP_MS
+    sibs = [c for c in chunk_by_id.values()
+            if str(c.get('filePath') or '') == fpath
+            and str(c.get('parentChunkId') or '') == pid
+            and float(c.get('startMs') or 0.0) >= e - 0.5]
+    sibs.sort(key=lambda c: float(c.get('startMs') or 0.0))
+    cur_end = e
+    taken = []
+    for c in sibs:
+        cs = float(c.get('startMs') or 0.0)
+        ce = float(c.get('endMs') or 0.0)
+        if ce <= cur_end:
+            continue  # 被前段包含 / 零长段：不推进
+        if cs - cur_end > SUPPLY_CHAIN_GAP_MS:
+            break  # 源时间断链：不跨接
+        if str(c.get('id') or '') in used_ids:
+            break  # 已被前序碎片吃掉：独占，不可跨
+        cur_end = ce
+        taken.append(str(c.get('id') or ''))
+        if cur_end - s >= target_ms:
+            break
+    cover = min(cur_end, s + target_ms)
+    # 🩹 向前补足（2026-09-27）：后向链不足以覆盖配音 ⇒ 沿同母块前驱链（源时间连续）回吃差额。
+    #   左界受独占约束：used_ids（已被本次交付吃掉）与 reserved_ids（他段命中片）皆不可跨。
+    cur_start = s
+    if cover - s < target_ms - 0.5:
+        blocked = (used_ids | reserved_ids) if reserved_ids else used_ids
+        preds = [c for c in chunk_by_id.values()
+                 if str(c.get('filePath') or '') == fpath
+                 and str(c.get('parentChunkId') or '') == pid
+                 and 0.0 < float(c.get('endMs') or 0.0) <= s + 0.5]
+        preds.sort(key=lambda c: float(c.get('endMs') or 0.0), reverse=True)
+        for c in preds:
+            cs = float(c.get('startMs') or 0.0)
+            ce = float(c.get('endMs') or 0.0)
+            if cs >= cur_start - 0.5:
+                continue  # 与当前窗重叠 / 落在其右侧：不推进
+            if cur_start - ce > SUPPLY_CHAIN_GAP_MS:
+                break  # 源时间断链：不跨接
+            if str(c.get('id') or '') in blocked:
+                break  # 独占阻断（已被吃掉 / 他段命中片）
+            cur_start = cs
+            taken.append(str(c.get('id') or ''))
+            if cover - cur_start >= target_ms:
+                break
+    start_ms = max(cur_start, cover - target_ms)
+    if start_ms >= s - 0.5 and cover <= e + 0.5:
+        return None  # 两个方向都未扩到料：直通（不消耗 used_ids）
+    out = dict(chunk)
+    out['startMs'] = start_ms
+    out['endMs'] = cover
+    out['durationMs'] = cover - start_ms
+    used_ids.update(taken)
+    return out
+
+
+# ==========================================
+# 🔬 跨模态重排（新引擎专用，2026-09-28）
+#   线上活路径 = `_run_new_engine`。本步骤在 beam_search.solve 之后、逐句后处理之前，
+#   把「语义榜 Top-12」交给多模态 VLM 重排（离线实验同尺子实测 0.416 vs 现状 0.12）。
+#   档位：ZENTECT_VLM_RERANK ∈ {off, dry, on}（缺省 off，零行为变化）+ ZENTECT_VLM_RERANK_MAX（0=不限）。
+#   回退：一行 `set ZENTECT_VLM_RERANK=off`。
+#   ⚠️ 与 legacy `_apply_vlm_rerank` **零复用**：后者绑定 5 分钟块级池与 valid_chunk_indices 旧口径，
+#      且受 `req.useVlmRerank` 门控（Node 从不下发 ⇒ 休眠）。本步骤独立门控，不点亮 legacy。
+# ==========================================
+VLM_RR_TOP_K = 12               # 候选盘大小（对齐离线实验的 BGE 榜 Top-12）
+VLM_RR_MODEL = 'qwen3-vl-plus'  # 重排器模型：**必须**覆写（视觉通道默认绑 flash，实测 5/5 全判「无」——
+                                #   未真打分，把 prompt 占位模板抄了回来）。离线实验 plus 0.416 / flash 0.155。
+                                #   凭据仍取视觉通道的 key/base（同属百炼 profile），仅覆写模型名。
+VLM_RR_TIMEOUT_S = 120          # 单次调用超时（12 图 base64 体积较大）
+VLM_RR_MAX_TOKENS = 1200        # 输出上限：对齐离线实验（temp/rerank-full.py 用 1200）。
+                                #   2026-09-29 实测：qwen3-vl-plus@720 **不产思维链**——usage 的
+                                #   `completion_tokens_details` 只有 text_tokens、无 reasoning_tokens，且显式
+                                #   `enable_thinking=false` 与默认的 token/耗时完全一致（1027 vs 1026、33.6 vs 34.5s）；
+                                #   单句输出仅 ~200 token，1200 余量充足。
+VLM_RR_FAIL_THRESHOLD = 6       # 连续失败熔断阈值
+VLM_RR_BUDGET_S = 600.0         # 总预算（超预算即停）。plus 实测 10.8s/句、43 句 ≈ 465s，300s 会中途截断
+                                #   导致后半句不重排（结果不一致）；600s 仍留 300s 余量给同请求内其它步骤
+                                #   （Node 侧 /api/solver 整体超时 900s）。
+_VLM_RR_FAIL_COUNT = 0          # **连续**失败计数：成功即清零（旧实现"永不重置"在全量下必误熔断）
+
+# 送图长边上限（成本口径）：候选封面是 **2160×1080**，而百炼图像 token ≈ ceil(w/32)×ceil(h/32)+2
+#   ⇒ 单图 ~2314 token、12 图/句 ~27.8k token（**未越 32K 档**，qwen3-vl-plus 仍按 ≤32K 档
+#   1 元/百万输入、10 元/百万输出计）。
+#   重排只判「画面贴不贴题」，2K 分辨率无增益 ⇒ 缩到 720 长边后单图 ~278 token（约 1/8）。
+#   **仅影响送图，不动任何打分/选片口径。**
+VLM_RR_IMG_MAX_SIDE = 720
+
+# 本轮 token 用量累计（仅供收尾日志对账；不参与任何决策）。
+_VLM_RR_USAGE = {'calls': 0, 'in': 0, 'out': 0}
+
+VLM_RR_PICK_PROMPT = """你是影视剪辑的选片员。下面是解说词与它所在段落的画面意图，以及 {n} 张候选画面（编号见图片顺序）。
+
+【解说词】{text}
+{intent}
+【候选画面】{n} 张，编号 {labels}。
+
+请判断**哪一张画面最贴合这句解说词**：主体/动作/场景/情绪四个维度都要对得上才算贴合。
+判断依据只允许来自图片本身与解说词，画面意图仅供参考。
+若全都很差，如实把 best 写 "无"。
+
+只输出一个 JSON 对象，不要 markdown 围栏、不要多余文字：
+{{"scores": {{{score_hint}}}, "best": "C01 或 无", "reason": "一句话"}}
+"""
+
+
+def _read_vlm_rerank_mode() -> str:
+    """读跨模态重排档位（env `ZENTECT_VLM_RERANK`，缺省 off）。非法值错就错落 off。"""
+    raw = (os.environ.get('ZENTECT_VLM_RERANK') or '').strip().lower()
+    return raw if raw in ('off', 'dry', 'on') else 'off'
+
+
+def _read_vlm_rerank_model() -> str:
+    """读重排器模型名（env `ZENTECT_VLM_RERANK_MODEL`，缺省 `qwen3-vl-plus`）。
+
+    为什么必须覆写而不用请求里带来的 `vlmApiModel`：后者是「视觉理解」通道的绑定模型
+    （当前 = qwen3-vl-flash），实测对重排任务 5/5 全判「无」且 scores 全 0（未真打分，
+    直接抄了 prompt 里的占位模板）。离线实验证明 plus 有效、flash 不合格，故此处强制 plus。
+    """
+    return (os.environ.get('ZENTECT_VLM_RERANK_MODEL') or '').strip() or VLM_RR_MODEL
+
+
+def _read_vlm_rerank_max() -> int:
+    """读本次最多重排的句数（env `ZENTECT_VLM_RERANK_MAX`，缺省 0 = 不限）。非法值落 0。"""
+    try:
+        return max(0, int(str(os.environ.get('ZENTECT_VLM_RERANK_MAX', '0')).strip() or '0'))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _resolve_cover_path(p) -> str:
+    """封面路径归位：绝对路径直用、相对路径按仓库根拼（与 `eval_match_fit._resolve_cover` 同口径）。"""
+    s = str(p or '').strip()
+    if not s:
+        return ''
+    if os.path.isabs(s):
+        return s
+    return os.path.join(_engine_repo_root(), s.replace('/', os.sep))
+
+
+def _engine_repo_root() -> str:
+    """仓库根（三级上溯，与 `montage_router._repo_root` / `_append_engine_trace` 同深度推导）。"""
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _parse_vlm_pick(text, labels) -> Optional[int]:
+    """从重排器响应解析被选中候选的下标；无法判定返回 None（= 保持原匹配）。
+
+    纯函数（无 IO），供单测直接驱动。口径**以离线实验为准**（temp/rerank-full.py L253-256）：
+    取 `scores` 的 argmax 作为选择；但若模型自述 `best` 为「无」则**一票否决** —— 2026-09-29
+    实测 qwen3-vl-plus 在「盘里确实没有答案」时会写 `best:"无"`，却仍给若干张打 0.1~0.2 的
+    噪声分；只认 argmax 会把「模型说没有」硬解成换片（= 误换片）。`best` 只用于否决，不用于选择。
+
+    退化保护：`scores` 全 0 / 缺失 ⇒ None。模型抄了 prompt 里的占位模板（`"C01": 0.0 ...`）
+    而没真打分时，argmax 恒指向盘内首项（= 语义最高），那是垃圾输入驱动的任意换片，
+    宁可保持原匹配。解析失败（无 JSON / 截断）同样 None：猜错比不猜危险。
+    """
+    s = str(text or '').strip()
+    if s.startswith('```'):
+        s = s.split('```')[1]
+        s = s[4:] if s.lower().startswith('json') else s
+    i, j = s.find('{'), s.rfind('}')
+    if i < 0 or j <= i:
+        return None                     # 无 JSON 块 ⇒ 不猜
+    try:
+        obj = json.loads(s[i:j + 1])
+    except (ValueError, TypeError):
+        return None                     # JSON 截断/串味 ⇒ 不猜
+    if isinstance(obj, dict):
+        best = obj.get('best')
+        if isinstance(best, str) and best.strip().rstrip('。.！! ') in ('无', '無'):
+            return None                 # 自述「无」⇒ 否决（即使有噪声分），见 docstring
+    scores = obj.get('scores') if isinstance(obj, dict) else None
+    if not isinstance(scores, dict):
+        return None
+    best_i, best_v = None, 0.0          # 初值 0 ⇒ 只认严格正值，全 0/负值/缺失一律 None
+    for k, lb in enumerate(labels):
+        v = scores.get(lb)
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            continue
+        if float(v) > best_v:
+            best_i, best_v = k, float(v)
+    return best_i
+
+
+def _supply_of(cid, chunk: dict, supply_by_id: dict) -> float:
+    """单候选「可供给时长」读数（覆盖约束用，与打分期/交付端 `build_supply_ms` 同源）。
+
+    索引命中 ⇒ 同母块源时间连续后继链合计；未命中（无 parentChunkId 的母块片）⇒ 回退自身时长
+    （与 `build_supply_ms` 的「缺 parentChunkId 不进索引」口径一致，不造假相邻关系）。
+    """
+    v = supply_by_id.get(str(cid))
+    if v is not None:
+        return float(v)
+    dur = float(chunk.get('durationMs') or 0.0)
+    if dur <= 0:
+        dur = max(0.0, float(chunk.get('endMs') or 0.0) - float(chunk.get('startMs') or 0.0))
+    return dur
+
+
+def _build_vlm_slate(cand_ids, chunk_by_id, sem_row, taken_ids, current_cid,
+                     taken_covers=None, top_k: int = VLM_RR_TOP_K,
+                     supply_by_id=None, min_cover_ms: float = 0.0) -> list:
+    """纯函数：构本句重排候选盘，返回 [(chunkId, coverPath, sem)]（按语义分降序、已截断）。
+
+    口径（对齐离线实验的 BGE 榜）：
+      ① 域 = 本句白名单 `cand_ids`（**不越池**：实测放开全池反而更差，是噪声进盘不是候选少）；
+      ② 序 = 拼接口径语义分降序（**不切白名单原序**，它已被 preselect 按源时间重排）；
+      ③ 排他 = 剔除已被其他句占用的切片（本句当前片除外）⇒ 替换后不产生重复用片；
+      ④ 封面 = coverPath → parentCoverPath 兜底，两者皆空则剔除（无图不可判）；
+      ⑤ 去重 = 同一张封面只留语义最高的那个候选（同父镜头的兄弟段共用父封面，
+               不去重会把额度浪费在重复画面上）；
+      ⑥ 跨句封面排他 = 该封面已被他句占用则剔除（本句当前片除外）。仅靠 ③ 的 cid 排他
+               堵不住这种情况：兄弟段（…_seg1/…_seg2）是不同的 cid、却共用父封面，
+               两句会各选一个兄弟段 ⇒ 最终画面重复（实测 seg_26_sub_1 选 …_seg1、
+               seg_26_sub_3 选 …_seg2，封面同为 seg_1308_cover.jpg）；
+      ⑦ 覆盖约束（选项A）= 剔除「可供给时长 < 本句配音时长」的候选（**含本句当前片**）。
+               病灶：重排只看视觉贴题，会把「母块只切出单片、无料可扩」的短片换入 ⇒
+               交付端扩链取料为空 ⇒ 画面必然短于配音（实测 seg_21_sub_2 覆盖 0.445）。
+               仅在 `supply_by_id` 非空且 `min_cover_ms > 0` 时生效（原声段 / 供给口径 off
+               ⇒ 不裁）。全盘供不起 ⇒ 盘变空/仅 1 张 ⇒ 调用方按「盘<2 跳过」退回现状，
+               不硬换更差的片。
+    """
+    taken_covers = taken_covers if taken_covers is not None else set()
+    pool = []
+    seen_cover = set()
+    ranked = sorted(
+        ((str(cid), float(sem_row.get(str(cid), -1e9))) for cid in (cand_ids or [])),
+        key=lambda x: -x[1],
+    )
+    for cid, sem in ranked:
+        if cid != current_cid and cid in taken_ids:
+            continue
+        chunk = chunk_by_id.get(cid)
+        if not chunk:
+            continue
+        # ⑦ 覆盖约束：供不起的候选不进盘（放在封面去重之前 ⇒ 可让同封面的「供得起」兄弟段顶上）
+        if min_cover_ms > 0 and supply_by_id is not None \
+                and _supply_of(cid, chunk, supply_by_id) < min_cover_ms - 0.5:
+            continue
+        cover = _resolve_cover_path(chunk.get('coverPath') or chunk.get('parentCoverPath'))
+        if not cover or not os.path.exists(cover) or cover in seen_cover:
+            continue
+        if cid != current_cid and cover in taken_covers:
+            continue                        # ⑥ 跨句封面排他（当前片仍留盘作"保持"参照）
+        seen_cover.add(cover)
+        pool.append((cid, cover, sem))
+        if len(pool) >= top_k:
+            break
+    return pool
+
+
+def _encode_cover_b64(path, max_side=VLM_RR_IMG_MAX_SIDE) -> str:
+    """封面 → base64（送 VLM 用）；先按长边等比缩到 `max_side` 再编码。
+
+    只为成本（见 `VLM_RR_IMG_MAX_SIDE` 注释）：2K 原图无视觉增益，却让每句 token 越过计费档。
+    安全性：缩图是**纯优化**，PIL 缺失 / 解码失败 / 缩图后反而更大 ⇒ 一律退回原图字节，
+    绝不因优化而让调用失败（缩图异常仍由 `_call_vlm_pick` 的 try 兜住，与改动前一致）。
+
+    Args:
+        path: 封面图路径（调用方已保证存在，来自 `_build_vlm_slate`）。
+        max_side: 送图长边上限（px）。
+
+    Returns:
+        str: base64 字符串（JPEG）。
+    """
+    import base64
+    try:
+        import io
+        from PIL import Image
+        with Image.open(path) as im:
+            im = im.convert('RGB')
+            im.thumbnail((max_side, max_side))
+            buf = io.BytesIO()
+            im.save(buf, format='JPEG', quality=85)
+            small = buf.getvalue()
+        with open(path, 'rb') as f:
+            raw = f.read()
+        data = small if 0 < len(small) < len(raw) else raw
+    except Exception:  # noqa: BLE001 —— 缩图失败不影响送图
+        with open(path, 'rb') as f:
+            data = f.read()
+    return base64.b64encode(data).decode('utf-8')
+
+
+def _call_vlm_pick(text, visual_intent, covers, api_key, api_base, model) -> Optional[int]:
+    """调多模态 VLM 从候选封面里挑最贴合的一张，返回下标；失败/熔断返回 None。
+
+    None 的语义在返回值上与「模型判定无合适画面」不可区分，调用方按
+    `_VLM_RR_FAIL_COUNT` 变化与否区分（见 `_apply_vlm_rerank_new_engine` 的日志）。
+    """
+    global _VLM_RR_FAIL_COUNT
+    if _VLM_RR_FAIL_COUNT >= VLM_RR_FAIL_THRESHOLD:
+        return None
+    if not (api_key and api_base and model) or not covers:
+        return None
+    import requests
+    labels = ['C{:02d}'.format(i + 1) for i in range(len(covers))]
+    prompt = VLM_RR_PICK_PROMPT.format(
+        n=len(covers), text=text,
+        intent=('【画面意图（仅供参考）】{}\n'.format(visual_intent) if visual_intent else ''),
+        labels='、'.join(labels),
+        score_hint=', '.join('"{}": 0.0'.format(x) for x in labels))
+    try:
+        content = [{'type': 'text', 'text': prompt}]
+        for cp in covers:
+            content.append({'type': 'image_url',
+                            'image_url': {'url': 'data:image/jpeg;base64,' + _encode_cover_b64(cp)}})
+        resp = requests.post(
+            api_base.rstrip('/') + '/chat/completions',
+            json={'model': model, 'messages': [{'role': 'user', 'content': content}],
+                  'temperature': 0.1, 'max_tokens': VLM_RR_MAX_TOKENS},
+            headers={'Authorization': 'Bearer ' + api_key, 'Content-Type': 'application/json'},
+            timeout=VLM_RR_TIMEOUT_S)
+        resp.raise_for_status()
+        body = resp.json()
+        raw = (body.get('choices') or [{}])[0].get('message', {}).get('content', '')
+        # token 用量累计（仅对账用；缺 usage 时计 0，不影响主流程）
+        u = body.get('usage') or {}
+        _VLM_RR_USAGE['calls'] += 1
+        _VLM_RR_USAGE['in'] += int(u.get('prompt_tokens') or 0)
+        _VLM_RR_USAGE['out'] += int(u.get('completion_tokens') or 0)
+    except Exception as e:  # noqa: BLE001 —— 网络/鉴权/限流统一计数，不拖垮求解主流程
+        _VLM_RR_FAIL_COUNT += 1
+        print('[VLM-RR] 调用失败（连续 {}/{}）：{}: {}'.format(
+            _VLM_RR_FAIL_COUNT, VLM_RR_FAIL_THRESHOLD, type(e).__name__, e), file=sys.stderr)
+        return None
+    _VLM_RR_FAIL_COUNT = 0                 # 成功即清零 ⇒ 恒为「连续失败」语义
+    idx = _parse_vlm_pick(raw, labels)
+    if idx is None:
+        # 🔬 诊断：模型「判无」与「解析不出」在返回值上同值，落原始回复片段以区分
+        #   （stage1 线上曾现 5/5 未选出且熔断=0 —— 没有这行无法归因是模型判无还是回复读不出）。
+        snippet = ' '.join(str(raw or '').split())[:400]
+        _append_engine_trace('[vlm-rr-raw] model={} 未选出，原始回复：{}'.format(model, snippet or '<空>'))
+    return idx
+
+
+def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> dict:
+    """对 beam_search 的逐句解做跨模态重排（新引擎专用，只改选片、不碰任何后处理）。
+
+    插入位置：`solved = _beam_solve(...)` 之后、逐句后处理循环之前 ⇒ 下游扩窗/净画/动量/
+    变速/封面回填全部按新片自动重算，无需改后处理任何一行。
+
+    Args:
+        solved: {shotId: 解项}，原地改写 `chunkData`/`chunkId`。
+        ctx: build_req_context 产出（读 cands_by_shotid / chunk_by_id / queries）。
+        sem_scores: {shotId: {chunkId: 拼接口径语义分}}（build_match_cost 的 sem_out）。
+        req: KMMatchReq（只读凭据 vlmApiKey / vlmApiBase；**模型名不复用** vlmApiModel，见下）。
+
+    Returns:
+        dict: 原 `solved`（dry 档内容不变，只落日志与统计）。
+    """
+    import time
+    mode = _read_vlm_rerank_mode()
+    if mode == 'off':
+        return solved
+    api_key = getattr(req, 'vlmApiKey', '') or ''
+    api_base = getattr(req, 'vlmApiBase', '') or ''
+    # 模型名走独立 env（缺省 qwen3-vl-plus），**不取** req.vlmApiModel —— 那是视觉通道绑定
+    # 的 flash，实测对本任务 5/5 全判「无」（未真打分）。凭据仍复用同 profile 的 key/base。
+    model = _read_vlm_rerank_model()
+    if not (api_key and api_base):
+        _append_engine_trace('[vlm-rr] 档位={} 但 VLM 凭据（apiKey/apiBase）不全 ⇒ 跳过（保持原匹配）'.format(mode))
+        return solved
+
+    max_n = _read_vlm_rerank_max()
+    t0 = time.time()
+    # 占用集合：全局已选片（排他口径；替换后同步维护 ⇒ 零重复用片）
+    taken = {str((r.get('chunkData') or {}).get('id') or '') for r in solved.values()}
+    taken.discard('')
+
+    def _cover_of(cid):
+        """解析片 id 的最终封面（与 `_build_vlm_slate` 同口径：coverPath → parentCoverPath）。"""
+        ch = ctx.chunk_by_id.get(str(cid or ''))
+        if not ch:
+            return ''
+        return _resolve_cover_path(ch.get('coverPath') or ch.get('parentCoverPath'))
+
+    # 封面占用计数：兄弟段（…_seg1/…_seg2）cid 不同、封面相同 ⇒ 必须按封面再排一次
+    cover_cnt = {}
+    for cid in taken:
+        cov = _cover_of(cid)
+        if cov:
+            cover_cnt[cov] = cover_cnt.get(cov, 0) + 1
+    # 🧩 选项A 覆盖约束：重排只能在「可供给时长 ≥ 本句配音时长」的候选里挑画面。
+    #   病灶 = 「视觉贴题」与「供得起」在重排环节脱钩：VLM 会把母块无料可扩的短片换入，
+    #   交付端扩链取料为空 ⇒ 画面必然短于配音（实测 seg_21_sub_2 覆盖 0.445）。
+    #   供给索引与打分期/交付端同源（match_cost.build_supply_ms）；口径 off ⇒ 不建索引、零行为变化。
+    from match_cost import _read_supply_dur as _read_sup_rr
+    supply_by_id = None
+    if _read_sup_rr():
+        from match_cost import build_supply_ms
+        supply_by_id = build_supply_ms(ctx.chunk_by_id)
+    stats = {'n': 0, 'slate_lt2': 0, 'picks_none': 0, 'changed': 0, 'budget_stop': 0, 'imgs': 0,
+             'cov_drop': 0}
+    _VLM_RR_USAGE.update(calls=0, **{'in': 0, 'out': 0})   # 本轮 token 用量清零（仅对账）
+    for q in ctx.queries:
+        sid = str(q['shotId'])
+        r = solved.get(sid)
+        if r is None:
+            continue
+        if max_n and stats['n'] >= max_n:
+            break
+        stats['n'] += 1
+        cur_cid = str((r.get('chunkData') or {}).get('id') or '')
+        # 覆盖阈值：原声段不适用（窗长由 ASR 段定，同 match_cost SUPPLY_SHORT_PENALTY 口径）。
+        _min_cover = 0.0 if bool(q.get('keepOriginalAudio')) \
+            else float(q.get('audioDurationMs') or 0.0)
+        if supply_by_id is not None and _min_cover > 0:
+            stats['cov_drop'] += sum(
+                1 for cid in (ctx.cands_by_shotid.get(sid) or [])
+                if ctx.chunk_by_id.get(str(cid)) is not None
+                and _supply_of(str(cid), ctx.chunk_by_id[str(cid)], supply_by_id) < _min_cover - 0.5)
+        slate = _build_vlm_slate(ctx.cands_by_shotid.get(sid) or [], ctx.chunk_by_id,
+                                 sem_scores.get(sid) or {}, taken, cur_cid, set(cover_cnt),
+                                 supply_by_id=supply_by_id, min_cover_ms=_min_cover)
+        if len(slate) < 2:
+            stats['slate_lt2'] += 1
+            _append_engine_trace('[vlm-rr] {} 盘<2（{} 张）⇒ 跳过'.format(sid, len(slate)))
+            continue
+        if time.time() - t0 > VLM_RR_BUDGET_S:
+            stats['budget_stop'] = 1
+            break
+        stats['imgs'] += len(slate)
+        _fail_before = _VLM_RR_FAIL_COUNT
+        pick = _call_vlm_pick(str(q.get('text') or ''), str(q.get('visualIntent') or ''),
+                              [c[1] for c in slate], api_key, api_base, model)
+        if pick is None:
+            if _VLM_RR_FAIL_COUNT == _fail_before:
+                stats['picks_none'] += 1
+            _append_engine_trace('[vlm-rr] {} 盘={} ⇒ 未选出（保持 {}）'.format(sid, len(slate), cur_cid))
+            continue
+        new_cid = slate[pick][0]
+        if new_cid == cur_cid:
+            _append_engine_trace('[vlm-rr] {} 盘={} ⇒ 保持 {}'.format(sid, len(slate), cur_cid))
+            continue
+        _append_engine_trace('[vlm-rr] {} 盘={} ⇒ {}（原 {}）'.format(sid, len(slate), new_cid, cur_cid))
+        if mode == 'dry':
+            continue                        # dry 档只记日志，绝不改 solved
+        cur_cover, new_cover = _cover_of(cur_cid), _cover_of(new_cid)
+        taken.discard(cur_cid)
+        taken.add(new_cid)
+        if cur_cover and cover_cnt.get(cur_cover):     # 释放原封面（仅当已无人占用才删键）
+            cover_cnt[cur_cover] -= 1
+            if cover_cnt[cur_cover] <= 0:
+                del cover_cnt[cur_cover]
+        if new_cover:
+            cover_cnt[new_cover] = cover_cnt.get(new_cover, 0) + 1
+        r['chunkData'] = dict(ctx.chunk_by_id.get(new_cid) or {})
+        r['chunkId'] = new_cid
+        r['vlmReranked'] = True
+        stats['changed'] += 1
+
+    _append_engine_trace(
+        '[vlm-rr] 档位={} model={} MAX={} ｜ 处理={} 句 ｜ 换片={} ｜ 未选出={} ｜ 盘<2={} ｜ '
+        '喂图={} 张 ｜ 覆盖剔除={} ｜ 超预算停={} ｜ 熔断计数={} ｜ token入/出={}/{}（{} 次调用）｜ 耗时={:.1f}s'.format(
+            mode, model, max_n or '不限', stats['n'], stats['changed'], stats['picks_none'],
+            stats['slate_lt2'], stats['imgs'], stats['cov_drop'], stats['budget_stop'],
+            _VLM_RR_FAIL_COUNT, _VLM_RR_USAGE['in'], _VLM_RR_USAGE['out'], _VLM_RR_USAGE['calls'],
+            time.time() - t0))
+    print('[VLM-RR] {}'.format(stats), file=sys.stderr)
+    return solved
 
 
 def _run_new_engine(req) -> dict:
@@ -4833,8 +5933,21 @@ def _run_new_engine(req) -> dict:
     seg_req = _kmmatch_to_segment_request(req)
     validate_request(seg_req)
     ctx = build_req_context(seg_req)
-    cost = build_match_cost(ctx.queries, ctx.chunk_by_id, ctx.cands_by_shotid, None)
+    # 🔬 跨模态重排：档位非 off 时导出拼接口径语义分供候选盘排序（off 档不建容器，零开销）。
+    _vlm_rr_mode = _read_vlm_rerank_mode()
+    _vlm_sem = {} if _vlm_rr_mode != 'off' else None
+    cost = build_match_cost(ctx.queries, ctx.chunk_by_id, ctx.cands_by_shotid, None,
+                            sem_out=_vlm_sem)
     tts = {str(q['shotId']): float(q.get('audioDurationMs') or 0.0) for q in ctx.queries}
+    # 🎬 补丁20（ISSUE-7）光学净画出入点：本次求解的收窄段数计数（off 档恒 0 且不打印汇总）。
+    _clean_stats = {'hit': 0, 'asr': 0}
+    # 🎬 补丁15（ISSUE-6）动量高光安全裁剪：从本批真实切片建段级 motion 序列（off 档不构建）。
+    _motion_cells = _build_motion_cells(list(ctx.chunk_by_id.values())) if _read_motion_cut() > 0.0 else None
+    _motion_stats = {'hit': 0, 'out_shift_right': 0, 'out_avoid': 0, 'drop_leadin': 0}
+    # 🎵 补丁2（ISSUE-10 层位纠正）视听节拍器对齐：BGM 强拍网格（秒→ms 已在适配器归一口径）
+    #   与磁吸计数（off 档恒 0 且不打印汇总）。
+    _beats_ms = seg_req.get('bgmBeats') or []
+    _beat_stats = {'hit': 0, 'speed': 0, 'max_delta_ms': 0.0}
     # 真实可用字段集（守「不可造假门」）：从本批切片/句的实际数据样本收窄 available_keys，
     #   而非全量启用。依赖字段未回填（如 A 域 eyelineDirection 尚未进候选）的休眠卡经此真正休眠，
     #   绝不以缺字段数据伪造启用硬门禁。判据：对该键取到的值非空（str.strip、>0 数值、非空列表/真布尔）。
@@ -4863,7 +5976,23 @@ def _run_new_engine(req) -> dict:
     )
     solved = _beam_solve(ctx, cost, rules, tts)
 
+    # 🔬 跨模态重排（档位 ZENTECT_VLM_RERANK，缺省 off ⇒ 本行为空操作）。
+    #   插在逐句后处理之前：只改「本句选中了哪片」，下游扩窗/净画/动量/变速/封面回填自动按新片重算。
+    if _vlm_rr_mode != 'off':
+        solved = _apply_vlm_rerank_new_engine(solved, ctx, _vlm_sem or {}, req)
+
     results = []
+    # 输出时间轴游标（补丁2 磁吸用）：off 档恒等于刚性音频时长累加（零行为变化）。
+    _cursor_ms = 0.0
+    # 🧩 乙案② 交付端：命中片不够配音时长 ⇒ 沿同母块连续后继链扩窗覆盖（独占消费）。
+    #   off 档（缺省）不建集合、零计数、零行为变化。
+    from match_cost import _read_supply_dur as _read_sup
+    _sup_on = _read_sup()
+    _chain_used = set()
+    # 保留集合：全部命中切片 id（向前回吃时排除 ⇒ 不与相邻段抢同一画面）
+    _chain_reserved = {str((r.get('chunkData') or {}).get('id') or '') for r in solved.values()}
+    _chain_reserved.discard('')
+    _chain_stats = {'hit': 0, 'full': 0, 'partial': 0, 'fwd': 0, 'back': 0, 'under': 0}
     for q in ctx.queries:
         sid = str(q['shotId'])
         r = solved.get(sid)
@@ -4880,6 +6009,40 @@ def _run_new_engine(req) -> dict:
         # 读不到切片 → 「匹配不到」。这里按 chunkData.id 兜齐 chunkId（错就错，空则空）。
         item['chunkId'] = (r.get('chunkData') or {}).get('id', '') or r.get('chunkId') or ''
         item['chunkData'] = r.get('chunkData') or {}
+        # 🧩 乙案② 交付端：命中片不够配音时长 ⇒ 沿同母块源时间连续后继链扩窗到覆盖配音
+        #   （独占消费：吃掉的兄弟片不再供后续碎片；原声段不扩——其声画同源、窗长由 ASR 段定）。
+        if _sup_on and not bool(_q_field(q, 'keepOriginalAudio', False)) \
+                and not bool(item.get('keepOriginalAudio')):
+            _aud_ms = float(item.get('audioDurationMs') or 0.0)
+            _cover_cd = _chain_cover_window(
+                item['chunkData'], _aud_ms, ctx.chunk_by_id, _chain_used, _chain_reserved)
+            if _cover_cd is not None:
+                # 窗头前移 ⇒ 走了「向前补足」（否则为纯后向扩链）
+                _went_back = float(_cover_cd.get('startMs') or 0.0) \
+                    < float(item['chunkData'].get('startMs') or 0.0) - 0.5
+                item['chunkData'] = _cover_cd
+                _chain_stats['hit'] += 1
+                _chain_stats['full' if float(_cover_cd.get('durationMs') or 0.0) >= _aud_ms - 0.5
+                             else 'partial'] += 1
+                _chain_stats['back' if _went_back else 'fwd'] += 1
+            # 🩹 交付扩链后仍有缺口诊断：窗长 < 配音 ⇒ 配音必被截断的风险段（仅计数 + 汇总日志，
+            #   不改变速钳制语义；用于回归观察「宁换片不截音」是否奏效）。
+            _w_cd = float(item['chunkData'].get('durationMs') or 0.0)
+            if not (_w_cd > 0):
+                _w_cd = float(item['chunkData'].get('endMs', 0.0)) \
+                    - float(item['chunkData'].get('startMs', 0.0))
+            if _aud_ms > 0 and _w_cd < _aud_ms - 0.5:
+                _chain_stats['under'] += 1
+        # 🎬 补丁20（ISSUE-7）光学净画出入点：新引擎命中切片是完整源切片（无 legacy 式截尾，
+        #   尾部光学残影/硬字幕半切更明显）⇒ 此处按目标音频时长收窄为「净画」子窗（时长不变、
+        #   仅平移入点；原声段命中 ASR 台词边界时优先对齐）。关闭档（缺省）原对象直通 ⇒ 零行为变化。
+        item['chunkData'] = _apply_clean_inout(
+            item['chunkData'], float(item.get('audioDurationMs') or 0.0), q, 'new_engine', _clean_stats)
+        # 🎬 补丁15（ISSUE-6）动量高光安全裁剪：新引擎命中切片再按「段级 motion 序列」修正出入点
+        #   （窗长恒=目标；关闭档原对象直通 ⇒ 零行为变化）。
+        item['chunkData'] = _apply_motion_cut(
+            item['chunkData'], float(item.get('audioDurationMs') or 0.0), q, _motion_cells,
+            'new_engine', _motion_stats)
         # G 域（§10.2.8 动作2）：输出项经输出侧权威校验（缺必填字段即抛，schema 漂移 fail-fast）。
         #   补 isExactSpeed/appliedSpeedFactor 变速口径（对齐 legacy _spd 的 [0.97,1.03] 剪辑师准则），
         #   让 on 档也带 E 域哨兵（否则 default_result 恒 False，导出端只能退化为自检源时>=目标）。
@@ -4891,6 +6054,10 @@ def _run_new_engine(req) -> dict:
             _spd = max(0.97, min(1.03, _cdur / _aud))
             item['appliedSpeedFactor'] = round(_spd, 3)
             item['isExactSpeed'] = item.get('isExactSpeed') is True or round(_spd, 3) == 1.0
+        # 🎵 补丁2（ISSUE-10 层位纠正）视听节拍器对齐：输出游标 + 本句刚性音频时长求切点，
+        #   最近强拍在 ±250ms 容差内则按 ±8% 等量伸缩吸附（改写 appliedSpeedFactor）；
+        #   off 档原值直通、游标恒刚性累加（零行为变化）。
+        _cursor_ms += _apply_beat_snap(item, q, _beats_ms, _cursor_ms, _beat_stats)
         validate_result(item)
         # 与 legacy 同构：legacy 结果条目带 coverPath（`_chunk.get("coverPath")`，L3338），
         # on 档 default_result 的 coverPath/thumbnail 恒空 → step5 卡片 `m.thumbnail` 读到空、
@@ -4902,8 +6069,46 @@ def _run_new_engine(req) -> dict:
             item['thumbnail'] = _fc.get('thumbnail') or _fc.get('coverPath') or ''
         results.append(item)
 
+    # 🧩 乙案② 交付端汇总：仅 on 档打印（off 档日志零变化）
+    if _sup_on:
+        _append_engine_trace(
+            f"[chain-deliver] 交付扩链 段数={_chain_stats['hit']}"
+            f"（覆盖配音={_chain_stats['full']}｜链不足尽力={_chain_stats['partial']}"
+            f"｜向前补足={_chain_stats['back']}）"
+            f"｜独占消费切片={len(_chain_used)}｜扩链后仍覆盖不足={_chain_stats['under']}")
     _cover_n = sum(1 for it in results if it.get('coverPath') or it.get('thumbnail'))
     _append_engine_trace(f"[on-engine] 卡片封面回填：coverPath/thumbnail 非空 {_cover_n}/{len(results)}")
+    # 🔢 落码点2 可观测性：置信度落库分布（本函数仅新引擎 on/shadow 路径执行 ⇒ off 档日志零变化）。
+    #   此前新引擎不产 confidence ⇒ Node 侧 matched.confidence 恒 undefined、全片 score=0/confirmed=false，
+    #   「匹配度差」既不可观测也不可回归；本行给出 min/med/max + 已确认段数供直接核对。
+    _conf_vals = sorted(float(it.get('confidence') or 0.0) for it in results)
+    if _conf_vals:
+        _append_engine_trace(
+            f'[on-engine] 置信度落库：段数={len(_conf_vals)} min={_conf_vals[0]:.3f} '
+            f'med={_conf_vals[len(_conf_vals) // 2]:.3f} max={_conf_vals[-1]:.3f} ｜ '
+            f'已确认(≥0.88)={sum(1 for v in _conf_vals if v >= 0.88)} ｜ '
+            f'降级段={sum(1 for it in results if it.get("isDegraded"))}')
+    # 🎬 补丁20（ISSUE-7）光学净画出入点汇总：仅 on 档打印（off 档日志零变化）
+    if _read_clean_inout() > 0.0:
+        _append_engine_trace(
+            f"[clean-inout] 净画出入点 收窄段={_clean_stats['hit']}（其中 ASR 台词对齐={_clean_stats['asr']}）"
+            f"｜开关权重={_read_clean_inout():g}｜边距={CLEAN_INOUT_EDGE_MS:.0f}ms")
+
+    # 🎬 补丁15（ISSUE-6）动量高光安全裁剪汇总：仅 on 档打印（off 档日志零变化）
+    if _read_motion_cut() > 0.0:
+        _append_engine_trace(
+            f"[motion-cut] 动量裁剪 位移段={_motion_stats['hit']}"
+            f"（出点右移保动作={_motion_stats['out_shift_right']}／出点前移弃动作={_motion_stats['out_avoid']}"
+            f"／弃起手准备段={_motion_stats['drop_leadin']}）"
+            f"｜开关权重={_read_motion_cut():g}｜热段阈={MOTION_HOT:g}")
+
+    # 🎵 补丁2（ISSUE-10）视听节拍器对齐汇总：仅 on 档打印（off 档日志零变化）
+    if _read_beat_snap() > 0.0:
+        _append_engine_trace(
+            f"[beat-snap] 强拍磁吸 段数={_beat_stats['hit']}"
+            f"（其中变速段={_beat_stats['speed']}｜最大等量伸缩={_beat_stats['max_delta_ms']:.0f}ms）"
+            f"｜开关权重={_read_beat_snap():g}｜容差={BEAT_SNAP_TOLERANCE_MS:.0f}ms"
+            f"｜死区={BEAT_SNAP_DEAD_ZONE_MS:.0f}ms｜强拍数={len(_beats_ms)}")
 
     # 🔍 per-query 命中/未命中统计（诊断）：query 总数 = 请求侧所有碎片查询；未命中 =
     #   beam 未给该 query 分配切片（solved 无键）。未命中里 `is_orig` 标记原声段——原声段本
@@ -4957,16 +6162,19 @@ _KM_DISPATCH_ROUTER = None
 
 
 def _append_engine_trace(m: str) -> None:
-    """把引擎对账/诊断 trace 落盘到 data/new-engine-shadow.log（追加，UTF-8），
-    便于离线读取核对 shadow A/B 与 on 档，不依赖终端实时转发。
-    print 仍保留走 stderr 供开发时实时查看；落盘失败仅告警不抛错，
-    因 trace 属诊断旁路，不能因写盘问题拖垮 KM 求解主流程。"""
+    """把引擎对账/诊断 trace 落盘到 `<数据目录>/data/new-engine-shadow.log`（追加，UTF-8），
+    便于离线读取核对 shadow A/B 与 on 档。
+
+    数据目录解析：`ZENTECT_DATA_DIR`（当前**无生产者**，实为预留口）→ **仓库根**（由本文件位置
+    三级上溯，与 `montage_router._repo_root()` 同深度推导）。**不用 cwd**：daemon 的工作目录不固定，
+    曾实测在 `resources/scripts/` 下跑出**第二落点** `resources/scripts/data/new-engine-shadow.log`，
+    与主落点 `<root>/data/` 分流（读数时须两处各取一半），故显式钉到仓库根。
+    落盘失败仅告警不抛错——trace 属诊断旁路，不能因写盘问题拖垮 KM 求解主流程。
+    """
     try:
-        path = os.path.join(
-            os.environ.get('ZENTECT_DATA_DIR') or os.getcwd(),
-            'data',
-            'new-engine-shadow.log',
-        )
+        base = os.environ.get('ZENTECT_DATA_DIR') or os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        path = os.path.join(base, 'data', 'new-engine-shadow.log')
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'a', encoding='utf-8') as f:
             f.write(f"[new-engine] {m}\n")

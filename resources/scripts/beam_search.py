@@ -33,6 +33,10 @@ from montage_contract import ContractError, has_motion_contrast
 
 # 一票否决的硬门禁代价（补丁21 Tier1）——任何规则返回此值即弃选。
 HARD_DENY_COST = float('inf')
+# 熔断降级段置信度封顶（落码点2，承接不虚高，对齐 legacy `min(0.85, _prev_conf)` 口径）：
+#   一级 hard_relax / 三级 all_beam_death 强挂的候选并非「合法贴合命中」，不得报出「已确认」级
+#   置信度（消费端 0.88 阈值下自动判未确认），否则降级段伪装成高可信匹配、掩盖真实贴合缺口。
+DEGRADED_CONF_CAP = 0.85
 # 长镜头顺延上限（§8.3 无 PPT 化）：连续顺延句数与累计时长。
 CONTINUE_MAX_SENTENCES = 3
 CONTINUE_MAX_MS = 7000
@@ -54,6 +58,17 @@ CONTINUE_PREF = 0.3
 TIME_PROX_SOFT_MAX = 0.5
 TIME_PROX_WINDOW_MS = 4000.0
 TIME_PROX_RAMP_MS = 12000.0
+
+# 前向审望资源耗尽惩罚（补丁1，env `ZENTECT_KM_FORWARD_LOOKOUT`，缺省 0=关闭）：
+#   本句若抢占「后句唯一可用主粮」，后半句就断供（无料可用）。前瞻窗口内逐句统计该候选在
+#   未来句候选池里的剩余可用数 rem（按本路径 used_bits 计，未被本路径占用即算可用）：
+#     rem == 1 → 唯一主粮（本句抢走即后句归零）→ 罚 FORWARD_LOOKOUT_SOLE_MAX；
+#     rem == 2 → 濒危（仅剩一席余量，语言学抖动即可压空）→ 罚 FORWARD_LOOKOUT_SCARCE_MAX。
+#   逐未来句累加、整趟封顶；纯统计零模型；缺省关 ⇒ 零行为变化、可一键回退（置 0）。
+FORWARD_LOOKOUT_SENTENCES = 5
+FORWARD_LOOKOUT_SOLE_MAX = 1.2
+FORWARD_LOOKOUT_SCARCE_MAX = 0.4
+FORWARD_LOOKOUT_TOTAL_MAX = 2.0
 
 
 # 装配期切片回查回调：`_pick_best_for_shot` 末帧漂移时据 chunkId 取完整切片。
@@ -302,8 +317,18 @@ def solve(
     # 消除「每句局部下标错指」缺陷 → 任一物理切片本路径一旦落点即永久禁复用
     # （补丁6 段域掩码 + 历史归全局黑名单，兑现无 PPT 化验收）。
     chunk_index: Dict[str, int] = {str(cid): i for i, cid in enumerate(ctx.chunk_by_id.keys())}
+    # 前向审望（补丁1）开关与诊断计数：缺省 0 = 关闭（零行为变化档，置 0 即一键回退）。
+    # 整趟只读一次 env，避免逐候选重复读；off 档不构造前瞻池、不累加计数（零开销）。
+    fl_weight = _read_forward_lookout()
+    fl_stats: Dict[str, int] = {'hits': 0, 'cost': 0.0, 'step': 0, 'pool_empty': 0,
+                                'probe': 0, 'guard': 0, 'miss_pool': 0, 'wide': 0,
+                                'scarce': 0, 'sole': 0}
+    # 弱锚接线（丙①，落码点3）开关与诊断计数：缺省 off = 零行为变化（block_first 锚仍不参与）。
+    #   集合按 shotId 去重计数（_expand_paths 熔断时会被多次调用，直接计数会虚高）。
+    _block_anchor = _read_block_anchor()
+    _anc_shots: set = set()
 
-    for query in ctx.queries:
+    for qi, query in enumerate(ctx.queries):
         sid = str(query['shotId'])
         scene = ctx.shotid_to_segment.get(sid) or 0
         # ---- 跨场硬清算（补丁19）：切换场次先收敛 Top-1 作唯一前驱 ----
@@ -321,6 +346,14 @@ def solve(
             continue
         candidates = [ctx.chunk_by_id[cid] for cid in cand_ids]
         scored = _next_candidate_scores({'shot_id': sid}, {}, match_cost, sid, cand_ids)
+        # 前向审望（补丁1）前瞻池：仅开关 on 时构造（off 档零开销、零行为变化）。
+        future_pools = (_forward_lookout_pools(ctx.queries, ctx.cands_by_shotid, qi)
+                        if fl_weight > 0.0 else [])
+        if fl_weight > 0.0:
+            # 诊断：空池步占比——区分「窗口内后句压根没候选池」与「未相交/池宽裕」两类零命中根因。
+            _bump(fl_stats, 'step')
+            if not future_pools:
+                _bump(fl_stats, 'pool_empty')
 
         # 展开一条本句的候选路径（K1 熔断复用：active_rules 控制硬门禁是否生效）。
         def _expand_paths(active_rules, force=False):
@@ -349,8 +382,15 @@ def solve(
                         total += _apply_tier_hard_and_soft(active_rules, prev_chunk, cand, rctx)
                         if total >= HARD_DENY_COST:
                             continue
-                        # 前向审望资源耗尽惩罚（补丁1 占位）：MVP 注入 0，规则卡片可填充。
-                        total += _forward_lookout(cand_id, cand_ids, scored)
+                        # 前向审望资源耗尽惩罚（补丁1）：本句抢占后句唯一/濒危主粮时加软阻尼，
+                        # 把机会留给后句。开关 off 档恒 0（见 _read_forward_lookout）。
+                        if fl_weight > 0.0:
+                            _fl = _forward_lookout(cand_id, future_pools, path.used_bits,
+                                                   chunk_index, fl_weight, stats=fl_stats)
+                            total += _fl
+                            if _fl > 0.0:
+                                fl_stats['hits'] += 1
+                                fl_stats['cost'] += _fl
                         # 跨新父源时间邻近软惩罚（P0 时序）：切到新父且源时间远距上一镜落点则加阻尼。
                         #   只改候选间相对排序，不改束路径推进；权重经 env 可关（A/B 复测）。
                         _tp_w = _read_time_prox()
@@ -375,12 +415,19 @@ def solve(
                         chunk_index[str(cand_id)],
                     )
                     # D 域状态推进（补丁11 单向锁 / 补丁13 心跳疲劳），写在子路径副本上。
-                    # B域动作3：matched 强锚句以真实 refFrame 作为补丁11 单向锁起算点。
+                    # B域动作3：matched 强锚恒生效；block_first（母块首帧，真实源坐标）为**弱锚**，
+                    #   仅在开关 on 时接线（丙①，落码点3）：实测本项目 43/43 段该锚完全未参与
+                    #   ⇒ B 域退化为无锚、单向锁基准回落切片 startMs。弱锚只改补丁11 单向锁起算点，
+                    #   不掺任何代价/门禁（与 matched 的差别仅在此，故称「分级弱锚」）。
                     _anchor_ms = None
-                    if str(query.get('refFrameSource') or '') == 'matched':
-                        _rf = float(query.get('refFrameTimeMs') or 0)
-                        if _rf > 0:
+                    _rf = float(query.get('refFrameTimeMs') or 0)
+                    if _rf > 0:
+                        _src_kind = str(query.get('refFrameSource') or '')
+                        if _src_kind == 'matched':
                             _anchor_ms = _rf
+                        elif _src_kind == 'block_first' and _block_anchor:
+                            _anchor_ms = _rf
+                            _anc_shots.add(sid)
                     _advance_state(child, prev_chunk, cand, _anchor_ms)
                     # 长镜头顺延状态继承（CONTINUE_PREV 由模式/规则层驱动真实赋值）。
                     if str(query.get('shotMode') or '') == 'CONTINUE_PREV':
@@ -408,18 +455,37 @@ def solve(
     # 装配最终结果。
     for query in ctx.queries:
         sid = str(query['shotId'])
-        chosen = _pick_best_for_shot(paths, query)
+        chosen = _pick_best_for_shot(paths, query, match_cost.get(sid))
         if chosen:
             # K1：熔断降级句强标记 isDegraded + 熔断层级（供 shadow 对账 / UI「待确认」徽标）。
             if sid in degraded_marks:
                 chosen['isDegraded'] = True
                 chosen['degradeKind'] = degraded_marks[sid]
+                # 承接不虚高（落码点2）：熔断强挂的候选置信度封顶，消费端 0.88 阈值下自动判未确认。
+                chosen['confidence'] = round(
+                    min(float(chosen.get('confidence') or 0.0), DEGRADED_CONF_CAP), 4)
+                chosen['score'] = chosen['confidence']
             results[sid] = chosen
 
     # 顺延后置对账（对齐 legacy B4 段内锚顺延）：语义供给层 perQueryTopK 逐句独立，
     # 不含「上一镜父切片」，导致部分 CONTINUE_PREV 句选到异父。此处按叙事行序把仍异父的
     # 顺延句重排到前句父镜头的另一子切片，就地补上候选池缺口、真实续上不切镜。
     reconcile_continuation(ctx, results, tts_duration_ms)
+
+    # 前向审望（补丁1）诊断：仅开关 on 时输出（off 档日志零变化，符合「缺省零行为变化」）。
+    if fl_weight > 0.0:
+        _fl_diag(f'[forward-lookout] 补丁1 前瞻惩罚 on(weight={fl_weight}) '
+                 f'窗口={FORWARD_LOOKOUT_SENTENCES}句 句数={len(ctx.queries)} '
+                 f'命中候选={fl_stats["hits"]} 累计代价={round(fl_stats["cost"], 3)} ｜ '
+                 f'探针={fl_stats["probe"]} 守卫={fl_stats["guard"]} '
+                 f'未相交={fl_stats["miss_pool"]} 宽裕={fl_stats["wide"]} '
+                 f'濒危={fl_stats["scarce"]} 唯一={fl_stats["sole"]} ｜ '
+                 f'空池步={fl_stats["pool_empty"]}/{fl_stats["step"]}')
+
+    # 弱锚接线（丙①，落码点3）诊断：仅开关 on 时输出（off 档日志零变化），与前瞻诊断同落盘口。
+    if _block_anchor:
+        _fl_diag(f'[block-anchor] 丙① 弱锚接线 on：block_first 句实际锚定 {len(_anc_shots)} 句'
+                 f'（matched 强锚不受影响；仅改补丁11 单向锁起算点，不掺代价/门禁）')
 
     return results
 
@@ -552,6 +618,8 @@ def reconcile_continuation(
     行序重跑一遍 CONTINUE_PREV 句：当前句父镜头 ≠ 上一镜父镜头时，若全局切片池存在
     前句父镜头的可续子切片，则就地重排本句至该同父切片。只改 CONTINUE_PREV 句，
     不动其它句 / 不触发全局重解，受 3 句连续顺延上限与 7s 物理锁约束。
+    续镜置信度继承上一镜（落码点2）：同父子切片不在本句候选池内、无自身综合分可算，
+    报上一镜的实测置信度，绝不凭空给高分（对齐 legacy 续镜 `_base_conf` 口径）。
 
     Args:
         ctx: 标准候选池上下文（chunk_by_id 提供全局切片，queries 提供叙事行序 + shotMode）。
@@ -563,6 +631,7 @@ def reconcile_continuation(
     """
     prev_chunk: Optional[dict] = None
     prev_parent = ''
+    prev_conf = 0.0
     cont_count = 0
     last_commit_ms = 0.0
 
@@ -601,6 +670,9 @@ def reconcile_continuation(
                     r['chunkData'] = sibling
                     cur_parent = prev_parent
                     cont_count += 1
+                    # 续镜置信度继承上一镜（承接不虚高）：兄弟片无本句综合分，报上一镜实测值。
+                    r['confidence'] = round(max(0.0, min(1.0, float(prev_conf or 0.0))), 4)
+                    r['score'] = r['confidence']
                 else:
                     cont_ok = 'fail'               # 异父+可续但池内无兄弟 → 真失败
             elif mode == 'CONTINUE_PREV' and prev_parent:
@@ -637,6 +709,7 @@ def reconcile_continuation(
         if cur_parent:
             prev_chunk = chunk
             prev_parent = cur_parent
+            prev_conf = float(r.get('confidence') or 0.0)
             last_commit_ms = float(chunk.get('startMs') or 0)
             if mode != 'CONTINUE_PREV':
                 cont_count = 0  # 新镜重置顺延计数
@@ -716,30 +789,204 @@ def _src_time_prox(prev_chunk: Optional[dict], cand: dict) -> float:
     return min(TIME_PROX_SOFT_MAX, TIME_PROX_SOFT_MAX * (gap - TIME_PROX_WINDOW_MS) / ramp)
 
 
-def _forward_lookout(cand_id: str, cand_ids: List[str],
-                     scored: List[tuple]) -> float:
-    """前向审望资源耗尽惩罚（补丁1）：MVP 保守占位为 0。
+def _read_forward_lookout() -> float:
+    """读取前向审望资源耗尽惩罚开关（env `ZENTECT_KM_FORWARD_LOOKOUT`，缺省 0）。
 
-    设计意图：若某候选是**唯一**可选且唯一主粮，则对本句抢占应施加较大代价，
-    防止前半句把后半句唯一能用的镜头用光。后续规则卡片在此注入真实统计。
+    0 → 关闭（缺省档，零行为变化、可一键回退）；>0 → 按权重线性缩放惩罚值。
+    非法值错就错地落 0（不豁免、不造假，交由主流程诊断行暴露）。
+
+    Returns:
+        float: [0, +∞) 的惩罚权重（0 表示关闭）。
+    """
+    import os
+    raw = os.environ.get('ZENTECT_KM_FORWARD_LOOKOUT', '0')
+    try:
+        w = float(raw)
+    except (TypeError, ValueError):
+        w = 0.0  # 非法值：按关闭处理（不豁免也不造假）
+    return max(0.0, w)
+
+
+def _read_block_anchor() -> bool:
+    """读取「母块首帧弱锚」接线开关（env `ZENTECT_KM_BLOCK_ANCHOR`，缺省 off）。
+
+    off（缺省）= 零行为变化：`refFrameSource='block_first'` 的句仍按无锚处理（现状，实测
+    本项目 43/43 段该锚完全未参与）。on = 把母块首帧（真实源坐标）接为**弱锚**，仅作
+    补丁11 单向锁起算点（与 matched 强锚同管线，不掺代价/门禁），收益需经 L2/L3 裁判验证。
+
+    Returns:
+        bool: True 表示接线生效。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_BLOCK_ANCHOR', '0')).strip().lower() in ('1', 'on', 'true')
+
+
+def _forward_lookout_pools(queries: List[dict], cands_by_shotid: Dict[str, List[str]],
+                           qi: int,
+                           window: int = FORWARD_LOOKOUT_SENTENCES) -> List[List[str]]:
+    """取本句之后 window 句的候选池（本句不入池：避免自我抢占被自己判成耗尽）。
+
+    Args:
+        queries: 全量脚本句（叙事行序）。
+        cands_by_shotid: 每句的标准候选切片 id 列表。
+        qi: 本句在 queries 中的下标。
+        window: 前瞻句数窗口（≤0 时返回空表 ⇒ 等价关闭）。
+
+    Returns:
+        List[List[str]]: 未来句候选池列表；空池已剔除（不产生假命中）。
+    """
+    pools: List[List[str]] = []
+    for nxt in queries[qi + 1: qi + 1 + max(0, window)]:
+        pool = cands_by_shotid.get(str(nxt.get('shotId'))) or []
+        if pool:
+            pools.append(list(pool))
+    return pools
+
+
+def _forward_lookout_remaining(pool: List[str], used_bits: int,
+                               chunk_index: Dict[str, int]) -> int:
+    """统计某未来句候选池在本路径下的剩余可用数 rem（未被本路径占用即算可用）。
+
+    不可造假门：切片 id 不在全局候选索引（数据缺陷）时**不计入可用**——宁可判「更易耗尽」
+    （保守少抢），也不虚增可用数放行抢占。
+
+    Args:
+        pool: 未来句候选切片 id 列表。
+        used_bits: 本路径全局已用位掩码。
+        chunk_index: {chunkId: 全局位下标}。
+
+    Returns:
+        int: 剩余可用候选数（≥0）。
+    """
+    rem = 0
+    for cid in pool:
+        idx = chunk_index.get(str(cid))
+        if idx is None:
+            continue
+        if not _is_used(used_bits, idx):
+            rem += 1
+    return rem
+
+
+def _forward_lookout(cand_id: str, future_pools: Optional[List[List[str]]],
+                     used_bits: int, chunk_index: Optional[Dict[str, int]],
+                     weight: float,
+                     stats: Optional[Dict[str, int]] = None) -> float:
+    """前向审望资源耗尽惩罚（补丁1）：本句抢占后句唯一/濒危主粮时的软阻尼。
+
+    设计意图：若某候选是**后句唯一可用主粮**（rem==1），本句抢占会让后句断供 ⇒ 本句需对
+    其施加较大代价，把机会留给后句；rem==2 是濒危余量，按较轻罚提示退让。逐未来句累加、
+    整趟封顶。判据纯统计（本路径 used_bits × 未来句候选池），零模型、可复现。
+
+    关闭档（weight<=0）、无前瞻池、无索引时恒返回 0.0 ⇒ 缺省零行为变化。
 
     Args:
         cand_id: 本句候选切片 id。
-        cand_ids: 本句候选集合。
-        scored: 供给层代价升序表。
+        future_pools: 本句之后 window 句的候选池（见 _forward_lookout_pools）。
+        used_bits: 本路径全局已用位掩码。
+        chunk_index: {chunkId: 全局位下标}。
+        weight: 惩罚权重（env 读取，0=关闭）。
+        stats: 可选诊断计数桶（仅开关 on 时由调用方传入；None ⇒ 零开销）。键义：
+            probe 探针次数 / guard 守卫短路（无池/无索引）/ miss_pool 未相交
+            / wide 相交但最低 rem>=3（池宽裕）/ scarce 最低 rem==2 / sole 最低 rem<=1。
 
     Returns:
-        float: 附加代价（MVP 为 0，占位显式声明）。
+        float: 附加到 transition cost 的软惩罚（关闭档/无命中为 0.0），
+        先按 FORWARD_LOOKOUT_TOTAL_MAX 封顶再乘权重。
     """
-    return 0.0
+    if stats is not None:
+        _bump(stats, 'probe')
+    if weight <= 0.0 or not future_pools or not chunk_index:
+        if stats is not None:
+            _bump(stats, 'guard')
+        return 0.0
+    total = 0.0
+    intersected = 0
+    min_rem: Optional[int] = None
+    for pool in future_pools:
+        if cand_id not in pool:
+            continue  # 后句用不上本候选：本句抢占它不会造成断供
+        rem = _forward_lookout_remaining(pool, used_bits, chunk_index)
+        intersected += 1
+        min_rem = rem if min_rem is None else min(min_rem, rem)
+        if rem <= 1:
+            total += FORWARD_LOOKOUT_SOLE_MAX
+        elif rem == 2:
+            total += FORWARD_LOOKOUT_SCARCE_MAX
+    if stats is not None:
+        # 零命中归因：区分「后句池根本用不上本候选」与「池子宽裕无需退让」两类根因。
+        if intersected == 0:
+            _bump(stats, 'miss_pool')
+        elif min_rem is not None and min_rem <= 1:
+            _bump(stats, 'sole')
+        elif min_rem == 2:
+            _bump(stats, 'scarce')
+        else:
+            _bump(stats, 'wide')
+    return min(total, FORWARD_LOOKOUT_TOTAL_MAX) * weight
 
 
-def _pick_best_for_shot(paths: List[BeamPath], query: dict) -> Optional[dict]:
+def _bump(stats: Dict[str, int], key: str) -> None:
+    """诊断计数自增（键缺失按 0 起算）。
+
+    Args:
+        stats: 计数桶（原地修改）。
+        key: 计数键名。
+    """
+    stats[key] = int(stats.get(key, 0)) + 1
+
+
+def _fl_diag(msg: str) -> None:
+    """前向审望（补丁1）诊断行：同时写 stderr 与 `%TEMP%/zentect-km-diag.log`。
+
+    print 走 stdout 会被 AppLogger 丢弃，故镜像落盘（与 timeline_solver._km_diag 同文件，
+    便于步骤5 跑完一处核对；此处不 import timeline_solver，规避循环依赖）。
+
+    Args:
+        msg: 诊断正文（不含前缀，调用方自带 `[forward-lookout]`）。
+    """
+    import os
+    import sys
+    import tempfile
+    line = msg
+    try:
+        print(line, file=sys.stderr)
+    except Exception:
+        pass
+    try:
+        path = os.path.join(tempfile.gettempdir(), 'zentect-km-diag.log')
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(line + '\n')
+    except Exception:
+        pass  # 诊断落盘失败不打断求解
+
+
+def _to_confidence(base_cost) -> float:
+    """把供给层「综合代价」换算为契约置信度（落码点2）。
+
+    供给层 `match_cost` 行的口径是 `1 − 综合分`（cost 越小越贴，match_cost.py L310），故
+    `1 − base_cost` 即旧 KM 同源的**综合分**，与 legacy 结果项 `confidence` 同一量纲/含义
+    （timeline_solver.py L4843 `round(combined_score, 4)`），消费端 0.88 已确认阈值可直接复用。
+
+    Args:
+        base_cost: 该句命中候选的综合代价（可能缺失：候选代价行不含本切片）。
+
+    Returns:
+        float: [0,1] 置信度；代价缺失/非法如实返回 0.0（绝不造假高置信）。
+    """
+    if isinstance(base_cost, bool) or not isinstance(base_cost, (int, float)):
+        return 0.0
+    return round(max(0.0, min(1.0, 1.0 - float(base_cost))), 4)
+
+
+def _pick_best_for_shot(paths: List[BeamPath], query: dict,
+                        cost_row: Optional[Dict[str, float]] = None) -> Optional[dict]:
     """从最终存活路径中取本句命中的最佳切片（代价最小路径优先）。
 
     Args:
         paths: 最终存活路径。
         query: 脚本句。
+        cost_row: 本句供给层代价行 {chunkId: base_cost}（换算 confidence 用；缺省=无代价行）。
 
     Returns:
         Optional[dict]: 命中切片的 MatchResult-dict；无命中返回 None。
@@ -758,5 +1005,8 @@ def _pick_best_for_shot(paths: List[BeamPath], query: dict) -> Optional[dict]:
         chunk = CHUNK_INDEX_CALLBACK(chunk_id) if CHUNK_INDEX_CALLBACK else None
     if chunk is None:
         return None
+    # 置信度取「本句命中候选自身的综合分」（非路径累计 pen：pen 含跨句软阻尼与负向奖励，
+    # 量纲不可比、恒为负，正是旧实现 score 全 0 不可观测之根因）。
+    conf = _to_confidence((cost_row or {}).get(str(chunk_id)))
     return {'shotId': str(query['shotId']), 'chosenChunkId': chunk_id,
-            'chunkData': chunk, 'score': -best.pen}
+            'chunkData': chunk, 'score': conf, 'confidence': conf}

@@ -22,7 +22,6 @@ from __future__ import annotations
 from typing import List, Optional
 
 from rules import (
-    beat_snap,
     camera_continuity,
     color_continuity,
     costume_rhythm,
@@ -45,6 +44,9 @@ from rules import (
 # 加一条规则 = 加一个文件 + 在此登记一行（F 域完成判定「加一卡只动一行」兑现）。
 # 休眠语义：依赖字段未回填（如 A 域 primarySubject/eyelineDirection/isCriticalHeroAsset、
 # 步骤1 silenceGapMs）的卡在 `available_keys` 收窄时经下放集合自动休眠，不伪造启用硬门禁。
+# 退役记录（2026-09-25）：`beat_snap`（补丁2）**已退役**——BGM 强拍在输出时间轴、切片
+# startMs 在源 PTS（不同轴），且新引擎同句所有候选的输出切点恒同（画面时长=刚性音频时长）
+# ⇒ 该卡在候选打分层对排序零影响；已下沉为输出装配层实现（timeline_solver._apply_beat_snap）。
 _CARD_DEFS = [
     # ---- Tier1 硬门禁（违反即 ∞，一票否决，§13.4）----
     {'name': 'monotonic_lock', 'tier': 'hard',
@@ -87,9 +89,6 @@ _CARD_DEFS = [
     {'name': 'shot_pref_adherence', 'tier': 'soft',
      'score': shot_pref_adherence.SCORE,
      'desc': '首选景别贴合', 'availability': frozenset({'preferredShot', 'shotScale'})},
-    {'name': 'beat_snap', 'tier': 'soft',
-     'score': beat_snap.SCORE,
-     'desc': '补丁2 视听节拍器对齐(休眠待回填)', 'availability': frozenset({'silenceGapMs', 'bgmBeats'})},
     {'name': 'gap_padding', 'tier': 'soft',
      'score': gap_padding.SCORE,
      'desc': '补丁7 气口弹性腔(休眠待回填)', 'availability': frozenset({'silenceGapMs'})},

@@ -407,6 +407,55 @@ function actIndexForChapter(chapterIdx: number, chapterCount: number): number {
   return ACT_DEFS.length - 1;
 }
 
+/**
+ * 函数级中文注释：相邻重复段落去重（纯函数，修「文案重复念」生产 bug）。
+ *
+ * 背景：两阶段滑窗逐章生成时，逐章独立调 LLM，跨章衔接只靠"上一章剧情"的少量提示，
+ * 挡不住 LLM 跨章/章内逐字复读——同一句解说被原样写进相邻两段（如 seg_9/seg_10/seg_11 三连相同），
+ * 下游 TTS 就真的念三遍。故在段落拼接完成后、赋 `seg_${idx}` 全局唯一主键之前做一次全局去重。
+ *
+ * 定位（2026-09-28）：本函数是**最后一道兜底网**。根因已在生成侧修复——① 衔接提示不再回引
+ * 上一章末句原文（改用剧情概要 + 明令禁止逐字复用）；② assertChapterQuality 跨章共享已见集合，
+ * 跨章逐字重复命中即抛错走内联重试。本函数继续保留，兜住"校验盲区"（如空文本透明、断句后暴露的重复）。
+ *
+ * 判定口径：仅比较「紧邻的两个有效段落」，归一化（trim + 去除所有空白字符）后**完全相同**才删除后出现那段；
+ * 只删「后出现者」，保留首次出现，绝不因为共享长前缀而误删正常叙事承接（那是 deduplicatePrefixIterations 的职责）。
+ *
+ * 空文本纪律：空文本段落（原声段 keepOriginalAudio 的占位文本 / 空占位段）一律「跳过」——
+ * 既不被删除，也不参与比较、不作为比较基准。若把空串也纳入比较，seg_12~seg_16 这类连续空原声段
+ * 会因归一化后全为 "" 被误判为「完全相同」而塌缩，直接摧毁原声时间轴。空文本对相邻判定透明（跳过继续）。
+ *
+ * @param paragraphs 段落数组（只需带 text 字段）
+ * @returns paragraphs：去重后的段；keptIndexes：保留段在入参中的原下标
+ *          （供调用方同步裁剪与段落一一对应的辅助数组，如 chunkIndexByShot，避免画面锚定错位）
+ */
+export function dedupeAdjacentParagraphs<T extends { text?: string }>(
+  paragraphs: T[],
+): { paragraphs: T[]; keptIndexes: number[] } {
+  if (!Array.isArray(paragraphs)) return { paragraphs: [], keptIndexes: [] };
+  const keptParagraphs: T[] = [];
+  const keptIndexes: number[] = [];
+  /** 上一个「有效（非空）」段落的归一化文本；空文本不更新它，即对相邻判定透明 */
+  let prevNorm: string | null = null;
+  for (let i = 0; i < paragraphs.length; i++) {
+    const norm = String(paragraphs[i]?.text ?? '').replace(/\s+/g, '');
+    if (!norm) {
+      // 空文本：跳过（保留、不参与比较、不更新基准）
+      keptParagraphs.push(paragraphs[i]);
+      keptIndexes.push(i);
+      continue;
+    }
+    if (prevNorm !== null && norm === prevNorm) {
+      // 与上一个有效段落归一化后完全相同 → 删除后出现的这一段（配音重复念的第二/第三遍）
+      continue;
+    }
+    prevNorm = norm;
+    keptParagraphs.push(paragraphs[i]);
+    keptIndexes.push(i);
+  }
+  return { paragraphs: keptParagraphs, keptIndexes };
+}
+
 export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, GeneratedShot[]> {
   readonly nodeType = 'script-gen';
 
@@ -1432,14 +1481,22 @@ ${roleMapLines.join('\n')}
      * 命中即抛错，由 Stage2 内联重试兜底重生成；连续两次仍碎片则整章硬抛错暴露给用户，
      * 绝不将碎片化解说静默落库（历史根因：文案开头大量"传承未断，可崔国明的脚步，却"式
      * 半截句 + "这句话，像一盆冷水"式复读直接落库，UI 只能看到碎文案而非报错）。
+     *
+     * 跨章重复（2026-09-28 根因修复）：两阶段滑窗逐章生成时，本函数原本每次调用都新建
+     * `seen` ⇒ 只查"章内重复"，抓不到"上一章末句被下一章逐字抄写"的跨章重复（实测
+     * seg_9==seg_10==seg_11、seg_6==seg_7_sub_1 直接落库）。现由调用方跨章传入同一 `seen`，
+     * 使跨章逐字重复与章内重复同判、同抛错（走内联重试重生成，不静默落库）。
      * @param shots 本章/本批 LLM 原始分镜数组
+     * @param seenAcrossChapters 跨章共享的已见文本集合（缺省新建 ⇒ 单阶段/单批行为不变）
      */
     const assertChapterQuality = (
       shots: Array<{ shotId?: string; text?: string; keepOriginalAudio?: boolean }>,
+      seenAcrossChapters: Set<string> = new Set<string>(),
     ): void => {
       // 完结标点（中英文）：句号/叹号/问号
       const FINISHED_END = /[。！？!?](?:["'"”’」』）)】]*)$/;
-      const seen = new Set<string>();
+      /** 章内 + 章间共用同一已见集合（见上注）；调用方跨章传入即覆盖跨章重复 */
+      const seen = seenAcrossChapters;
       for (const shot of shots) {
         // 原声段为 ASR 台词原文，允许口语化半句，不参与碎片判定
         if (shot.keepOriginalAudio === true) continue;
@@ -1453,7 +1510,7 @@ ${roleMapLines.join('\n')}
           throw new Error(`碎片化半截句（未以句号/叹号/问号收尾）: "${t.slice(0, 24)}..."`);
         }
         if (seen.has(t)) {
-          throw new Error(`完全重复句: "${t.slice(0, 24)}..."`);
+          throw new Error(`完全重复句（含跨章逐字重复）: "${t.slice(0, 24)}..."`);
         }
         seen.add(t);
       }
@@ -1539,7 +1596,9 @@ ${roleMapLines.join('\n')}
         }
         return parts.join('\n').slice(0, 300);
       })();
-      let chapterPrevTail = '';
+      /** 跨章已见文本（归一化）：两阶段逐章共享，挡住「上一章末句被下一章逐字抄写」的跨章重复。
+       *  单阶段路径不传入（整批一次校验），行为不变。 */
+      let seenAcrossChapters = new Set<string>();
       for (let k = 0; k < chapterGroups.length; k++) {
         const group: any[] = chapterGroups[k];
         const baseIndex = chapterBaseIndexes[k];
@@ -1569,8 +1628,22 @@ ${roleMapLines.join('\n')}
         const parts: string[] = [
           `【本章定位】：第 ${k + 1}/${chapterGroups.length} 章${meta?.title ? `「${meta.title}」` : ''}${meta?.summary ? `。剧情概要：${meta.summary}` : ''}`,
         ];
-        if (chapterPrevTail) {
-          parts.push(`【上一章结尾衔接】：上一章最后一句为「…${chapterPrevTail}」。本章第一段解说须自然承接上述剧情与语气。`);
+        if (k > 0) {
+          /** 🔧 根因修复（文案重复）：旧版此处回引上一章末句**原文**（「上一章最后一句为「…X」」），
+           *  叠加"本章配额小到只剩 1 句话"（实测配额 13~25 字），模型最省力的做法就是把被引用的 X
+           *  原样抄成本章首段 ⇒ 同句跨章连出 2~3 遍（实测 seg_9==seg_10==seg_11、seg_6==seg_7_sub_1）。
+           *  改为只给上一章「剧情概要」（不回引任何原句）并明令禁止逐字复用；跨章硬校验兜底见
+           *  assertChapterQuality 的 seenAcrossChapters（命中即以"完全重复句"抛错走内联重试重生成）。 */
+          const prevMeta = chapterMetaList[k - 1];
+          const prevBrief = [prevMeta?.title, prevMeta?.summary]
+            .filter(Boolean)
+            .join('：')
+            .slice(0, 200);
+          parts.push(
+            `【上一章剧情进度】：${prevBrief || '（上一章概要缺失，请据本章 ContextChunk 自洽推进）'}\n`
+            + '本章第一段须自然承接上一章的剧情与语气，但【严禁逐字复用上一章的任何句子或其片段】，'
+            + '也不得复述上一章已讲过的信息——本章只推进新信息；若语义确有承接，必须换用全新措辞重写。',
+          );
         }
         parts.push(`【多模态上下文片段流（ContextChunk）——仅限本章 chunk ${group[0]?.chunkId ?? ''} ~ ${group[group.length - 1]?.chunkId ?? ''}】：\n\n${JSON.stringify(ScriptGenStrategy.slimContextChunks(group, plotOutline?.keyTurns), null, 2)}`);
         if (roleBlock) parts.push(roleBlock);
@@ -1605,8 +1678,12 @@ ${roleMapLines.join('\n')}
             const normalizedChapter = normalizeRawShots(parsedChapter);
             // 碎片化质量校验：半截句/重复句命中即抛错，走内联重试（最多 2 次），
             // 杜绝"传承未断，可崔国明的脚步，却"式半截句直接落库
-            assertChapterQuality(normalizedChapter);
+            // 跨章校验：先在副本上试算，通过后才把本章文本并入全局已见集合——
+            // 被丢弃的失败尝试不污染全局集合，避免误伤重试产物。
+            const attemptSeen = new Set(seenAcrossChapters);
+            assertChapterQuality(normalizedChapter, attemptSeen);
             chapterRaw = normalizedChapter;
+            seenAcrossChapters = attemptSeen;
           } catch (e: any) {
             lastErr = e?.message || String(e);
             AppLogger.warn(LOG_TAGS.AI_AGENT, `[文案生成] 第 ${k + 1} 章 Stage2 请求返回异常（第 ${attempt}/2 次）：${lastErr}`);
@@ -1636,10 +1713,23 @@ ${roleMapLines.join('\n')}
           chunkIndexByShot.push(baseIndex + Math.min(i, group.length - 1));
         }
         rawShots.push(...enforced);
-        const lastSeg = enforced[enforced.length - 1];
-        chapterPrevTail = lastSeg ? String(lastSeg.text || '').replace(/\s+/g, '').slice(-60) : '';
       }
       AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 两阶段滑窗完成：${chapterGroups.length} 章 · 共 ${rawShots.length} 段分镜`);
+    }
+
+    // 相邻重复段落去重（修「文案重复念」）：单/两阶段两路产物均已拼接进 rawShots，
+    // 此刻赋 seg_{idx} 全局唯一主键之前做一次全局去重——把「相邻且归一化后完全相同」的复读段删掉，
+    // 之后的 seg_{idx} 按去重后的下标自然连续重编号。rawShots 与 chunkIndexByShot 按下标一一对应，
+    // 删除一段必须同步裁剪对应下标的 chunkIndexByShot，否则全片画面锚定错位（contextChunks 回查张冠李戴）。
+    const dedupAdjacent = dedupeAdjacentParagraphs(rawShots);
+    if (dedupAdjacent.keptIndexes.length !== rawShots.length) {
+      const removedCount = rawShots.length - dedupAdjacent.keptIndexes.length;
+      // 先按保留下标把 chunkIndexByShot 重排，再整体替换两数组，始终保持下标一一对应
+      const alignedChunkIndexes = dedupAdjacent.keptIndexes.map((keepIdx) => chunkIndexByShot[keepIdx]);
+      rawShots = dedupAdjacent.paragraphs;
+      chunkIndexByShot.length = 0;
+      chunkIndexByShot.push(...alignedChunkIndexes);
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 相邻重复段落去重：删除 ${removedCount} 段`);
     }
 
     onProgress(90, '正在对生成的剧本进行反序列化...');
@@ -1715,13 +1805,31 @@ ${roleMapLines.join('\n')}
     const originalParagraphs = parsed.filter((p) => p.keepOriginalAudio);
 
     // 按原始顺序合并：非原声断句子句 + 原声段落，保持与 LLM 输出顺序一致
-    const merged = [...broken, ...originalParagraphs].sort((a, b) => {
+    const mergedAll = [...broken, ...originalParagraphs].sort((a, b) => {
       const aOrder = (a as any).__order ?? 0;
       const bOrder = (b as any).__order ?? 0;
       return aOrder - bOrder;
     });
 
-    const parsedShots: GeneratedShot[] = merged.map((p) => {
+    // 断句子句级相邻去重（补一层，修「文案重复念」）：
+    //   段落级去重（dedupeAdjacentParagraphs，seg_{idx} 之前）只能挡住"原始段落逐字相同"，
+    //   挡不住"母段落被 breakLongParagraphs 切出的首个子句与上一段逐字相同"——典型如
+    //   seg_6="电话打不通，接待方人间蒸发，她彻底慌了。" 与 seg_7 的首个子句 seg_7_sub_1 逐字相同
+    //   （原始 seg_7 是更长的段落，二者在段落级并不相等，只有断句后才暴露重复）。
+    //   故在断句终产物交给下游（TTS/步骤5/落库）之前，复用同一套判定再跑一次。
+    //   并行数组确认：此阶段 chunk 相关数据（startMs/durationMs/refFrame*/characters/__order）已在
+    //   构造 parsed 时内联进每个子句对象，chunkIndexByShot 不再被引用，无按下标一一对应的并行数组，
+    //   故只需裁剪子句列表本身，无错位风险；顺序键 __order 随对象内联，删除不改变相对顺序。
+    //   id 不做重排：保留原有 {母句id}_sub_{n} 与 matchUnitId 语义（删首个子句后可能出现 _sub 序号跳号，属预期）。
+    const dedupClauses = dedupeAdjacentParagraphs(mergedAll);
+    if (dedupClauses.keptIndexes.length !== mergedAll.length) {
+      AppLogger.info(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成] 断句子句相邻去重：删除 ${mergedAll.length - dedupClauses.keptIndexes.length} 段`,
+      );
+    }
+
+    const parsedShots: GeneratedShot[] = dedupClauses.paragraphs.map((p) => {
       const scanResult = lexiconFilter.scan(p.text || '');
       /** 🎙️ 原声保留段：生成阶段即锁定原声台词在源片中的时间窗（源坐标），
        *  步骤4 原声试听/导出硬绑定直接可读。音频源以【画面时间窗】为主锁定（见下），文本反查仅作辅助。 */

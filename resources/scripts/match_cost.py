@@ -44,6 +44,77 @@ from timeline_solver import (
 )
 
 
+# ---------------------------------------------------------------------------
+# 可供给时长口径（落码点3 乙案，开关 `ZENTECT_KM_SUPPLY_DUR`，缺省 off = 零行为变化）
+#   问题：候选粒度 = 3.0s 切片（605 镜头切出 1613 候选段，单段上限 ≈3s）；时长契合分若只吃
+#   「本段自身时长」，配音惯常 4~8s 的句子在候选池里人人「供不起」⇒ 只能在同样不合格的候选里挑
+#   最不差的，导出侧再靠变速硬凑（实测 scene_001 1067ms vs 配音 4744ms ⇒ 4.45× 慢放）。
+#   事实：605 镜头在源片上连续铺满 0 间断 ⇒ 同母块内**源时间连续**的子切片链可 1.0× 连播取满，
+#   「素材不足」是伪命题，真问题在「用哪段时长当候选容量」的口径。
+#   口径：可供给时长 = 本段时长 + 同母块内源时间连续（同 filePath、相邻间隔 ≤ SUPPLY_CHAIN_GAP_MS）
+#   的后继段链合计。供得起 ⇒ 取子窗即够（无需变速）；供不起 ⇒ 如实按缺口计罚。
+# ---------------------------------------------------------------------------
+SUPPLY_CHAIN_GAP_MS = 100.0   # 源时间连续判据（与 SemanticAnalyzeStrategy 单位内切窗同口径）
+
+# 乙案「近硬约束」罚量（落码点3，仅开关 on 档生效）：
+#   现状软惩罚权重（时长权重 0.22 × 曲线分差）太小 ⇒ 语义分一翻盘就选中「供不起」的片，
+#   交付端再靠 ±3% clamp 硬凑 ⇒ 配音被截断（实测 6 句窗长远短于配音）。
+#   这里把「本候选可供给时长 < 本句配音时长」的代价抬到远大于其它分项之和（cost∈[0,1] 量级，
+#   罚量取 100），使「本句只要存在任一可覆盖候选，综合代价最小的必是可覆盖候选」成立。
+#   ⚠️ 仅当该句**存在**可覆盖候选时才施加（全供不起 ⇒ 不罚，逐字节退回现状、保置信度量纲）；
+#   原声段（keepOriginalAudio）不适用该约束（其窗长由 ASR 段决定）⇒ 不判不可覆盖、不罚。
+SUPPLY_SHORT_PENALTY = 100.0
+
+
+def _read_supply_dur() -> bool:
+    """读取「可供给时长」口径开关（env `ZENTECT_KM_SUPPLY_DUR`，缺省 off）。
+
+    off（缺省）= 零行为变化：时长契合仍按候选段自身时长计（现状、可一键回退）。
+    on = 第二入参改用可供给时长（乙案主线），需经 L2 保真哨兵 + L3 25 段标注裁判后才可转缺省。
+
+    Returns:
+        bool: True 表示按可供给时长口径计分。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_SUPPLY_DUR', '0')).strip().lower() in ('1', 'on', 'true')
+
+
+def build_supply_ms(chunks: Dict[str, dict]) -> Dict[str, float]:
+    """构建「切片 id → 可供给时长 ms」（乙案，落码点3；仅开关 on 档消费）。
+
+    自后向前累加同母块内**源时间连续**的后继段链（同 filePath、相邻间隔 ≤ SUPPLY_CHAIN_GAP_MS），
+    得到「本段起可 1.0× 连播的素材总长度」。缺 parentChunkId 的切片不进索引（调用方回退自身时长，
+    不造假相邻关系）。
+
+    Args:
+        chunks: 切片资产索引 {chunkId: chunk}。
+
+    Returns:
+        Dict[str, float]: {chunkId: 可供给时长 ms}（仅含带 parentChunkId 的切片）。
+    """
+    by_parent: Dict[str, List[dict]] = {}
+    for c in chunks.values():
+        pid = str(c.get('parentChunkId') or '')
+        if pid:
+            by_parent.setdefault(pid, []).append(c)
+    out: Dict[str, float] = {}
+    for arr in by_parent.values():
+        arr.sort(key=lambda c: float(c.get('startMs') or 0.0))
+        tail = 0.0
+        for i in range(len(arr) - 1, -1, -1):
+            cur = arr[i]
+            dur = max(0.0, float(cur.get('endMs') or 0.0) - float(cur.get('startMs') or 0.0))
+            if i + 1 < len(arr):
+                nxt = arr[i + 1]
+                gap = float(nxt.get('startMs') or 0.0) - float(cur.get('endMs') or 0.0)
+                if str(nxt.get('filePath') or '') == str(cur.get('filePath') or '') \
+                        and abs(gap) <= SUPPLY_CHAIN_GAP_MS:
+                    dur += tail     # 与后继链连续 ⇒ 合并（tail 已含后继链全部时长）
+            tail = dur
+            out[str(cur.get('id'))] = dur
+    return out
+
+
 def build_query_text(query: dict) -> str:
     """构造一句的语义编码文本：解说词正文 + 画面意图（对齐旧 KM query_texts 口径）。
 
@@ -159,6 +230,9 @@ def _norm_cand_sem(scores: List[float]) -> List[float]:
 # 切片侧结构化实体字段 → 中文语义标签（方向3 描述增强并入用）。
 #   选型口径：仅取「文案↔画面」匹配中最具判别力的实体维（主体/景别/地点/运镜/道具/服装/天气），
 #   情绪/角色维度不走文本并入（已有独立打分因子，避免重复信号）。
+#   ⚠️ 读键口径：`shotScale/location/camera` 在 KM 路径上由 `build_chunk_index` 的别名补空
+#     （`shotType→shotScale`、`scene→location`、`cameraMovement→camera`，见 montage_contract
+#     `CHUNK_KEY_ALIASES`）后**是有值的**；直接读 `projects.metadata.videoChunks` 原始键会误判为全空。
 _DESC_AUG_FIELDS = (
     ('primarySubject', '主体'),
     ('shotScale', '景别'),
@@ -224,6 +298,7 @@ def build_match_cost(
     cands_by_shotid: Dict[str, List[str]],
     weights: Optional[dict] = None,
     text_beta: Optional[float] = None,
+    sem_out: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, Dict[str, float]]:
     """计算每句候选切片的综合贴合代价矩阵 {shotId: {chunkId: base_cost}}。
 
@@ -243,6 +318,9 @@ def build_match_cost(
         chunk_by_id: 切片资产索引 {chunkId: chunk}。
         cands_by_shotid: 每句候选切片 id 列表 {shotId: [chunkId]}。
         weights: 可选综合分权重覆盖（透传 `_compute_combined_score`）。
+        sem_out: 可选**只读导出**容器，就地填入 {shotId: {chunkId: 拼接口径语义分}}。
+            供跨模态重排构候选盘排序用（对齐离线实验的 BGE 榜口径），**不参与任何生产代价计算**；
+            不传（None）时零额外开销、零行为变化。
 
     Returns:
         Dict[str, Dict[str, float]]: {shotId: {chunkId: base_cost}}；
@@ -291,13 +369,21 @@ def build_match_cost(
     _norm_changed_n = 0        # DIAG 统计：量纲对齐前后综合 Top-1 发生变更的句数
     _comb_top1_sem_ranks = []  # DIAG 统计：综合 Top-1 切片的候选内语义名次（1=语义第一即综合第一）
     _cand_pool_sizes = []      # DIAG 统计：候选池大小分布
+    # 可供给时长口径（乙案，落码点3）：仅开关 on 档构建索引（off 档零开销、零行为变化）。
+    supply_on = _read_supply_dur()
+    _supply_ms = build_supply_ms(chunk_by_id) if supply_on else {}
+    _supply_stat = {'short': 0, 'extended': 0, 'enforced': 0, 'none_cover': 0}
+    # 供不起候选数 / 可供给链长于自身的候选数 / 近硬约束实际生效句数 / 全候选供不起句数
 
-    def _calc_row(cands: list, sem_values: List[float]) -> tuple:
+    def _calc_row(cands: list, sem_values: List[float],
+                  apply_supply_penalty: bool = False) -> tuple:
         """按给定语义分序列算综合代价行（供原始/归一化两版复用）。
 
         Args:
-            cands: 本句候选元组列表 (cid, sem, duration, emotion, role)。
+            cands: 本句候选元组列表 (cid, sem, duration, emotion, role, coverable)。
             sem_values: 与 cands 等长的语义分序列（原始或归一化）。
+            apply_supply_penalty: True 时对「可供给时长 < 配音」的候选加近硬约束罚
+                （仅当本句存在可覆盖候选时由调用方置 True；全供不起时置 False 退现状）。
 
         Returns:
             tuple: (row {cid: cost}, 综合最优 cid)。
@@ -305,11 +391,14 @@ def build_match_cost(
         row: Dict[str, float] = {}
         _best_cid = None
         _best_cost = 1e9
-        for i, (cid, _s, _d, _e, _r) in enumerate(cands):
+        for i, (cid, _s, _d, _e, _r, _cov) in enumerate(cands):
             combined = _compute_combined_score(sem_values[i], _d, _e, _r, weights)
-            row[cid] = 1.0 - float(combined)  # 正向分 → 负向代价
-            if row[cid] < _best_cost:
-                _best_cost = row[cid]
+            cost = 1.0 - float(combined)  # 正向分 → 负向代价
+            if apply_supply_penalty and not _cov:
+                cost += SUPPLY_SHORT_PENALTY  # 近硬约束：供不起的片代价远高于任何其它分项之和
+            row[cid] = cost
+            if cost < _best_cost:
+                _best_cost = cost
                 _best_cid = cid
         return row, _best_cid
 
@@ -342,6 +431,10 @@ def build_match_cost(
                 raise ContractError(f'MatchCost: 候选切片 {cid} 不在资产索引中')
             ci = chunk_order[cid]
             sem_score = float(semantic_sim[qi, ci])
+            # 🔬 跨模态重排候选盘排序用（可选只读导出，对齐离线 BGE 榜的拼接口径）。
+            #   在 β 融合「之前」记录，导出的恒为拼接语义分；sem_out=None 时整段零开销。
+            if sem_out is not None:
+                sem_out.setdefault(sid, {})[cid] = sem_score
             # P1′-a 精排融合：β=1.0 → 纯 text；β=0 → 纯拼接；中间 → 线性混合。
             if beta > 0.0 and text_sim is not None:
                 sem_score = float((1.0 - beta) * sem_score + beta * float(text_sim[qi, ci]))
@@ -349,7 +442,20 @@ def build_match_cost(
             # 时长契合（非对称裁剪友好型）
             c_start = float(chunk.get('startMs') or 0.0)
             c_end = float(chunk.get('endMs') or c_start)
-            duration_penalty = _compute_duration_score(t_audio_ms, c_end - c_start)
+            _eff_ms = c_end - c_start
+            _coverable = True   # 可覆盖 = 可供给时长 ≥ 配音时长（off 档/原声段恒真，不参与罚）
+            if supply_on:
+                # 乙案（落码点3）：第二入参改用「可供给时长」（本段 + 同母块源时间连续后继链）。
+                #   供得起（供应 ≥ 目标）⇒ 取子窗即够、无需变速 ⇒ 按曲线「正好够」档计（min 即该表达）；
+                #   供不起 ⇒ 按真实可供给时长计罚（后果确为变速/截断，如实罚，不豁免不造假）。
+                _sup_ms = float(_supply_ms.get(str(cid), _eff_ms) or _eff_ms)
+                if _sup_ms < t_audio_ms:
+                    _supply_stat['short'] += 1
+                if abs(_sup_ms - _eff_ms) > 1e-6:
+                    _supply_stat['extended'] += 1
+                _coverable = _sup_ms >= t_audio_ms   # 供得起 ⇒ 本候选可覆盖本句配音
+                _eff_ms = min(_sup_ms, t_audio_ms)
+            duration_penalty = _compute_duration_score(t_audio_ms, _eff_ms)
 
             # 情绪相容度（切片情绪由步骤2 帧聚合而来）
             emotion_score = _emotion_compatibility(query_emotion, chunk.get('emotion') or '')
@@ -360,12 +466,21 @@ def build_match_cost(
             if str(chunk.get('charGrain') or 'ok') == 'union_suspect':
                 role_score = 0.5 + (role_score - 0.5) * 0.5
 
-            cands.append((cid, sem_score, duration_penalty, emotion_score, role_score))
+            cands.append((cid, sem_score, duration_penalty, emotion_score, role_score, _coverable))
+
+        # 乙案「近硬约束」判定（仅开关 on 档、非原声段）：
+        #   本句存在任一可覆盖候选 ⇒ 对供不起候选加远高于其它分项之和的罚（存在必被选中）；
+        #   全候选都供不起 ⇒ 不罚（逐字节退回现状，保置信度量纲），仅计数 + 打日志暴露缺料。
+        _koa = bool(query.get('keepOriginalAudio'))
+        _any_cov = any(c[5] for c in cands)
+        _apply_supply_penalty = supply_on and not _koa and _any_cov
+        if supply_on and not _koa:
+            _supply_stat['enforced' if _any_cov else 'none_cover'] += 1
 
         # 方向2 量纲对齐：候选内 min-max 归一化后参与综合分（不改语义排序，只重排相对权重）。
         raw_sems = [c[1] for c in cands]
         norm_sems = _norm_cand_sem(raw_sems) if sem_norm != 'off' else raw_sems
-        row, _best_cid = _calc_row(cands, norm_sems)
+        row, _best_cid = _calc_row(cands, norm_sems, _apply_supply_penalty)
         result[sid] = row
 
         # DIAG：β 融合后语义主分 Top-1 相对纯拼接发生变更的句数（可测量精排是否翻盘）。
@@ -375,7 +490,7 @@ def build_match_cost(
         # DIAG：量纲对齐前后综合 Top-1 变更 + 综合 Top-1 的候选内语义名次分布（回答「墙在哪」：
         #   r1 占比高 ⇒ 语义第一即综合第一，墙在语义判别本身；占比低 ⇒ 被其他因子翻盘，量纲/权重可调）。
         if sem_norm != 'off':
-            _row_raw, _best_raw = _calc_row(cands, raw_sems)
+            _row_raw, _best_raw = _calc_row(cands, raw_sems, _apply_supply_penalty)
             if _best_raw != _best_cid:
                 _norm_changed_n += 1
         _cand_pool_sizes.append(len(cand_ids))
@@ -399,6 +514,12 @@ def build_match_cost(
             f"r1={_rank1}/{len(_comb_top1_sem_ranks)} r<=3={_rank3}/{len(_comb_top1_sem_ranks)}"
             + (f" | 归一化前后综合Top1变更={_norm_changed_n}/{len(result)}"
                if sem_norm != 'off' else ""))
+    # 可供给时长口径（乙案，落码点3）诊断：仅开关 on 时输出（off 档日志零变化，符合缺省零行为变化）。
+    if supply_on:
+        _diag_parts.append(
+            f"[supply-dur] 乙案 on：时长契合改吃可供给时长 ｜ 候选供不起={_supply_stat['short']} "
+            f"链长于自身={_supply_stat['extended']} ｜ 供给索引={len(_supply_ms)}/{len(chunk_ids)} 切片"
+            f" ｜ 近硬约束生效句={_supply_stat['enforced']} ｜ 无候选可覆盖={_supply_stat['none_cover']}")
     print(" ".join(_diag_parts), file=sys.stderr)
 
     # 及时释放大矩阵引用，缓解常驻内存。

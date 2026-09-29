@@ -7,6 +7,12 @@ montage_router.py —— 求解器薄壳路由（§8.5.2 可插拔，复用既�
     shadow  → 新旧并行、只留日志（A/B 对账，新结果不生效）
     off     → 旧引擎（零行为变化，回滚保险丝）
 
+档位真源（ISSUE-4 收敛，2026-09-24）：读取顺序 = 标记文件 `temp/storyboard-mode`
+（Node 侧 `resolveStoryboardMode()` 的落盘，缺省 on）→ 环境变量 → off。
+标记文件与 S3 段域（`timeline_solver.load_storyboard`）**同源**，从而消除
+「Node 以为新引擎生效、daemon 实际跑旧引擎」的双缺省分叉：两者皆非法/缺失才 off
+（旧引擎保底，绝不误开新引擎）。
+
 分层：本模块不做任何匹配/规则，只做「读开关 → 分发 + shadow 记录」。
 供给层（MatchCost，R1 两层次串行）由集成方注入 provider，本模块不掺画面计算。
 """
@@ -24,8 +30,34 @@ from montage_contract import (
     default_result,
 )
 
-# 环境变量开关（复用既有，线上改一行即回滚）。
+# 环境变量开关（复用既有）。注意：标记文件优先，故回滚也走 Node 侧 env
+# （Node 每趟步骤5 会 `syncStoryboardModeFile` 同步到标记文件），或直接改标记文件。
 _MODE_ENV = 'ZENTECT_KM_STORYBOARD_MODE'
+
+# 档位标记文件（Node 侧同步，与 S3 段域 `timeline_solver.load_storyboard` 严格同路径）。
+_MODE_FILE_REL = ('temp', 'storyboard-mode')
+
+
+def _repo_root() -> str:
+    """仓库根（与 `timeline_solver.load_storyboard` 同深度推导，确保两处读同一文件）。"""
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _read_mode_file() -> str:
+    """读 Node 侧同步的档位标记文件，返回小写档位串；缺失/异常返回空串。
+
+    必须按 `utf-8-sig` 读：文件常由记事本/工具写入，带 BOM 时用 `utf-8` 会读出
+    '\\ufeffon' 而静默回落（`load_storyboard` 已踩过同一坑，故此处同口径）。
+    """
+    try:
+        path = os.path.join(_repo_root(), *_MODE_FILE_REL)
+        if not os.path.exists(path):
+            return ''
+        with open(path, 'r', encoding='utf-8-sig') as f:
+            return (f.read() or '').strip().lstrip('\ufeff').lower()
+    except Exception:  # noqa: BLE001 —— 读档失败等价「未设」，交由下一档兜底
+        return ''
+
 
 # 供给层代价 provider：match_cost_provider(req) -> {shotId: {chunkId: base_cost}}
 MatchCostProvider = Callable[[dict], Dict[str, Dict[str, float]]]
@@ -35,13 +67,18 @@ TraceLogger = Callable[[str], None]
 
 
 def resolve_mode() -> str:
-    """读取运行档位，非法值按 off 处理（旧引擎保底，绝不误开新引擎）。
+    """读取运行档位：标记文件 → 环境变量 → off（前者非法/缺失即旧引擎保底）。
+
+    标记文件（`temp/storyboard-mode`）是 Node 侧权威档位的落盘，与 S3 段域同源；
+    只有两者都不可用/非法才落 off，**绝不误开新引擎**。
 
     Returns:
         str: on | shadow | off。
     """
-    raw = (os.environ.get(_MODE_ENV) or '').strip().lower()
-    return raw if raw in ROUTER_MODES else ROUTER_MODE_OFF
+    for raw in (_read_mode_file(), (os.environ.get(_MODE_ENV) or '').strip().lower()):
+        if raw in ROUTER_MODES:
+            return raw
+    return ROUTER_MODE_OFF
 
 
 class Router:

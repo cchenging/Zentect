@@ -1,13 +1,15 @@
 """
-test_rule_cards.py — 🧩 步骤5 新引擎 · 17 卡装配验证（⓪ 单测骨架）
+test_rule_cards.py — 🧩 步骤5 新引擎 · 16 卡装配验证（⓪ 单测骨架）
 
 锁定 `rules.build_rule_cards` 的「点亮 / 休眠」机制（守项目红线「不可造假门」：
 依赖字段未回填的卡必须真休眠，绝不以缺字段数据伪造启用硬门禁）：
 
-  1. 全量装配：available_keys=None ⇒ 17 卡全亮（4 hard + 13 soft），卡名唯一
+  1. 全量装配：available_keys=None ⇒ 16 卡全亮（4 hard + 12 soft），卡名唯一
   2. 严格收窄：available_keys=set() ⇒ 全休眠（0 卡）
   3. 子集判据：`availability ⊆ available_keys` 才点亮（差一字段即休眠）
-  4. 字段级点亮：silenceGapMs ⇒ gap_padding 亮 / beat_snap 眠（还缺 bgmBeats）
+  4. 字段级点亮：silenceGapMs ⇒ 仅 gap_padding 亮；`beat_snap` **已退役**（层位错配：
+     BGM 强拍在输出时间轴、与切片源 PTS 不同轴，且同句所有候选的输出切点恒同 ⇒ 该卡对
+     排序零影响；已下沉到 timeline_solver 输出装配层实现，见 `_apply_beat_snap`）
 
 本文件只锁机制、不改算法，也不引入新引擎以外的依赖。
 
@@ -26,14 +28,15 @@ import rules
 from rules import build_rule_cards
 
 
-# 17 卡的完整花名册（增删卡即改本表 —— 本表是「17 卡」这一事实的锁）。
+# 16 卡的完整花名册（增删卡即改本表 —— 本表是「16 卡」这一事实的锁）。
+# `beat_snap` 已于 2026-09-25 退役（层位错配 ⇒ 下沉输出装配层，见 timeline_solver 补丁2 段）。
 ALL_CARD_NAMES = frozenset({
     # Tier1 硬门禁（4）
     'monotonic_lock', 'env_medium_lock', 'eyeline_guard', 'critical_asset_lock',
-    # Tier2 软阻尼（13）
+    # Tier2 软阻尼（12）
     'jump_cut', 'heartbeat', 'scale_rhythm', 'motion_rhythm', 'cross_scene_recall',
     'costume_rhythm', 'color_continuity', 'camera_continuity', 'shot_pref_adherence',
-    'beat_snap', 'gap_padding', 'shot_loop_reset', 'focus_exemption',
+    'gap_padding', 'shot_loop_reset', 'focus_exemption',
 })
 
 
@@ -43,22 +46,22 @@ def _names(cards):
 
 
 def test_all_cards_activated_when_keys_none():
-    """available_keys=None ⇒ 契约全字段就绪，17 卡全亮且 hard/soft 配额正确。"""
+    """available_keys=None ⇒ 契约全字段就绪，16 卡全亮且 hard/soft 配额正确。"""
     cards = build_rule_cards()
-    assert len(cards) == 17, f"应装配 17 卡，实际 {len(cards)}"
+    assert len(cards) == 16, f"应装配 16 卡，实际 {len(cards)}"
     assert _names(cards) == ALL_CARD_NAMES, f"卡名花名册不一致: {_names(cards) ^ ALL_CARD_NAMES}"
     assert len(_names(cards)) == len(cards), "卡名必须唯一（重名会污染 trace 与降级标记）"
     hard = [c for c in cards if c.tier == 'hard']
     soft = [c for c in cards if c.tier == 'soft']
-    assert (len(hard), len(soft)) == (4, 13), f"应为 4 hard / 13 soft，实际 {len(hard)}/{len(soft)}"
-    print(f"✓ test_all_cards_activated_when_keys_none: 17 卡全亮（4 hard + 13 soft）")
+    assert (len(hard), len(soft)) == (4, 12), f"应为 4 hard / 12 soft，实际 {len(hard)}/{len(soft)}"
+    print(f"✓ test_all_cards_activated_when_keys_none: 16 卡全亮（4 hard + 12 soft）")
 
 
 def test_all_dormant_when_keys_empty():
     """available_keys=set() ⇒ 严格模式下无字段就绪，全部休眠（0 卡）。"""
     cards = build_rule_cards(set())
     assert cards == [], f"空字段集应全休眠，实际点亮 {_names(cards)}"
-    print("✓ test_all_dormant_when_keys_empty: 空可用集 → 17 卡全休眠")
+    print("✓ test_all_dormant_when_keys_empty: 空可用集 → 16 卡全休眠")
 
 
 def test_subset_judgement_exact_match_only():
@@ -78,14 +81,20 @@ def test_subset_judgement_exact_match_only():
 
 
 def test_field_level_gating_silence_gap_vs_bgm_beats():
-    """字段级点亮：silenceGapMs 单字段可点亮 gap_padding，但 beat_snap 仍眠（缺 bgmBeats）。"""
+    """字段级点亮：`silenceGapMs` 单字段即可点亮 gap_padding；`beat_snap` 已退役不在册。
+
+    `beat_snap`（补丁2）退役依据：BGM 强拍在输出时间轴、切片 startMs 在源 PTS（不同轴），
+    且同句所有候选的输出切点恒同 ⇒ 该卡对候选排序零影响（可证明 no-op）。
+    改判为输出装配层实现（`timeline_solver._apply_beat_snap`），故不得再出现在装配表里。
+    """
     got = _names(build_rule_cards({'silenceGapMs'}))
     assert 'gap_padding' in got, "silenceGapMs 就绪时 gap_padding 应点亮"
-    assert 'beat_snap' not in got, "beat_snap 还缺 bgmBeats，必须休眠（双缺口的字段侧）"
+    assert 'beat_snap' not in got, "beat_snap 已退役，不得再被装配"
 
+    # 即便两字段齐备，退役卡也不得复活（防止「顺手加回一行」的回归）。
     got2 = _names(build_rule_cards({'silenceGapMs', 'bgmBeats'}))
-    assert {'gap_padding', 'beat_snap'} <= got2, "两字段齐备时两卡应同时点亮"
-    print("✓ test_field_level_gating_silence_gap_vs_bgm_beats: 字段级点亮判据正确")
+    assert 'beat_snap' not in got2 and 'gap_padding' in got2, "退役卡不得因字段齐备而复活"
+    print("✓ test_field_level_gating_silence_gap_vs_bgm_beats: 字段级点亮判据正确（beat_snap 已退役）")
 
 
 def test_card_defs_availability_is_frozenset():
@@ -109,14 +118,14 @@ def test_partition_rule_cards_single_source_of_truth():
         active_names = {c['name'] for c in active}
         assert _names(build_rule_cards(av)) == active_names, \
             f"available_keys={av} 时两份判据不一致（单一真源被绕过）"
-        assert len(active) + len(dormant) == 17, "点亮 + 休眠必须覆盖全部 17 卡"
+        assert len(active) + len(dormant) == 16, "点亮 + 休眠必须覆盖全部 16 卡"
         assert not (active_names & set(dormant)), "点亮与休眠不得重叠"
     print("✓ test_partition_rule_cards_single_source_of_truth: 点亮判据单一真源一致")
 
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🧩 步骤5 新引擎 · 17 卡装配验证（⓪ 单测骨架）")
+    print("🧩 步骤5 新引擎 · 16 卡装配验证（⓪ 单测骨架）")
     print("=" * 60)
     test_all_cards_activated_when_keys_none()
     test_all_dormant_when_keys_empty()

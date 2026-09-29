@@ -71,9 +71,13 @@ export class VlmFrameCacheRepository {
    *         + 校准 primarySubject（画面绝对单焦点，含物件/空镜）+ keyProps 收拢为可枚举道具类别
    *        （具体道具名移交 scene/narrativeAction 承载）。三处同改字段 → 必须 bump 版本，否则重跑
    *        命中旧 primarySubject/eyelineDirection/keyProps 掩盖本次改动。
+   *  🔧 v8（2026-09-25，实测批次② 前置）：**prompt 正文/schema 未改**，仅为实现「真·全量 VLM 重跑」
+   *        而递增版本——v7 缓存已于 09-22 全量写满（665 行）⇒ 不 bump 则步骤2 会 100% 命中缓存、
+   *        零 VLM 推理。⚠️ 因 prompt 未变，v8 产物应与 v7 高度一致（同 prompt 同模型，仅采样差异）；
+   *        若期望「描述质量变化」，须同时改 prompt/schema 再 bump。
    *  ⚠️ 必须与 VisionExtractStrategy 写入侧引用同一常量，避免查询/写入版本不一致。
    */
-  static readonly PROMPT_VERSION = 'v7';
+  static readonly PROMPT_VERSION = 'v8';
 
   /**
    * 批量查询缓存（一次 SQL 拿回多帧结果，避免 N 次 SELECT）

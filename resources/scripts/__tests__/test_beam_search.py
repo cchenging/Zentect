@@ -25,6 +25,7 @@ from build_context import CandidateContext
 from rules import monotonic_lock
 from beam_search import (
     BEAM_WIDTH,
+    DEGRADED_CONF_CAP,
     HARD_DENY_COST,
     BeamPath,
     RuleCard,
@@ -197,6 +198,65 @@ def test_solve_cross_scene_settlement_keeps_all_shots():
     print("✓ test_solve_cross_scene_settlement_keeps_all_shots: 跨场收敛后全场次正常排产")
 
 
+# ===========================================================================
+# 5. 置信度全链路（落码点2：新引擎契约补 confidence）
+# ===========================================================================
+def test_result_carries_confidence_from_supply_cost():
+    """结果项置信度 = 1 − 供给层综合代价（与 legacy confidence 同量纲），score 同值且落在 [0,1]。"""
+    q1 = assemble_query({'shotId': 's1', 'text': '句1'})
+    c1 = assemble_chunk({'id': 'c1', 'startMs': 1000, 'endMs': 3000})
+    ctx = _mk_ctx([q1], [c1], {'s1': ['c1']})
+
+    out = solve(ctx, {'s1': {'c1': 0.2}}, [], {'s1': 1000.0})
+
+    r = out['s1']
+    assert r['confidence'] == 0.8, f"置信度应为 1−0.2=0.8，实际 {r['confidence']}"
+    assert r['score'] == r['confidence'], \
+        "score 应与 confidence 同值（旧实现 = −pen，含跨句软阻尼、量纲不可比）"
+    assert 0.0 <= r['confidence'] <= 1.0, "置信度必须落在 [0,1]"
+    print("✓ test_result_carries_confidence_from_supply_cost: 置信度由供给层综合代价换算")
+
+
+def test_degraded_confidence_capped_below_confirm_threshold():
+    """一级熔断强挂候选置信度封顶 0.85（<0.88 已确认阈值）⇒ 降级段不得伪装成已确认。"""
+    q1 = assemble_query({'shotId': 's1', 'text': '句1'})
+    q2 = assemble_query({'shotId': 's2', 'text': '句2'})
+    # 同一物理镜头 P 的两片：cA 靠后先被消费，cB 靠前触发时间倒流 → 一级熔断 hard_relax。
+    c_a = assemble_chunk({'id': 'cA', 'parentChunkId': 'P', 'startMs': 10000, 'endMs': 12000})
+    c_b = assemble_chunk({'id': 'cB', 'parentChunkId': 'P', 'startMs': 1000, 'endMs': 3000})
+    ctx = _mk_ctx([q1, q2], [c_a, c_b], {'s1': ['cA'], 's2': ['cB']})
+    rules = [RuleCard('monotonic_lock', 'hard', monotonic_lock.SCORE)]
+
+    out = solve(ctx, {'s1': {'cA': 0.05}, 's2': {'cB': 0.05}}, rules,
+                {'s1': 1000.0, 's2': 1000.0})
+
+    assert out['s1']['confidence'] == 0.95, "未熔断句应报真实综合分 0.95（不被封顶）"
+    assert out['s2'].get('isDegraded') is True
+    assert out['s2']['confidence'] == DEGRADED_CONF_CAP == 0.85, \
+        f"熔断段应封顶 {DEGRADED_CONF_CAP}，实际 {out['s2']['confidence']}"
+    assert out['s2']['confidence'] < 0.88, "封顶后必须低于消费端已确认阈值（承接不虚高）"
+    print("✓ test_degraded_confidence_capped_below_confirm_threshold: 降级段置信度封顶生效")
+
+
+def test_continuation_confidence_inherits_prev_shot():
+    """续镜重排至同父兄弟片后，置信度继承上一镜实测值（兄弟片无本句综合分，不凭空给高分）。"""
+    q1 = assemble_query({'shotId': 's1', 'text': '句1'})
+    q2 = assemble_query({'shotId': 's2', 'text': '句2', 'shotMode': 'CONTINUE_PREV'})
+    c_a = assemble_chunk({'id': 'cA', 'parentChunkId': 'P', 'startMs': 1000, 'endMs': 2000})
+    c_b = assemble_chunk({'id': 'cB', 'parentChunkId': 'P', 'startMs': 3000, 'endMs': 4000})
+    c_x = assemble_chunk({'id': 'cX', 'parentChunkId': 'Q', 'startMs': 5000, 'endMs': 6000})
+    # s2 候选池只给异父 cX（同父兄弟不在池内）⇒ 由 reconcile_continuation 就地重排为 cB。
+    ctx = _mk_ctx([q1, q2], [c_a, c_b, c_x], {'s1': ['cA'], 's2': ['cX']})
+
+    out = solve(ctx, {'s1': {'cA': 0.2}, 's2': {'cX': 0.1}}, [], {'s1': 1000.0, 's2': 1000.0})
+
+    assert out['s1']['confidence'] == 0.8
+    assert out['s2']['chosenChunkId'] == 'cB', "顺延句应被重排到同父兄弟片 cB"
+    assert out['s2']['confidence'] == 0.8, \
+        f"续镜置信度应继承上一镜 0.8（而非异父候选 cX 的 0.9），实际 {out['s2']['confidence']}"
+    print("✓ test_continuation_confidence_inherits_prev_shot: 续镜置信度继承上一镜")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("🔎 步骤5 新引擎 · 束搜索求解核验证（⓪ 单测骨架）")
@@ -208,5 +268,8 @@ if __name__ == "__main__":
     test_k1_breaker_level3_all_beam_death()
     test_scene_collapse_picks_min_pen_and_rejects_empty()
     test_solve_cross_scene_settlement_keeps_all_shots()
+    test_result_carries_confidence_from_supply_cost()
+    test_degraded_confidence_capped_below_confirm_threshold()
+    test_continuation_confidence_inherits_prev_shot()
     print("=" * 60)
     print("全部通过 ✅")
