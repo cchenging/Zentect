@@ -35,7 +35,7 @@ async function invokeSafe<T = any>(channel: string, ...args: any[]): Promise<T> 
 // 💥 领域划分 SDK
 export const API = {
   system: {
-    getPaths: () => invokeSafe<{ projects: string, exports: string }>(IPC_CHANNELS.SYSTEM_GET_PATHS),
+    getPaths: () => invokeSafe<{ userData: string, projects: string, exports: string, models: string, scripts: string, logs: string }>(IPC_CHANNELS.SYSTEM_GET_PATHS),
     resizeWindow: (w: number, h: number) => invokeSafe(IPC_CHANNELS.SYSTEM_RESIZE, w, h),
     close: () => invokeSafe(IPC_CHANNELS.SYSTEM_CLOSE),
     minimize: () => invokeSafe(IPC_CHANNELS.SYSTEM_MINIMIZE),

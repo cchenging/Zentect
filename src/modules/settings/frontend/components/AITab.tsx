@@ -9,6 +9,7 @@ import { FormField } from '@renderer/components/ui/form-field';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@renderer/components/ui/dialog';
 import { PROVIDER_CONFIGS } from '../../ai-config/backend/AiConfigService';
 import { API } from '@renderer/api';
+import { looksEncryptedValue } from '../../../../shared/utils/credentialFormat';
 
 interface AITabProps {
   data: any;
@@ -33,6 +34,21 @@ const PROVIDER_ICON_MAP: Record<string, { className: string; text: string }> = {
 const getIcon = (presetType: string) =>
   PROVIDER_ICON_MAP[presetType] || PROVIDER_ICON_MAP.custom;
 
+/**
+ * 剥离 Electron IPC 的报错包装，只留业务消息
+ *
+ * `ipcRenderer.invoke` 会把主进程抛出的 Error 包成
+ * `Error invoking remote method 'apiProfile:update': Error: <原文>`，
+ * 直接展示给用户太吵；此处剥掉两层前缀（剥不出则原样返回）。
+ */
+const cleanIpcErrorMessage = (e: any): string => {
+  const raw = String(e?.message || e || '保存失败');
+  return raw
+    .replace(/^Error invoking remote method '[^']*':\s*/, '')
+    .replace(/^Error:\s*/, '')
+    || '保存失败';
+};
+
 /* ====== 完整管线节点定义（9 个节点） ====== */
 const ALL_PIPELINE_NODES = [
   // LLM 节点：使用上方已配置的云模型
@@ -48,6 +64,21 @@ const ALL_PIPELINE_NODES = [
   // 禁用节点：由下方独立配置决定
   { taskType: 'tts',       label: '语音合成',  hint: '由下方语音合成配置决定', disabled: true, icon: '🔊', desc: '文字转语音' },
 ] as const;
+
+/* ====== 模型分类（拉取列表的筛选维度） ====== */
+const MODEL_CATEGORIES = ['全部', '视觉', '语音', '生图/视频', '向量/重排', '文本'] as const;
+/**
+ * 按小写关键词给模型名归类，供筛选 chip 使用
+ * 顺序敏感：先匹配到的先返回（如 qwen-vl-max 归「视觉」而非「文本」）
+ */
+function classifyModel(name: string): string {
+  const n = name.toLowerCase();
+  if (/(embedding|rerank)/.test(n)) return '向量/重排';
+  if (/(tts|asr|audio|speech|livetranslate|s2s|voice)/.test(n)) return '语音';
+  if (/(image|seedream|seedance|video|^wan)/.test(n)) return '生图/视频';
+  if (/(vl|omni|qvq|ocr)/.test(n)) return '视觉';
+  return '文本';
+}
 
 /* ====== Toggle Switch ====== */
 const ToggleSwitch: React.FC<{ checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }> = ({ checked, onChange, disabled }) => (
@@ -124,6 +155,9 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   const [modalOpen, setModalOpen] = useState(false);
   const [modalStep, setModalStep] = useState<'provider' | 'form'>('provider');
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  /** 本次弹窗是「新增」还是「编辑既有配置」—— 新增流会在选定供应商时建草稿行，
+   *  因此不能再用 `editingProfileId` 判断新增（草稿行一建它就非空了） */
+  const [isNewProfile, setIsNewProfile] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<string>('');
   const [formBaseUrl, setFormBaseUrl] = useState('');
   const [formApiKey, setFormApiKey] = useState('');
@@ -134,6 +168,24 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'fail'>('idle');
   const [apiKeyChanged, setApiKeyChanged] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  /** 该配置的 Key 已存在但解不开（ADR-004 G4）：留空 + 横幅，绝不回显密文 */
+  const [credentialWarning, setCredentialWarning] = useState('');
+  /** 保存失败原因（此前 catch{} 静默吞掉，用户看不到后端拒绝） */
+  const [saveError, setSaveError] = useState('');
+
+  /* ---------- 感知保存（方案 1：草稿行 + 失焦即存） ---------- */
+  /**
+   * - `draftRowIdRef`：本次弹窗内**新建**的草稿行 id（编辑既有配置时恒为 null）
+   * - `draftPromiseRef`：草稿行创建中的 promise —— 用户可能在 create 落库前就失焦，
+   *   用它串行化，避免「草稿未建好又建一条」产生重复行
+   * - `dirtyRef`：用户是否真的改过字段；关闭时「有草稿行且从未改动」⇒ 回滚删除，避免垃圾行
+   * - `originalModelsRef`：打开弹窗时的模型列表 —— 联动清理（删模型 ⇒ 清绑定）的比较基准，
+   *   不能读 `apiProfiles`（每次落库都在变）
+   */
+  const draftRowIdRef = useRef<string | null>(null);
+  const draftPromiseRef = useRef<Promise<string | null> | null>(null);
+  const dirtyRef = useRef(false);
+  const originalModelsRef = useRef<string[]>([]);
 
   /* ---------- 删除确认 ---------- */
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
@@ -241,158 +293,297 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   };
 
   /* ---------- 表单校验 ---------- */
-  const validateForm = (): boolean => {
-    const errors: Record<string, string> = {};
-    if (!formBaseUrl.trim()) errors.baseUrl = '接口地址不能为空';
+  /**
+   * 行内校验（**只提示、不阻塞写入**）
+   *
+   * 感知保存（方案 1）下不存在「保存闸门」：字段一失焦就落库，因此校验结果只用于字段旁的红色提示。
+   * 唯一的硬拦截是 ADR-004 G4 的密文形态 Key —— 由 `persistProfile` 直接拒绝写入（后端亦有守卫）。
+   */
+  const isApiKeyPristine = editingProfileId !== null && !draftRowIdRef.current && !apiKeyChanged;
 
-    // 🔧 修复：编辑模式下若 API Key 未改动（空值 + apiKeyChanged=false），跳过校验
-    // 新增模式或用户已输入新 Key 时按正常规则校验
-    const isApiKeyPristine = editingProfileId !== null && !apiKeyChanged;
-    if (!isApiKeyPristine) {
-      if (!formApiKey.trim()) errors.apiKey = 'API Key 不能为空';
-      else if (formApiKey.trim().length < 10) errors.apiKey = 'API Key 格式不正确，长度不足';
-    }
-
-    const models = isCustom
-      ? customModelsText.split('\n').map(s => s.trim()).filter(Boolean)
-      : formModels;
-    if (models.length === 0) errors.models = '请至少选择一个模型';
-    setFormErrors(errors);
-    return Object.keys(errors).length === 0;
+  const validateField = (field: 'baseUrl' | 'apiKey' | 'models') => {
+    setFormErrors((prev) => {
+      const next = { ...prev };
+      delete next[field];
+      if (field === 'baseUrl' && !formBaseUrl.trim()) {
+        next.baseUrl = '接口地址不能为空';
+      }
+      if (field === 'apiKey') {
+        const v = formApiKey.trim();
+        if (looksEncryptedValue(v)) {
+          // 🔧 ADR-004 G4：密文形态绝不能保存（会对密文再加密且不可逆）
+          next.apiKey = '检测到密文格式（v1:/v2:/v3:）。请填写明文 API Key —— 保存密文会导致二次加密且不可恢复';
+        } else if (!isApiKeyPristine && !v) {
+          next.apiKey = 'API Key 不能为空';
+        } else if (v && v.length < 10) {
+          next.apiKey = 'API Key 格式不正确，长度不足';
+        }
+      }
+      if (field === 'models') {
+        const models = isCustom
+          ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
+          : formModels;
+        if (models.length === 0) next.models = '请至少选择一个模型';
+      }
+      return next;
+    });
   };
 
   /* ---------- Modal 操作 ---------- */
+  /** 重置感知保存的会话级 refs（每次打开弹窗都要清，否则会串上一轮的状态） */
+  const resetDraftRefs = (originalModels: string[] = []) => {
+    draftRowIdRef.current = null;
+    draftPromiseRef.current = null;
+    dirtyRef.current = false;
+    originalModelsRef.current = originalModels;
+  };
+
   const openAddModal = () => {
     setEditingProfileId(null);
+    setIsNewProfile(true);
     setModalStep('provider');
     setSelectedProvider(''); setFormBaseUrl(''); setFormApiKey(''); setFormAlias('');
     setFormModels([]); setCustomModelsText(''); setFormKeyVisible(false); setTestStatus('idle');
-    setApiKeyChanged(false); setFormErrors({});
+    setApiKeyChanged(false); setFormErrors({}); setCredentialWarning(''); setSaveError('');
+    resetDraftRefs();
     setModalOpen(true);
   };
 
   const openEditModal = (profile: any) => {
     setEditingProfileId(profile.id);
+    setIsNewProfile(false);
     // 🔧 修复 Bug1：后端返回 camelCase，旧代码读 snake_case 导致预设类型恒为 undefined
     const presetType = profile.presetType || profile.provider;
+    const models: string[] = Array.isArray(profile.models) ? profile.models : [];
     setSelectedProvider(presetType);
     setFormBaseUrl(profile.baseUrl || '');
     // 🔧 修复：编辑模式回填真实 Key（后端已解密），用户可查看和修改
     // apiKeyChanged 保持 false，保存时若未改动则不覆盖原 Key
-    setFormApiKey(profile.apiKey || '');
+    // 🔧 ADR-004 G4：解密失败时后端恒返回空串（不再回显密文），此处改为留空 + 横幅提示
+    const keyUnreadable = profile.apiKeyStatus === 'decrypt_failed';
+    setFormApiKey(keyUnreadable ? '' : (profile.apiKey || ''));
+    setCredentialWarning(keyUnreadable
+      ? '该配置的 API Key 已失效（无法解密，通常因系统密钥库重建）。请重新填写明文 Key，否则该通道不可用。'
+      : '');
     setFormAlias(profile.alias || profile.name || '');
-    setFormModels(Array.isArray(profile.models) ? profile.models : []);
-    setCustomModelsText(Array.isArray(profile.models) ? profile.models.join('\n') : '');
+    setFormModels(models);
+    setCustomModelsText(models.join('\n'));
     setFormKeyVisible(false); setTestStatus('idle');
-    setApiKeyChanged(false); setFormErrors({});
+    setApiKeyChanged(false); setFormErrors({}); setSaveError('');
+    // 🔧 方案 1：编辑既有配置**不建草稿行**；联动清理的比较基准取打开时的模型列表
+    resetDraftRefs(models);
     setModalStep(presetType ? 'form' : 'provider');
     setModalOpen(true);
   };
-  const closeModal = () => setModalOpen(false);
+  /**
+   * 感知保存：把当前表单落库（新增流先补建草稿行，之后一律走 `update` 单一路径）
+   *
+   * - ADR-004 G4：密文形态的 Key **绝不外发**（此处拦截 + 后端 `assertPlaintextApiKey` 双保险）
+   * - 仅当用户实际输入过 Key 才写 `apiKey` 字段，否则不传 ⇒ 不会把既有 Key 覆盖成空
+   * @param overrides.models 显式指定模型列表（勾选复选框时用，避免读到未提交的 state）
+   * @returns true = 已写入；false = 被拒/失败（原因已由 `saveError` / `formErrors` 呈现）
+   */
+  const persistProfile = async (overrides?: { models?: string[] }): Promise<boolean> => {
+    if (!selectedProvider) return false;
+
+    // G4：对密文再加密不可逆 ⇒ 直接拒绝写入
+    if (apiKeyChanged && looksEncryptedValue(formApiKey.trim())) {
+      setFormErrors((prev) => ({ ...prev, apiKey: '检测到密文格式（v1:/v2:/v3:）。请填写明文 API Key —— 保存密文会导致二次加密且不可恢复' }));
+      return false;
+    }
+
+    const preset = (PROVIDER_CONFIGS as any)[selectedProvider];
+    const alias = formAlias.trim();
+    const models = overrides?.models ?? (isCustom
+      ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
+      : formModels);
+
+    const patch: any = {
+      name: alias || preset?.name || selectedProvider,
+      baseUrl: formBaseUrl.trim(),
+      models,
+      alias: alias || '',
+      isPreset: isCustom ? 0 : 1,
+      presetType: isCustom ? null : selectedProvider,
+    };
+    if (apiKeyChanged && formApiKey.trim()) patch.apiKey = formApiKey.trim();
+
+    try {
+      let id = editingProfileId ?? draftRowIdRef.current;
+      // 草稿行可能仍在创建中（用户在 create 落库前就失焦了）⇒ 等它，避免重复建行
+      if (!id && draftPromiseRef.current) id = await draftPromiseRef.current;
+
+      if (!id) {
+        const created: any = await window.api?.apiProfile?.create({
+          ...patch, provider: selectedProvider,
+          apiKey: formApiKey.trim(), enabled: 1, isActive: false, sortOrder: 0,
+        });
+        const row: any = created?.data ?? created;
+        id = row?.id ?? null;
+        if (!id) throw new Error('草稿行创建后未返回 id');
+        draftRowIdRef.current = id;
+        setEditingProfileId(id);
+      } else {
+        await window.api?.apiProfile?.update(id, patch);
+      }
+      setSaveError('');
+      return true;
+    } catch (e: any) {
+      setSaveError(cleanIpcErrorMessage(e));
+      return false;
+    }
+  };
+
+  /**
+   * 字段失焦即存（感知保存的唯一写入口，替代原「保存」按钮）
+   * 未改动过就不写 —— 避免「点开看一眼」也产生无意义写入
+   */
+  const handleFieldBlur = (field: 'baseUrl' | 'apiKey' | 'models' | 'text') => {
+    if (field !== 'text') validateField(field);
+    if (!dirtyRef.current) return;
+    void persistProfile();
+  };
+
+  /**
+   * 提交模型变更（勾选复选框 / 回车追加 都走这里）
+   *
+   * 含「删模型 ⇒ 清受影响管线绑定」的联动确认 —— 原挂在保存按钮上，感知保存后前移到提交时刻。
+   * @returns false = 用户取消了确认框（调用方须回滚 UI 勾选态）；写入失败不回滚（用户意图应保留）
+   */
+  const commitModels = async (next: string[]): Promise<boolean> => {
+    const removed = originalModelsRef.current.filter((m) => !next.includes(m));
+    if (editingProfileId && removed.length > 0) {
+      const affected = (Object.values(bindings) as any[]).filter(
+        (b) => b?.profileId === editingProfileId && removed.includes(b?.modelName)
+      );
+      if (affected.length > 0) {
+        const taskList = affected
+          .map((b) => ALL_PIPELINE_NODES.find((n) => n.taskType === b.taskType)?.label || b.taskType)
+          .join('、');
+        const confirmMsg =
+          `本次修改删除了模型：${removed.join(', ')}\n` +
+          `以下管线节点引用了这些模型：${taskList}\n` +
+          `保存后将自动清空上述绑定，是否继续？`;
+        if (!window.confirm(confirmMsg)) return false;
+
+        // 先清空受影响的绑定，避免管线节点残留无效 model_name
+        for (const b of affected) {
+          try { await window.api?.profileBinding?.upsert(b.taskType, null, ''); } catch {}
+        }
+        setBindings((prev) => {
+          const n = { ...prev };
+          affected.forEach((b) => { n[b.taskType] = { taskType: b.taskType, profileId: null, modelName: '' }; });
+          return n;
+        });
+      }
+    }
+    originalModelsRef.current = next;
+    await persistProfile({ models: next });
+    return true;
+  };
+
+  /**
+   * 关闭弹窗（感知保存收口）
+   *
+   * 新增流若只走到「选供应商」就退出（`dirtyRef` 从未置位）⇒ 回滚删除草稿行，避免列表堆积空行。
+   * 弹窗期间不调 `loadData()`（每次失焦都重载太重），统一在关闭时刷新一次。
+   */
+  const handleCloseModal = async () => {
+    const draftId = draftRowIdRef.current;
+    if (draftId && !dirtyRef.current) {
+      try { await window.api?.apiProfile?.delete(draftId); } catch {}
+    }
+    resetDraftRefs();
+    setModalOpen(false);
+    await loadData();
+  };
 
   const selectProvider = (type: string) => {
     setSelectedProvider(type);
     const preset = (PROVIDER_CONFIGS as any)[type];
     setFormBaseUrl(preset?.baseUrl || ''); setFormModels([]); setCustomModelsText('');
     setFormKeyVisible(false); setTestStatus('idle'); setApiKeyChanged(false); setFormErrors({});
+    setCredentialWarning(''); setSaveError('');
     setModalStep('form');
+
+    // 🔧 方案 1：选定供应商即落**草稿行**（此刻 provider / baseUrl / presetType 才有值；
+    //    在「打开弹窗」那一步建行会得到一条 provider 为空的垃圾行）。
+    //    之后所有字段失焦一律走 update ⇒ 单一路径，不再需要「保存」按钮。
+    resetDraftRefs();
+    const isCustomType = type === 'custom';
+    draftPromiseRef.current = (async () => {
+      try {
+        const created: any = await window.api?.apiProfile?.create({
+          name: preset?.name || type,
+          provider: type,
+          apiKey: '',
+          baseUrl: preset?.baseUrl || '',
+          models: [],
+          isActive: false,
+          sortOrder: 0,
+          alias: '',
+          enabled: 1,
+          isPreset: isCustomType ? 0 : 1,
+          presetType: isCustomType ? null : type,
+        });
+        const row: any = created?.data ?? created;
+        const id: string | null = row?.id ?? null;
+        if (id) { draftRowIdRef.current = id; setEditingProfileId(id); }
+        return id;
+      } catch (e: any) {
+        setSaveError(cleanIpcErrorMessage(e));
+        return null;
+      }
+    })();
   };
-  const togglePresetModel = (model: string) => {
-    setFormModels((prev) => prev.includes(model) ? prev.filter((m) => m !== model) : [...prev, model]);
+
+  /**
+   * 统一的模型勾选入口（预设列表与自定义文本两条线都走这里）
+   *
+   * - 当前列表 = custom ? textarea 按行 : formModels
+   * - 保留 `commitModels`「删模型弹确认框、取消则回滚」的既有语义
+   */
+  const toggleModelSelection = async (model: string) => {
+    const current = isCustom
+      ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
+      : formModels;
+    const next = current.includes(model)
+      ? current.filter((m) => m !== model)
+      : [...current, model];
+    const clearModelError = () => {
+      if (formErrors.models) setFormErrors((prev) => { const n = { ...prev }; delete n.models; return n; });
+    };
+    if (isCustom) {
+      const prevText = customModelsText;
+      setCustomModelsText(next.join('\n'));
+      dirtyRef.current = true;
+      clearModelError();
+      // 用户取消联动确认 ⇒ 回滚勾选态
+      const ok = await commitModels(next);
+      if (!ok) setCustomModelsText(prevText);
+    } else {
+      const prevModels = formModels;
+      setFormModels(next);
+      dirtyRef.current = true;
+      clearModelError();
+      // 用户取消联动确认 ⇒ 回滚勾选态
+      const ok = await commitModels(next);
+      if (!ok) setFormModels(prevModels);
+    }
   };
   const isCustom = selectedProvider === 'custom';
   // 🔧 修复：仅「新增预设供应商」时 baseUrl 只读（自动填入 preset.baseUrl）
   // 编辑模式（无论预设还是 custom）和新增 custom 模式都允许修改
-  const isBaseUrlReadOnly = !editingProfileId && !isCustom;
-
-  /**
-   * 保存 Profile（新增/编辑）
-   *
-   * 推荐方案：模型信息修改与管线绑定联动
-   * - 编辑模式下，对比原始模型列表与新模型列表，找出被删除的模型
-   * - 查询当前所有绑定，定位引用了被删除模型（且 profileId 匹配）的管线节点
-   * - 若存在受影响绑定，弹确认框提示用户
-   * - 用户确认后，先清空受影响绑定（upsert 置空），再保存 Profile
-   * - 用户取消则中止保存，保留原数据
-   */
-  const handleSaveProfile = async () => {
-    if (!validateForm()) return;
-    const baseUrl = formBaseUrl.trim();
-    const alias = formAlias.trim();
-    const preset = (PROVIDER_CONFIGS as any)[selectedProvider];
-    let models: string[];
-    if (isCustom) {
-      models = customModelsText.split('\n').map((s) => s.trim()).filter(Boolean);
-    } else {
-      models = formModels;
-    }
-
-    // 🔧 联动清理：编辑模式下检测被删除的模型，弹确认框后清空受影响的管线绑定
-    if (editingProfileId) {
-      const originalProfile = apiProfiles.find((p) => p.id === editingProfileId);
-      const originalModels: string[] = Array.isArray(originalProfile?.models)
-        ? (originalProfile as any).models
-        : [];
-      const deletedModels = originalModels.filter((m: string) => !models.includes(m));
-
-      if (deletedModels.length > 0) {
-        // 找出引用了被删除模型且绑定到当前 Profile 的管线节点
-        const affectedBindings = (Object.values(bindings) as any[]).filter(
-          (b) => b?.profileId === editingProfileId && deletedModels.includes(b?.modelName)
-        );
-
-        if (affectedBindings.length > 0) {
-          const taskList = affectedBindings
-            .map((b) => {
-              const node = ALL_PIPELINE_NODES.find((n) => n.taskType === b.taskType);
-              return node?.label || b.taskType;
-            })
-            .join('、');
-          const confirmMsg =
-            `本次修改删除了模型：${deletedModels.join(', ')}\n` +
-            `以下管线节点引用了这些模型：${taskList}\n` +
-            `保存后将自动清空上述绑定，是否继续？`;
-          if (!window.confirm(confirmMsg)) return;
-
-          // 用户确认：先清空受影响的绑定，避免保存后管线节点残留无效 model_name
-          for (const b of affectedBindings) {
-            try { await window.api?.profileBinding?.upsert(b.taskType, null, ''); } catch {}
-          }
-          // 乐观更新本地 bindings，保持 UI 与 DB 一致
-          setBindings((prev) => {
-            const next = { ...prev };
-            affectedBindings.forEach((b) => {
-              next[b.taskType] = { taskType: b.taskType, profileId: null, modelName: '' };
-            });
-            return next;
-          });
-        }
-      }
-    }
-
-    const profileData: any = {
-      name: alias || preset?.name || selectedProvider, provider: selectedProvider,
-      baseUrl, models, alias: alias || '',
-      enabled: editingProfileId ? undefined : 1,
-      isPreset: isCustom ? 0 : 1, presetType: isCustom ? null : selectedProvider,
-    };
-    // 🔧 修复：编辑模式下仅当用户实际输入了新 Key（apiKeyChanged=true）才传给后端
-    // 否则不传 apiKey 字段，后端 update 不会覆盖原 Key
-    if (apiKeyChanged && formApiKey.trim()) {
-      profileData.apiKey = formApiKey.trim();
-    } else if (!editingProfileId) {
-      profileData.apiKey = formApiKey.trim();
-    }
-    try {
-      if (editingProfileId) { await window.api?.apiProfile?.update(editingProfileId, profileData); }
-      else { await window.api?.apiProfile?.create(profileData); }
-      await loadData(); closeModal();
-    } catch {}
-  };
+  // ⚠️ 不能用 `editingProfileId` 判断新增：方案 1 下新增流选定供应商即建草稿行，它立刻非空
+  const isBaseUrlReadOnly = isNewProfile && !isCustom;
 
   const [testFailReason, setTestFailReason] = useState('');
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchHint, setFetchHint] = useState('');
+  /** 拉取到的「可选项池」—— 只作为候选来源，不自动勾选、不落库 */
+  const [fetchedPool, setFetchedPool] = useState<string[]>([]);
+  const [modelSearch, setModelSearch] = useState('');
+  const [modelCategory, setModelCategory] = useState<string>('全部');
 
   /**
    * 测试连接：POST /chat/completions 真实最小推理验证所选模型可用性
@@ -402,7 +593,9 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
    * 正确做法：解构 result.data 或 result.error
    */
   const handleTestConnection = async () => {
-    if (editingProfileId && !formApiKey.trim()) {
+    // 编辑既有配置时不回用已存的 Key 做测试（避免拿旧凭据误判）
+    // ⚠️ 不能用 `editingProfileId` 判断：方案 1 下新增流选定供应商即建草稿行，它立刻非空
+    if (!isNewProfile && !formApiKey.trim()) {
       setTestStatus('fail');
       setTestFailReason('请先输入 API Key 再测试（编辑模式不会使用已保存的 Key）');
       return;
@@ -458,8 +651,9 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   /**
    * 拉取账户可用模型列表
    *
-   * 调用 OpenAI 兼容 /models 接口，用真实数据覆盖硬编码列表
-   * - 成功：用拉取到的模型列表（全选）替换 formModels / customModelsText
+   * 调用 OpenAI 兼容 /models 接口，把去重后的结果填入「可选项池」（fetchedPool），
+   * **不自动勾选、不落库** —— 由用户从候选列表里挑，避免 230 个模型被全选灌库。
+   * - 成功：可选项池变大，已选数量保持原样
    * - 失败：保留 PROVIDER_CONFIGS 参考列表，显示错误提示
    */
   const handleFetchModels = async () => {
@@ -482,10 +676,13 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         setFetchHint('拉取成功但返回空列表（已保留参考列表）');
         return;
       }
-      // 拉取成功：用真实数据覆盖，默认全选
-      setFormModels(models);
-      if (isCustom) setCustomModelsText(models.join('\n'));
-      setFetchHint(`✓ 拉取成功，共 ${models.length} 个模型（已全选）`);
+      // 只填「可选项池」：去重后供搜索/分类筛选，绝不自动勾选、绝不落库
+      const deduped = Array.from(new Set(models)).filter((m) => typeof m === 'string' && m.trim() !== '');
+      setFetchedPool(deduped);
+      const selectedCount = isCustom
+        ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean).length
+        : formModels.length;
+      setFetchHint(`✓ 拉取成功，共 ${deduped.length} 个模型可选 —— 请勾选需要的（已选 ${selectedCount} 个）`);
     } catch (err: any) {
       setFetchHint(`拉取失败：${err?.message || String(err)}（已保留参考列表）`);
     } finally {
@@ -499,6 +696,91 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
     (Array.isArray(p.models) ? p.models : []).map((m: string) => ({
       modelName: m, profileId: p.id, profileName: p.alias || p.name || p.provider,
     }))
+  );
+
+  /* ---------- 模型选择区（搜索 / 分类 / 候选） ---------- */
+  // 当前已选：custom 走 textarea 按行，预设走 formModels
+  const selectedModelList = isCustom
+    ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
+    : formModels;
+  // 候选 = 去重(预设 ∪ 拉取池 ∪ 已选)
+  const candidateModels = Array.from(new Set([
+    ...((PROVIDER_CONFIGS as any)[selectedProvider]?.models || []),
+    ...fetchedPool,
+    ...selectedModelList,
+  ]));
+  // 分类计数按「未过滤的池子」算
+  const categoryCounts = candidateModels.reduce<Record<string, number>>((acc, m) => {
+    const c = classifyModel(m);
+    acc[c] = (acc[c] || 0) + 1;
+    return acc;
+  }, {});
+  // 先分类过滤，再按不区分大小写的子串搜索
+  const filteredCandidates = candidateModels.filter((m) => {
+    const catOk = modelCategory === '全部' || classifyModel(m) === modelCategory;
+    const searchOk = !modelSearch || m.toLowerCase().includes(modelSearch.toLowerCase());
+    return catOk && searchOk;
+  });
+
+  // 搜索 + 分类 + 已选 + 候选列表（预设与 custom 两条线共用同一套 UI）
+  const modelSelectionJsx = (
+    <div className={`border rounded-md bg-[var(--input)] ${formErrors.models ? 'border-[var(--accent-rose)]' : 'border-[var(--border)]'}`}>
+      {/* (a) 已选区块：常驻，不受搜索/分类影响，保证随时可取消 */}
+      <div className="px-2.5 py-2 border-b border-[var(--border)]">
+        <div className="text-[12px] text-muted-foreground mb-1">已选 {selectedModelList.length} 个</div>
+        {selectedModelList.length === 0 ? (
+          <div className="text-[12px] text-muted-foreground/60">尚未选择模型</div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {selectedModelList.map((model) => (
+              <label key={model} className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-accent/8 text-[12px] text-foreground cursor-pointer hover:bg-accent/15 transition-colors">
+                <input type="checkbox" checked onChange={() => void toggleModelSelection(model)} className="accent-[var(--accent)]" />
+                <span className="truncate max-w-[180px]" title={model}>{model}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+      {/* (b) 筛选条：搜索框 + 分类 chip */}
+      <div className="px-2.5 py-2 border-b border-[var(--border)] flex flex-col gap-1.5">
+        <input
+          className="w-full px-2 py-1 text-[13px] bg-transparent text-foreground outline-none border border-[var(--border)] rounded focus:border-accent"
+          placeholder="搜索模型名…"
+          value={modelSearch}
+          onChange={(e) => setModelSearch(e.target.value)}
+        />
+        <div className="flex flex-wrap gap-1.5">
+          {MODEL_CATEGORIES.map((cat) => {
+            const count = cat === '全部' ? candidateModels.length : (categoryCounts[cat] || 0);
+            const active = modelCategory === cat;
+            return (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => setModelCategory(cat)}
+                className={`text-[12px] px-2 py-0.5 rounded border transition-colors cursor-pointer outline-none ${active ? 'border-accent text-accent bg-accent/10' : 'border-[var(--border)] text-muted-foreground hover:border-accent/40'}`}
+              >
+                {cat} {count}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {/* (c) 可选列表 */}
+      <div className="max-h-[140px] overflow-y-auto">
+        {filteredCandidates.length === 0 ? (
+          <div className="px-2.5 py-2 text-[12px] text-muted-foreground">无匹配模型</div>
+        ) : (
+          filteredCandidates.map((model) => (
+            <label key={model} className={`flex items-center gap-2 px-2.5 py-1.5 cursor-pointer text-[13px] transition-colors hover:bg-[var(--bg-hover)] ${selectedModelList.includes(model) ? 'bg-accent/8' : ''}`}>
+              <input type="checkbox" checked={selectedModelList.includes(model)} onChange={() => void toggleModelSelection(model)} className="accent-[var(--accent)]" />
+              <span className="truncate" title={model}>{model}</span>
+              <span className="text-[11px] text-muted-foreground/60 ml-auto shrink-0">{classifyModel(model)}</span>
+            </label>
+          ))
+        )}
+      </div>
+    </div>
   );
 
   /* ========== 渲染 ========== */
@@ -721,8 +1003,8 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
           <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[14px] w-[480px] max-h-[85vh] overflow-y-auto p-[26px]">
             <div className="flex items-center justify-between mb-5">
-              <span className="text-[15px] font-semibold text-foreground">{editingProfileId ? '编辑模型' : '添加模型'}</span>
-              <button onClick={closeModal} className="w-[26px] h-[26px] flex items-center justify-center rounded-md text-muted-foreground hover:bg-[var(--bg-hover)] hover:text-white transition-colors cursor-pointer outline-none text-lg">&times;</button>
+              <span className="text-[15px] font-semibold text-foreground">{isNewProfile ? '添加模型' : '编辑模型'}</span>
+              <button onClick={handleCloseModal} className="w-[26px] h-[26px] flex items-center justify-center rounded-md text-muted-foreground hover:bg-[var(--bg-hover)] hover:text-white transition-colors cursor-pointer outline-none text-lg">&times;</button>
             </div>
             {modalStep === 'provider' && (
               <div>
@@ -746,19 +1028,19 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                 <h3 className="text-[13px] font-medium text-muted-foreground mb-4">{(PROVIDER_CONFIGS as any)[selectedProvider]?.fullName || selectedProvider}</h3>
                 <div className="mb-3.5">
                   <label className="text-xs text-muted-foreground block mb-1.5">别名</label>
-                  <input className="w-full px-2.5 py-1.5 rounded-md border border-[var(--border)] bg-[var(--input)] text-[13px] text-foreground outline-none focus:border-accent transition-colors" placeholder="给这个配置起个名字，如「我的豆包」「公司Key」" value={formAlias} onChange={(e) => setFormAlias(e.target.value)} />
+                  <input className="w-full px-2.5 py-1.5 rounded-md border border-[var(--border)] bg-[var(--input)] text-[13px] text-foreground outline-none focus:border-accent transition-colors" placeholder="给这个配置起个名字，如「我的豆包」「公司Key」" value={formAlias} onChange={(e) => { setFormAlias(e.target.value); dirtyRef.current = true; }} onBlur={() => handleFieldBlur('text')} />
                 </div>
                 <div className="mb-3.5">
                   <label className="text-xs text-muted-foreground block mb-1.5">接口地址 <span className="text-[var(--accent-rose)]">*</span></label>
                   {/* 🔧 修复：编辑模式下始终允许修改（用户可能切换 region/代理/转发地址） */}
                   {/* 仅「新增预设供应商」时只读（自动填入 preset.baseUrl），新增 custom 和编辑模式都可改 */}
-                  <input className={`w-full px-2.5 py-1.5 rounded-md border bg-[var(--input)] text-[13px] outline-none focus:border-accent transition-colors ${formErrors.baseUrl ? 'border-[var(--accent-rose)]' : 'border-[var(--border)]'} ${isBaseUrlReadOnly ? 'text-muted-foreground' : 'text-foreground'}`} value={formBaseUrl} onChange={(e) => { setFormBaseUrl(e.target.value); if (formErrors.baseUrl) setFormErrors(prev => { const n = {...prev}; delete n.baseUrl; return n; }); }} readOnly={isBaseUrlReadOnly} placeholder="https://api.example.com/v1" />
+                  <input className={`w-full px-2.5 py-1.5 rounded-md border bg-[var(--input)] text-[13px] outline-none focus:border-accent transition-colors ${formErrors.baseUrl ? 'border-[var(--accent-rose)]' : 'border-[var(--border)]'} ${isBaseUrlReadOnly ? 'text-muted-foreground' : 'text-foreground'}`} value={formBaseUrl} onChange={(e) => { setFormBaseUrl(e.target.value); dirtyRef.current = true; if (formErrors.baseUrl) setFormErrors(prev => { const n = {...prev}; delete n.baseUrl; return n; }); }} onBlur={() => { if (!isBaseUrlReadOnly) handleFieldBlur('baseUrl'); }} readOnly={isBaseUrlReadOnly} placeholder="https://api.example.com/v1" />
                   {formErrors.baseUrl && <span className="text-[12px] text-[var(--accent-rose)] mt-1 block">{formErrors.baseUrl}</span>}
                 </div>
                 <div className="mb-3.5">
                   <label className="text-xs text-muted-foreground block mb-1.5">API Key <span className="text-[var(--accent-rose)]">*</span></label>
                   <div className={`flex items-center border rounded-md bg-[var(--input)] overflow-hidden focus-within:border-accent ${formErrors.apiKey ? 'border-[var(--accent-rose)]' : 'border-[var(--border)]'}`}>
-                    <input type={formKeyVisible ? 'text' : 'password'} className="flex-1 px-2.5 py-1.5 bg-transparent text-[13px] text-foreground outline-none font-mono" placeholder="sk-..." value={formApiKey} onChange={(e) => { setFormApiKey(e.target.value); setApiKeyChanged(true); if (formErrors.apiKey) setFormErrors(prev => { const n = {...prev}; delete n.apiKey; return n; }); }} />
+                    <input type={formKeyVisible ? 'text' : 'password'} className="flex-1 px-2.5 py-1.5 bg-transparent text-[13px] text-foreground outline-none font-mono" placeholder="sk-..." value={formApiKey} onChange={(e) => { setFormApiKey(e.target.value); setApiKeyChanged(true); dirtyRef.current = true; if (formErrors.apiKey) setFormErrors(prev => { const n = {...prev}; delete n.apiKey; return n; }); }} onBlur={() => handleFieldBlur('apiKey')} />
                     {/* 🔧 修复：用 Eye/EyeOff 图标替换固定 emoji，点击后有明确视觉反馈 */}
                     <button type="button" onClick={() => setFormKeyVisible(!formKeyVisible)} className="px-2.5 py-1.5 text-muted-foreground hover:text-foreground cursor-pointer outline-none transition-colors">
                       {formKeyVisible ? <EyeOff size={14} /> : <Eye size={14} />}
@@ -766,6 +1048,12 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                   </div>
                   {/* 🔧 修复：编辑模式回填真实 Key，不再需要"Key 已保存"提示 */}
                   {formErrors.apiKey && <span className="text-[12px] text-[var(--accent-rose)] mt-1 block">{formErrors.apiKey}</span>}
+                  {/* 🔧 ADR-004 G4：凭据解不开时留空 + 横幅，不回显密文 */}
+                  {credentialWarning && (
+                    <div className="mt-1.5 text-[12px] text-[var(--accent-rose)] bg-[rgba(225,29,72,0.08)] border border-[rgba(225,29,72,0.25)] rounded px-2 py-1.5 leading-relaxed">
+                      {credentialWarning}
+                    </div>
+                  )}
                   {!isCustom && (PROVIDER_CONFIGS as any)[selectedProvider]?.keyUrl && (
                     <a className="inline-flex items-center gap-1 text-xs text-accent mt-1 cursor-pointer hover:underline" href="#" onClick={(e) => { e.preventDefault(); window.open((PROVIDER_CONFIGS as any)[selectedProvider].keyUrl, '_blank'); }}>
                       <ExternalLink size={11} /> 获取 API Key
@@ -788,34 +1076,25 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                   </div>
                   {isCustom ? (
                     <>
-                      <textarea className={`w-full px-2.5 py-1.5 rounded-md border bg-[var(--input)] text-[13px] text-foreground outline-none focus:border-accent resize-y min-h-[64px] leading-relaxed ${formErrors.models ? 'border-[var(--accent-rose)]' : 'border-[var(--border)]'}`} placeholder={`输入模型名称，每行一个，如：\ngpt-4o\nclaude-sonnet-4`} value={customModelsText} onChange={(e) => { setCustomModelsText(e.target.value); if (formErrors.models) setFormErrors(prev => { const n = {...prev}; delete n.models; return n; }); }} />
+                      <textarea className={`w-full px-2.5 py-1.5 rounded-md border bg-[var(--input)] text-[13px] text-foreground outline-none focus:border-accent resize-y min-h-[64px] leading-relaxed ${formErrors.models ? 'border-[var(--accent-rose)]' : 'border-[var(--border)]'}`} placeholder={`输入模型名称，每行一个，如：\ngpt-4o\nclaude-sonnet-4`} value={customModelsText} onChange={(e) => { setCustomModelsText(e.target.value); dirtyRef.current = true; if (formErrors.models) setFormErrors(prev => { const n = {...prev}; delete n.models; return n; }); }} onBlur={() => handleFieldBlur('models')} />
                       <div className="text-[12px] text-muted-foreground mt-1">每行一个模型名称</div>
+                      {/* 同一套搜索/分类/候选列表：勾选即往 textarea 的行里增删，免手打 */}
+                      <div className="mt-1.5">{modelSelectionJsx}</div>
                     </>
                   ) : (
-                    <div className={`border rounded-md bg-[var(--input)] ${formErrors.models ? 'border-[var(--accent-rose)]' : 'border-[var(--border)]'}`}>
-                      <div className="max-h-[140px] overflow-y-auto">
-                        {(PROVIDER_CONFIGS as any)[selectedProvider]?.models?.map((model: string) => (
-                          <label key={model} className={`flex items-center gap-2 px-2.5 py-1.5 cursor-pointer text-[13px] transition-colors hover:bg-[var(--bg-hover)] ${formModels.includes(model) ? 'bg-accent/8' : ''}`}>
-                            <input type="checkbox" checked={formModels.includes(model)} onChange={() => { togglePresetModel(model); if (formErrors.models) setFormErrors(prev => { const n = {...prev}; delete n.models; return n; }); }} className="accent-[var(--accent)]" /> {model}
-                          </label>
-                        ))}
-                        {/* 🔧 修复：显示已保存但不在预设列表中的额外模型（可取消勾选） */}
-                        {formModels.filter((m: string) => !(PROVIDER_CONFIGS as any)[selectedProvider]?.models?.includes(m)).map((model: string) => (
-                          <label key={model} className={`flex items-center gap-2 px-2.5 py-1.5 cursor-pointer text-[13px] transition-colors hover:bg-[var(--bg-hover)] ${formModels.includes(model) ? 'bg-accent/8' : ''}`}>
-                            <input type="checkbox" checked={formModels.includes(model)} onChange={() => { togglePresetModel(model); if (formErrors.models) setFormErrors(prev => { const n = {...prev}; delete n.models; return n; }); }} className="accent-[var(--accent)]" />
-                            {model}
-                            <span className="text-[12px] text-muted-foreground ml-auto">自定义</span>
-                          </label>
-                        ))}
-                      </div>
+                    <div>
+                      {modelSelectionJsx}
                       {/* 🔧 修复：预设模式下也允许追加自定义模型 */}
-                      <div className="border-t border-[var(--border)] p-2">
+                      <div className="mt-1.5 border border-[var(--border)] rounded-md bg-[var(--input)] p-2">
                         <input className="w-full px-2 py-1 text-[13px] bg-transparent text-foreground outline-none border border-[var(--border)] rounded focus:border-accent" placeholder="追加自定义模型名，回车添加" onKeyDown={(e) => {
                           if (e.key === 'Enter') {
                             e.preventDefault();
                             const val = (e.target as HTMLInputElement).value.trim();
                             if (val && !formModels.includes(val)) {
-                              setFormModels((prev) => [...prev, val]);
+                              const next = [...formModels, val];
+                              setFormModels(next);
+                              dirtyRef.current = true;
+                              void commitModels(next);
                               (e.target as HTMLInputElement).value = '';
                             }
                           }
@@ -850,11 +1129,18 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                       <span className="text-[12px] text-[var(--accent-rose)]/70 max-w-[280px] truncate" title={testFailReason}>{testFailReason}</span>
                     )}
                   </div>
-                  <div className="flex gap-2">
-                    <button onClick={closeModal} className="px-4 py-1.5 rounded-md border border-[var(--border)] bg-transparent text-muted-foreground text-[13px] cursor-pointer hover:border-[var(--bg-elevated)] hover:text-foreground transition-colors outline-none">取消</button>
-                    <button onClick={handleSaveProfile} className="px-4 py-1.5 rounded-md border-none bg-[var(--accent)] text-white text-[13px] font-medium cursor-pointer hover:opacity-90 transition-opacity outline-none">保存</button>
+                  <div className="flex items-center gap-3">
+                    {/* 感知保存：无「保存」按钮，字段离开即落库 */}
+                    <span className="text-[12px] text-muted-foreground">改动离开字段后自动保存</span>
+                    <button onClick={handleCloseModal} className="px-4 py-1.5 rounded-md border border-[var(--border)] bg-transparent text-muted-foreground text-[13px] cursor-pointer hover:border-[var(--bg-elevated)] hover:text-foreground transition-colors outline-none">关闭</button>
                   </div>
                 </div>
+                {/* 🔧 ADR-004 G4：保存失败必须可见（后端拒绝密文保存等） */}
+                {saveError && (
+                  <div className="mt-3 text-[12px] text-[var(--accent-rose)] bg-[rgba(225,29,72,0.08)] border border-[rgba(225,29,72,0.25)] rounded px-2 py-1.5 leading-relaxed">
+                    保存失败：{saveError}
+                  </div>
+                )}
               </div>
             )}
           </div>

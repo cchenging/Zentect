@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { API } from '@renderer/api';
 import { AppNotifier } from '@renderer/core/AppNotifier';
 
@@ -52,7 +52,6 @@ export const useSettingsManager = () => {
   const [config, setConfig] = useState<any>(null);
   const [activeTab, setActiveTab] = useState<'general' | 'ai' | 'export' | 'models' | 'health'>('general');
   const [isTesting, setIsTesting] = useState(false);
-  const [isSaving, setIsSaving] = useState(false);
   const [modelPool, setModelPool] = useState<string[]>([]);
   const [apiProfiles, setApiProfiles] = useState<any[]>([]);
   const [profileBindings, setProfileBindings] = useState<any[]>([]);
@@ -81,9 +80,13 @@ export const useSettingsManager = () => {
         const dynamicSettings: Record<string, any> = { ...DEFAULT_SETTINGS_SCHEMA, ...allSettings };
 
         const loadedData = {
-          projectPath: systemPaths.projects,
-          exportPath: systemPaths.exports,
           ...dynamicSettings,
+          // 🔧 路径类设置必须有默认值：首次安装时 DB 里没有这些键，旧写法只给 projectPath/exportPath
+          //   兜了默认，logPath 被 Schema 里的 '' 直接渲染成空框（看着像没装上）。此处统一回落到
+          //   系统实际路径，保证「装完就有一个能用的值」；用户清空后回退到同一路径，语义不变。
+          projectPath: dynamicSettings.projectPath || systemPaths.projects,
+          exportPath: dynamicSettings.exportPath || systemPaths.exports,
+          logPath: dynamicSettings.logPath || systemPaths.logs,
           // 单独对需要清洗的 Model 字段进行防脏数据拦截
           deepseekModels: parseModels(dynamicSettings.deepseekModels, ['deepseek-chat', 'deepseek-reasoner']),
           qwenModels: parseModels(dynamicSettings.qwenModels, ['qwen-max', 'qwen-plus', 'qwen-vl-max']),
@@ -118,38 +121,40 @@ export const useSettingsManager = () => {
     })();
   }, []);
 
+  // 💥 即时落盘（auto-save）：设置项一改即写库，不设保存按钮。
+  //   防抖 500ms 的原因：文本类字段（API Key 等）逐字触发，且敏感 Key 要经 DPAPI 加密，
+  //   逐字落盘会产生大量无谓的加密+写库开销；窗口期内的改动合并为一次批量写入。
+  const pendingRef = useRef<Record<string, any>>({});
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const flushPending = useCallback(() => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
+    const pending = pendingRef.current;
+    const keys = Object.keys(pending);
+    if (keys.length === 0) return;
+    pendingRef.current = {};
+    // 静默成功：设置项改动属高频操作，不宜逐次弹「保存成功」；仅失败时提示
+    Promise.all(keys.map(k => API.system.setSetting(k, pending[k])))
+      .catch((e: any) => AppNotifier.error(e?.message || '设置保存失败'));
+  }, []);
+
+  const scheduleSave = useCallback((key: string, value: any) => {
+    pendingRef.current[key] = value;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(flushPending, 500);
+  }, [flushPending]);
+
+  // 离开设置页时立即写出防抖窗口内未落盘的改动，避免丢失
+  useEffect(() => () => flushPending(), [flushPending]);
+
   const updateConfig = useCallback((_section: string, key: string, value: any) => {
     setConfig((prev: any) => {
       const updated = { ...prev, [key]: value };
       if (String(key).includes('Models')) rebuildModelPool(updated);
       return updated;
     });
-  }, [rebuildModelPool]);
-
-  // 💥 增量更新点：基于 Schema 自动保存，取代长串硬编码
-  const saveConfig = async () => {
-    setIsSaving(true);
-    try {
-      const savePromises = Object.keys(DEFAULT_SETTINGS_SCHEMA).map(key => {
-        // 对 Models 字段做兜底转存保证
-        const valueToSave = String(key).includes('Models') ? (config[key] || []) : config[key];
-        return API.system.setSetting(key, valueToSave);
-      });
-
-      // 特殊处理系统路径
-      savePromises.push(API.system.setSetting('projectPath', config.projectPath));
-      savePromises.push(API.system.setSetting('exportPath', config.exportPath));
-
-      await Promise.all(savePromises);
-      AppNotifier.success('保存成功');
-      return true;
-    } catch (e: any) {
-      AppNotifier.error(e.message || '保存失败');
-      return false;
-    } finally {
-      setIsSaving(false);
-    }
-  };
+    scheduleSave(key, value);
+  }, [rebuildModelPool, scheduleSave]);
 
   const testAIConnection = async (type: string, providerName: string, configData: any, saveKey?: string) => {
     if (saveKey) await API.system.setSetting(saveKey, config[saveKey] || '');
@@ -190,8 +195,8 @@ export const useSettingsManager = () => {
   };
 
   return {
-    config, activeTab, setActiveTab, updateConfig, saveConfig,
-    testAIConnection, testTTS, isTesting, isSaving, modelPool,
+    config, activeTab, setActiveTab, updateConfig,
+    testAIConnection, testTTS, isTesting, modelPool,
     apiProfiles, profileBindings,
   };
 };

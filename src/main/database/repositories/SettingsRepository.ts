@@ -114,7 +114,11 @@ export class SettingsRepository {
           ? JSON.stringify(value)
           : String(value);
 
-        if (valToSave.trim() === '') continue;
+        // 🔧 空串是「显式清空」的合法语义（清空 API Key、日志目录留空=回退默认位置），必须落库。
+        //   此前用 `if (valToSave.trim() === '') continue;` 跳过空值，是为了兜底旧版 saveConfig
+        //   把整份 Schema 逐键全量写回（含大量未填写字段的空值）时会误清已有配置；
+        //   该全量写回已废弃，现由 useSettingsManager 的防抖即时落盘按「用户实际改动的键」写入，
+        //   兜底不再需要，且它会让「清空」操作静默失效。
 
         // 仅对敏感 key 进行加密
         if (isSensitiveConfig(key)) {

@@ -49,7 +49,7 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({ data, onUpdate }) => {
               <div className="text-xs text-muted-foreground">新建项目的默认存储目录</div>
             </div>
             <div className="flex-1 flex gap-2">
-              <Input readOnly value={data.projectPath || ''} className="flex-1 text-xs font-mono text-muted-foreground bg-bg-secondary h-8 border-border/50" />
+              <Input value={data.projectPath || ''} onChange={(e) => onUpdate('general', 'projectPath', e.target.value)} className="flex-1 text-xs font-mono bg-bg-secondary h-8 border-border/50" />
               <Button onClick={() => handleSelectDirectory('projectPath')} variant="outline" className="h-8 px-3 text-xs shrink-0 border-border/50 hover:border-accent/40 hover:text-accent">浏览</Button>
             </div>
           </div>
@@ -60,7 +60,7 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({ data, onUpdate }) => {
               <div className="text-xs text-muted-foreground">导出成片视频的默认目录</div>
             </div>
             <div className="flex-1 flex gap-2">
-              <Input readOnly value={data.exportPath || ''} placeholder="默认 data/exports" className="flex-1 text-xs font-mono text-muted-foreground bg-bg-secondary h-8 border-border/50" />
+              <Input value={data.exportPath || ''} onChange={(e) => onUpdate('general', 'exportPath', e.target.value)} placeholder="默认 data/exports" className="flex-1 text-xs font-mono bg-bg-secondary h-8 border-border/50" />
               <Button onClick={() => handleSelectDirectory('exportPath')} variant="outline" className="h-8 px-3 text-xs shrink-0 border-border/50 hover:border-accent/40 hover:text-accent">浏览</Button>
             </div>
           </div>
@@ -71,7 +71,7 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({ data, onUpdate }) => {
               <div className="text-xs text-muted-foreground">导出剪映草稿工程的目录</div>
             </div>
             <div className="flex-1 flex gap-2">
-              <Input readOnly value={data.jianyingPath || ''} placeholder={t.common?.default || '留空自动检测'} className="flex-1 text-xs font-mono text-muted-foreground bg-bg-secondary h-8 border-border/50" />
+              <Input value={data.jianyingPath || ''} onChange={(e) => onUpdate('general', 'jianyingPath', e.target.value)} placeholder={t.common?.default || '留空自动检测'} className="flex-1 text-xs font-mono bg-bg-secondary h-8 border-border/50" />
               <Button onClick={() => handleSelectDirectory('jianyingPath')} variant="outline" className="h-8 px-3 text-xs shrink-0 border-border/50 hover:border-accent/40 hover:text-accent">浏览</Button>
             </div>
           </div>
@@ -79,10 +79,10 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({ data, onUpdate }) => {
           <div className="flex items-center gap-4">
             <div className="w-[160px] shrink-0">
               <div className="text-xs text-foreground font-medium">日志目录</div>
-              <div className="text-xs text-muted-foreground">留空使用默认位置；保存后立即生效</div>
+              <div className="text-xs text-muted-foreground">留空使用默认位置（data/logs）；改完即生效</div>
             </div>
             <div className="flex-1 flex gap-2">
-              <Input readOnly value={data.logPath || ''} placeholder="默认 AppData/Roaming/Zentect/logs" className="flex-1 text-xs font-mono text-muted-foreground bg-bg-secondary h-8 border-border/50" />
+              <Input value={data.logPath || ''} onChange={(e) => onUpdate('general', 'logPath', e.target.value)} placeholder="默认 data/logs" className="flex-1 text-xs font-mono bg-bg-secondary h-8 border-border/50" />
               <Button onClick={() => handleSelectDirectory('logPath')} variant="outline" className="h-8 px-3 text-xs shrink-0 border-border/50 hover:border-accent/40 hover:text-accent">浏览</Button>
             </div>
           </div>
