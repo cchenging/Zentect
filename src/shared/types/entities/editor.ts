@@ -35,6 +35,9 @@ export interface VlmFrame {
   timeStr?: string;
   /** 💬 该帧时间区间内匹配到的 ASR 台词（顶层冗余，来自 VisionExtractStrategy，供 step2 UI 直接展示） */
   asrText?: string;
+  /** 🎬 P0（2026-09-30）：帧内容 hash（md5 of 帧图像），与 vlm_frame_cache.frame_hash 同源。
+   *  步骤5 按时间窗聚合时，把涵盖帧的 hash 挂到所属镜头的 VideoChunk.frameHashes（帧→镜头归属链）。 */
+  frameHash?: string;
   /** 🎭 P0 意境维度：该帧的情绪标签（如：紧张/平静/温馨），来自 FrameDetail.emotion（VLM 结构化输出 emotionalState），供步骤5 做"文案↔画面"情绪匹配 */
   emotion?: string;
   /** 🎬 该帧的镜头景别（如：特写/中景/全景），来自 FrameDetail.downstream.shotType，供步骤5 意境/衔接匹配 */
@@ -318,6 +321,13 @@ export interface VideoChunk {
   parentStartMs?: number;
   /** 在物理镜头内的子段序号（0 起） */
   segmentIndexInParent?: number;
+  /**
+   * 🎬 P0（2026-09-30）帧→镜头归属链：本镜头时间窗 [startMs-500, endMs+500] 内涵盖帧的内容 hash 列表
+   * （与 vlm_frame_cache.frame_hash / VlmFrame.frameHash 同源，按时间升序去重）。
+   * 帧级召回（P2 帧向量索引 / P3 上卷）据此从「命中帧」反查所属镜头，无需再猜时间归属。
+   * 无涵盖帧时不写入（不造假值）。
+   */
+  frameHashes?: string[];
 }
 
 /** 背景音乐 */

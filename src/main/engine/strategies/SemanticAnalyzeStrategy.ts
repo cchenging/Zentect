@@ -9,6 +9,7 @@ import { BgmBeatRepository } from '../../database/repositories/BgmBeatRepository
 import { LLMFactory } from '../adapters/LLMFactory';
 import { promisePool } from '../../utils/async';
 import { VisionExtractStrategy } from './VisionExtractStrategy';
+import { PerceptualHasher } from '../media/PerceptualHasher';
 import * as path from 'path';
 import * as fs from 'fs';
 // 🎬 OP/ED 片头片尾裁剪策略（P0 手动裁剪 / P1 源头裁剪）
@@ -772,7 +773,23 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  供 daemon 做"文案情绪↔画面情绪"匹配（文案段落 emotion 来自步骤3 LLM 生成，帧 emotion 来自步骤2 VLM 结构化输出）。
      *  🎬 P0 OP/ED：先平移 frameDescs.timeMs -= trimStartMs，再删除 OP/ED 区间外的帧描述，
      *     保证帧时间轴与 chunks（已平移）完全对齐，避免双指针聚合空归。 */
-    const frameDescsRaw: { timeMs: number; description: string; emotion?: string; shotType?: string; cameraMovement?: string; scene?: string; characters?: string[];
+    /** 🎬 P0（2026-09-30）：帧内容 hash 解析（帧身份基准）。
+     *  优先取帧对象自带 frameHash（步骤2 落库字段），缺失时以 url 现算 md5 兜底
+     *  （与 vlm_frame_cache.frame_hash 同源，均为帧图像二进制的 md5）。
+     *  magic:// 为未 hydrate 的逻辑路径、http 为远端，均无法读盘 → 跳过（不造假值）。
+     *  Map 记忆化：同 url 只读盘一次，且避免失败 warn 刷屏。 */
+    const frameHashCache = new Map<string, string>();
+    const frameHashOf = (f: any): string => {
+      const own = typeof f?.frameHash === 'string' ? f.frameHash.trim() : '';
+      if (own) return own;
+      const url = typeof f?.url === 'string' ? f.url : '';
+      if (!url || url.startsWith('magic://') || url.startsWith('http')) return '';
+      if (frameHashCache.has(url)) return frameHashCache.get(url)!;
+      const h = PerceptualHasher.computeContentHash(url)?.contentHash || '';
+      frameHashCache.set(url, h);
+      return h;
+    };
+    const frameDescsRaw: { timeMs: number; description: string; frameHash?: string; emotion?: string; shotType?: string; cameraMovement?: string; scene?: string; characters?: string[];
       shotStyle?: string; dramaticConflict?: string; spatialRelation?: string; visualAtmosphere?: string;
       primarySubject?: string; secondarySubjects?: string[]; interaction?: string;
       keyProps?: string; costume?: string; weatherEnv?: string }[] = collectFrameDescriptions(task).map((f: any) => {
@@ -811,6 +828,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
          *   仅在帧时间明显是源坐标（首帧 ≥ OP 结束点）时转 body；否则保持原样。 */
         timeMs: Math.max(0, Number(f.timeMs || 0)),
         description: f.description,
+        /** 🎬 P0（2026-09-30）：帧内容 hash 随帧进入聚合，供写回 chunk.frameHashes（帧→镜头归属链）。 */
+        frameHash: frameHashOf(f),
         emotion: f.emotion,
         /** 🔧 P0 修复：FrameDetail 顶层无 shotType 字段，真实值在 downstream.shotType 中
          *  （VisionExtractStrategy.normalizeDownstreamFields 从 jsonItem.shotType 提取）。
@@ -1063,6 +1082,22 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (chunk.description && String(chunk.description).trim()) {
           VisionExtractStrategy.fillStructuredFromDescription(chunk, chunk.description);
         }
+        /** 🎬 P0（2026-09-30）帧→镜头归属链：本镜头时间窗 [start-500, end+500] 的涵盖帧（与下面
+         *  各聚合口径同源），把其 frame_hash 按时间升序去重后挂到 chunk.frameHashes。
+         *  这是"镜头 → 涵盖帧集合"的唯一落库入口：帧级召回（P2 帧向量索引 / P3 上卷）据此
+         *  从"命中帧"直接反查所属镜头，无需再按时间猜归属。无 hash → 不写入（不造假值）。 */
+        const winFrames = sortedDescs.slice(winLeft, winRight);
+        const winHashes: string[] = [];
+        const winHashSeen = new Set<string>();
+        for (const wf of winFrames) {
+          const h = (wf as any).frameHash;
+          if (typeof h === 'string' && h && !winHashSeen.has(h)) {
+            winHashSeen.add(h);
+            winHashes.push(h);
+          }
+        }
+        if (winHashes.length > 0) chunk.frameHashes = winHashes;
+        else delete chunk.frameHashes;
         /** 🎬 补丁18（评审稿 §13.1）：帧级 `frameRoles` → 切片级确定性归约，覆盖上面两步的
          *  "VLM 帧级 primarySubject 众数"与"characters 并集"（后者还会被上一步
          *  `fillStructuredFromDescription` 从 description 正则并集回填，故必须压在其后执行）：
@@ -1072,7 +1107,6 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
          *  涵盖帧 = 当前滑动窗口 `sortedDescs[winLeft..winRight-1]`（即 [start-500, end+500] 内的时间有序帧，
          *  与既有聚合口径同源）。无涵盖帧 → 不改写任何字段（不造假值）。 */
         if (rolePoolingOn) {
-          const winFrames = sortedDescs.slice(winLeft, winRight);
           const rp = SemanticAnalyzeStrategy.reduceChunkRolesFromFrames(winFrames, start, end);
           if (rp.primarySubject === undefined) {
             rpNoFrames++;
@@ -1100,6 +1134,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       const withScene = chunks.filter((c) => (c.scene || '').trim().length > 0).length;
       const withCharacters = chunks.filter((c) => Array.isArray(c.characters) && c.characters.length > 0).length;
       const withKeywords = chunks.filter((c) => Array.isArray(c.keywords) && c.keywords.length > 0).length;
+      /** 🎬 P0（2026-09-30）：帧→镜头归属链覆盖率（应为 chunks.length；为 0 说明帧身份未落库）。 */
+      const withFrameHashes = chunks.filter((c: any) => Array.isArray(c.frameHashes) && c.frameHashes.length > 0).length;
       // 🔬 第2步诊断（2026-09-16）：直接判定"结构化字段长期归零"的结构断层在哪一层——
       //   ① 下游帧是否带 downstream（缺失则所有只依赖 downstream 的字段必然静默归零）；
       //   ② 映射后运镜是否可用（补了描述回捞后应显著 >0）；
@@ -1127,7 +1163,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         `${withCameraMovement}/${chunks.length} 带运镜cameraMovement，` +
         `${withScene}/${chunks.length} 带场景scene，` +
         `${withCharacters}/${chunks.length} 带角色characters，` +
-        `${withKeywords}/${chunks.length} 带关键词keywords`);
+        `${withKeywords}/${chunks.length} 带关键词keywords，` +
+        `${withFrameHashes}/${chunks.length} 带帧归属frameHashes`);
       /** 🎬 补丁18 诊断（开关 off 时不打印，日志逐字节零变化）：三态分布 + 30% 时长过滤条数 +
        *  置信度均值——让"点亮 ≠ 可信"（覆盖率/置信度）在日志里可见，作为 A/B 对账基线。 */
       if (rolePoolingOn) {

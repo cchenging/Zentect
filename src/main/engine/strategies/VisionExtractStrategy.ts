@@ -67,6 +67,9 @@ export interface FrameDetail {
   description: string;
   asrText: string;
   asrTime: string;
+  /** 🎬 P0（2026-09-30）：帧内容 hash（md5 of 帧图像二进制），与 vlm_frame_cache 的 frame_hash 同源。
+   *  落库后步骤5 把它挂到所属镜头的 chunk.frameHashes，构成「镜头 → 涵盖帧集合」的归属链。 */
+  frameHash?: string;
   /** 该帧在视频中的绝对时间（毫秒） */
   timeMs: number;
   /** 该帧绝对时间的可读格式，如 "00:12.15" */
@@ -1725,6 +1728,11 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
 
       return {
         url,
+        /** 🎬 P0（2026-09-30）：帧内容 hash（md5 of 帧图像二进制）随帧落库。
+         *  与 vlm_frame_cache 的 frame_hash 同源（同一 contentHashMap），是"帧 → 镜头"归属链的
+         *  身份基准：步骤5 聚合时把涵盖帧的 hash 挂到 chunk.frameHashes，帧级召回（P2/P3）据此
+         *  回查帧描述与向量。此前只用于缓存查询、**从不落库**，导致帧身份一出步骤2 就丢失。 */
+        frameHash: contentHashMap.get(fp) || '',
         description: frameDescriptions[i] || '',
         asrText: matchedAsr.map(l => l.text).join(' '),
         asrTime: matchedAsr.length > 0

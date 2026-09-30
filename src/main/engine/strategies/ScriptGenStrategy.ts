@@ -288,18 +288,29 @@ function ensureVisualIntentFilled(
  *  2. action 缺失时退化为该帧关键词拼接（最多 6 个，动作/道具类，供文本重合度打分有料可用）；
  *  3. 二者皆缺返回空字符串——调用方据此走 block_first 退化，绝不用编造描述充数。
  *
- * @param frame 步骤2 downstreamContext.shots 中的单帧（含 action/shotType/keywords）
+ * @param frame 步骤2 帧对象：downstreamContext.shots（扁平 action/shotType/keywords）
+ *              或 FrameDetail/vlmFrames（结构化字段嵌在 downstream 下 + 顶层 description）
  * @returns 帧描述文本（可能为空字符串）
  */
 function frameDescriptionOf(frame: any): string {
-  const action = String(frame?.action || '').trim();
-  const shotType = String(frame?.shotType || '').trim();
+  /** 🎯 P1（2026-09-30）双形状兼容：步骤2 有两套同构产出——
+   *  ① downstreamContext.shots：`{...downstream, timeMs, asrText}`（字段在**顶层**）；
+   *  ② FrameDetail / vlmFrames：结构化字段在 **downstream 下**，另有顶层 description。
+   *  旧实现只读①形状 ⇒ 收到②形状帧时 action/shotType/keywords 全空 ⇒ 有描述的帧被误判为
+   *  "无描述帧" ⇒ 锚点整体退化 block_first（实测 43/43）。此处统一双源读取，优先级 downstream > 顶层。 */
+  const ds = frame?.downstream;
+  const action = String(ds?.action || frame?.action || '').trim();
+  const shotType = String(ds?.shotType || frame?.shotType || '').trim();
   const prefix = shotType ? `【${shotType}】` : '';
   if (action) return `${prefix}${action}`;
-  const keywords = Array.isArray(frame?.keywords)
-    ? frame.keywords.filter((k: any) => typeof k === 'string' && k.trim()).slice(0, 6).join('、')
+  const kwSrc = (Array.isArray(ds?.keywords) && ds.keywords.length > 0) ? ds.keywords : frame?.keywords;
+  const keywords = Array.isArray(kwSrc)
+    ? kwSrc.filter((k: any) => typeof k === 'string' && k.trim()).slice(0, 6).join('、')
     : '';
-  return keywords;
+  if (keywords) return keywords;
+  /** 顶层原始描述兜底：FrameDetail.description 是步骤2 VLM 的自然语言画面描述（真实内容，非编造），
+   *  结构化字段全缺时用它参与锚点文本重合度比较，避免"帧有描述却因形状错位被当空描述"。 */
+  return String(frame?.description || '').trim();
 }
 
 /**
@@ -346,18 +357,45 @@ function frameTextOverlap(a: string, b: string): number {
  *
  * @param chunk 该段文案对应的母块 ContextChunk（含 startMs/durationMs）
  * @param paragraphText 段文案拼接文本（text + visualIntent）
- * @param frames 步骤2 下游帧数组（downstreamContext.shots）
+ * @param frames 锚点帧源（见调用处 anchorFrames：visualShots 扁平形状 优先，回退 input.visionResult.frames）
+ * @param stat 🔬 P1 探针（可选）：三道闸计数累计器，调用方聚合后打印；不传则行为与旧实现逐字节一致
  * @returns 参考帧三字段（timeMs 在退化且母块时间轴非法时为 undefined）
  */
+type RefFrameGateStat = {
+  /** 总调用次数 */
+  total: number;
+  /** 闸① 母块 startMs/durationMs 非法 */
+  gateA: number;
+  /** 闸② 窗内无帧（坐标错位 / 帧源为空） */
+  gateB: number;
+  /** 闸③ 窗内有帧但描述全空（形状错位） */
+  gateC: number;
+  /** 三道闸皆过 → matched */
+  ok: number;
+  /** 帧源整体为空（闸②的极端形态，用于区分"输入空"与"坐标错位"） */
+  emptyFrames: number;
+  /** 前 N 条未命中明细 */
+  sample: string[];
+};
+
 function resolveParagraphRefFrame(
   chunk: any,
   paragraphText: string,
   frames: any[],
+  stat?: RefFrameGateStat,
 ): { refFrameTimeMs?: number; refFrameDesc: string; refFrameSource: 'matched' | 'block_first' } {
+  if (stat) {
+    stat.total++;
+    if (!Array.isArray(frames) || frames.length === 0) stat.emptyFrames++;
+  }
   const winStart = Number(chunk?.startMs);
   const winDur = Number(chunk?.durationMs);
   if (!Number.isFinite(winStart) || !Number.isFinite(winDur) || winDur <= 0) {
     // 母块时间轴非法：无锚点可退化，返回 undefined + 空描述（不伪造时间）
+    if (stat) {
+      stat.gateA++;
+      if (stat.sample.length < 8) stat.sample.push(`闸① ${chunk?.id ?? '?'} 时间轴非法 start=${chunk?.startMs} dur=${chunk?.durationMs}`);
+    }
     return { refFrameDesc: '', refFrameSource: 'block_first' };
   }
   const winEnd = winStart + winDur;
@@ -378,7 +416,17 @@ function resolveParagraphRefFrame(
     if (!best || score > best.score) best = { t, desc, score };
   }
   if (best && best.desc) {
+    if (stat) stat.ok++;
     return { refFrameTimeMs: Math.round(best.t), refFrameDesc: best.desc, refFrameSource: 'matched' };
+  }
+  if (stat) {
+    if (framesInWindow.length === 0) {
+      stat.gateB++;
+      if (stat.sample.length < 8) stat.sample.push(`闸② ${chunk?.id ?? '?'} 窗内0帧 win=[${winStart},${winEnd}) 帧源=${Array.isArray(frames) ? frames.length : 0}`);
+    } else {
+      stat.gateC++;
+      if (stat.sample.length < 8) stat.sample.push(`闸③ ${chunk?.id ?? '?'} 窗内${framesInWindow.length}帧 描述全空`);
+    }
   }
   return { refFrameTimeMs: Math.round(blockFirstFrameMs), refFrameDesc: '', refFrameSource: 'block_first' };
 }
@@ -728,6 +776,21 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       asrLines = input.audioResult.lines;
     }
 
+    /** 🎯 P1（2026-09-30）锚点帧源解析链：`visualShots`（downstreamContext.shots 扁平形状，
+     *  含 action/shotType/keywords/timeMs）→ `input.visionResult.frames`（步骤2 原始产出
+     *  FrameDetail / vlmFrames，结构化字段嵌在 downstream 下 + 顶层 description）。
+     *  实测根因：步骤3 为单节点执行（STEP_SEQUENCES[3].dependsOn=[]），orchestrator 只注入
+     *  `visionResult.frames`、不注入 `downstreamContext.shots` ⇒ visualShots 恒为空 ⇒
+     *  resolveParagraphRefFrame 收到空帧集 ⇒ 全片退化为 block_first（实测 43/43，refT==startMs）。
+     *  本解析链只服务"文案 → 真实画面锚点"选择，**不参与 chunk 时间轴构建**
+     *  （时间轴改动波及 startMs/durationMs 契约，另案评估，本步不越界）。 */
+    const anchorFrames: any[] = (visualShots.length > 0 && visualShots.some((s: any) => frameDescriptionOf(s)))
+      ? visualShots
+      : (Array.isArray(input.visionResult?.frames) ? input.visionResult.frames : visualShots);
+    AppLogger.info(LOG_TAGS.AI_AGENT,
+      `[文案生成] 🎯 锚点帧源：visualShots=${visualShots.length}（有描述 ${visualShots.filter((s: any) => frameDescriptionOf(s)).length}）`
+      + ` → 选定 ${anchorFrames.length} 帧（visualShots 优先，回退 visionResult.frames）`);
+
     // 构建 ContextChunk JSON 数组：将视觉片段与 ASR 台词按时序对齐
     // 每个 chunk 含 chunkId/timeRange/durationMs/anchoredCharacters/asrContext/visualContext
     const contextChunks: any[] = [];
@@ -743,6 +806,12 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       && visualShots.every((s: any) => s && Number.isFinite(Number(s.timeMs)));
     if (!hasRealFrameTimes && visualShots.length > 0) {
       AppLogger.warn(LOG_TAGS.AI_AGENT, '[文案生成] ⚠️ 帧真实时间戳缺失，chunk 时间轴回退 ASR 行数均分估算，时间点可能不精确');
+    } else if (visualShots.length === 0) {
+      /** 🔬 P1（2026-09-30）探针补盲：旧条件 `!hasRealFrameTimes && visualShots.length > 0` 在帧源为空时
+       *  **静默不告警**，导致"帧时间轴缺失"在日志里查不到（实测步骤3 单节点执行时 visualShots 恒为空）。
+       *  此处显式告警，标明 chunk 时间轴已退化为 ASR 估算（锚点帧源另走 anchorFrames，不受此影响）。 */
+      AppLogger.warn(LOG_TAGS.AI_AGENT,
+        '[文案生成] ⚠️ 未收到 downstreamContext.shots（帧源为空），chunk 时间轴回退 ASR 行数均分估算；参考帧锚点改用 visionResult.frames');
     }
 
     for (let i = 0; i < totalShots; i++) {
@@ -1756,6 +1825,9 @@ ${roleMapLines.join('\n')}
     // 分镜时长必须等于画面真实时长，否则步骤5 匹配时解说段与画面错位。
 
     // 先构造带 __order 的中间分镜（__order = chunk 下标，供断句后按原始顺序合并、回查 contextChunks）
+    /** 🔬 P1 探针（2026-09-30）：三道闸计数 + 未命中明细，定位"锚点退化"落在哪一闸
+     *  （闸① 时间轴非法 / 闸② 窗内无帧=坐标错位或帧源空 / 闸③ 窗内帧描述全空=形状错位）。 */
+    const refFrameStat: RefFrameGateStat = { total: 0, gateA: 0, gateB: 0, gateC: 0, ok: 0, emptyFrames: 0, sample: [] };
     const parsed = rawShotsWithVI.map((raw, idx) => {
       const srcChunk = contextChunks[chunkIndexByShot[idx] ?? idx];
       const baseDuration = srcChunk?.durationSec ?? (raw.duration || 3);
@@ -1786,13 +1858,23 @@ ${roleMapLines.join('\n')}
         ...resolveParagraphRefFrame(
           srcChunk,
           `${raw.text || ''} ${raw.visualIntent || ''}`.trim(),
-          visualShots,
+          anchorFrames,
+          refFrameStat,
         ),
         /** 🎬 决策 #6：抽象旁白标记（LLM 按契约产出，仅 true 才为真），
          *  断句后由子句继承，最终驱动步骤5 的空镜优先路由 */
         isAbstractNarration: raw.isAbstractNarration === true,
       };
     });
+
+    /** 🔬 P1 探针输出：matched 占比 + 三闸分布 + 前 N 条明细（验收口径：matched 脱离 0/43）。 */
+    AppLogger.info(LOG_TAGS.AI_AGENT,
+      `[文案生成] 🎯 参考帧锚点：matched ${refFrameStat.ok}/${refFrameStat.total}｜`
+      + `闸①时间轴非法 ${refFrameStat.gateA}｜闸②窗内无帧 ${refFrameStat.gateB}（其中帧源为空 ${refFrameStat.emptyFrames} 次）｜`
+      + `闸③描述全空 ${refFrameStat.gateC}｜锚点帧源 ${anchorFrames.length} 帧`);
+    if (refFrameStat.sample.length > 0) {
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 🔬 锚点未命中明细：${refFrameStat.sample.join(' ‖ ')}`);
+    }
 
     // 🎯 匹配单位模式（开关 ZENTECT_SCRIPT_MATCH_UNIT，取值 sentence/legacy，缺省 legacy）：
     //   legacy = 每个按标点切出的碎片各算一个匹配单位（线上现状，默认零变化）；
