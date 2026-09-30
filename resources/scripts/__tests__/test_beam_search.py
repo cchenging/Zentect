@@ -3,7 +3,8 @@ test_beam_search.py — 🔎 步骤5 新引擎 · 束搜索求解核验证（⓪
 
 锁定 ⓪ 里与求解核强相关的四处机制（只锁机制、不改算法）：
 
-  1. 束搜索主核 + 段域掩码（补丁6）：逐句前向排产，任一物理切片本路径落点即永久禁复用
+  1. 束搜索主核 + 掩码（补丁6，P4 粒度 = 镜头 + 时间窗）：逐句前向排产，同镜可换窗续用
+     （ab→bc→cd），窗用尽则该镜不得再选（防 PPT 化）
   2. 两级管线（补丁21）：先 hard（违反即 ∞ 一票否决）后 soft（仅累加），非法 tier 契约暴露
   3. K1 阶梯熔断：①完整规则 → ②放开 Tier-1（hard_relax）→ ③强挂最优候（all_beam_death）
   4. 跨场清算（补丁19）：跨场收敛 Top-1 作唯一物理前驱；空路径收敛必须抛错
@@ -49,27 +50,43 @@ def _mk_ctx(queries, chunks, cands, seg_of=None):
 
 
 # ===========================================================================
-# 1. 束搜索主核 + 段域掩码（补丁6）
+# 1. 束搜索主核 + 掩码（补丁6，P4 粒度 = 镜头 + 时间窗）
 # ===========================================================================
-def test_solve_assigns_and_masks_reuse():
-    """两句共享同一候选池：s1 取最优 c1 后，s2 沿同路径被掩码挡住，退次优 c2。"""
+def test_solve_allows_same_shot_next_window():
+    """掩码（补丁6）粒度 = 镜头 + 时间窗：同镜下一句可开**新窗**续用（ab→bc→cd 自然形成）。"""
     q1 = assemble_query({'shotId': 's1', 'text': '句1'})
     q2 = assemble_query({'shotId': 's2', 'text': '句2'})
-    c1 = assemble_chunk({'id': 'c1', 'startMs': 1000, 'endMs': 3000})
-    c2 = assemble_chunk({'id': 'c2', 'startMs': 5000, 'endMs': 8000})
-    ctx = _mk_ctx([q1, q2], [c1, c2],
-                  {'s1': ['c1', 'c2'], 's2': ['c1', 'c2']})
-    cost = {'s1': {'c1': 0.1, 'c2': 0.2}, 's2': {'c1': 0.1, 'c2': 0.15}}
+    # 镜头 c1 时长 3000ms；两句各需 1000ms 窗 ⇒ s2 在 c1 内开第二窗，合法复用、不降级。
+    c1 = assemble_chunk({'id': 'c1', 'startMs': 0, 'endMs': 3000})
+    ctx = _mk_ctx([q1, q2], [c1], {'s1': ['c1'], 's2': ['c1']})
 
-    out = solve(ctx, cost, [], {'s1': 1000.0, 's2': 1000.0})
+    out = solve(ctx, {'s1': {'c1': 0.1}, 's2': {'c1': 0.1}}, [], {'s1': 1000.0, 's2': 1000.0})
 
     assert set(out) == {'s1', 's2'}, f"两句都应产出分配，实际 {set(out)}"
-    assert out['s1']['chosenChunkId'] == 'c1', "s1 应取原生代价最优 c1"
-    # 段域掩码：c1 已在本路径落点 ⇒ 永久禁复用（跨场不清零），s2 只能退 c2。
-    assert out['s2']['chosenChunkId'] == 'c2', "s2 不得复用 c1（补丁6 段域掩码）"
+    assert out['s1']['chosenChunkId'] == 'c1' and out['s2']['chosenChunkId'] == 'c1', \
+        "同镜换窗（入点随游标前移）应可继续取料，不得被误判为复用而禁选"
     assert not out['s1'].get('isDegraded') and not out['s2'].get('isDegraded'), \
-        "正常排产不应带降级标记"
-    print("✓ test_solve_assigns_and_masks_reuse: 逐句排产 + 段域掩码禁复用")
+        "正常同镜多窗排产不应带降级标记"
+    print("✓ test_solve_allows_same_shot_next_window: 同镜不同窗可继续取料")
+
+
+def test_solve_blocks_exhausted_shot_window():
+    """掩码（补丁6）：镜头窗用尽（剩余窗长 < 本句窗长）⇒ 该镜不得再选，退次优。"""
+    q1 = assemble_query({'shotId': 's1', 'text': '句1'})
+    q2 = assemble_query({'shotId': 's2', 'text': '句2'})
+    # 镜头 P 仅 1000ms（2000→3000）；两句各需 1000ms ⇒ s1 吃掉整镜，s2 不得再在 P 开窗。
+    cP = assemble_chunk({'id': 'P', 'startMs': 2000, 'endMs': 3000})
+    cQ = assemble_chunk({'id': 'Q', 'startMs': 5000, 'endMs': 8000})
+    ctx = _mk_ctx([q1, q2], [cP, cQ], {'s1': ['P'], 's2': ['P', 'Q']})
+
+    out = solve(ctx, {'s1': {'P': 0.1}, 's2': {'P': 0.1, 'Q': 0.2}}, [],
+                {'s1': 1000.0, 's2': 1000.0})
+
+    assert out['s1']['chosenChunkId'] == 'P'
+    assert out['s2']['chosenChunkId'] == 'Q', \
+        "P 窗用尽 ⇒ s2 应退次优 Q（不得回头重放 P）"
+    assert not out['s2'].get('isDegraded'), "退次优属正常排产，不应降级"
+    print("✓ test_solve_blocks_exhausted_shot_window: 镜头窗用尽禁再选")
 
 
 def test_unique_curr_chunks_diversity_pruning():
@@ -121,21 +138,23 @@ def test_two_tier_pipeline_hard_first_then_soft():
 # 3. K1 阶梯熔断（①完整 → ②hard_relax → ③all_beam_death）
 # ===========================================================================
 def test_k1_breaker_level1_hard_relax():
-    """一级熔断：唯一候选被单向锁 ∞ 否决 → 放开 Tier-1 硬门禁后复活，标 hard_relax。"""
+    """一级熔断：唯一候选被 Tier-1 硬门禁 ∞ 否决 → 放开硬门禁后复活，标 hard_relax。"""
     q1 = assemble_query({'shotId': 's1', 'text': '句1'})
     q2 = assemble_query({'shotId': 's2', 'text': '句2'})
-    # 同一物理镜头 P 的两片：cA 靠后（10000ms）先被消费，cB 靠前（1000ms）时间倒流。
-    c_a = assemble_chunk({'id': 'cA', 'parentChunkId': 'P', 'startMs': 10000, 'endMs': 12000})
-    c_b = assemble_chunk({'id': 'cB', 'parentChunkId': 'P', 'startMs': 1000, 'endMs': 3000})
-    ctx = _mk_ctx([q1, q2], [c_a, c_b], {'s1': ['cA'], 's2': ['cB']})
-    cost = {'s1': {'cA': 0.1}, 's2': {'cB': 0.1}}
-    rules = [RuleCard('monotonic_lock', 'hard', monotonic_lock.SCORE)]
+    c1 = assemble_chunk({'id': 'c1', 'startMs': 1000, 'endMs': 3000})
+    c2 = assemble_chunk({'id': 'c2', 'startMs': 5000, 'endMs': 8000})
+    ctx = _mk_ctx([q1, q2], [c1, c2], {'s1': ['c1'], 's2': ['c2']})
+    cost = {'s1': {'c1': 0.1}, 's2': {'c2': 0.1}}
+    # 硬门禁只在 s2 触发（s1 正常过门）：一级熔断放开 Tier-1 后 s2 唯一候选复活。
+    deny_s2 = RuleCard(
+        'fake_deny_s2', 'hard',
+        lambda p, c, x: HARD_DENY_COST if (x.get('query') or {}).get('shotId') == 's2' else 0.0)
 
-    out = solve(ctx, cost, rules, {'s1': 1000.0, 's2': 1000.0})
+    out = solve(ctx, cost, [deny_s2], {'s1': 1000.0, 's2': 1000.0})
 
-    assert out['s1']['chosenChunkId'] == 'cA', "s1 应正常过锁"
+    assert out['s1']['chosenChunkId'] == 'c1', "s1 应正常过锁"
     assert not out['s1'].get('isDegraded'), "s1 未触发熔断，不应带降级标记"
-    assert out['s2']['chosenChunkId'] == 'cB', "s2 唯一候选应在放开硬门禁后复活"
+    assert out['s2']['chosenChunkId'] == 'c2', "s2 唯一候选应在放开硬门禁后复活"
     assert out['s2'].get('isDegraded') is True, "s2 必须标降级（供 UI 待确认徽标）"
     assert out['s2'].get('degradeKind') == 'hard_relax', \
         f"应为一级熔断 hard_relax，实际 {out['s2'].get('degradeKind')!r}"
@@ -143,11 +162,11 @@ def test_k1_breaker_level1_hard_relax():
 
 
 def test_k1_breaker_level3_all_beam_death():
-    """三级熔断：全候选被段域掩码耗尽 → 强挂最优候（忽略掩码）并标 all_beam_death。"""
+    """三级熔断：镜头窗已用尽 ⇒ 一/二级均无路可走 → 强挂最优候并标 all_beam_death。"""
     q1 = assemble_query({'shotId': 's1', 'text': '句1'})
     q2 = assemble_query({'shotId': 's2', 'text': '句2'})
-    c1 = assemble_chunk({'id': 'c1', 'startMs': 1000, 'endMs': 3000})
-    # 两句候选池都只有 c1：s1 落点后 c1 被掩码，s2 在一/二级都无路可走。
+    # 镜头 c1 仅 1000ms 且两句各需 1000ms：s1 落点后窗用尽，s2 无合规候选。
+    c1 = assemble_chunk({'id': 'c1', 'startMs': 1000, 'endMs': 2000})
     ctx = _mk_ctx([q1, q2], [c1], {'s1': ['c1'], 's2': ['c1']})
     cost = {'s1': {'c1': 0.1}, 's2': {'c1': 0.2}}
 
@@ -221,13 +240,14 @@ def test_degraded_confidence_capped_below_confirm_threshold():
     """一级熔断强挂候选置信度封顶 0.85（<0.88 已确认阈值）⇒ 降级段不得伪装成已确认。"""
     q1 = assemble_query({'shotId': 's1', 'text': '句1'})
     q2 = assemble_query({'shotId': 's2', 'text': '句2'})
-    # 同一物理镜头 P 的两片：cA 靠后先被消费，cB 靠前触发时间倒流 → 一级熔断 hard_relax。
-    c_a = assemble_chunk({'id': 'cA', 'parentChunkId': 'P', 'startMs': 10000, 'endMs': 12000})
-    c_b = assemble_chunk({'id': 'cB', 'parentChunkId': 'P', 'startMs': 1000, 'endMs': 3000})
-    ctx = _mk_ctx([q1, q2], [c_a, c_b], {'s1': ['cA'], 's2': ['cB']})
-    rules = [RuleCard('monotonic_lock', 'hard', monotonic_lock.SCORE)]
+    c1 = assemble_chunk({'id': 'c1', 'startMs': 1000, 'endMs': 3000})
+    c2 = assemble_chunk({'id': 'c2', 'startMs': 5000, 'endMs': 8000})
+    ctx = _mk_ctx([q1, q2], [c1, c2], {'s1': ['c1'], 's2': ['c2']})
+    deny_s2 = RuleCard(
+        'fake_deny_s2', 'hard',
+        lambda p, c, x: HARD_DENY_COST if (x.get('query') or {}).get('shotId') == 's2' else 0.0)
 
-    out = solve(ctx, {'s1': {'cA': 0.05}, 's2': {'cB': 0.05}}, rules,
+    out = solve(ctx, {'s1': {'c1': 0.05}, 's2': {'c2': 0.05}}, [deny_s2],
                 {'s1': 1000.0, 's2': 1000.0})
 
     assert out['s1']['confidence'] == 0.95, "未熔断句应报真实综合分 0.95（不被封顶）"
@@ -238,30 +258,53 @@ def test_degraded_confidence_capped_below_confirm_threshold():
     print("✓ test_degraded_confidence_capped_below_confirm_threshold: 降级段置信度封顶生效")
 
 
+def test_monotonic_lock_reads_window_entry():
+    """补丁11 单向锁（P4）：判据基准是**本窗入点**（ctx['entryMs']）而非镜头起点。
+
+    同镜换窗续用（入点随游标前移，镜头起点恒定）不得被误判为时间倒流；
+    入点确实回退到已消费最远入点之前才 ∞。
+    """
+    cand = assemble_chunk({'id': 'P', 'startMs': 0, 'endMs': 20000})
+    # 入点前移 0 → 12000：通过（若按 startMs 判，恒 0 < farthest 会误杀同镜续用）。
+    assert monotonic_lock.SCORE(None, cand, {
+        'state': {'max_consumed_ms': {'P': 11000.0}}, 'entryMs': 12000.0}) == 0.0, \
+        "同镜换窗（入点前移）不得被判时间倒流"
+    # 容差内（11000 − 200 = 10800 ≤ 入点）：通过。
+    assert monotonic_lock.SCORE(None, cand, {
+        'state': {'max_consumed_ms': {'P': 11000.0}}, 'entryMs': 10900.0}) == 0.0
+    # 入点回退到已消费最远入点之前（超出 200ms 容差）：一票否决。
+    assert monotonic_lock.SCORE(None, cand, {
+        'state': {'max_consumed_ms': {'P': 11000.0}}, 'entryMs': 1000.0}) >= HARD_DENY_COST
+    # 未给 entryMs 时退回切片起点（兼容旧调用形态）。
+    assert monotonic_lock.SCORE(None, cand, {'state': {'max_consumed_ms': {'P': -1.0}}}) == 0.0
+    print("✓ test_monotonic_lock_reads_window_entry: 单向锁按本窗入点判据正确")
+
+
 def test_continuation_confidence_inherits_prev_shot():
-    """续镜重排至同父兄弟片后，置信度继承上一镜实测值（兄弟片无本句综合分，不凭空给高分）。"""
+    """顺延对账（P4 镜头粒度）：异镜的 CONTINUE_PREV 句回写**上一镜本体**并继承其置信度。"""
     q1 = assemble_query({'shotId': 's1', 'text': '句1'})
     q2 = assemble_query({'shotId': 's2', 'text': '句2', 'shotMode': 'CONTINUE_PREV'})
-    c_a = assemble_chunk({'id': 'cA', 'parentChunkId': 'P', 'startMs': 1000, 'endMs': 2000})
-    c_b = assemble_chunk({'id': 'cB', 'parentChunkId': 'P', 'startMs': 3000, 'endMs': 4000})
-    c_x = assemble_chunk({'id': 'cX', 'parentChunkId': 'Q', 'startMs': 5000, 'endMs': 6000})
-    # s2 候选池只给异父 cX（同父兄弟不在池内）⇒ 由 reconcile_continuation 就地重排为 cB。
-    ctx = _mk_ctx([q1, q2], [c_a, c_b, c_x], {'s1': ['cA'], 's2': ['cX']})
+    c_p = assemble_chunk({'id': 'P', 'startMs': 0, 'endMs': 8000})
+    c_x = assemble_chunk({'id': 'X', 'startMs': 20000, 'endMs': 26000})
+    # s2 候选池只给异镜 X（上一镜 P 不在池内）⇒ 由 reconcile_continuation 回写上一镜本体 P。
+    ctx = _mk_ctx([q1, q2], [c_p, c_x], {'s1': ['P'], 's2': ['X']})
 
-    out = solve(ctx, {'s1': {'cA': 0.2}, 's2': {'cX': 0.1}}, [], {'s1': 1000.0, 's2': 1000.0})
+    out = solve(ctx, {'s1': {'P': 0.2}, 's2': {'X': 0.1}}, [], {'s1': 1000.0, 's2': 1000.0})
 
     assert out['s1']['confidence'] == 0.8
-    assert out['s2']['chosenChunkId'] == 'cB', "顺延句应被重排到同父兄弟片 cB"
+    assert out['s2']['chosenChunkId'] == 'P', "顺延句应回写上一镜本体（同一切片 id）"
     assert out['s2']['confidence'] == 0.8, \
-        f"续镜置信度应继承上一镜 0.8（而非异父候选 cX 的 0.9），实际 {out['s2']['confidence']}"
-    print("✓ test_continuation_confidence_inherits_prev_shot: 续镜置信度继承上一镜")
+        f"续镜置信度应继承上一镜 0.8（而非异镜候选 X 的 0.9），实际 {out['s2']['confidence']}"
+    assert out['s2'].get('_cont_ok') == 'continued', "权威顺延分类应记为 continued"
+    print("✓ test_continuation_confidence_inherits_prev_shot: 续镜回写上一镜本体并继承置信度")
 
 
 if __name__ == "__main__":
     print("=" * 60)
     print("🔎 步骤5 新引擎 · 束搜索求解核验证（⓪ 单测骨架）")
     print("=" * 60)
-    test_solve_assigns_and_masks_reuse()
+    test_solve_allows_same_shot_next_window()
+    test_solve_blocks_exhausted_shot_window()
     test_unique_curr_chunks_diversity_pruning()
     test_two_tier_pipeline_hard_first_then_soft()
     test_k1_breaker_level1_hard_relax()
@@ -270,6 +313,7 @@ if __name__ == "__main__":
     test_solve_cross_scene_settlement_keeps_all_shots()
     test_result_carries_confidence_from_supply_cost()
     test_degraded_confidence_capped_below_confirm_threshold()
+    test_monotonic_lock_reads_window_entry()
     test_continuation_confidence_inherits_prev_shot()
     print("=" * 60)
     print("全部通过 ✅")

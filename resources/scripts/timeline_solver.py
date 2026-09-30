@@ -5521,7 +5521,7 @@ def _chain_cover_window(chunk: Optional[dict], target_ms: float, chunk_by_id: di
 #   线上活路径 = `_run_new_engine`。本步骤在 beam_search.solve 之后、逐句后处理之前，
 #   把「语义榜 Top-12」交给多模态 VLM 重排（离线实验同尺子实测 0.416 vs 现状 0.12）。
 #   档位：ZENTECT_VLM_RERANK ∈ {off, dry, on}（缺省 off，零行为变化）+ ZENTECT_VLM_RERANK_MAX（0=不限）。
-#   盘口径开关：ZENTECT_VLM_RR_COV（缺省 on = 按可供给时长裁盘；=0 ⇒ 裸盘，排查用）。
+#   盘口径：恒按「可供给时长 ≥ 本句配音时长」裁盘（供给口径 off 时该项自动不生效，无独立开关）。
 #   回退：一行 `set ZENTECT_VLM_RERANK=off`。
 #   ⚠️ 与 legacy `_apply_vlm_rerank` **零复用**：后者绑定 5 分钟块级池与 valid_chunk_indices 旧口径，
 #      且受 `req.useVlmRerank` 门控（Node 从不下发 ⇒ 休眠）。本步骤独立门控，不点亮 legacy。
@@ -5589,18 +5589,6 @@ def _read_vlm_rerank_max() -> int:
         return max(0, int(str(os.environ.get('ZENTECT_VLM_RERANK_MAX', '0')).strip() or '0'))
     except (TypeError, ValueError):
         return 0
-
-
-def _read_vlm_rr_cover() -> bool:
-    """读重排盘「覆盖约束」开关（env `ZENTECT_VLM_RR_COV`，缺省 on = 沿用可供给时长裁盘）。
-
-    2026-09-29 排查用：实测该约束在 VLM 前按「可供给时长 ≥ 本句配音时长」剔掉 809/1327 候选
-    （收尾日志 `覆盖剔除=809`），且与「未选出=18/36」同时出现 ⇒ 需先看**裸盘**下 VLM 的真实
-    水平，故加此开关先关掉裁盘。关掉后 ⑦ 整条不生效（含 `cov_drop` 统计恒为 0）。
-    **仅作用于重排盘**：KM 代价侧的 `SUPPLY_SHORT_PENALTY` 仍由 `ZENTECT_KM_SUPPLY_DUR` 独立控制。
-    """
-    raw = (os.environ.get('ZENTECT_VLM_RR_COV') or 'on').strip().lower()
-    return raw not in ('0', 'off', 'false')
 
 
 def _resolve_cover_path(p) -> str:
@@ -5692,9 +5680,8 @@ def _build_vlm_slate(cand_ids, chunk_by_id, sem_row, taken_ids, current_cid,
       ⑦ 覆盖约束（选项A）= 剔除「可供给时长 < 本句配音时长」的候选（**含本句当前片**）。
                病灶：重排只看视觉贴题，会把「母块只切出单片、无料可扩」的短片换入 ⇒
                交付端扩链取料为空 ⇒ 画面必然短于配音（实测 seg_21_sub_2 覆盖 0.445）。
-               仅在 `supply_by_id` 非空且 `min_cover_ms > 0` 时生效（原声段 / 供给口径 off
-               / `ZENTECT_VLM_RR_COV=0` ⇒ 不裁）。全盘供不起 ⇒ 盘变空/仅 1 张 ⇒ 调用方
-               按「盘<2 跳过」退回现状，不硬换更差的片。
+               仅在 `supply_by_id` 非空且 `min_cover_ms > 0` 时生效（原声段 / 供给口径 off ⇒ 不裁）。
+               全盘供不起 ⇒ 盘变空/仅 1 张 ⇒ 调用方按「盘<2 跳过」退回现状，不硬换更差的片。
     """
     taken_covers = taken_covers if taken_covers is not None else set()
     pool = []
@@ -5863,8 +5850,7 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
     #   供给索引与打分期/交付端同源（match_cost.build_supply_ms）；口径 off ⇒ 不建索引、零行为变化。
     from match_cost import _read_supply_dur as _read_sup_rr
     supply_by_id = None
-    # ⑦ 覆盖约束开关（env `ZENTECT_VLM_RR_COV`）：关掉后 VLM 盘不按可供给时长裁（排查用）。
-    if _read_sup_rr() and _read_vlm_rr_cover():
+    if _read_sup_rr():
         from match_cost import build_supply_ms
         supply_by_id = build_supply_ms(ctx.chunk_by_id)
     stats = {'n': 0, 'slate_lt2': 0, 'picks_none': 0, 'changed': 0, 'budget_stop': 0, 'imgs': 0,
@@ -5928,9 +5914,9 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
         stats['changed'] += 1
 
     _append_engine_trace(
-        '[vlm-rr] 档位={} model={} MAX={} 覆盖约束={} ｜ 处理={} 句 ｜ 换片={} ｜ 未选出={} ｜ 盘<2={} ｜ '
+        '[vlm-rr] 档位={} model={} MAX={} 供得起裁盘={} ｜ 处理={} 句 ｜ 换片={} ｜ 未选出={} ｜ 盘<2={} ｜ '
         '喂图={} 张 ｜ 覆盖剔除={} ｜ 超预算停={} ｜ 熔断计数={} ｜ token入/出={}/{}（{} 次调用）｜ 耗时={:.1f}s'.format(
-            mode, model, max_n or '不限', 'on' if _read_vlm_rr_cover() else 'off',
+            mode, model, max_n or '不限', 'on' if _read_sup_rr() else 'off',
             stats['n'], stats['changed'], stats['picks_none'],
             stats['slate_lt2'], stats['imgs'], stats['cov_drop'], stats['budget_stop'],
             _VLM_RR_FAIL_COUNT, _VLM_RR_USAGE['in'], _VLM_RR_USAGE['out'], _VLM_RR_USAGE['calls'],

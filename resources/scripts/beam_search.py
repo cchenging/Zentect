@@ -9,11 +9,14 @@ beam_search.py —— 受限束搜索前向排产（§8.2 / §9，Q1/Q2 准绳�
     （query,chunk）与规则集（rules/）。输出：逐句命中的 MatchResult 装配。
 
 状态与算法（§8.2-项4 写死）：
-  状态 ⟨current_chunk_id, used_chunks_bitset, prev_shot_scale, continuation_count⟩
+  状态 ⟨current_chunk_id, win_cursor_ms, prev_shot_scale, continuation_count⟩
   束宽 Beam=3；候选代价注入满足时仍守恒选择；逐句前向推进。
   受限点：
-    · 段域掩码（补丁6）：bitset 按全局候选索引累计已用切片（跨场不清零），
-      任一物理切片本路径一旦落点即永久禁复用（历史归全局黑名单）。
+    · 掩码（补丁6，粒度 = **镜头 + 时间窗**，P4 修正）：逐镜头维护本路径的**下一窗入点游标**
+      （`BeamPath.win_cursor_ms`，跨场不清零 ⇒ 历史归全局黑名单）。同一镜头可被多句复用，
+      但每句只开**新窗**（入点 = 上句窗末 ⇒ 窗序号严格递增，同镜同窗结构性禁复用，防 PPT 化）；
+      「Σ 窗长 ≤ 镜头时长」按「剩余窗长 ≥ 本句窗长」判定（`_win_exhausted`），窗用尽则
+      该镜头后续句不得再选 —— 杜绝回滚重取 a→b 段（§1.2 剪辑师基准：起点单调不减）。
     · 多样性剪枝（补丁6）：每一层保留的 3 条路径**末端切片互异**，杜绝微小变体霸位。
     · 前向审望资源耗尽惩罚（补丁1）：本句若抢占后句唯一关键主粮，施加过高代价抑制。
 
@@ -29,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 from build_context import CandidateContext
-from montage_contract import ContractError, has_motion_contrast, MONOTONIC_SLACK_MS
+from montage_contract import ContractError, has_motion_contrast
 
 # 一票否决的硬门禁代价（补丁21 Tier1）——任何规则返回此值即弃选。
 HARD_DENY_COST = float('inf')
@@ -44,6 +47,10 @@ CONTINUE_MAX_MS = 7000
 #   `CONTINUE_MAX_SENTENCES` 降级为**安全上限**（防单镜垄断全片）。逐父镜头累计已承载窗长，
 #   与本镜头可用时长比较；0.5ms 仅吸收浮点误差、不放大配额。
 CONTINUE_QUOTA_EPS = 0.5
+# 窗长缺省口径（P4 镜头+时间窗）：句缺配音时长时按 3s 占一个真实窗 —— 与取料层
+#   `SemanticAnalyzeStrategy.buildShotWindowTable` 的 `DEFAULT_WINDOW_MS` 同口径。
+#   若按 0 计，窗游标不动 ⇒ 同镜同窗被反复复用（防 PPT 化失效）且窗永不耗尽（镜头可无限吃句）。
+WINDOW_FALLBACK_MS = 3000.0
 # 长镜头顺延由后置对账（reconcile_continuation，对齐 legacy B4）驱动：CONTINUE_PREV 句在
 # 束搜索主核内按语义正常参与，求解完成后统一重排至上一镜父镜头。**不再注入转移奖励**——
 # 强奖励会反向扭曲 NEW_SHOT 句的选取（为占便宜续镜头而牺牲其最优匹配），恰是 legacy 将
@@ -65,7 +72,7 @@ TIME_PROX_RAMP_MS = 12000.0
 
 # 前向审望资源耗尽惩罚（补丁1，env `ZENTECT_KM_FORWARD_LOOKOUT`，缺省 0=关闭）：
 #   本句若抢占「后句唯一可用主粮」，后半句就断供（无料可用）。前瞻窗口内逐句统计该候选在
-#   未来句候选池里的剩余可用数 rem（按本路径 used_bits 计，未被本路径占用即算可用）：
+#   未来句候选池里的剩余可用数 rem（按本路径窗游标计：该镜剩余窗长 ≥ 该未来句窗长即算可用）：
 #     rem == 1 → 唯一主粮（本句抢走即后句归零）→ 罚 FORWARD_LOOKOUT_SOLE_MAX；
 #     rem == 2 → 濒危（仅剩一席余量，语言学抖动即可压空）→ 罚 FORWARD_LOOKOUT_SCARCE_MAX。
 #   逐未来句累加、整趟封顶；纯统计零模型；缺省关 ⇒ 零行为变化、可一键回退（置 0）。
@@ -107,7 +114,10 @@ class BeamPath:
     Attributes:
         curr_chunk_id: 当前落点切片 id（多样性剪枝 key）。
         curr_chunk: 当前落点切片实体。
-        used_bits: 本路径已用切片 bitset（按全局候选索引累计，永久禁复用）。
+        win_cursor_ms: 掩码（补丁6，粒度 = **镜头 + 时间窗**）—— {镜头键: 下一窗入点游标 ms}。
+            只增不减（跨场不清零）：同一镜头可被多句复用，但每句只开**新窗**（入点 = 上句窗末，
+            窗序号严格递增 ⇒ 同镜同窗结构性禁复用）；游标触及镜头末 ⇒ 该镜头用尽、后续句不得再选。
+            兄弟路径各持独立副本（`build_path` 拷贝），互不污染。
         prev_scale: 上一镜景别（转移代价输入）。
         continuation_count: 自末次 NEW_SHOT 起连续顺延句数。
         last_shot_commit_ms: 末次强切/新镜的落点时间（顺延 7s 判据）。
@@ -117,7 +127,7 @@ class BeamPath:
     """
     curr_chunk_id: Optional[str] = None
     curr_chunk: Optional[dict] = None
-    used_bits: int = 0
+    win_cursor_ms: Dict[str, float] = field(default_factory=dict)
     prev_scale: str = ''
     continuation_count: int = 0
     last_shot_commit_ms: float = 0.0
@@ -132,28 +142,38 @@ class BeamPath:
 
 
 def build_path(path: BeamPath, chunk: dict, shot_id: str, scene_id: int,
-               budget_ms: float, used_idx: int) -> BeamPath:
+               entry_ms: float, need_ms: float) -> BeamPath:
     """造一条落在 chunk 上的新路径（供展开层调用，不掺规则）。
 
-    修复段域掩码未生效：`used_idx` 为本句落点切片在**全局候选索引**中的下位，子路径
-    在父路径 used_bits 上把该位置 1（`_mark_used`），实现「本路径已用切片永久禁复用」，
-    兑现补丁6 段域掩码 + 历史归全局黑名单（无 PPT 化验收）。
+    P4 掩码推进（粒度 = 镜头 + 时间窗）：本句在该镜头上开了一个**新窗**，子路径把父路径的
+    窗游标推进到本窗末（`min(镜头末, 入点 + 窗长)`，只增不减）。游标只增 ⇒ 同镜同窗结构性
+    禁复用（防 PPT 化）；游标触及镜头末 ⇒ 掩码用尽，后续句在该镜头上开不出窗
+    （门禁见 `_win_exhausted`），兑现 §1.2「同一镜头多句复用时窗口单调前移」且 Σ 窗长 ≤ 镜头时长。
 
     Args:
         path: 父路径。
-        chunk: 新落点切片。
+        chunk: 新落点切片（P4 后即物理镜头本体）。
         shot_id: 本句 id。
         scene_id: 本句所属场次。
-        budget_ms: 本句目标时长（顺延 7s 判据基准）。
-        used_idx: 本落点在全局候选索引中的下标（used_bits 定位用）。
+        entry_ms: 本窗入点（源 ms；首句 = 命中帧强锚/镜头起点，顺延 = 上句窗末）。
+        need_ms: 本窗窗长（本句配音时长；缺失按 `WINDOW_FALLBACK_MS`）。
 
     Returns:
         BeamPath: 子路径（输出到链末）。
     """
+    _key = _shot_key(chunk)
+    _s0 = float(chunk.get('startMs') or 0.0)
+    _e0 = float(chunk.get('endMs') or 0.0)
+    _win_cursor = dict(path.win_cursor_ms)
+    _cursor_new = float(entry_ms) + float(need_ms)
+    if _e0 > _s0:
+        # 余量不足整窗 ⇒ 只把游标推到镜头末（取料层按新窗重算变速，与 TS clamp 同口径）。
+        _cursor_new = min(max(_cursor_new, _s0), _e0)
+    _win_cursor[_key] = max(float(path.win_cursor_ms.get(_key, _s0)), _cursor_new)
     new_path = BeamPath(
         curr_chunk_id=chunk.get('id'),
         curr_chunk=chunk,
-        used_bits=_mark_used(path.used_bits, used_idx),
+        win_cursor_ms=_win_cursor,
         prev_scale=str(chunk.get('shotScale') or ''),
         continuation_count=0,  # NEW_SHOT 重开顺延计数（调 setUp 由展开层显式控制）
         last_shot_commit_ms=float(chunk.get('startMs') or 0),
@@ -213,14 +233,73 @@ def _apply_tier_hard_and_soft(
     return penalty
 
 
-def _mark_used(used_bits: int, cand_idx: int) -> int:
-    """把候选索引位置 1 计入当前场次 bitset。"""
-    return used_bits | (1 << cand_idx)
+def _shot_key(chunk: dict) -> str:
+    """镜头键（P4 键域 = **镜头 id**）：候选单元已收敛为物理镜头（`parentChunkId` = 自身
+    scene id），取 `parentChunkId` 优先、退回自身 id —— 两者在 P4 后同指该镜头；对无父字段的
+    切片退回自身 id，保证同一镜头恒映射到同一键（掩码/状态/规则卡共用同一键域）。
+    """
+    return str(chunk.get('parentChunkId') or chunk.get('id') or '')
 
 
-def _is_used(used_bits: int, cand_idx: int) -> bool:
-    """查询候选索引是否已被当前场次占用。"""
-    return bool(used_bits & (1 << cand_idx))
+def _win_need_ms(target_ms) -> float:
+    """本句所需窗长（ms）：配音时长缺失/非正时按 `WINDOW_FALLBACK_MS` 占一个真实窗。
+
+    与取料层 `buildShotWindowTable` 的 `neededMs > EPS ? neededMs : DEFAULT_WINDOW_MS` 同口径。
+    """
+    v = float(target_ms or 0.0)
+    return v if v > 0.0 else WINDOW_FALLBACK_MS
+
+
+def _win_residual_ms(chunk: dict, cursor: Optional[float]) -> float:
+    """本镜剩余可开窗时长（ms）：入点 = 本路径窗游标（未开窗时按镜头起点），余量 = 镜头末 − 入点。
+
+    `endMs` 缺失（≤ `startMs`）时无从按游标扣减，退回该切片的可用时长口径（`_chunk_avail_ms`）。
+    """
+    s0 = float(chunk.get('startMs') or 0.0)
+    e0 = float(chunk.get('endMs') or 0.0)
+    if e0 <= s0:
+        return _chunk_avail_ms(chunk)
+    entry = s0 if cursor is None else max(float(cursor), s0)
+    return max(0.0, e0 - entry)
+
+
+def _win_exhausted(chunk: dict, cursor: Optional[float], need_ms: float) -> bool:
+    """掩码门禁（补丁6，P4 粒度 = 镜头 + 时间窗）：该镜窗用尽 ⇒ 本句不得再选。
+
+    判据：本路径已在该镜开过窗（游标有值）、且剩余窗长 < 本句所需窗长
+    （即 Σ 窗长 + 本句窗长 已越过镜头时长）。首窗（游标无值）不预判 —— 首窗入点由取料层按
+    命中帧定、余量不足时截短而非弃选；时长字段缺失（可用时长 ≤ 0）时「无从约束」不误杀。
+    """
+    if cursor is None or _chunk_avail_ms(chunk) <= 0.0:
+        return False
+    return _win_residual_ms(chunk, cursor) < float(need_ms) - CONTINUE_QUOTA_EPS
+
+
+def _win_entry_ms(path: BeamPath, chunk: dict, anchor_ms: Optional[float]) -> float:
+    """本句在该镜头上开窗的入点（源 ms）。
+
+    优先本路径窗游标（= 上句窗末 ⇒ 顺延，只增不减）；否则取命中帧强锚（**锚点须确在本镜头
+    区间内**，跨界锚不得借用 —— 错就错，不造假入点）；再退回镜头起点。取料层
+    `buildShotWindowTable.allocate` 按同一口径（cursor ?? hit ?? startMs）开窗，两侧入点一致。
+
+    Args:
+        path: 本路径（读 `win_cursor_ms`）。
+        chunk: 本句候选镜头。
+        anchor_ms: 本句真实参考帧时间（仅 matched 强锚 / 开关 on 的 block_first 弱锚非 None）。
+
+    Returns:
+        float: 本窗入点（源 ms）。
+    """
+    s0 = float(chunk.get('startMs') or 0.0)
+    cursor = path.win_cursor_ms.get(_shot_key(chunk))
+    if cursor is not None:
+        return max(float(cursor), s0)
+    if anchor_ms is not None:
+        a = float(anchor_ms)
+        e0 = float(chunk.get('endMs') or 0.0)
+        if a >= s0 and (e0 <= s0 or a <= e0):
+            return a
+    return s0
 
 
 def _unique_curr_chunks(paths: List[BeamPath]) -> List[BeamPath]:
@@ -313,16 +392,13 @@ def solve(
     paths: List[BeamPath] = [BeamPath()]
     results: Dict[str, dict] = {}
     last_scene: int = 0
-    global_used: Dict[str, bool] = {}
     # 装配期切片回查：注入全局索引，供 _pick_best_for_shot 末帧漂移时取完整切片（含 parentChunkId）。
     global CHUNK_INDEX_CALLBACK
     CHUNK_INDEX_CALLBACK = ctx.chunk_by_id.get
     # K1 熔断标记：{shotId: 熔断层级}，最终结果据此打 isDegraded + degradeKind。
     degraded_marks: Dict[str, str] = {}
-    # 全局候选索引：chunkId → 全程稳定位掩码下标。used_bits 按此全局空间累计置位，
-    # 消除「每句局部下标错指」缺陷 → 任一物理切片本路径一旦落点即永久禁复用
-    # （补丁6 段域掩码 + 历史归全局黑名单，兑现无 PPT 化验收）。
-    chunk_index: Dict[str, int] = {str(cid): i for i, cid in enumerate(ctx.chunk_by_id.keys())}
+    # 掩码（补丁6，P4 粒度 = 镜头 + 时间窗）落在每条路径的 `BeamPath.win_cursor_ms`
+    # （{镜头键: 下一窗入点}，只增不减、跨场不清零），不再有全局位掩码索引。
     # 前向审望（补丁1）开关与诊断计数：缺省 0 = 关闭（零行为变化档，置 0 即一键回退）。
     # 整趟只读一次 env，避免逐候选重复读；off 档不构造前瞻池、不累加计数（零开销）。
     fl_weight = _read_forward_lookout()
@@ -353,7 +429,8 @@ def solve(
         candidates = [ctx.chunk_by_id[cid] for cid in cand_ids]
         scored = _next_candidate_scores({'shot_id': sid}, {}, match_cost, sid, cand_ids)
         # 前向审望（补丁1）前瞻池：仅开关 on 时构造（off 档零开销、零行为变化）。
-        future_pools = (_forward_lookout_pools(ctx.queries, ctx.cands_by_shotid, qi)
+        future_pools = (_forward_lookout_pools(ctx.queries, ctx.cands_by_shotid, qi,
+                                               tts_duration_ms)
                         if fl_weight > 0.0 else [])
         if fl_weight > 0.0:
             # 诊断：空池步占比——区分「窗口内后句压根没候选池」与「未相交/池宽裕」两类零命中根因。
@@ -373,26 +450,45 @@ def solve(
                 List[BeamPath]: 展开出的子路径（可空）。
             """
             out: List[BeamPath] = []
+            # 本句所需窗长：配音时长缺失按 WINDOW_FALLBACK_MS 占一个真实窗（与取料层同口径）。
+            _need = _win_need_ms(tts_duration_ms.get(sid))
+            # 强锚解析（B域动作3）：matched 强锚恒生效；block_first（母块首帧，真实源坐标）为**弱锚**，
+            #   仅在开关 on 时接线（丙①，落码点3）。须先于规则执行——补丁11 单向锁按「本窗入点」判据
+            #   （由 rctx['entryMs'] 注入）。弱锚只改单向锁起算点，不掺任何代价/门禁。
+            _anchor_ms = None
+            _rf = float(query.get('refFrameTimeMs') or 0)
+            if _rf > 0:
+                _src_kind = str(query.get('refFrameSource') or '')
+                if _src_kind == 'matched':
+                    _anchor_ms = _rf
+                elif _src_kind == 'block_first' and _block_anchor:
+                    _anchor_ms = _rf
+                    _anc_shots.add(sid)
             for path in paths:
                 prev_chunk = path.curr_chunk
                 for cand_id, base_cost in scored:
-                    # 段域掩码（补丁6）：本路径已用切片永久禁复用（全局位掩码累计，跨场不清零）。
-                    # force=True（三级熔断）时忽略掩码，回退允许复用以确保「绝不白屏」。
-                    if not force and _is_used(path.used_bits, chunk_index[str(cand_id)]):
-                        continue
                     cand = ctx.chunk_by_id[cand_id]
+                    # 掩码（补丁6，粒度 = 镜头 + 时间窗）：本路径已在该镜开过窗且**剩余窗长不足本句窗长**
+                    #   ⇒ 该镜窗用尽，本句不得再选。force=True（三级熔断）忽略掩码，确保「绝不白屏」。
+                    if not force and _win_exhausted(
+                            cand, path.win_cursor_ms.get(_shot_key(cand)), _need):
+                        continue
+                    # 本窗入点（源 ms）：路径游标 ?? 命中帧强锚（须确在本镜内）?? 镜头起点，
+                    #   与取料层 `buildShotWindowTable.allocate` 同口径（两侧开窗起点一致）。
+                    entry = _win_entry_ms(path, cand, _anchor_ms)
                     total = base_cost
                     if not force:
-                        # 规则上下文：state / 句 / 跨场首步标记（规则卡只读，Δ_advance 写入）。
-                        rctx = {'state': path.state, 'query': query, 'is_scene_first': is_scene_first}
+                        # 规则上下文：state / 句 / 跨场首步标记 / 本窗入点（规则卡只读，Δ_advance 写入）。
+                        rctx = {'state': path.state, 'query': query,
+                                'is_scene_first': is_scene_first, 'entryMs': entry}
                         total += _apply_tier_hard_and_soft(active_rules, prev_chunk, cand, rctx)
                         if total >= HARD_DENY_COST:
                             continue
                         # 前向审望资源耗尽惩罚（补丁1）：本句抢占后句唯一/濒危主粮时加软阻尼，
                         # 把机会留给后句。开关 off 档恒 0（见 _read_forward_lookout）。
                         if fl_weight > 0.0:
-                            _fl = _forward_lookout(cand_id, future_pools, path.used_bits,
-                                                   chunk_index, fl_weight, stats=fl_stats)
+                            _fl = _forward_lookout(cand_id, future_pools, path.win_cursor_ms,
+                                                   ctx.chunk_by_id, fl_weight, stats=fl_stats)
                             total += _fl
                             if _fl > 0.0:
                                 fl_stats['hits'] += 1
@@ -412,29 +508,9 @@ def solve(
                             if prev_chunk.get('parentChunkId') and \
                                     prev_chunk.get('parentChunkId') == cand.get('parentChunkId'):
                                 total -= CONTINUE_PREF
-                    child = build_path(
-                        path,
-                        cand,
-                        sid,
-                        scene,
-                        tts_duration_ms.get(sid, 0.0),
-                        chunk_index[str(cand_id)],
-                    )
+                    child = build_path(path, cand, sid, scene, entry, _need)
                     # D 域状态推进（补丁11 单向锁 / 补丁13 心跳疲劳），写在子路径副本上。
-                    # B域动作3：matched 强锚恒生效；block_first（母块首帧，真实源坐标）为**弱锚**，
-                    #   仅在开关 on 时接线（丙①，落码点3）：实测本项目 43/43 段该锚完全未参与
-                    #   ⇒ B 域退化为无锚、单向锁基准回落切片 startMs。弱锚只改补丁11 单向锁起算点，
-                    #   不掺任何代价/门禁（与 matched 的差别仅在此，故称「分级弱锚」）。
-                    _anchor_ms = None
-                    _rf = float(query.get('refFrameTimeMs') or 0)
-                    if _rf > 0:
-                        _src_kind = str(query.get('refFrameSource') or '')
-                        if _src_kind == 'matched':
-                            _anchor_ms = _rf
-                        elif _src_kind == 'block_first' and _block_anchor:
-                            _anchor_ms = _rf
-                            _anc_shots.add(sid)
-                    _advance_state(child, prev_chunk, cand, _anchor_ms)
+                    _advance_state(child, prev_chunk, cand, entry)
                     # 长镜头顺延状态继承（CONTINUE_PREV 由模式/规则层驱动真实赋值）。
                     if str(query.get('shotMode') or '') == 'CONTINUE_PREV':
                         _apply_continuation(child, query, tts_duration_ms.get(sid, 0.0), prev_chunk)
@@ -500,29 +576,28 @@ def solve(
 # 子函数（长镜头顺延 / 前向审望 / 结果装配）
 # ===========================================================================
 def _advance_state(path: BeamPath, prev_chunk: Optional[dict], cand: dict,
-                   anchor_ms: Optional[float] = None) -> None:
+                   entry_ms: float) -> None:
     """推进束路径的 D 域状态（补丁11 单向锁 / 补丁13 心跳疲劳）。
 
     只写在 `path.state` 副本上（build_path 已深拷贝），绝不影响父/兄弟路径。
     规则卡只读本状态，状态推进集中在此单一方法（守「一个方法只做一件事」）。
 
     B域（§10.2.3 动作3）：补丁11 `maxConsumedTimeMs` 起算点从「切片 startMs」
-    改为「真实参考帧 refFrameTimeMs」（anchor_ms）——当本句是 matched 强锚句时，
-    使该父镜头消耗基线贴着真实剧情时间去，堵住等分插值近似锚导致的漂移。
+    改为「**本窗入点**」（`entry_ms`，P4 粒度 = 镜头 + 时间窗）——键域由段 id 收到镜头 id
+    （`_shot_key`），基准贴着真实开窗位置（命中帧强锚 ?? 路径游标 ?? 镜头起点）走，
+    使单向锁与取料层开窗口径同源（取料层按同一入点开窗）。
 
     Args:
         path: 目标路径（原地修改 state，返回 None）。
         prev_chunk: 前一镜切片（首镜为 None）。
-        cand: 当前落点切片。
-        anchor_ms: 本句真实参考帧时间（源坐标，仅 matched 强锚句非 None）。
+        cand: 当前落点镜头。
+        entry_ms: 本窗入点（源 ms，`_win_entry_ms` 产出）。
     """
     state = path.state
-    # -- 补丁11 同源物理单向锁：记录同父镜头已消费的最远起点 --
-    pid = cand.get('parentChunkId') or ''
+    # -- 补丁11 同源物理单向锁：记录同镜头已消费的最远**窗入点** --
+    pid = _shot_key(cand)
     c_start = float(cand.get('startMs') or 0.0)
-    # B域动作3：仅显式强锚（matched）且落入本句候选时，以真实 refFrame 为单向锁基准；
-    # 无锚句 anchor_ms=None 沿用切片 startMs（零行为变化，保 legacy/shadow 对账稳定）。
-    _base = anchor_ms if (anchor_ms is not None) else c_start
+    _base = float(entry_ms) if entry_ms is not None else c_start
     if pid:
         consumed = state.setdefault('max_consumed_ms', {})
         consumed[pid] = max(float(consumed.get(pid, 0.0)), _base)
@@ -536,85 +611,6 @@ def _advance_state(path: BeamPath, prev_chunk: Optional[dict], cand: dict,
             state['fatigue_accum_ms'] = float(state.get('fatigue_accum_ms', 0.0)) \
                 + max(c_start - p_start, 0.0)
     # 首镜无前驱：疲劳不累积（保持 0）。
-
-
-def _pick_sibling(
-    chunk_by_id: Dict[str, dict],
-    parent: str,
-    exclude: str,
-    results: Dict[str, dict],
-    floor_ms: float = 0.0,
-) -> Optional[dict]:
-    """CONTINUE_PREV 顺延取片（同父 + 单向锁下沉，缺陷1 修法 2026-09-30）。
-
-    硬约束（两条，任一不满足即不作候选）：
-      · **只取同父**（`parentChunkId == parent`）：跨父取片会谎报「续上同一镜头」，
-        并让调用方的 `cur_parent` 记账失真（原 l2/l3 全局兜底即此病灶，已摘除）。
-      · **单向锁下沉**：只接受 `startMs ≥ floor_ms − MONOTONIC_SLACK_MS`。
-        `floor_ms` = 该父镜头「已消费最远起点」（reconcile 侧维护，与束搜索
-        `_advance_state` / 补丁11 同口径）——原 l1「取时间最早」恒回 a→b 段（时间倒流）
-        正是缺陷1 直接病灶，此处堵死。
-
-    级联（同父内，仅放宽「时间上续」窗口，单向锁恒生效）：
-      l0 同父 + 紧接上一镜（startMs ∈ (pre_start, pre_start + CONTINUE_MAX_MS]）+ 未整片复用
-      l1 同父 + 合规（≥ floor）+ 未整片复用（取 ≥ floor 的**最早**切片）
-    同父无合规后继 → 返回 None（错就错：调用方记 fail / 保持原解，不造假镜像）。
-
-    Args:
-        chunk_by_id: 切片资产索引。
-        parent: 要续接的父镜头 id。
-        exclude: 已被前句占用的切片 id（避免整片重贴）。
-        results: 已装配结果（用于跳过全局已整片复用的子切片）。
-        floor_ms: 该父镜头已消费最远起点（单向锁下界；0 表示无约束）。
-
-    Returns:
-        Optional[dict]: 合规续接切片；无合规后继返回 None。
-    """
-    prev_start = 0.0
-    for cid, c in chunk_by_id.items():
-        if c.get('id') == exclude:
-            prev_start = float(c.get('startMs') or 0)
-            break
-
-    def _unreused():
-        """产出「未在别句整片复用」的切片 id → 切片 迭代器（复用检查内联，避免重复扫描）。"""
-        reused = set()
-        for r in results.values():
-            _cid = r.get('chosenChunkId')
-            if _cid:
-                reused.add(str(_cid))
-        for cid, c in chunk_by_id.items():
-            if cid == exclude or cid in reused:
-                continue
-            yield cid, c
-
-    # 单向锁下界（与补丁11 同容差 MONOTONIC_SLACK_MS：容差只为吸收源时间抖动）。
-    floor = float(floor_ms or 0.0) - MONOTONIC_SLACK_MS
-
-    # l0：同父 + 时间上续 + 未整片复用（startMs 紧随上帧，限窗口内避免隔飞）。
-    lo_picks = []
-    for cid, c in _unreused():
-        if str(c.get('parentChunkId') or '') != parent:
-            continue
-        _s = float(c.get('startMs') or 0)
-        if _s < floor:
-            continue  # 单向锁：早于已消费最远起点 ⇒ 时间倒流，不作候选
-        if prev_start < _s <= prev_start + CONTINUE_MAX_MS:
-            lo_picks.append((_s, c))
-    if lo_picks:
-        return min(lo_picks, key=lambda x: x[0])[1]
-    # l1：同父 + 合规（≥ 已消费最远起点）+ 未整片复用（取合规范围内**最早**）。
-    l1_picks = []
-    for cid, c in _unreused():
-        if str(c.get('parentChunkId') or '') != parent:
-            continue
-        _s = float(c.get('startMs') or 0)
-        if _s < floor:
-            continue  # 单向锁：时间倒流不作候选（原「取全父最早」路径已修）
-        l1_picks.append((_s, c))
-    if l1_picks:
-        return min(l1_picks, key=lambda x: x[0])[1]
-    return None
 
 
 def _chunk_avail_ms(chunk: dict) -> float:
@@ -638,21 +634,22 @@ def _chunk_avail_ms(chunk: dict) -> float:
 
 
 def _parent_avail_ms(chunk_by_id: Dict[str, dict]) -> Dict[str, float]:
-    """逐父镜头可用总时长：其全部切片的源时间跨度 `max(endMs) − min(startMs)`。
+    """逐镜头可用总时长：其全部切片的源时间跨度 `max(endMs) − min(startMs)`。
 
-    P4 后候选单元=605 物理镜头（与父镜头 1:1）时即该镜头自身时长；旧段级结构下即母块
-    全跨度（长镜头真实可承载时长）。缺 `endMs` 的切片按其自身可用时长外推。
+    P4 后候选单元=605 物理镜头（键域 = 镜头 id，`_shot_key` 与 `parentChunkId` 同指）时
+    即该镜头自身时长；旧段级结构下即母块全跨度（长镜头真实可承载时长）。
+    缺 `endMs` 的切片按其自身可用时长外推。
 
     Args:
         chunk_by_id: 切片资产索引。
 
     Returns:
-        Dict[str, float]: {parentChunkId: 可用总时长 ms}；无父镜头字段的切片不入表。
+        Dict[str, float]: {镜头键: 可用总时长 ms}。
     """
     lo: Dict[str, float] = {}
     hi: Dict[str, float] = {}
     for c in chunk_by_id.values():
-        pid = str(c.get('parentChunkId') or '')
+        pid = _shot_key(c)
         if not pid:
             continue
         s = float(c.get('startMs') or 0.0)
@@ -671,15 +668,22 @@ def reconcile_continuation(
     results: Dict[str, dict],
     tts_duration_ms: Dict[str, float],
 ) -> None:
-    """顺延后置对账（对齐 legacy B4 段内锚顺延）：把仍异父的 CONTINUE_PREV 句续上同父。
+    """顺延后置对账（P4 镜头粒度）：把仍异镜的 CONTINUE_PREV 句回写到上一镜本体。
 
-    语义供给层 perQueryTopK 逐句独立打分，不含「上一镜父切片」，故束搜索奖励再强，
-    候选池里没有同父子切片时就续不上（shadow 实测 50% 失败正源于此）。本函数按叙事
-    行序重跑一遍 CONTINUE_PREV 句：当前句父镜头 ≠ 上一镜父镜头时，若全局切片池存在
-    前句父镜头的可续子切片，则就地重排本句至该同父切片。只改 CONTINUE_PREV 句，
-    不动其它句 / 不触发全局重解，受 3 句连续顺延上限与 7s 物理锁约束。
-    续镜置信度继承上一镜（落码点2）：同父子切片不在本句候选池内、无自身综合分可算，
-    报上一镜的实测置信度，绝不凭空给高分（对齐 legacy 续镜 `_base_conf` 口径）。
+    语义供给层 perQueryTopK 逐句独立打分，候选池不含「上一句的镜头」，故束搜索即便有
+    同父软偏好，候选池里没有上一镜时也续不上（shadow 实测 50% 失败正源于此）。P4 后候选
+    单元 = 物理镜头（`_shot_key` 与 `parentChunkId` 同指），「顺延」即**继续取上一镜本体**：
+    本函数按叙事行序重跑 CONTINUE_PREV 句，若当前镜 ≠ 上一镜且仍可续（镜头窗配额未用尽、
+    连续顺延句数/时长未越界），就把本句落点回写为上一镜完整切片 —— 取料层
+    `buildShotWindowTable` 按 `cursorByShot` 在该镜内自动开**下一窗**（起点单调前移，
+    兑现 ab→bc→cd 且 Σ 窗长 ≤ 镜头时长）。只改 CONTINUE_PREV 句，不动其它句 / 不触发全局重解。
+    续镜置信度继承上一镜（落码点2）：回写的是上一镜本体、无本句自身综合分可算，报上一镜的
+    实测置信度，绝不凭空给高分（对齐 legacy 续镜 `_base_conf` 口径）。
+
+    三道锁（任一越界即不续、保持原解并如实记因）：
+      · 句数安全上限 `CONTINUE_MAX_SENTENCES`（防单镜垄断全片）；
+      · **镜头窗配额**（缺陷2）：`Σ 该镜头各句窗长 + 本句窗长 ≤ 镜头可用时长`；
+      · 连续顺延累计时长 < `CONTINUE_MAX_MS`（7s 物理锁）。
 
     Args:
         ctx: 标准候选池上下文（chunk_by_id 提供全局切片，queries 提供叙事行序 + shotMode）。
@@ -693,11 +697,10 @@ def reconcile_continuation(
     prev_parent = ''
     prev_conf = 0.0
     cont_count = 0
-    last_commit_ms = 0.0
-    # 缺陷1 修法：单向锁下沉 —— 逐父镜头维护「已消费最远起点」（与束搜索 _advance_state /
-    #   补丁11 同口径），作 `_pick_sibling` 取片下界，杜绝顺延取片时间倒流。
-    consumed: Dict[str, float] = {}
-    # 缺陷2 修法：真实顺延配额 = floor(镜头可用时长 / 该句所需窗长)；逐父累计已承载窗长。
+    # 连续顺延累计窗长（7s 物理锁）：续上则累加，本句未续（新镜/强切）即归零。
+    cont_ms = 0.0
+    # 镜头窗配额（缺陷2）：逐镜头累计各句已开窗长，Σ ≤ 镜头可用时长。
+    #   「含首窗」——非顺延句在同一镜头开的第一个窗同样计入，否则 Σ 窗长不成立。
     parent_avail = _parent_avail_ms(ctx.chunk_by_id)
     parent_used: Dict[str, float] = {}
 
@@ -708,56 +711,43 @@ def reconcile_continuation(
         if r is None:
             continue
         chosen_id = r.get('chosenChunkId')
-        # 父镜头取完整切片：优先按 chosenChunkId 回查全局索引（_pick_best_for_shot 末帧漂移时
+        # 镜头取完整切片：优先按 chosenChunkId 回查全局索引（_pick_best_for_shot 末帧漂移时
         # 已注入全局索引回调取完整切片，此回查为双保险）。
         chunk = ctx.chunk_by_id.get(str(chosen_id) or '') or r.get('chunkData')
         if chunk is None:
             continue
-        cur_parent = str(chunk.get('parentChunkId') or '')
+        cur_parent = _shot_key(chunk)
         mode = str(query.get('shotMode') or '')
+        _need_ms = _win_need_ms(tts_duration_ms.get(sid))
 
         if mode == 'CONTINUE_PREV' and prev_chunk is not None:
-            within_time = (float(chunk.get('startMs') or 0) - last_commit_ms) <= CONTINUE_MAX_MS \
-                if last_commit_ms else True
-            # 缺陷2：真实配额 = floor(镜头可用时长 / 该句所需窗长)。逐父累计已承载窗长
-            #   （含本句配音窗长）仍在本镜头可用时长内 ⇒ 尚可续；超出 ⇒ 本镜头已用尽，强切。
-            #   可用时长缺失（0）时无从约束，退回句数安全上限。
-            _need_ms = float(tts_duration_ms.get(sid) or 0.0)
+            # 窗口额：该镜头（上一镜）已承载窗长 + 本句窗长 ≤ 该镜头可用时长。
             _avail_ms = float(parent_avail.get(prev_parent, 0.0))
             _used_ms = float(parent_used.get(prev_parent, 0.0))
             within_quota = (_avail_ms <= 0.0) or (_used_ms + _need_ms <= _avail_ms + CONTINUE_QUOTA_EPS)
-            sibling = None
+            # 7s 物理锁：连续顺延累计窗长（跨镜头由「未续」分支归零）。
+            within_time = cont_ms <= CONTINUE_MAX_MS
             # 权威顺延分类（喂 shadow 对账，消除"数组相邻项读父"误差）：
-            #   continued=已续上（picker 换片同父）
-            #   same      =主解本已同父，无需续接（非缺陷）
-            #   time_lock / quota_lock / limit_3 =物理锁/镜头窗用尽/触顶强切（非缺陷）
-            #   fail      =该续未续（真失败：异父+可续但同父无合规后继切片）
+            #   continued = 已续上（回写上一镜本体）
+            #   same      = 主解本已同镜，无需续接（非缺陷）
+            #   time_lock / quota_lock / limit_3 = 7s 物理锁/镜头窗用尽/触顶强切（非缺陷）
             cont_ok = 'same'
             if prev_parent and prev_parent != cur_parent \
                     and cont_count < CONTINUE_MAX_SENTENCES and within_time and within_quota:
-                sibling = _pick_sibling(ctx.chunk_by_id, prev_parent, str(prev_chunk.get('id') or ''),
-                                        results, consumed.get(prev_parent, 0.0))
-                if sibling is not None:
-                    cont_ok = 'continued'
-                    r['chosenChunkId'] = sibling['id']
-                    r['chunkData'] = sibling
-                    cur_parent = prev_parent
-                    cont_count += 1
-                    # 缺陷1：换片后记账随真实落点（chunk 同步为 sibling），否则下一句的
-                    #   单向锁下界/时间闸会读「被替换掉的旧切片」，判据失真。
-                    chunk = sibling
-                    consumed[prev_parent] = max(consumed.get(prev_parent, 0.0),
-                                                float(sibling.get('startMs') or 0.0))
-                    parent_used[prev_parent] = _used_ms + _need_ms
-                    # 续镜置信度继承上一镜（承接不虚高）：兄弟片无本句综合分，报上一镜实测值。
-                    r['confidence'] = round(max(0.0, min(1.0, float(prev_conf or 0.0))), 4)
-                    r['score'] = r['confidence']
-                else:
-                    cont_ok = 'fail'               # 异父+可续但同父无合规后继 → 真失败
+                # 顺延 = 回写上一镜本体（同一切片 id）：取料层按 cursor 在该镜开下一窗。
+                r['chosenChunkId'] = prev_chunk.get('id')
+                r['chunkData'] = prev_chunk
+                chunk = prev_chunk
+                cur_parent = prev_parent
+                cont_count += 1
+                cont_ok = 'continued'
+                # 续镜置信度继承上一镜（承接不虚高）：同镜本体无本句综合分，报上一镜实测值。
+                r['confidence'] = round(max(0.0, min(1.0, float(prev_conf or 0.0))), 4)
+                r['score'] = r['confidence']
             elif mode == 'CONTINUE_PREV' and prev_parent:
-                # 未走 picker 的原因：7s 物理锁/镜头窗用尽/连续触顶/本已同父，均非引擎失败。
+                # 未走续接的原因：本已同镜 / 7s 物理锁 / 镜头窗用尽 / 连续触顶，均非引擎失败。
                 if cur_parent == prev_parent:
-                    cont_ok = 'same'               # 主解本已同父，无需续接
+                    cont_ok = 'same'               # 主解本已同镜，无需续接
                 elif not within_time:
                     cont_ok = 'time_lock'          # 7s 物理锁强切（非缺陷）
                 elif not within_quota:
@@ -769,10 +759,9 @@ def reconcile_continuation(
             r['_cont_block'] = cont_ok
             # 逐句诊断（落盘 dev 文件）：CONTINUE_PREV 句续接结果与各判据供定位失败根因。
             # print 走 stdout 被 AppLogger 丢弃，改追加写独立文件，便于跑完直接核对真实判据。
-            _rcd = ('续上' if sibling is not None else '未续')
             _diag_line = (f'[reconcile-DIAG] {sid} prev_parent={prev_parent!r} '
                           f'cur_parent={cur_parent!r} within_time={within_time} '
-                          f'cont_count={cont_count} ' + _rcd)
+                          f'within_quota={within_quota} cont_count={cont_count} {cont_ok}')
             print(_diag_line)
             try:
                 import os
@@ -782,20 +771,17 @@ def reconcile_continuation(
                     _df.write(_diag_line + '\n')
             except Exception:
                 pass  # 诊断落盘失败不打断求解
-            if sibling is not None:
-                last_commit_ms = float(sibling.get('startMs') or 0)
         # 本句确立为新镜或成功顺延后，都成为下一句可续接的"上一镜"。
-        # last_commit_ms 统一更新为当前落点起点：基准始终跟随叙事时间线，`within_time` 才反映
-        # 「本句距上一镜落点」的真实时间差（旧实现只在顺延成功时更新，基准停滞导致判据失真）。
         if cur_parent:
             prev_chunk = chunk
             prev_parent = cur_parent
             prev_conf = float(r.get('confidence') or 0.0)
-            last_commit_ms = float(chunk.get('startMs') or 0)
-            # 缺陷1：本句落点计入该父镜头「已消费最远起点」——下一句顺延取片据此设下界。
-            consumed[cur_parent] = max(consumed.get(cur_parent, 0.0), last_commit_ms)
+            # 镜头窗配额（含首窗）：本句在该镜头开了一个窗，累计其窗长。
+            parent_used[cur_parent] = float(parent_used.get(cur_parent, 0.0)) + _need_ms
             if mode != 'CONTINUE_PREV':
                 cont_count = 0  # 新镜重置顺延计数
+        # 7s 物理锁基准：本句续上则累加其窗长，否则（新镜/强切）归零重起算。
+        cont_ms = cont_ms + _need_ms if mode == 'CONTINUE_PREV' and cont_ok == 'continued' else 0.0
 
 
 def _apply_continuation(path: BeamPath, query: dict, target_ms: float,
@@ -876,10 +862,10 @@ def _src_time_prox(prev_chunk: Optional[dict], cand: dict) -> float:
     """
     if prev_chunk is None or cand is None:
         return 0.0
-    p_parent = prev_chunk.get('parentChunkId') or ''
-    c_parent = cand.get('parentChunkId') or ''
+    p_parent = _shot_key(prev_chunk)
+    c_parent = _shot_key(cand)
     if p_parent and c_parent and p_parent == c_parent:
-        return 0.0  # 同父：不在此处理（交顺延/续接机制）
+        return 0.0  # 同镜：不在此处理（交顺延/续接机制）
     p_start = float(prev_chunk.get('startMs') or 0.0)
     c_start = float(cand.get('startMs') or 0.0)
     if not (p_start > 0 and c_start > 0):
@@ -925,68 +911,77 @@ def _read_block_anchor() -> bool:
 
 def _forward_lookout_pools(queries: List[dict], cands_by_shotid: Dict[str, List[str]],
                            qi: int,
-                           window: int = FORWARD_LOOKOUT_SENTENCES) -> List[List[str]]:
-    """取本句之后 window 句的候选池（本句不入池：避免自我抢占被自己判成耗尽）。
+                           tts_duration_ms: Optional[Dict[str, float]] = None,
+                           window: int = FORWARD_LOOKOUT_SENTENCES) -> List[tuple]:
+    """取本句之后 window 句的（候选池, 该句所需窗长）——本句不入池（避免自我抢占被自己判成耗尽）。
+
+    P4 掩码粒度 = 镜头 + 时间窗：后句「可用」与否取决于**该镜剩余窗长 ≥ 该后句窗长**，
+    故池须随句带上所需窗长（缺失按 `WINDOW_FALLBACK_MS`，与取料层同口径）。
 
     Args:
         queries: 全量脚本句（叙事行序）。
-        cands_by_shotid: 每句的标准候选切片 id 列表。
+        cands_by_shotid: 每句的标准候选镜头 id 列表。
         qi: 本句在 queries 中的下标。
+        tts_duration_ms: 每句配音时长 {shotId: ms}（缺省按缺省窗长计）。
         window: 前瞻句数窗口（≤0 时返回空表 ⇒ 等价关闭）。
 
     Returns:
-        List[List[str]]: 未来句候选池列表；空池已剔除（不产生假命中）。
+        List[tuple]: [(候选 id 列表, 所需窗长 ms)]；空池已剔除（不产生假命中）。
     """
-    pools: List[List[str]] = []
+    pools: List[tuple] = []
     for nxt in queries[qi + 1: qi + 1 + max(0, window)]:
-        pool = cands_by_shotid.get(str(nxt.get('shotId'))) or []
+        nxt_sid = str(nxt.get('shotId'))
+        pool = cands_by_shotid.get(nxt_sid) or []
         if pool:
-            pools.append(list(pool))
+            pools.append((list(pool), _win_need_ms((tts_duration_ms or {}).get(nxt_sid))))
     return pools
 
 
-def _forward_lookout_remaining(pool: List[str], used_bits: int,
-                               chunk_index: Dict[str, int]) -> int:
-    """统计某未来句候选池在本路径下的剩余可用数 rem（未被本路径占用即算可用）。
+def _forward_lookout_remaining(pool: List[str], win_cursor_ms: Optional[Dict[str, float]],
+                               chunk_by_id: Dict[str, dict], need_ms: float) -> int:
+    """统计某未来句候选池在本路径下的剩余可用数 rem（**该镜剩余窗长 ≥ 该句窗长**即算可用）。
 
-    不可造假门：切片 id 不在全局候选索引（数据缺陷）时**不计入可用**——宁可判「更易耗尽」
+    不可造假门：镜头 id 不在全局索引（数据缺陷）时**不计入可用**——宁可判「更易耗尽」
     （保守少抢），也不虚增可用数放行抢占。
 
     Args:
-        pool: 未来句候选切片 id 列表。
-        used_bits: 本路径全局已用位掩码。
-        chunk_index: {chunkId: 全局位下标}。
+        pool: 未来句候选镜头 id 列表。
+        win_cursor_ms: 本路径掩码（{镜头键: 下一窗入点 ms}；空/None 表示该镜尚未开窗）。
+        chunk_by_id: 全局镜头索引（判剩余窗长用）。
+        need_ms: 该未来句所需窗长（ms）。
 
     Returns:
         int: 剩余可用候选数（≥0）。
     """
     rem = 0
+    cursors = win_cursor_ms or {}
     for cid in pool:
-        idx = chunk_index.get(str(cid))
-        if idx is None:
+        chunk = (chunk_by_id or {}).get(str(cid))
+        if chunk is None:
             continue
-        if not _is_used(used_bits, idx):
+        if not _win_exhausted(chunk, cursors.get(_shot_key(chunk)), need_ms):
             rem += 1
     return rem
 
 
-def _forward_lookout(cand_id: str, future_pools: Optional[List[List[str]]],
-                     used_bits: int, chunk_index: Optional[Dict[str, int]],
+def _forward_lookout(cand_id: str, future_pools: Optional[List[tuple]],
+                     win_cursor_ms: Optional[Dict[str, float]],
+                     chunk_by_id: Optional[Dict[str, dict]],
                      weight: float,
                      stats: Optional[Dict[str, int]] = None) -> float:
     """前向审望资源耗尽惩罚（补丁1）：本句抢占后句唯一/濒危主粮时的软阻尼。
 
     设计意图：若某候选是**后句唯一可用主粮**（rem==1），本句抢占会让后句断供 ⇒ 本句需对
     其施加较大代价，把机会留给后句；rem==2 是濒危余量，按较轻罚提示退让。逐未来句累加、
-    整趟封顶。判据纯统计（本路径 used_bits × 未来句候选池），零模型、可复现。
+    整趟封顶。判据纯统计（本路径镜头+时间窗游标 × 未来句候选池），零模型、可复现。
 
     关闭档（weight<=0）、无前瞻池、无索引时恒返回 0.0 ⇒ 缺省零行为变化。
 
     Args:
-        cand_id: 本句候选切片 id。
-        future_pools: 本句之后 window 句的候选池（见 _forward_lookout_pools）。
-        used_bits: 本路径全局已用位掩码。
-        chunk_index: {chunkId: 全局位下标}。
+        cand_id: 本句候选镜头 id。
+        future_pools: 本句之后 window 句的（候选池, 窗长）（见 _forward_lookout_pools）。
+        win_cursor_ms: 本路径掩码（{镜头键: 下一窗入点 ms}）。
+        chunk_by_id: 全局镜头索引。
         weight: 惩罚权重（env 读取，0=关闭）。
         stats: 可选诊断计数桶（仅开关 on 时由调用方传入；None ⇒ 零开销）。键义：
             probe 探针次数 / guard 守卫短路（无池/无索引）/ miss_pool 未相交
@@ -998,17 +993,17 @@ def _forward_lookout(cand_id: str, future_pools: Optional[List[List[str]]],
     """
     if stats is not None:
         _bump(stats, 'probe')
-    if weight <= 0.0 or not future_pools or not chunk_index:
+    if weight <= 0.0 or not future_pools or not chunk_by_id:
         if stats is not None:
             _bump(stats, 'guard')
         return 0.0
     total = 0.0
     intersected = 0
     min_rem: Optional[int] = None
-    for pool in future_pools:
+    for pool, need_ms in future_pools:
         if cand_id not in pool:
             continue  # 后句用不上本候选：本句抢占它不会造成断供
-        rem = _forward_lookout_remaining(pool, used_bits, chunk_index)
+        rem = _forward_lookout_remaining(pool, win_cursor_ms, chunk_by_id, need_ms)
         intersected += 1
         min_rem = rem if min_rem is None else min(min_rem, rem)
         if rem <= 1:
