@@ -1091,15 +1091,40 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         const winFrames = sortedDescs.slice(winLeft, winRight);
         const winHashes: string[] = [];
         const winHashSeen = new Set<string>();
+        let anyInShot = false;
         for (const wf of winFrames) {
+          const t = Number(wf.timeMs) || 0;
+          if (t >= start && t <= end) anyInShot = true;
           const h = (wf as any).frameHash;
           if (typeof h === 'string' && h && !winHashSeen.has(h)) {
             winHashSeen.add(h);
             winHashes.push(h);
           }
         }
-        if (winHashes.length > 0) chunk.frameHashes = winHashes;
-        else delete chunk.frameHashes;
+        /** 🎬 P0 兜底（2026-09-30）：窗内无帧（短片/采样空档）时退化取"全局时间最近帧"补一条归属，
+         *  使每个镜头都有 frameHashes（口径：605 镜头均有）。frameHashSource 如实标注来源：
+         *  'in-shot'（有帧 timeMs∈[start,end]）/ 'window'（仅 [start-500,end+500] 聚合窗命中）/
+         *  'nearest'（窗内空 → 时间最近帧兜底，跨窗）。不造假 hash，只放宽窗口并如实标注。 */
+        const frameHashSource: 'in-shot' | 'window' | 'nearest' =
+          winHashes.length > 0 ? (anyInShot ? 'in-shot' : 'window') : 'nearest';
+        if (winHashes.length === 0 && sortedDescs.length > 0) {
+          const mid = (start + end) / 2;
+          let best = sortedDescs[0];
+          let bestD = Math.abs((Number(best.timeMs) || 0) - mid);
+          for (const wf of sortedDescs) {
+            const d = Math.abs((Number(wf.timeMs) || 0) - mid);
+            if (d < bestD) { best = wf; bestD = d; }
+          }
+          const h = (best as any).frameHash;
+          if (typeof h === 'string' && h) winHashes.push(h);
+        }
+        if (winHashes.length > 0) {
+          chunk.frameHashes = winHashes;
+          (chunk as any).frameHashSource = frameHashSource;
+        } else {
+          delete chunk.frameHashes;
+          delete (chunk as any).frameHashSource;
+        }
         /** 🎬 补丁18（评审稿 §13.1）：帧级 `frameRoles` → 切片级确定性归约，覆盖上面两步的
          *  "VLM 帧级 primarySubject 众数"与"characters 并集"（后者还会被上一步
          *  `fillStructuredFromDescription` 从 description 正则并集回填，故必须压在其后执行）：
