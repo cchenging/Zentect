@@ -280,23 +280,28 @@ def test_monotonic_lock_reads_window_entry():
     print("✓ test_monotonic_lock_reads_window_entry: 单向锁按本窗入点判据正确")
 
 
-def test_continuation_confidence_inherits_prev_shot():
-    """顺延对账（P4 镜头粒度）：异镜的 CONTINUE_PREV 句回写**上一镜本体**并继承其置信度。"""
+def test_continuation_in_beam_same_shot():
+    """顺延「镜头级正常参与」（§4.4 拆后门）：上一镜并入候选池 + 同父软偏好后，
+    CONTINUE_PREV 句在束搜索主核内**直接**选到上一镜本体（不再由后置对账回写）。"""
     q1 = assemble_query({'shotId': 's1', 'text': '句1'})
     q2 = assemble_query({'shotId': 's2', 'text': '句2', 'shotMode': 'CONTINUE_PREV'})
-    c_p = assemble_chunk({'id': 'P', 'startMs': 0, 'endMs': 8000})
-    c_x = assemble_chunk({'id': 'X', 'startMs': 20000, 'endMs': 26000})
-    # s2 候选池只给异镜 X（上一镜 P 不在池内）⇒ 由 reconcile_continuation 回写上一镜本体 P。
-    ctx = _mk_ctx([q1, q2], [c_p, c_x], {'s1': ['P'], 's2': ['X']})
+    # 同父键 PP：CONTINUE_PREF 软偏好据此把本句拉回上一镜（P）；异父 X 无此偏好。
+    c_p = assemble_chunk({'id': 'P', 'parentChunkId': 'PP', 'startMs': 0, 'endMs': 8000})
+    c_x = assemble_chunk({'id': 'X', 'parentChunkId': 'XX', 'startMs': 20000, 'endMs': 26000})
+    # s2 候选池同时给上一镜 P 与异镜 X；X 语义分更高（0.9 > 0.65），
+    # 但仍应被同父软偏好（−CONTINUE_PREF）拉回 P —— 证明顺延确实在束内正常参与。
+    ctx = _mk_ctx([q1, q2], [c_p, c_x], {'s1': ['P'], 's2': ['P', 'X']})
 
-    out = solve(ctx, {'s1': {'P': 0.2}, 's2': {'X': 0.1}}, [], {'s1': 1000.0, 's2': 1000.0})
+    out = solve(ctx, {'s1': {'P': 0.2}, 's2': {'P': 0.35, 'X': 0.1}}, [],
+                {'s1': 1000.0, 's2': 1000.0})
 
     assert out['s1']['confidence'] == 0.8
-    assert out['s2']['chosenChunkId'] == 'P', "顺延句应回写上一镜本体（同一切片 id）"
-    assert out['s2']['confidence'] == 0.8, \
-        f"续镜置信度应继承上一镜 0.8（而非异镜候选 X 的 0.9），实际 {out['s2']['confidence']}"
-    assert out['s2'].get('_cont_ok') == 'continued', "权威顺延分类应记为 continued"
-    print("✓ test_continuation_confidence_inherits_prev_shot: 续镜回写上一镜本体并继承置信度")
+    assert out['s2']['chosenChunkId'] == 'P', \
+        "顺延句应在束内选到上一镜本体 P（非异镜 X），不依赖后置对账回写"
+    assert out['s2']['confidence'] == 0.65, \
+        f"置信度应为本句真实综合分 0.65（不再继承上一镜，也不取异镜 X 的 0.9），实际 {out['s2']['confidence']}"
+    assert out['s2'].get('_cont_ok') == 'continued', "权威顺延分类应记为 continued（落点同父）"
+    print("✓ test_continuation_in_beam_same_shot: 顺延镜头级正常参与，束内直接选到上一镜本体")
 
 
 if __name__ == "__main__":
@@ -314,6 +319,6 @@ if __name__ == "__main__":
     test_result_carries_confidence_from_supply_cost()
     test_degraded_confidence_capped_below_confirm_threshold()
     test_monotonic_lock_reads_window_entry()
-    test_continuation_confidence_inherits_prev_shot()
+    test_continuation_in_beam_same_shot()
     print("=" * 60)
     print("全部通过 ✅")

@@ -24,7 +24,8 @@ beam_search.py —— 受限束搜索前向排产（§8.2 / §9，Q1/Q2 准绳�
     · 违反即 ∞ 的硬门禁（Tier1，补丁21）：长镜头物理单向锁 / 视线跳轴 / 空镜昼夜介质 / 稀有物料强占
     · 仅累加的软阻尼（Tier2，补丁21）：同机位跳斩 / 心跳阻尼 / 景别律动 / 动静
     · 跨场硬清算（补丁19）：文案跨 segmentId 时收敛 Top-1 作唯一物理前驱。
-    · 长镜头顺延安全锁（§8.3）：CONTINUE_PREV 句连续顺延 ≤3 句且 <7s，越界强切。
+    · 长镜头顺延安全锁（§8.3 + 缺陷2 真配额）：CONTINUE_PREV 句连续顺延 ≤3 句（安全上限）、
+      累计窗长 <7s、且 Σ 窗长 ≤ 镜头可用时长，任一越界即强切。
 """
 from __future__ import annotations
 
@@ -51,17 +52,17 @@ CONTINUE_QUOTA_EPS = 0.5
 #   `SemanticAnalyzeStrategy.buildShotWindowTable` 的 `DEFAULT_WINDOW_MS` 同口径。
 #   若按 0 计，窗游标不动 ⇒ 同镜同窗被反复复用（防 PPT 化失效）且窗永不耗尽（镜头可无限吃句）。
 WINDOW_FALLBACK_MS = 3000.0
-# 长镜头顺延由后置对账（reconcile_continuation，对齐 legacy B4）驱动：CONTINUE_PREV 句在
-# 束搜索主核内按语义正常参与，求解完成后统一重排至上一镜父镜头。**不再注入转移奖励**——
-# 强奖励会反向扭曲 NEW_SHOT 句的选取（为占便宜续镜头而牺牲其最优匹配），恰是 legacy 将
-# CONTINUE_PREV 排除出 KM 矩阵的原因。
+# 长镜头顺延（§4.3/§4.4 拆后门）：CONTINUE_PREV 句的「上一镜」由 build_context 并入本句候选池，
+# 在束搜索主核内**镜头级正常参与**——CONTINUE_PREF 同父软偏好 + 镜头窗掩码 + 顺延安全锁共同
+# 裁决，求解后不再有独立对账后门；顺延分类（_cont_ok）在装配期由束内真实落点直接判定。
 # 束宽（补丁1 写死）。
 BEAM_WIDTH = 3
 
 # CONTINUE_PREV 句的主解同父软偏好（软阻尼负向，非硬切）：当本句被场景断言为顺延上一镜
 # 且候选与上一镜父镜头一致时，适当降低其成本，使其在“尚未被前句占用”时倾向继续父镜头，
-# 从源头保证同父延续（reconcile 兜底）。仅本句候选间相对排序生效，不跨句、不影响前序句，
-# 故不会被全局 DP“劫持”NEW_SHOT 句的选取。数值需小于硬门禁、大于仅微差语义抖动。
+# 从源头保证同父延续（上一镜已在候选池内，无需后置对账）。仅本句候选间相对排序生效，
+# 不跨句、不影响前序句，故不会被全局 DP“劫持”NEW_SHOT 句的选取。数值需小于硬门禁、
+# 大于仅微差语义抖动。
 CONTINUE_PREF = 0.3
 # 跨新父源时间邻近软惩罚（P0 时序）：切到新父镜头时，若候选源时间距上一镜落点过远（大跨度
 # 跳闪），施加软阻尼让其远离。软阻尼不硬否决（与 Tier-1 硬门禁区分）、上限封顶以免压过语义主分，
@@ -549,10 +550,11 @@ def solve(
                 chosen['score'] = chosen['confidence']
             results[sid] = chosen
 
-    # 顺延后置对账（对齐 legacy B4 段内锚顺延）：语义供给层 perQueryTopK 逐句独立，
-    # 不含「上一镜父切片」，导致部分 CONTINUE_PREV 句选到异父。此处按叙事行序把仍异父的
-    # 顺延句重排到前句父镜头的另一子切片，就地补上候选池缺口、真实续上不切镜。
-    reconcile_continuation(ctx, results, tts_duration_ms)
+    # 顺延分类（§4.4 拆后门）：CONTINUE_PREV 句已在束搜索主核内「镜头级正常参与」——
+    # 上一镜经 build_context 并入本句候选池 + CONTINUE_PREF 同父软偏好 + 镜头窗掩码
+    # `_win_exhausted` + 安全锁 `_apply_continuation` 共同裁决，求解落点即最终解。
+    # 此处仅按叙事行序把**束内真实落点**如实翻译为消费端权威分类，绝不改写选片。
+    _classify_continuation(ctx, results, tts_duration_ms)
 
     # 前向审望（补丁1）诊断：仅开关 on 时输出（off 档日志零变化，符合「缺省零行为变化」）。
     if fl_weight > 0.0:
@@ -663,125 +665,90 @@ def _parent_avail_ms(chunk_by_id: Dict[str, dict]) -> Dict[str, float]:
     return {pid: max(hi[pid] - lo[pid], 0.0) for pid in lo}
 
 
-def reconcile_continuation(
+def _classify_continuation(
     ctx: CandidateContext,
     results: Dict[str, dict],
     tts_duration_ms: Dict[str, float],
 ) -> None:
-    """顺延后置对账（P4 镜头粒度）：把仍异镜的 CONTINUE_PREV 句回写到上一镜本体。
+    """顺延分类（§4.4 拆后门）：把束内**真实落点**如实翻译为消费端权威 `_cont_ok`。
 
-    语义供给层 perQueryTopK 逐句独立打分，候选池不含「上一句的镜头」，故束搜索即便有
-    同父软偏好，候选池里没有上一镜时也续不上（shadow 实测 50% 失败正源于此）。P4 后候选
-    单元 = 物理镜头（`_shot_key` 与 `parentChunkId` 同指），「顺延」即**继续取上一镜本体**：
-    本函数按叙事行序重跑 CONTINUE_PREV 句，若当前镜 ≠ 上一镜且仍可续（镜头窗配额未用尽、
-    连续顺延句数/时长未越界），就把本句落点回写为上一镜完整切片 —— 取料层
-    `buildShotWindowTable` 按 `cursorByShot` 在该镜内自动开**下一窗**（起点单调前移，
-    兑现 ab→bc→cd 且 Σ 窗长 ≤ 镜头时长）。只改 CONTINUE_PREV 句，不动其它句 / 不触发全局重解。
-    续镜置信度继承上一镜（落码点2）：回写的是上一镜本体、无本句自身综合分可算，报上一镜的
-    实测置信度，绝不凭空给高分（对齐 legacy 续镜 `_base_conf` 口径）。
+    CONTINUE_PREV 句已在束搜索主核内「镜头级正常参与」——上一镜经 build_context 并入本句
+    候选池、`CONTINUE_PREF` 同父软偏好、镜头窗掩码 `_win_exhausted`、安全锁
+    `_apply_continuation` 共同裁决，求解落点即最终解。本函数**只读不改**（绝不回写
+    chosenChunkId/chunkData/confidence），按叙事行序把每句落点同父与否翻译为六值分类，
+    供 shadow 对账消除「数组相邻项读父」误差（CONTINUE_PREV 句之间常夹 NEW_SHOT，
+    相邻项父 ≠ 语义上一镜父）。
 
-    三道锁（任一越界即不续、保持原解并如实记因）：
-      · 句数安全上限 `CONTINUE_MAX_SENTENCES`（防单镜垄断全片）；
-      · **镜头窗配额**（缺陷2）：`Σ 该镜头各句窗长 + 本句窗长 ≤ 镜头可用时长`；
-      · 连续顺延累计时长 < `CONTINUE_MAX_MS`（7s 物理锁）。
+    六值（与 montage_router 消费端口径一一对应）：
+      · continued  = 落点与上一句同父（该续且续上，束内正常参与的直接结果）
+      · same       = 兼容保留（本实现下同父即 continued；仅当外部注入时可能出现）
+      · time_lock  = 未续因连续顺延累计窗长越 `CONTINUE_MAX_MS`（7s 物理锁，非缺陷）
+      · quota_lock = 未续因上一镜窗配额用尽（缺陷2 真配额，非缺陷）
+      · limit_3    = 未续因连续顺延句数触顶（`CONTINUE_MAX_SENTENCES` 安全上限，非缺陷）
+      · fail       = 该续未续（真失败：非上述任一锁所致）
+
+    归因判据按叙事行序重放：`cont_streak`/`cont_ms` 统计「连续同父顺延」的句数与累计窗长，
+    `parent_used` 统计各镜头已承载窗长（含首窗，非顺延句开的第一个窗同样计入），
+    任一锁越界即判对应非缺陷因，否则记 fail。
 
     Args:
-        ctx: 标准候选池上下文（chunk_by_id 提供全局切片，queries 提供叙事行序 + shotMode）。
-        results: 束搜索已装配结果（{shotId: MatchResult}，就地改）。
+        ctx: 标准候选池上下文（chunk_by_id 提供全量切片，queries 提供叙事行序 + shotMode）。
+        results: 束搜索已装配结果（{shotId: MatchResult}，只读不改选片）。
         tts_duration_ms: 每句目标时长 {shotId: ms}。
 
     Returns:
-        None（原地修改 results）。
+        None（就地写 results 的 `_cont_ok` / `_cont_block`；不改其它字段）。
     """
-    prev_chunk: Optional[dict] = None
     prev_parent = ''
-    prev_conf = 0.0
-    cont_count = 0
+    cont_streak = 0
     # 连续顺延累计窗长（7s 物理锁）：续上则累加，本句未续（新镜/强切）即归零。
     cont_ms = 0.0
-    # 镜头窗配额（缺陷2）：逐镜头累计各句已开窗长，Σ ≤ 镜头可用时长。
-    #   「含首窗」——非顺延句在同一镜头开的第一个窗同样计入，否则 Σ 窗长不成立。
+    # 镜头窗配额（缺陷2）：逐镜头累计各句已开窗长，Σ ≤ 镜头可用时长（含首窗）。
     parent_avail = _parent_avail_ms(ctx.chunk_by_id)
     parent_used: Dict[str, float] = {}
 
     for query in ctx.queries:
         sid = str(query['shotId'])
-        r = results.get(sid)
-        # 空分配（候选池空）无法续接，但也阻断不了"上一镜"向前延续，仅跳过本句。
-        if r is None:
-            continue
-        chosen_id = r.get('chosenChunkId')
-        # 镜头取完整切片：优先按 chosenChunkId 回查全局索引（_pick_best_for_shot 末帧漂移时
-        # 已注入全局索引回调取完整切片，此回查为双保险）。
-        chunk = ctx.chunk_by_id.get(str(chosen_id) or '') or r.get('chunkData')
-        if chunk is None:
-            continue
-        cur_parent = _shot_key(chunk)
         mode = str(query.get('shotMode') or '')
         _need_ms = _win_need_ms(tts_duration_ms.get(sid))
+        r = results.get(sid)
+        # 落点镜头：优先按 chosenChunkId 回查全局索引（_pick_best_for_shot 末帧漂移时
+        # 已注入全局索引回调取完整切片，此回查为双保险）。
+        chunk = None
+        if r is not None:
+            chunk = ctx.chunk_by_id.get(str(r.get('chosenChunkId') or '')) or r.get('chunkData')
+        cur_parent = _shot_key(chunk) if chunk else ''
+        cont_ok = ''
 
-        if mode == 'CONTINUE_PREV' and prev_chunk is not None:
-            # 窗口额：该镜头（上一镜）已承载窗长 + 本句窗长 ≤ 该镜头可用时长。
+        if mode == 'CONTINUE_PREV' and prev_parent and chunk is not None:
+            # 上一镜（prev_parent）窗配额：已承载窗长 + 本句窗长 ≤ 该镜头可用时长。
             _avail_ms = float(parent_avail.get(prev_parent, 0.0))
             _used_ms = float(parent_used.get(prev_parent, 0.0))
-            within_quota = (_avail_ms <= 0.0) or (_used_ms + _need_ms <= _avail_ms + CONTINUE_QUOTA_EPS)
-            # 7s 物理锁：连续顺延累计窗长（跨镜头由「未续」分支归零）。
-            within_time = cont_ms <= CONTINUE_MAX_MS
-            # 权威顺延分类（喂 shadow 对账，消除"数组相邻项读父"误差）：
-            #   continued = 已续上（回写上一镜本体）
-            #   same      = 主解本已同镜，无需续接（非缺陷）
-            #   time_lock / quota_lock / limit_3 = 7s 物理锁/镜头窗用尽/触顶强切（非缺陷）
-            cont_ok = 'same'
-            if prev_parent and prev_parent != cur_parent \
-                    and cont_count < CONTINUE_MAX_SENTENCES and within_time and within_quota:
-                # 顺延 = 回写上一镜本体（同一切片 id）：取料层按 cursor 在该镜开下一窗。
-                r['chosenChunkId'] = prev_chunk.get('id')
-                r['chunkData'] = prev_chunk
-                chunk = prev_chunk
-                cur_parent = prev_parent
-                cont_count += 1
-                cont_ok = 'continued'
-                # 续镜置信度继承上一镜（承接不虚高）：同镜本体无本句综合分，报上一镜实测值。
-                r['confidence'] = round(max(0.0, min(1.0, float(prev_conf or 0.0))), 4)
-                r['score'] = r['confidence']
-            elif mode == 'CONTINUE_PREV' and prev_parent:
-                # 未走续接的原因：本已同镜 / 7s 物理锁 / 镜头窗用尽 / 连续触顶，均非引擎失败。
-                if cur_parent == prev_parent:
-                    cont_ok = 'same'               # 主解本已同镜，无需续接
-                elif not within_time:
-                    cont_ok = 'time_lock'          # 7s 物理锁强切（非缺陷）
-                elif not within_quota:
-                    cont_ok = 'quota_lock'         # 缺陷2：本镜头可用时长已用尽，强切（非缺陷）
-                elif cont_count >= CONTINUE_MAX_SENTENCES:
-                    cont_ok = 'limit_3'            # 连续顺延触顶强切（非缺陷）
+            if cur_parent == prev_parent:
+                cont_ok = 'continued'                 # 该续且续上（落点同父）
+            elif cont_ms > CONTINUE_MAX_MS:
+                cont_ok = 'time_lock'                 # 7s 物理锁强切（非缺陷）
+            elif _avail_ms > 0.0 and _used_ms + _need_ms > _avail_ms + CONTINUE_QUOTA_EPS:
+                cont_ok = 'quota_lock'                # 缺陷2：上一镜可用时长已用尽（非缺陷）
+            elif cont_streak >= CONTINUE_MAX_SENTENCES:
+                cont_ok = 'limit_3'                   # 连续顺延触顶强切（非缺陷）
+            else:
+                cont_ok = 'fail'                      # 该续未续（真失败）
             # 权威标记同时落 _cont_block（兼容旧字段）与 _cont_ok（shadow 主判据）。
             r['_cont_ok'] = cont_ok
             r['_cont_block'] = cont_ok
-            # 逐句诊断（落盘 dev 文件）：CONTINUE_PREV 句续接结果与各判据供定位失败根因。
-            # print 走 stdout 被 AppLogger 丢弃，改追加写独立文件，便于跑完直接核对真实判据。
-            _diag_line = (f'[reconcile-DIAG] {sid} prev_parent={prev_parent!r} '
-                          f'cur_parent={cur_parent!r} within_time={within_time} '
-                          f'within_quota={within_quota} cont_count={cont_count} {cont_ok}')
-            print(_diag_line)
-            try:
-                import os
-                _repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                _diag_path = os.path.join(_repo, 'data', 'reconcile-diag.log')
-                with open(_diag_path, 'a', encoding='utf-8') as _df:
-                    _df.write(_diag_line + '\n')
-            except Exception:
-                pass  # 诊断落盘失败不打断求解
-        # 本句确立为新镜或成功顺延后，都成为下一句可续接的"上一镜"。
+
+        # 本句确立为新镜或成功顺延后，都成为下一句可续接的「上一镜」。
         if cur_parent:
-            prev_chunk = chunk
             prev_parent = cur_parent
-            prev_conf = float(r.get('confidence') or 0.0)
-            # 镜头窗配额（含首窗）：本句在该镜头开了一个窗，累计其窗长。
             parent_used[cur_parent] = float(parent_used.get(cur_parent, 0.0)) + _need_ms
-            if mode != 'CONTINUE_PREV':
-                cont_count = 0  # 新镜重置顺延计数
-        # 7s 物理锁基准：本句续上则累加其窗长，否则（新镜/强切）归零重起算。
-        cont_ms = cont_ms + _need_ms if mode == 'CONTINUE_PREV' and cont_ok == 'continued' else 0.0
+        # 连续顺延计数：本句续上则延续加长，否则（新镜/强切/未续）归零重起算。
+        if mode == 'CONTINUE_PREV' and cont_ok == 'continued':
+            cont_streak += 1
+            cont_ms += _need_ms
+        else:
+            cont_streak = 0
+            cont_ms = 0.0
 
 
 def _apply_continuation(path: BeamPath, query: dict, target_ms: float,
