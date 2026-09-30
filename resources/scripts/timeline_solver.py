@@ -5646,24 +5646,8 @@ def _parse_vlm_pick(text, labels) -> Optional[int]:
     return best_i
 
 
-def _supply_of(cid, chunk: dict, supply_by_id: dict) -> float:
-    """单候选「可供给时长」读数（覆盖约束用，与打分期/交付端 `build_supply_ms` 同源）。
-
-    索引命中 ⇒ 同母块源时间连续后继链合计；未命中（无 parentChunkId 的母块片）⇒ 回退自身时长
-    （与 `build_supply_ms` 的「缺 parentChunkId 不进索引」口径一致，不造假相邻关系）。
-    """
-    v = supply_by_id.get(str(cid))
-    if v is not None:
-        return float(v)
-    dur = float(chunk.get('durationMs') or 0.0)
-    if dur <= 0:
-        dur = max(0.0, float(chunk.get('endMs') or 0.0) - float(chunk.get('startMs') or 0.0))
-    return dur
-
-
 def _build_vlm_slate(cand_ids, chunk_by_id, sem_row, taken_ids, current_cid,
-                     taken_covers=None, top_k: int = VLM_RR_TOP_K,
-                     supply_by_id=None, min_cover_ms: float = 0.0) -> list:
+                     taken_covers=None, top_k: int = VLM_RR_TOP_K) -> list:
     """纯函数：构本句重排候选盘，返回 [(chunkId, coverPath, sem)]（按语义分降序、已截断）。
 
     口径（对齐离线实验的 BGE 榜）：
@@ -5676,12 +5660,7 @@ def _build_vlm_slate(cand_ids, chunk_by_id, sem_row, taken_ids, current_cid,
       ⑥ 跨句封面排他 = 该封面已被他句占用则剔除（本句当前片除外）。仅靠 ③ 的 cid 排他
                堵不住这种情况：兄弟段（…_seg1/…_seg2）是不同的 cid、却共用父封面，
                两句会各选一个兄弟段 ⇒ 最终画面重复（实测 seg_26_sub_1 选 …_seg1、
-               seg_26_sub_3 选 …_seg2，封面同为 seg_1308_cover.jpg）；
-      ⑦ 覆盖约束（选项A）= 剔除「可供给时长 < 本句配音时长」的候选（**含本句当前片**）。
-               病灶：重排只看视觉贴题，会把「母块只切出单片、无料可扩」的短片换入 ⇒
-               交付端扩链取料为空 ⇒ 画面必然短于配音（实测 seg_21_sub_2 覆盖 0.445）。
-               仅在 `supply_by_id` 非空且 `min_cover_ms > 0` 时生效（原声段 / 供给口径 off ⇒ 不裁）。
-               全盘供不起 ⇒ 盘变空/仅 1 张 ⇒ 调用方按「盘<2 跳过」退回现状，不硬换更差的片。
+               seg_26_sub_3 选 …_seg2，封面同为 seg_1308_cover.jpg）。
     """
     taken_covers = taken_covers if taken_covers is not None else set()
     pool = []
@@ -5695,10 +5674,6 @@ def _build_vlm_slate(cand_ids, chunk_by_id, sem_row, taken_ids, current_cid,
             continue
         chunk = chunk_by_id.get(cid)
         if not chunk:
-            continue
-        # ⑦ 覆盖约束：供不起的候选不进盘（放在封面去重之前 ⇒ 可让同封面的「供得起」兄弟段顶上）
-        if min_cover_ms > 0 and supply_by_id is not None \
-                and _supply_of(cid, chunk, supply_by_id) < min_cover_ms - 0.5:
             continue
         cover = _resolve_cover_path(chunk.get('coverPath') or chunk.get('parentCoverPath'))
         if not cover or not os.path.exists(cover) or cover in seen_cover:
@@ -5844,17 +5819,7 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
         cov = _cover_of(cid)
         if cov:
             cover_cnt[cov] = cover_cnt.get(cov, 0) + 1
-    # 🧩 选项A 覆盖约束：重排只能在「可供给时长 ≥ 本句配音时长」的候选里挑画面。
-    #   病灶 = 「视觉贴题」与「供得起」在重排环节脱钩：VLM 会把母块无料可扩的短片换入，
-    #   交付端扩链取料为空 ⇒ 画面必然短于配音（实测 seg_21_sub_2 覆盖 0.445）。
-    #   供给索引与打分期/交付端同源（match_cost.build_supply_ms）；口径 off ⇒ 不建索引、零行为变化。
-    from match_cost import _read_supply_dur as _read_sup_rr
-    supply_by_id = None
-    if _read_sup_rr():
-        from match_cost import build_supply_ms
-        supply_by_id = build_supply_ms(ctx.chunk_by_id)
-    stats = {'n': 0, 'slate_lt2': 0, 'picks_none': 0, 'changed': 0, 'budget_stop': 0, 'imgs': 0,
-             'cov_drop': 0}
+    stats = {'n': 0, 'slate_lt2': 0, 'picks_none': 0, 'changed': 0, 'budget_stop': 0, 'imgs': 0}
     _VLM_RR_USAGE.update(calls=0, **{'in': 0, 'out': 0})   # 本轮 token 用量清零（仅对账）
     for q in ctx.queries:
         sid = str(q['shotId'])
@@ -5865,17 +5830,8 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
             break
         stats['n'] += 1
         cur_cid = str((r.get('chunkData') or {}).get('id') or '')
-        # 覆盖阈值：原声段不适用（窗长由 ASR 段定，同 match_cost SUPPLY_SHORT_PENALTY 口径）。
-        _min_cover = 0.0 if bool(q.get('keepOriginalAudio')) \
-            else float(q.get('audioDurationMs') or 0.0)
-        if supply_by_id is not None and _min_cover > 0:
-            stats['cov_drop'] += sum(
-                1 for cid in (ctx.cands_by_shotid.get(sid) or [])
-                if ctx.chunk_by_id.get(str(cid)) is not None
-                and _supply_of(str(cid), ctx.chunk_by_id[str(cid)], supply_by_id) < _min_cover - 0.5)
         slate = _build_vlm_slate(ctx.cands_by_shotid.get(sid) or [], ctx.chunk_by_id,
-                                 sem_scores.get(sid) or {}, taken, cur_cid, set(cover_cnt),
-                                 supply_by_id=supply_by_id, min_cover_ms=_min_cover)
+                                 sem_scores.get(sid) or {}, taken, cur_cid, set(cover_cnt))
         if len(slate) < 2:
             stats['slate_lt2'] += 1
             _append_engine_trace('[vlm-rr] {} 盘<2（{} 张）⇒ 跳过'.format(sid, len(slate)))
@@ -5914,11 +5870,11 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
         stats['changed'] += 1
 
     _append_engine_trace(
-        '[vlm-rr] 档位={} model={} MAX={} 供得起裁盘={} ｜ 处理={} 句 ｜ 换片={} ｜ 未选出={} ｜ 盘<2={} ｜ '
-        '喂图={} 张 ｜ 覆盖剔除={} ｜ 超预算停={} ｜ 熔断计数={} ｜ token入/出={}/{}（{} 次调用）｜ 耗时={:.1f}s'.format(
-            mode, model, max_n or '不限', 'on' if _read_sup_rr() else 'off',
+        '[vlm-rr] 档位={} model={} MAX={} ｜ 处理={} 句 ｜ 换片={} ｜ 未选出={} ｜ 盘<2={} ｜ '
+        '喂图={} 张 ｜ 超预算停={} ｜ 熔断计数={} ｜ token入/出={}/{}（{} 次调用）｜ 耗时={:.1f}s'.format(
+            mode, model, max_n or '不限',
             stats['n'], stats['changed'], stats['picks_none'],
-            stats['slate_lt2'], stats['imgs'], stats['cov_drop'], stats['budget_stop'],
+            stats['slate_lt2'], stats['imgs'], stats['budget_stop'],
             _VLM_RR_FAIL_COUNT, _VLM_RR_USAGE['in'], _VLM_RR_USAGE['out'], _VLM_RR_USAGE['calls'],
             time.time() - t0))
     print('[VLM-RR] {}'.format(stats), file=sys.stderr)

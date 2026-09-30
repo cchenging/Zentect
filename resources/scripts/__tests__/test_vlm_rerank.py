@@ -156,20 +156,7 @@ def test_build_vlm_slate():
     # ⑤ 空候选 → 空盘
     assert ts._build_vlm_slate([], chunks, sem, set(), '') == []
 
-    # ⑥ 覆盖约束（选项A）：供不起的候选不进盘（b/c 语义更高但只供 300ms < 阈值 1000ms）
-    got6 = [x[0] for x in ts._build_vlm_slate(
-        ['a', 'b', 'c'], chunks, sem, set(), '',
-        supply_by_id={'a': 5000.0, 'b': 300.0, 'c': 300.0}, min_cover_ms=1000.0)]
-    assert got6 == ['a'], '供不起的候选必须剔除: {}'.format(got6)
-    # 缺读数 ⇒ 回退自身时长（f 无 durationMs/startMs ⇒ 0 ⇒ 供不起 ⇒ 剔除）
-    got7 = [x[0] for x in ts._build_vlm_slate(
-        ['a', 'f'], chunks, sem, set(), '', supply_by_id={'a': 5000.0}, min_cover_ms=1000.0)]
-    assert got7 == ['a'], got7
-    # 未给 supply_by_id ⇒ 不裁（零行为变化）
-    got8 = [x[0] for x in ts._build_vlm_slate(
-        ['a', 'b'], chunks, sem, set(), '', min_cover_ms=1000.0)]
-    assert got8 == ['b', 'a'], '未给 supply_by_id 不得裁剪: {}'.format(got8)
-    print('  ✅ _build_vlm_slate（降序/排他/兜底/去重/截断/覆盖约束）')
+    print('  ✅ _build_vlm_slate（降序/排他/兜底/去重/截断）')
 
 
 # ---------------------------------------------------------------- 4) 端到端
@@ -264,53 +251,6 @@ def test_apply_end_to_end():
     assert out['s1']['chunkData']['id'] == 'p0'
     assert any('凭据' in t for t in traces), traces
     print('  ✅ _apply_vlm_rerank_new_engine（off/dry/on/无凭据 + 零重复用片）')
-
-
-def test_supply_cover_constraint():
-    """选项A：重排只能在「可供给时长 ≥ 本句配音时长」的候选里挑画面。
-
-    对照（同一 solved / 同一 VLM 回复）：
-      ① 口径 off ⇒ 不裁 ⇒ 盘首项 = 语义最高但供不起的 q3 = 当前片 ⇒ 保持不动；
-      ② 口径 on  ⇒ q3（供 1000ms < 配音 1500ms）被剔出盘 ⇒ 只能换到供得起的 q2。
-    母块 P 四段连续（q0..q3）⇒ 可供给时长 q0=4000 / q1=3000 / q2=2000 / q3=1000ms。
-    """
-    import requests
-    covs = _mk_covers(4)
-    ch = {}
-    for i, (cid, st) in enumerate((('q0', 0), ('q1', 1000), ('q2', 2000), ('q3', 3000))):
-        ch[cid] = {'id': cid, 'coverPath': covs[i], 'parentChunkId': 'P',
-                   'filePath': 'f.mp4', 'startMs': st, 'endMs': st + 1000}
-    queries = [{'shotId': 's1', 'text': '一', 'visualIntent': '', 'audioDurationMs': 1500}]
-    ctx = _FakeCtx(queries, {'s1': ['q3', 'q2', 'q1']}, ch)
-    sem = {'s1': {'q3': 0.9, 'q2': 0.5, 'q1': 0.3}}      # 语义最高的是供不起的 q3
-    req = type('Req', (), {'vlmApiKey': 'k', 'vlmApiBase': 'http://x/v1', 'vlmApiModel': 'm'})()
-
-    old_post = requests.post
-    requests.post = _PostOk('C01')                        # 恒选盘内首项
-    ts._VLM_RR_FAIL_COUNT = 0
-    try:
-        # ① 口径 off：不裁 ⇒ 盘首项 = q3 = 当前片 ⇒ 保持（零行为变化）
-        r = _env(ZENTECT_VLM_RERANK='on', ZENTECT_KM_SUPPLY_DUR=None)
-        try:
-            solved = {'s1': {'chunkData': dict(ch['q3']), 'chunkId': 'q3'}}
-            out = ts._apply_vlm_rerank_new_engine(solved, ctx, sem, req)
-        finally:
-            r()
-        assert out['s1']['chunkData']['id'] == 'q3', 'off 档行为必须不变'
-
-        # ② 口径 on：q3 被覆盖约束剔除 ⇒ 只能换到供得起的 q2
-        r = _env(ZENTECT_VLM_RERANK='on', ZENTECT_KM_SUPPLY_DUR='1')
-        try:
-            solved2 = {'s1': {'chunkData': dict(ch['q3']), 'chunkId': 'q3'}}
-            out2 = ts._apply_vlm_rerank_new_engine(solved2, ctx, sem, req)
-        finally:
-            r()
-        assert out2['s1']['chunkData']['id'] == 'q2', \
-            '供不起的 q3 应被剔出候选盘（实际 {}）'.format(out2['s1']['chunkData']['id'])
-    finally:
-        requests.post = old_post
-        ts._VLM_RR_FAIL_COUNT = 0
-    print('  ✅ 选项A 覆盖约束（供不起的候选不进重排盘；口径 off 零行为变化）')
 
 
 def test_no_cross_sentence_cover_dup():
@@ -440,7 +380,6 @@ if __name__ == '__main__':
     test_parse_vlm_pick()
     test_build_vlm_slate()
     test_apply_end_to_end()
-    test_supply_cover_constraint()
     test_no_cross_sentence_cover_dup()
     test_encode_cover_b64_and_usage()
     test_circuit_breaker()
