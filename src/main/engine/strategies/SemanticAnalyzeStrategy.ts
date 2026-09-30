@@ -25,6 +25,8 @@ import { collapseShotsToMatchUnits, resolveScriptMatchUnitMode } from '../../../
 /** 🎬 A1·S2 分镜师 Agent（§24.16-A）：为每个母句开 α 真工单 ShotSpec，并按 matchUnitId 回填到 query */
 import { StoryboardAgent, resolveStoryboardOpen, syncStoryboardModeFile } from '../storyboard/StoryboardAgent';
 import type { ShotSpec } from '../../../shared/contracts/shotSpec';
+/** 🎬 P2/P3（2026-09-30）：帧级召回 —— 帧向量索引构建 + 上卷镜头候选（取代段级 TF-IDF 预选） */
+import { FrameRecallService, type FrameIndexSeed, type ShotRecallHit } from '../search/FrameRecallService';
 
 /**
  * 镜头匹配策略：三维一体弹性时间轴对齐
@@ -1165,6 +1167,37 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         `${withCharacters}/${chunks.length} 带角色characters，` +
         `${withKeywords}/${chunks.length} 带关键词keywords，` +
         `${withFrameHashes}/${chunks.length} 带帧归属frameHashes`);
+      /** 🎬 P2（2026-09-30）帧向量索引：把「归属镜头 + 帧身份 + 帧释义」落 frame_index（BGE 向量）。
+       *  数据源即上面的 P0 归属链（chunk.frameHashes）与帧释义（frameDescs），零新增推理、零额外遍历；
+       *  编码走 daemon `/api/embed_texts`（与 match_cost 语义主分同源），已索引帧复跑秒级命中。
+       *  ⚠️ 不兜底：编码通道不可用即上抛（帧召回是 P3 候选取值的唯一来源，静默空集会让全片匹配不到）。 */
+      if (withFrameHashes > 0) {
+        const frameDescByHash = new Map<string, { timeMs: number; description: string }>();
+        for (const f of frameDescs) {
+          const h = (f as any).frameHash;
+          if (typeof h === 'string' && h && !frameDescByHash.has(h)) {
+            frameDescByHash.set(h, { timeMs: Number(f.timeMs) || 0, description: String(f.description || '').trim() });
+          }
+        }
+        const seeds: FrameIndexSeed[] = [];
+        for (const c of chunks) {
+          for (const h of ((c as any).frameHashes || [])) {
+            const fd = frameDescByHash.get(h);
+            if (fd && fd.description) {
+              seeds.push({ frameHash: h, chunkId: String(c.id), timeMs: fd.timeMs, description: fd.description });
+            }
+          }
+        }
+        try {
+          const st = await FrameRecallService.ensureIndex(seeds, projectId, sceneMediaId);
+          AppLogger.info(LOG_TAGS.AI_AGENT,
+            `[镜头匹配] 🎬 P2 帧向量索引：待索引入参 ${st.total} 帧｜复用 ${st.reused}｜本次编码落库 ${st.encoded}`);
+        } catch (e: any) {
+          throw new Error(`P2 帧向量索引构建失败（帧召回无替代通道，不降级）: ${e?.message || e}`);
+        }
+      } else {
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] ⚠️ P2 帧向量索引跳过：无镜头携带 frameHashes（帧→镜头归属链为空）`);
+      }
       /** 🎬 补丁18 诊断（开关 off 时不打印，日志逐字节零变化）：三态分布 + 30% 时长过滤条数 +
        *  置信度均值——让"点亮 ≠ 可信"（覆盖率/置信度）在日志里可见，作为 A/B 对账基线。 */
       if (rolePoolingOn) {
@@ -1356,6 +1389,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           (q as any).preferredShot = spec.preferredShot || '';
           (q as any).actionType = spec.actionType || '';
           (q as any).keyProp = spec.keyProp || '';
+          // 🧭 P5 属性贴合（议题 D 的桥）再补两项：运镜 / 主体此前同样恒空，
+          //    daemon 侧 `montage_contract.attribute_adherence_cost` 读这两项做 ②供给分软阻尼。
+          //    ⚠️ 同样保持契约英文枚举（CAMERA_DYNAMIC / 角色名），勿转中文：daemon 侧统一归一。
+          (q as any).cameraDynamic = spec.cameraDynamic || '';
+          (q as any).targetSubjects = spec.targetSubjects || [];
           attached++;
         }
         AppLogger.info(LOG_TAGS.AI_AGENT,
@@ -1587,18 +1625,46 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       }
     }
 
-    /** 🔧 P2 #11 方案 A：KM Top-K 预选（Node 侧整体收窄 videoChunks，不改 daemon 契约）。
-     *   仅在"送 KM 的查询子集"上执行预选，避免原声段落导致 query 池与 chunk 池尺度不一致。 */
-    const preselect = SemanticAnalyzeStrategy.preselectTopK(kmQueries, matchSegments, {
-      logProjectId: _context.projectId ? `[${_context.projectId}]` : '',
-    });
-    /** 记住原始匹配候选段，用于 matches→segment 回填（chunkData 里完整原始字段） */
-    const originalChunksById = new Map<string, any>();
-    for (const c of matchSegments) originalChunksById.set(String(c.id), c);
-    /** 用预选过滤后的 chunk 池跑 KM；audit 用 perQueryTopK 放在闭包内 */
-    const kmVideoChunks = preselect.filteredChunks;
-    const perQueryTopKForAudit = preselect.perQueryTopK;
-    const candidateIdsForKm: Record<string, string[]> = preselect.perQueryTopK;
+    /** 🎬 P3（2026-09-30）帧召回 + 上卷镜头候选 —— **取代**段级 TF-IDF 预选（preselectTopK）。
+     *  spec §4.3：拿「句文案 + visualIntent + refFrameDesc(真锚点)」去跟**帧释义**（一帧一条，零损耗）
+     *  求最像画面瞬间，命中帧按归属镜头（chunk_id）上卷计票 ⇒ 逐句"确实被命中的镜头清单"。
+     *  为什么换：段是"镜头内均分"产物、语义逐字继承母镜头，同镜头内兄弟段文本完全同分
+     *  （分不出切菜/洗碗）；帧级召回才分辨得出瞬间，上卷后得到的是真命中镜头而非抄来的简介。
+     *  候选单元同时收敛为**物理镜头 605**（P4）：段作为匹配单元退场，只保留在 DB 缓存/替换弹窗侧。 */
+    const shotById = new Map<string, any>();
+    for (const c of chunks) shotById.set(String(c.id), c);
+    const recallHits = await FrameRecallService.recall(
+      kmQueries.map((q: any) => ({
+        shotId: String(q.shotId),
+        text: q.text,
+        visualIntent: q.visualIntent,
+        refFrameDesc: q.refFrameDesc,
+      })),
+      projectId,
+      sceneMediaId,
+      { topFrames: 40, topShots: 24 },
+    );
+    /** 逐句镜头候选白名单 + 命中帧入点（P4 取料用）：白名单只收"帧召回确实命中"的镜头 */
+    const candidateIdsForKm: Record<string, string[]> = {};
+    const frameHitsForKm: Record<string, { chunkId: string; timeMs: number; frameHash: string }> = {};
+    let recallCoveredUnits = 0;
+    let recallCandidateShots = 0;
+    for (const [sid, hits] of recallHits) {
+      if (hits.length === 0) continue;
+      recallCoveredUnits += 1;
+      recallCandidateShots += hits.length;
+      candidateIdsForKm[sid] = hits.map((h: ShotRecallHit) => h.chunkId);
+      frameHitsForKm[sid] = { chunkId: hits[0].chunkId, timeMs: hits[0].bestTimeMs, frameHash: hits[0].bestFrameHash };
+    }
+    AppLogger.info(LOG_TAGS.AI_AGENT,
+      `[镜头匹配] 🎬 P3 帧召回上卷：句 ${kmQueries.length}｜有候选句 ${recallCoveredUnits}｜`
+      + `候选镜头合计 ${recallCandidateShots}（均 ${recallCoveredUnits ? (recallCandidateShots / recallCoveredUnits).toFixed(1) : '0'} 个/句）｜`
+      + `候选单元=物理镜头 ${chunks.length} 个（段退场）`);
+    /** 记住原始候选切片（镜头级），用于 matches→segment 回填（chunkData 里完整原始字段） */
+    const originalChunksById = shotById;
+    /** P4：候选池 = 全量物理镜头；逐句再按帧召回白名单收窄（candidateIds）；未召回句不设白名单 ⇒ 全域可选 */
+    const kmVideoChunks = chunks;
+    const perQueryTopKForAudit = candidateIdsForKm;
 
     /** 步骤4：调用 KM 全局排他性匹配算法 */
 
@@ -1704,8 +1770,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         projectId,
         mediaId: sceneMediaId,
         /** 🔧 P2 #11 方案B：行级候选白名单 { shotId: chunkId[] }，daemon 在代价矩阵里置强惩罚只让候选进 KM
-         *   （方案A 已把 videoChunks 收窄成并集，方案B 再精确到每句候选，双层压缩；perQueryTopK 为空则 daemon 忽略） */
+         *   （方案A 已把 videoChunks 收窄成并集，方案B 再精确到每句候选，双层压缩；perQueryTopK 为空则 daemon 忽略）
+         *   🎬 P3（2026-09-30）：白名单来源已换成**帧召回上卷**的镜头清单（取代段级 TF-IDF 预选）。 */
         candidateIds: candidateIdsForKm,
+        /** 🎬 P4（2026-09-30）帧命中入点 { shotId: {chunkId, timeMs, frameHash} }：取料层据此定首句入点 */
+        frameHits: frameHitsForKm,
         bgmBeats,
         bpm: bgmBpm,
         weights: { sem: 0.62, emotion: 0.08, duration: 0.2, role: 0.1 },
@@ -1725,7 +1794,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       const kmResultsArr: any[] = (kmResult as any)?.results || (kmResult as any)?.data || [];
       if (kmResultsArr.length === 0) {
         const zeroDur = kmQueries.filter((q: any) => !q.audioDurationMs).length;
-        const pk = preselect.perQueryTopK as Record<string, string[]> | undefined;
+        const pk = perQueryTopKForAudit as Record<string, ReadonlyArray<string>> | undefined;
         const emptyPk = (pk ? Object.values(pk) : []).filter((ids) => !ids || ids.length === 0).length;
         AppLogger.warn(LOG_TAGS.AI_AGENT,
           `[镜头匹配][KM-DIAG] ★ KM 返回空 results: kmQueries=${kmQueries.length} | ` +
@@ -1777,13 +1846,13 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
        *  碎片顺序把单位窗切成首尾相接子窗（料源 = 同父连续兄弟片链，不足则【顺延候选镜头】取满窗——方案甲，
        *  候选也耗尽才按碎片时长比例切分），并用全局游标保证同一镜头被多单位复用时顺延续接、不回头重放；
        *  碎片身份/文本/时长不变 ⇒ matchResults 数量恒等于段落数。 */
-      const unitFragmentWindows = SemanticAnalyzeStrategy.buildUnitWindowTable(
+      const unitFragmentWindows = SemanticAnalyzeStrategy.buildShotWindowTable(
         shotLevelQueries, matchById, originalChunksById,
-        SemanticAnalyzeStrategy.buildSiblingPool(matchSegments, kmVideoChunks),
-        /* 🎬 方案甲（2026-09-26）：透传单位级预选 topK 候选 ⇒ 命中镜头料不够时可顺延候选镜头取满窗
-         *  （实测命中镜头常短于配音：scene_001 1067ms vs 配音 4744ms，而旧口径只能拉长该镜头 ⇒ 4.45× 慢放）。
-         *  sentence 档 perQueryTopK 以匹配单位 id 为键，与 buildUnitWindowTable 的分组键同源。 */
+        /* 🎬 P4（2026-09-30）：候选=物理镜头，取料不再依赖"同父兄弟片"（镜头内无兄弟），
+         *  而是以「命中帧入点 + 窗末顺延」在镜头内**连续切窗**；候选镜头清单仍透传，
+         *  供窗用尽时顺延到次优镜头（不再重复回退到命中镜头最早处）。 */
         perQueryTopKForAudit as Record<string, ReadonlyArray<string>> | undefined,
+        frameHitsForKm as Record<string, { chunkId: string; timeMs: number }>,
       );
       const matches = shotLevelQueries.map((q) => {
         /** 匹配单位键：sentence 档 = 碎片所属完整句 id；legacy 档 = 碎片自身 id（同值，零变化） */
@@ -3630,671 +3699,138 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     );
   }
 
-  /** 单位内碎片画面窗「同父源时间连续」容差（ms）：与导出层 enrichMatchRelations 同口径 */
-  private static readonly UNIT_WINDOW_CONTINUITY_MS = 100;
-
   /**
-   * 📊 「组变速分布」判定上界（±8% 铁律）：与导出层 `MaterialsAssembler.SPEED_MAX` 及契约
-   * `montage.ts` 字段注释「[1/1.08, 1.08]」同口径。多成员合并组变速 = Σ源/Σ目标 且**无 clamp**
-   * ⇒ 越过下界即慢放、越过上界即放快（仅诊断读数用，不参与决策）。
-   */
-  private static readonly SPEED_MAX_RATIO = 1.08;
-
-  /**
-   * 建「物理镜头 → 该镜头内全部子切片」索引（按 startMs 升序、(parent,id,startMs) 去重）。
-   * 仅供单位内碎片画面窗分配取料；传入多个池时按并集去重（daemon 侧 kmVideoChunks 可能被裁剪）。
+   * 🎬 P4（2026-09-30）镜头内连续切窗 —— **取代** `buildUnitWindowTable` 的「同父兄弟片链」取料。
    *
-   * @param pools 候选段池（形状需含 id/parentChunkId/startMs/endMs/filePath）
-   * @returns {parentChunkId: 子切片数组（startMs 升序）}
-   */
-  private static buildSiblingPool(
-    ...pools: Array<ReadonlyArray<any> | null | undefined>
-  ): Map<string, Array<Record<string, unknown>>> {
-    const out = new Map<string, Array<Record<string, unknown>>>();
-    const seen = new Set<string>();
-    for (const pool of pools) {
-      for (const c of Array.isArray(pool) ? pool : []) {
-        const parent = String((c as any)?.parentChunkId || '');
-        if (!parent) continue;
-        const key = `${parent}|${String((c as any)?.id || '')}|${Number((c as any)?.startMs ?? NaN)}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const arr = out.get(parent);
-        if (arr) arr.push(c as Record<string, unknown>);
-        else out.set(parent, [c as Record<string, unknown>]);
-      }
-    }
-    for (const arr of out.values()) {
-      arr.sort((a, b) => Number(a.startMs ?? 0) - Number(b.startMs ?? 0));
-    }
-    return out;
-  }
-
-  /**
-   * 汇总「碎片 shotId → 子窗」总表（供回填侧一次查表），并打一条聚合日志。
+   * 契约（spec §1.2）：同一镜头被多句复用时，按文案顺序在镜头内**连续前移**分配窗口，起点单调不减、
+   * 不回头重放：句1 [a──b] → 句2 [b──c] → 句3 [c──d]，且 Σ 窗长 ≤ 镜头时长。
+   * - 入点：该句命中帧的瞬间（P3 `frameHits` 真锚点）；同镜头已有消费游标时以游标为准（顺延续接）。
+   * - 窗长：该碎片自身配音时长（无配音时退化为 3s，再按镜头余量截断）。
+   * - 镜头余量不足整窗 ⇒ 截短该窗（变速系数由 `retimeFragmentWindow` 按新窗重算）；
+   *   余量吃尽后该句**顺延到次优候选镜头**（P3 召回白名单顺序，最多 MAX_EXTRA_SHOTS 个），
+   *   候选全耗尽才退回「命中镜头整镜头」兜底窗（不造零长窗、不回头重放）。
    *
-   * 分组口径与 collapseShotsToMatchUnits 同源：键 = `matchUnitId || shotId`，顺序 = 文案顺序。
-   * 全部单位参与（含单碎片：既推进消费游标，也受游标约束）；原声段与未命中单位不参与。
-   *
-   * @param shotLevelQueries 碎片级 query（顺序 = 文案顺序）
-   * @param matchById 单位 id → KM 命中结果
-   * @param originalChunksById 切片 id → 完整切片（daemon 裁剪 chunkData 时补回）
-   * @param siblingPool 子切片索引（buildSiblingPool 产出）
-   * @param candidateIdsByUnit 单位 id → 预选 topK 候选切片 id（方案甲跨镜头填料用；缺省 = 只用命中镜头链）
-   * @returns {碎片 shotId: {startMs,endMs,srcFile?,srcParent?}}
+   * @param shotLevelQueries 碎片级 query（顺序 = 文案顺序；含 shotId/matchUnitId/audioDurationMs）
+   * @param matchById 匹配单位 id → KM 命中结果（含 chunkId/chunkData）
+   * @param chunkById 物理镜头 id → 镜头对象（含 startMs/endMs/filePath/coverPath/description）
+   * @param candidateIdsByUnit 匹配单位 id → P3 帧召回上卷的候选镜头清单（按得分降序）
+   * @param frameHitsByUnit 匹配单位 id → 命中帧（入点）{chunkId, timeMs}
+   * @returns 碎片 shotId → 该碎片的子窗（跨镜头取料带 srcFile/srcParent；落点非命中镜头带 srcChunkId/srcCover/srcDesc）
    */
-  private static buildUnitWindowTable(
+  private static buildShotWindowTable(
     shotLevelQueries: ReadonlyArray<any>,
     matchById: Map<string, any>,
-    originalChunksById: Map<string, any>,
-    siblingPool: Map<string, Array<Record<string, unknown>>>,
+    chunkById: Map<string, any>,
     candidateIdsByUnit?: Record<string, ReadonlyArray<string>> | null,
+    frameHitsByUnit?: Record<string, { chunkId: string; timeMs: number }> | null,
   ): Map<string, UnitFragmentWindow> {
-    /** 🎬 方案甲：同单位内最多顺延几个候选镜头（上限抑制硬切数；候选按语义排名取前 N） */
+    /** 同句除命中镜头外最多顺延的候选镜头数（候选耗尽才兜底整镜头） */
     const MAX_EXTRA_SHOTS = 3;
+    /** 浮点容差（ms） */
+    const EPS = 0.5;
+    /** 镜头余量低于此值即视为「用尽」，后续句不再在该镜头内开窗 */
+    const MIN_TAIL_MS = 200;
+    /** 配音时长缺失时的默认窗长（ms），仍受镜头余量截断 */
+    const DEFAULT_WINDOW_MS = 3000;
+
     const out = new Map<string, UnitFragmentWindow>();
-    const stats = { extraUnits: 0, degradedUnits: 0 };
-    const fragsByUnit = new Map<string, any[]>();
-    for (const q of Array.isArray(shotLevelQueries) ? shotLevelQueries : []) {
-      const key = String((q as any)?.matchUnitId || (q as any)?.shotId || '');
-      if (!key) continue;
-      const arr = fragsByUnit.get(key);
-      if (arr) arr.push(q);
-      else fragsByUnit.set(key, [q]);
-    }
-    /**
-     * 🎯 独占（2026-09-27）：预先收集【全部单位的命中片 id】—— 回吃前驱片时不得吃掉别单位要用的片，
-     * 否则该单位回填后与相邻段画面重播。与 daemon 侧 `_chain_reserved` 同源口径。
-     */
-    const hitIdsByAllUnits = new Set<string>();
-    for (const [unitKey] of fragsByUnit) {
-      const m = matchById.get(unitKey);
-      if (!m) continue;
-      const cid = String(m.chunkId || m.mediaId || '');
-      if (cid) hitIdsByAllUnits.add(cid);
-    }
-    let units = 0;
-    let frags = 0;
-    /**
-     * 🎯 跨单位消费游标（2026-09-26）：parentChunkId → 该镜头已被前序单位消费到的源时间（ms）。
-     * 实测（DB 探针）相邻段落各自从同一父镜头的同一时间点起播（seg_0尾/seg_1/seg_2/seg_11
-     * 全从 scene_004 的 76707ms 起播），单位内切窗治不了 ⇒ 引入全局游标：同一镜头被多单位复用时
-     * 顺延续接、不回头重放。按文案顺序推进（fragsByUnit 保持 shotLevelQueries 的插入顺序）。
-     */
-    const consumedByParent = new Map<string, number>();
-    for (const [unitKey, unitFrags] of fragsByUnit) {
-      if (unitFrags[0]?.keepOriginalAudio === true) continue;   // 原声段单位键恒等于碎片自身 id，双保险
+    const stats = { windows: 0, advanced: 0, shortened: 0, reassigned: 0, fallback: 0, uncovered: 0 };
+    /** 物理镜头 → 已消费到的源时间（跨句生效、只增不减 ⇒ 起点单调不减） */
+    const cursorByShot = new Map<string, number>();
+
+    /** 构造子窗：srcFile 恒给（同镜头时与命中镜头同一文件）；跨镜头才带 srcParent（供导出层按硬切处理） */
+    const windowOf = (chunk: any, startMs: number, endMs: number, isCross: boolean): UnitFragmentWindow => ({
+      startMs,
+      endMs,
+      ...(chunk?.filePath ? { srcFile: String(chunk.filePath) } : {}),
+      ...(isCross ? { srcParent: String(chunk?.parentChunkId || chunk?.id || '') } : {}),
+      ...(chunk?.id ? { srcChunkId: String(chunk.id) } : {}),
+      ...(chunk?.coverPath ? { srcCover: String(chunk.coverPath) } : {}),
+      ...(chunk?.description ? { srcDesc: String(chunk.description) } : {}),
+    });
+
+    /** 在指定镜头内开窗：入点 = 消费游标 ?? 命中帧 ?? 镜头起点；返回 null 表示该镜头余量不足 */
+    const allocate = (chunk: any, neededMs: number, hitMs: number, isCross: boolean): UnitFragmentWindow | null => {
+      const cid = String(chunk?.id || '');
+      const s0 = Number(chunk?.startMs);
+      const e0 = Number(chunk?.endMs);
+      if (!cid || !Number.isFinite(s0) || !Number.isFinite(e0) || e0 - s0 <= EPS) return null;
+      const cursor = cursorByShot.get(cid);
+      const hit = Number.isFinite(hitMs) && hitMs >= s0 && hitMs <= e0 ? hitMs : NaN;
+      const rawEntry = cursor !== undefined ? Math.max(cursor, s0) : (Number.isFinite(hit) ? hit : s0);
+      const entry = Math.min(Math.max(rawEntry, s0), e0);
+      const avail = e0 - entry;
+      if (avail <= MIN_TAIL_MS) return null;                       // 余量不足以承载画面
+      const want = neededMs > EPS ? neededMs : Math.min(avail, DEFAULT_WINDOW_MS);
+      const end = Math.min(e0, entry + want);
+      cursorByShot.set(cid, end);                                  // 单向锁：只增不减
+      if (cursor !== undefined && entry > cursor + EPS) stats.advanced += 1;
+      return windowOf(chunk, entry, end, isCross);
+    };
+
+    for (const q of shotLevelQueries) {
+      /** 原声段有独立定位窗（不经本表），跳过以免污染消费游标 */
+      if ((q as any)?.keepOriginalAudio === true) continue;
+      const unitKey = String((q as any)?.matchUnitId || (q as any)?.shotId || '');
+      const fragId = String((q as any)?.shotId || '');
+      if (!unitKey || !fragId) continue;
       const matched = matchById.get(unitKey);
-      if (!matched) continue;                                   // 未命中 → 无窗可切
-      const unitChunk = matched.chunkData
-        || originalChunksById.get(String(matched.chunkId || matched.mediaId || ''))
-        || null;
-      /** 🎬 方案甲：次优候选镜头（排除命中切片自身与同父镜头；同父已由兄弟链覆盖） */
-      const candIds = candidateIdsByUnit?.[unitKey]
-        || candidateIdsByUnit?.[String(unitFrags[0]?.shotId || '')]
-        || [];
-      const hitChunkId = String(matched.chunkId || matched.mediaId || (unitChunk as any)?.id || '');
-      const seenParents = new Set<string>([String((unitChunk as any)?.parentChunkId || '')]);
-      const extraChunks: Array<Record<string, unknown>> = [];
-      for (const cid of candIds) {
-        if (extraChunks.length >= MAX_EXTRA_SHOTS) break;
-        const ckey = String(cid || '');
-        if (!ckey || ckey === hitChunkId) continue;
-        const c = originalChunksById.get(ckey);
-        if (!c) continue;
-        const p = String((c as any).parentChunkId || '');
-        if (p && seenParents.has(p)) continue;
-        /**
-         * 🎯 已被前序单位消费过的镜头不再进候选池（2026-09-26）：必须在【取前 MAX_EXTRA_SHOTS 个】
-         * 之前剔除 —— 否则前 3 个候选可能全是相邻段刚用过的镜头，进分配器后被整体剔除 ⇒ 空手退化
-         * （实测 seg_2 落回命中镜头全窗 + 比例切分 ⇒ 0.390 慢放）。剔除后仍不足再靠分配器的
-         * 「不裁剪重算」兜底。
-         */
-        if (p && (consumedByParent.get(p) ?? 0) > 0) continue;
-        if (p) seenParents.add(p);
-        extraChunks.push(c as Record<string, unknown>);
+      if (!matched) { stats.uncovered += 1; continue; }
+      const anchorId = String(matched.chunkId || matched.chunkData?.id || '');
+      const hit = frameHitsByUnit?.[unitKey];
+      const hitId = hit ? String(hit.chunkId || '') : '';
+      const hitMs = hit ? Number(hit.timeMs) : NaN;
+
+      /** 候选次序：命中镜头 → 匹配镜头 → 召回白名单（去重后最多 1+MAX_EXTRA_SHOTS 个） */
+      const cands: string[] = [];
+      const seen = new Set<string>();
+      const push = (id: string) => {
+        const s = String(id || '');
+        if (!s || seen.has(s)) return;
+        seen.add(s);
+        cands.push(s);
+      };
+      push(hitId);
+      push(anchorId);
+      for (const id of candidateIdsByUnit?.[unitKey] || []) push(String(id));
+      const list = cands.slice(0, 1 + MAX_EXTRA_SHOTS);
+
+      const needed = Number((q as any)?.audioDurationMs);
+      const neededMs = Number.isFinite(needed) && needed > EPS ? needed : 0;
+
+      let win: UnitFragmentWindow | null = null;
+      let pickedId = '';
+      for (const cid of list) {
+        const chunk = chunkById.get(cid);
+        if (!chunk) continue;
+        const got = allocate(chunk, neededMs, cid === hitId ? hitMs : NaN, cid !== anchorId);
+        if (got) { win = got; pickedId = cid; break; }
       }
-      const wins = SemanticAnalyzeStrategy.buildUnitFragmentWindows(
-        unitFrags, unitChunk, siblingPool, extraChunks, stats, consumedByParent, hitIdsByAllUnits,
-      );
-      if (wins.size === 0) {
-        /** 单碎片单位零变化（未被他单位消费过）时也要登记消费，否则后续单位仍会与它重播 */
-        if (unitFrags.length === 1) {
-          const p = String((unitChunk as any)?.parentChunkId || '');
-          const e = Number((unitChunk as any)?.endMs ?? NaN);
-          if (p && Number.isFinite(e)) consumedByParent.set(p, Math.max(consumedByParent.get(p) ?? 0, e));
-        }
-        continue;
-      }
-      for (const [sid, w] of wins) out.set(sid, w);
-      units += 1;
-      frags += wins.size;
-    }
-    /**
-     * 🎬 同母句「同父不相接」收敛（2026-09-27，实测驱动）：legacy 档一碎片一 query ⇒ 单位表恒为单片、
-     *  上方单位内切窗机制空转；同一母句的多碎片由 KM 独立命中，可能落在【同一镜头的不同时间点】
-     *  （DB 实测 seg_2 跳 12492ms+3062ms、seg_23 跳 12275ms、seg_25 跳 4245ms）⇒ 导出后仍是
-     *  「同一镜头跳着重放」。此处只认【同母句 + 命中同一父 + 窗不相接】一个条件：锚 = 首片命中窗起点，
-     *  沿同父兄弟片向后吃料重切为首尾相接窗。
-     *  其余一律原样不动（宁缺勿错、不引入新猜测）：不同父（整句被打散到多场景，如 seg_0 机舱/更衣室/柜门）、
-     *  本就相接（实测 seg_21/seg_24 已走对）、锚点定位不到所属切片（supply 块重贴标签等脏数据，如 seg_7）。
-     */
-    let collapsedGroups = 0;
-    const fragsByFamily = new Map<string, any[]>();
-    for (const q of Array.isArray(shotLevelQueries) ? shotLevelQueries : []) {
-      const sid = String((q as any)?.shotId || '');
-      if (!sid) continue;
-      /** 母句归组键：sentence 档取 matchUnitId，legacy 档由碎片 id 去 `_sub_N` 后缀还原母句 id */
-      const key = String((q as any)?.matchUnitId || sid).replace(/_sub_\d+$/, '');
-      const arr = fragsByFamily.get(key);
-      if (arr) arr.push(q);
-      else fragsByFamily.set(key, [q]);
-    }
-    for (const famFrags of fragsByFamily.values()) {
-      if (famFrags.length <= 1) continue;
-      /** 各碎片的「当前生效窗 + 父镜头」：主循环切过的读改写后的 srcParent，未切过的读命中 chunkData */
-      const items: Array<{ q: any; sid: string; startMs: number; endMs: number; parent: string } | null> =
-        famFrags.map((q: any) => {
-          const sid = String(q?.shotId || '');
-          if (q?.keepOriginalAudio === true) return null;              // 原声段不参与
-          const matched = matchById.get(String(q?.matchUnitId || sid));
-          if (!matched) return null;                                   // 未命中不参与
-          const chunk: any = matched.chunkData
-            || originalChunksById.get(String(matched.chunkId || matched.mediaId || '')) || null;
-          const w = out.get(sid);
-          const startMs = w ? w.startMs : Number(chunk?.startMs ?? NaN);
-          const endMs = w ? w.endMs : Number(chunk?.endMs ?? NaN);
-          const parent = String(w?.srcParent || chunk?.parentChunkId || '');
-          if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs || !parent) return null;
-          return { q, sid, startMs, endMs, parent };
-        });
-      if (items.some((it) => !it)) continue;                           // 有任一片取不到窗 ⇒ 整族不动
-      const byParent = new Map<string, Array<{ q: any; sid: string; startMs: number; endMs: number }>>();
-      for (const it of items as Array<{ q: any; sid: string; startMs: number; endMs: number; parent: string }>) {
-        const arr = byParent.get(it.parent);
-        if (arr) arr.push(it);
-        else byParent.set(it.parent, [it]);
-      }
-      for (const [parent, group] of byParent) {
-        if (group.length <= 1) continue;                               // 不同父 ⇒ 各片独立，不动
-        /** 已首尾相接 ⇒ 零变化（这些本来就是想要的长镜头延续） */
-        let contiguous = true;
-        for (let i = 1; i < group.length; i++) {
-          if (Math.abs(group[i].startMs - group[i - 1].endMs) >= SemanticAnalyzeStrategy.UNIT_WINDOW_CONTINUITY_MS) {
-            contiguous = false;
-            break;
+      /** 候选全耗尽：退回「命中镜头整镜头」兜底窗（不留空窗，保证卡片有画面） */
+      if (!win) {
+        const fbChunk = chunkById.get(hitId) || chunkById.get(anchorId);
+        if (fbChunk) {
+          const s0 = Number(fbChunk.startMs);
+          const e0 = Number(fbChunk.endMs);
+          if (Number.isFinite(s0) && Number.isFinite(e0) && e0 - s0 > EPS) {
+            win = windowOf(fbChunk, s0, e0, String(fbChunk.id) !== anchorId);
+            pickedId = String(fbChunk.id);
+            stats.fallback += 1;
           }
         }
-        if (contiguous) continue;
-        /** 锚 = 首片命中窗起点；必须落在某条同父兄弟片内，否则（脏数据）整组不动 */
-        const anchor = group[0];
-        const host = (siblingPool.get(parent) || []).find((c) => {
-          const s = Number((c as any)?.startMs ?? NaN);
-          const e = Number((c as any)?.endMs ?? NaN);
-          return Number.isFinite(s) && Number.isFinite(e) && e > s && s <= anchor.startMs && anchor.startMs < e;
-        });
-        if (!host) continue;
-        /**
-         * 沿同父兄弟片向前连走，合成为**一个**「源时间无缝」料块：分块语义只在换镜头时才该硬切，
-         * 同一镜头内的切片边界若被当成块边界，会触发分配器的「整片换块」⇒ 首片锚点被推到下一片片头
-         * （实测 seg_2：锚 1750912 会被推到 1753579，白丢 4.6s 且丢掉 KM 选中的起播点）。
-         */
-        let spanEnd = Number((host as any).endMs);
-        const hostPath = String((host as any).filePath || '');
-        const sibs = (siblingPool.get(parent) || [])
-          .map((c) => ({
-            s: Number((c as any).startMs ?? NaN),
-            e: Number((c as any).endMs ?? NaN),
-            p: String((c as any).filePath || ''),
-          }))
-          .filter((c) => Number.isFinite(c.s) && Number.isFinite(c.e) && c.e > c.s)
-          .sort((a, b) => a.s - b.s);
-        for (const c of sibs) {
-          if (Math.abs(c.s - spanEnd) >= SemanticAnalyzeStrategy.UNIT_WINDOW_CONTINUITY_MS) continue;
-          if (hostPath && c.p && c.p !== hostPath) continue;
-          spanEnd = c.e;
-        }
-        if (spanEnd - anchor.startMs < group.reduce((s, it) => s + Math.max(1, Math.round(Number(it.q?.audioDurationMs) || 0)), 0)) {
-          continue;   // 同父料不足以覆盖整组 ⇒ 不动（不制造慢放）
-        }
-        /** 复用单位内切窗器：命中块 = 锚点到料尾的无缝整块（不传游标/候选，只用同父料） */
-        const wins = SemanticAnalyzeStrategy.buildUnitFragmentWindows(
-          group.map((it) => it.q), { ...(host as any), startMs: anchor.startMs, endMs: spanEnd }, siblingPool,
-        );
-        if (wins.size !== group.length) continue;                      // 未能覆盖整组 ⇒ 不改写（宁缺勿错）
-        for (const [sid, w] of wins) out.set(sid, w);
-        collapsedGroups += 1;
       }
-    }
-    if (frags > 0 || collapsedGroups > 0) {
-      AppLogger.info(LOG_TAGS.AI_AGENT,
-        `[镜头匹配] 单位画面窗切分：${units} 个单位 / ${frags} 段已按序分配首尾相接子窗（含跨单位消费游标续接）/ ` +
-        `${stats.extraUnits} 个单位因命中镜头料不足顺延了候选镜头（跨镜头取满窗，不再拉长唯一镜头）/ ` +
-        `${collapsedGroups} 个同母句子组因同父窗不相接已重切为连续窗（不同父/已相接者不动）`);
+      if (!win) { stats.uncovered += 1; continue; }
+
+      stats.windows += 1;
+      if (win.endMs - win.startMs < neededMs - EPS) stats.shortened += 1;
+      if (pickedId && pickedId !== (list[0] || '')) stats.reassigned += 1;
+      out.set(fragId, win);
     }
 
-    /**
-     * 📊 「组变速分布」诊断（方案档 v1.20 硬指标；2026-09-29 落码，**零行为变化、仅读数**）：
-     *   多碎片母句在导出层会因「同父 + 源时间连续 <100ms」合成一个 clip，而**多成员合并组变速
-     *   = Σ源/Σ目标 且无 clamp**（MaterialsAssembler L730-731 / TracksAssembler L98-99）
-     *   ⇒ 该比值即真实播放倍率：越过下界 = 慢放、越过上界 = 放快（v1.19 实测 6/7 单位慢放即此口径）。
-     *   分组键与「同母句收敛」同源（sentence 档 = matchUnitId；legacy 档 = 碎片 id 去 `_sub_N`）
-     *   ⇒ 与 v1.19 实测表（`seg_1=0.225` 等）逐字可比；**单碎片母句不计**（导出层单成员 clamp 兜底，
-     *   非本分布的风险项）；未命中/时长缺失/窗无效一律跳过（不造假）。
-     */
-    {
-      const lo = 1 / SemanticAnalyzeStrategy.SPEED_MAX_RATIO;
-      const hi = SemanticAnalyzeStrategy.SPEED_MAX_RATIO;
-      let groupCount = 0; let inRange = 0; let slow = 0; let faster = 0; let splitGroups = 0;
-      const outOfRange: string[] = [];
-      for (const [famKey, famFrags] of fragsByFamily) {
-        if (famFrags.length <= 1) continue;                                      // 单碎片母句 ⇒ 单成员 clamp
-        if (famFrags.some((f: any) => f?.keepOriginalAudio === true)) continue;   // 原声段变速恒 1.0
-        let srcSum = 0; let tgtSum = 0; let valid = true; let joined = true;
-        let prevParent = ''; let prevEnd = NaN;
-        for (const q of famFrags) {
-          const sid = String((q as any)?.shotId || '');
-          const matched = matchById.get(String((q as any)?.matchUnitId || sid));
-          if (!matched) { valid = false; break; }                                // 未命中 ⇒ 不参与
-          const chunk: any = matched.chunkData
-            || originalChunksById.get(String(matched.chunkId || matched.mediaId || '')) || null;
-          const w = out.get(sid);
-          const s = w ? w.startMs : Number(chunk?.startMs ?? NaN);
-          const e = w ? w.endMs : Number(chunk?.endMs ?? NaN);
-          const aud = Number((q as any)?.audioDurationMs) || 0;
-          if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s || !(aud > 0)) { valid = false; break; }
-          const parent = String(w?.srcParent || chunk?.parentChunkId || '');
-          if (prevParent && (parent !== prevParent
-            || Math.abs(s - prevEnd) >= SemanticAnalyzeStrategy.UNIT_WINDOW_CONTINUITY_MS)) joined = false;
-          prevParent = parent; prevEnd = e;
-          srcSum += e - s; tgtSum += aud;
-        }
-        if (!valid) continue;
-        if (!joined) { splitGroups += 1; continue; }   // 不同父/窗不相接 ⇒ 导出层硬切（各片单成员 clamp）
-        const ratio = srcSum / tgtSum;
-        groupCount += 1;
-        if (ratio > hi) { faster += 1; outOfRange.push(`${famKey}=${ratio.toFixed(3)}(放快)`); }
-        else if (ratio < lo) { slow += 1; outOfRange.push(`${famKey}=${ratio.toFixed(3)}(慢放)`); }
-        else inRange += 1;
-      }
-      // 🔎 与上一行「单位画面窗切分」同闸：本次匹配确实做过窗切分就必报。
-      // 故「本行缺失」= 根本没跑匹配，「本行 0 组」= 跑了但无多碎片母句 —— 两者可区分，验收才不会静默。
-      if (frags > 0 || collapsedGroups > 0 || groupCount > 0 || splitGroups > 0) {
-        AppLogger.info(LOG_TAGS.AI_AGENT,
-          `[镜头匹配] 组变速分布（多碎片母句合并组）：${groupCount} 组 ｜ ` +
-          `落 [${lo.toFixed(3)},${hi.toFixed(2)}] = ${inRange} ｜ 慢放 = ${slow} ｜ 放快 = ${faster} ｜ ` +
-          `未成组(硬切/各片单成员 clamp) = ${splitGroups} ｜ 料荒(比例切分兜底调用) = ${stats.degradedUnits}` +
-          `${groupCount + splitGroups === 0 ? ' ｜ 本次无多碎片母句（组变速不适用）' : ''}` +
-          `${outOfRange.length > 0 ? ` ｜ 越界明细 ${outOfRange.join(' ')}` : ''}`);
-      }
-    }
-    return out;
-  }
-
-  /**
-   * 自命中切片起沿源时间后向走出的「同父连续兄弟片链」（首元素恒为命中切片自身）。
-   *
-   * 口径与 beam_search `_pick_sibling` l0 级同源：同 parentChunkId + 源间隙 < UNIT_WINDOW_CONTINUITY_MS + 同 filePath。
-   *
-   * @param hitChunkData 命中切片（含 startMs/endMs/parentChunkId/filePath）
-   * @param siblingPool buildSiblingPool 产出的子切片索引
-   * @returns 链（窗序列）；命中窗无效时返回空数组（调用方零变化）
-   */
-  private static buildForwardChain(
-    hitChunkData: Record<string, unknown> | null | undefined,
-    siblingPool: Map<string, Array<Record<string, unknown>>>,
-  ): Array<{ startMs: number; endMs: number }> {
-    const hitStart = Number(hitChunkData?.startMs ?? NaN);
-    const hitEnd = Number(hitChunkData?.endMs ?? NaN);
-    if (!Number.isFinite(hitStart) || !Number.isFinite(hitEnd) || hitEnd <= hitStart) return [];
-    const chain: Array<{ startMs: number; endMs: number }> = [{ startMs: hitStart, endMs: hitEnd }];
-    const parent = String(hitChunkData?.parentChunkId || '');
-    if (!parent) return chain;
-    const hitPath = String(hitChunkData?.filePath || '');
-    const sibs = (siblingPool.get(parent) || [])
-      .map((c) => ({
-        startMs: Number((c as any).startMs ?? NaN),
-        endMs: Number((c as any).endMs ?? NaN),
-        path: String((c as any).filePath || ''),
-      }))
-      .filter((c) => Number.isFinite(c.startMs) && Number.isFinite(c.endMs) && c.endMs > c.startMs);
-    let cursor = hitEnd;
-    for (const s of sibs) {
-      if (Math.abs(s.startMs - cursor) >= SemanticAnalyzeStrategy.UNIT_WINDOW_CONTINUITY_MS) {
-        if (s.startMs < cursor) continue;  // 已落在游标之前（被命中切片覆盖），跳过
-        break;                             // 源时间断开 → 链到此为止
-      }
-      if (hitPath && s.path && s.path !== hitPath) break;  // 不同素材文件，禁止跨接
-      chain.push({ startMs: Math.max(s.startMs, cursor), endMs: s.endMs });
-      cursor = s.endMs;
-    }
-    return chain;
-  }
-
-  /**
-   * 自命中切片起沿源时间**反方向**走出的「同父连续前驱片链」（返回可回吃区间）。
-   *
-   * 🩹 2026-09-27（实测驱动）：`buildForwardChain` 只向源时间正方向取料 ⇒ 命中「母块尾片」的单位
-   * 必然判荒，与料量多少无关。实测 scene_053 / scene_075 / scene_452 的命中片**都是该母块最后一片**，
-   * 其前方分别还有 2419ms / 1735ms / 9636ms 完全未用的素材（seg_19 / seg_21_sub_2 / seg_26_sub_2
-   * 因此料荒 8% ~ 32%）。
-   *
-   * 口径与 `buildForwardChain` 对称（同 parentChunkId + 同 filePath + 源间隙 < UNIT_WINDOW_CONTINUITY_MS）；
-   * **不越过 floorMs**（= 该父镜头的跨单位消费游标）：游标之前的源时间已被前序单位吃掉，
-   * 回吃会与相邻段画面重复（独占）。
-   *
-   * @param hitChunkData 命中切片（含 startMs/endMs/parentChunkId/filePath）
-   * @param siblingPool buildSiblingPool 产出的子切片索引
-   * @param floorMs 左边界（该父镜头已消费到的源时间 ms）；向前扩不得越过它
-   * @param reservedIds 他段命中片 id 集（独占：不得回吃别单位要用的片，防重播）
-   * @returns 可回吃区间 {startMs,endMs}（endMs 恒 = 命中片起点）；无料可回吃时返回 null（调用方零变化）
-   */
-  private static buildBackwardChain(
-    hitChunkData: Record<string, unknown> | null | undefined,
-    siblingPool: Map<string, Array<Record<string, unknown>>>,
-    floorMs: number,
-    reservedIds?: ReadonlySet<string>,
-  ): { startMs: number; endMs: number } | null {
-    const hitStart = Number(hitChunkData?.startMs ?? NaN);
-    if (!Number.isFinite(hitStart)) return null;
-    const parent = String(hitChunkData?.parentChunkId || '');
-    if (!parent) return null;
-    const hitPath = String(hitChunkData?.filePath || '');
-    const floor = Number.isFinite(floorMs) ? floorMs : 0;
-    const preds = (siblingPool.get(parent) || [])
-      .map((c) => ({
-        id: String((c as any).id || ''),
-        startMs: Number((c as any).startMs ?? NaN),
-        endMs: Number((c as any).endMs ?? NaN),
-        path: String((c as any).filePath || ''),
-      }))
-      .filter((c) => Number.isFinite(c.startMs) && Number.isFinite(c.endMs) && c.endMs > c.startMs)
-      .filter((c) => c.endMs <= hitStart + 0.5)      // 只取命中片左侧（含紧邻片）
-      .sort((a, b) => b.endMs - a.endMs);            // 由近及远
-    let cursor = hitStart;
-    for (const s of preds) {
-      if (cursor - s.endMs >= SemanticAnalyzeStrategy.UNIT_WINDOW_CONTINUITY_MS) break;  // 源时间断开
-      if (hitPath && s.path && s.path !== hitPath) break;                                // 不同素材文件，禁止跨接
-      if (s.startMs < floor) break;                    // 越过游标 ⇒ 已被前序单位吃掉（独占阻断）
-      if (s.id && reservedIds?.has(s.id)) break;       // 是他段命中片 ⇒ 独占阻断（防与相邻段重播）
-      cursor = s.startMs;
-      if (cursor <= floor) break;
-    }
-    return cursor < hitStart ? { startMs: cursor, endMs: hitStart } : null;
-  }
-
-  /**
-   * 按「跨单位消费游标」裁剪链：丢掉已被前序单位吃尽的链头，并把首个未吃尽段左端抬到游标处。
-   *
-   * 🎯 2026-09-26：治「相邻段落各自从同一父镜头的同一时间点起播」（实测 seg_0尾/seg_1/seg_2/seg_11
-   * 全从 scene_004 的 76707ms 起播）⇒ 同一镜头被多单位复用时顺延续接，不回头重放。
-   *
-   * @param chain buildForwardChain 产出的链
-   * @param cursorMs 该父镜头已被消费到的源时间（ms）
-   * @returns 剩余可用块（左端已顺延到游标）；链被吃光时返回 null
-   */
-  private static trimChainByCursor(
-    chain: Array<{ startMs: number; endMs: number }>,
-    cursorMs: number,
-  ): { startMs: number; endMs: number } | null {
-    if (!Array.isArray(chain) || chain.length === 0) return null;
-    const cur = Number.isFinite(cursorMs) ? cursorMs : 0;
-    let i = 0;
-    while (i < chain.length && chain[i].endMs <= cur) i += 1;
-    if (i >= chain.length) return null;
-    const startMs = Math.max(chain[i].startMs, cur);
-    const endMs = chain[chain.length - 1].endMs;
-    return endMs > startMs ? { startMs, endMs } : null;
-  }
-
-  /**
-   * 单位画面窗分配（治「共窗重放 / 前后不衔接 / 跨单位重播」）。
-   *
-   * 背景（用户实测 2026-09-25）：sentence 档把一整个完整句折叠成 1 条 query ⇒ 命中 1 个切片，
-   * 回填时该句全部碎片继承同一 chunkData/时间窗 ⇒ 导出层各片段从同一窗头重放
-   * （例：前 3 段文案同属一句，三段预览全是同一个 1.7s 切片重复播放）。
-   *
-   * 分配口径（顺序 = 碎片顺序，同块内首尾相接 end_i === start_{i+1}）：
-   *  - 料源块按优先序 = 【命中镜头链】+【顺延的次优候选镜头链】；链 = 同父 + 源时间连续（<100ms）
-   *    + 同 filePath 的兄弟片（自命中切片起沿源时间后向走），与 beam_search `_pick_sibling` l0 级同源；
-   *  - 🎯 跨单位消费游标（2026-09-26 `cursor`）：各链头一律顺延到该父镜头已被前序单位消费到的位置，
-   *    杜绝相邻段落从同一父镜头同一时间点重播（实测 seg_0尾/seg_1/seg_2/seg_11 全从 scene_004 的
-   *    76707ms 起播）；料被吃光的镜头直接从块列表剔除；
-   *  - 块总量 ≥ 碎片总时长 → 每片按自身 TTS 时长取窗（变速恒 1.0，余料不用）；跨块 = 硬切；
-   *  - 🎬 方案甲（2026-09-26）块总量 < 碎片总时长（候选也耗尽）→ 落回「按碎片时长比例切分」（慢放兜底）；
-   *    但游标裁剪所致的料不足（非真实缺料）先改用「不裁剪」重算 ⇒ 去重尽力而为，不以极端慢放为代价。
-   *    实测（DB 探针）命中镜头常显著短于配音：scene_001 仅 1067ms 而配音 4744ms（缺口 4.45×），
-   *    且该镜头可用料已用满（无余料可挖），但候选池里 20s+ 的镜头并不缺
-   *    ⇒ 旧口径「把唯一镜头按比例拉长」必然慢放（导出层合并组变速无 clamp）。
-   *
-   * @param fragments 该单位的碎片级 query（顺序 = 文案顺序，含碎片自身 audioDurationMs）
-   * @param hitChunkData 单位命中切片的完整 chunkData（含 startMs/endMs/parentChunkId/filePath）
-   * @param siblingPool buildSiblingPool 产出的子切片索引
-   * @param extraChunks 次优候选切片（跨镜头填料；缺省 = 只用命中镜头链）
-   * @param stats 出参：实际扩用了候选镜头的单位计数（供聚合日志）
-   * @param cursor 跨单位消费游标（parentChunkId → 已消费到的源时间 ms）；本函数就地推进
-   * @param reservedHitIds 他段命中片 id 集（独占：回吃不得吃掉别单位要用的片；缺省 = 不设限）
-   * @returns {碎片 shotId: {startMs,endMs,srcFile?,srcParent?,srcChunkId?,srcCover?}}；料源无效时返回空表（调用方零变化）
-   */
-  private static buildUnitFragmentWindows(
-    fragments: Array<{ shotId?: string; audioDurationMs?: number }>,
-    hitChunkData: Record<string, unknown> | null | undefined,
-    siblingPool: Map<string, Array<Record<string, unknown>>>,
-    extraChunks?: ReadonlyArray<Record<string, unknown>>,
-    stats?: { extraUnits: number; degradedUnits?: number },
-    cursor?: Map<string, number>,
-    reservedHitIds?: ReadonlySet<string>,
-  ): Map<string, UnitFragmentWindow> {
-    const out = new Map<string, UnitFragmentWindow>();
-    if (!Array.isArray(fragments) || fragments.length === 0) return out;
-    const hitStart = Number(hitChunkData?.startMs ?? NaN);
-    const hitEnd = Number(hitChunkData?.endMs ?? NaN);
-    if (!Number.isFinite(hitStart) || !Number.isFinite(hitEnd) || hitEnd <= hitStart) return out;
-
-    /** 碎片目标时长：全缺失时按命中窗等分，保证 sum > 0（除零守卫） */
-    const rawTargets = fragments.map((f) => Number(f?.audioDurationMs) || 0);
-    const rawSum = rawTargets.reduce((s, v) => s + v, 0);
-    const targets = rawSum > 0
-      ? rawTargets
-      : fragments.map(() => (hitEnd - hitStart) / fragments.length);
-    /** 每片实际取料量（≥1ms 单调守卫）与总需求 */
-    const needs = targets.map((v) => Math.max(1, Math.round(Number(v) || 0)));
-    const needSum = needs.reduce((s, v) => s + v, 0);
-
-    /**
-     * 零变化守卫：多碎片单位一律切窗；单碎片单位仅在「命中镜头已被前序单位消费过（游标越过窗头）」
-     * 时才改写 —— 否则保持原窗，交回导出层做句尾对齐子窗裁剪（旧口径零变化）。
-     */
-    const hitParent = String(hitChunkData?.parentChunkId || '');
-    if (fragments.length <= 1 && (cursor?.get(hitParent) ?? 0) <= hitStart) return out;
-
-    /**
-     * 料源块（按优先序）：命中镜头链 → 次优候选镜头链；各链头按 cursorOf 顺延。
-     * `backFloorOf` 单独给「回吃」用：兜底重算时前向链可整体放弃游标（宁可复用画面也不极端慢放），
-     * 但回吃不得越过真实游标 —— 否则回吃到前序单位已消费区间，画面必与相邻段重播。
-     */
-    const planBlocks = (
-      cursorOf: (parent: string) => number,
-      backFloorOf: (parent: string) => number = cursorOf,
-    ) => {
-      const list: Array<UnitFragmentWindow> = [];
-      const hitBlock = SemanticAnalyzeStrategy.trimChainByCursor(
-        SemanticAnalyzeStrategy.buildForwardChain(hitChunkData, siblingPool),
-        cursorOf(hitParent),
-      );
-      let hitAvail = 0;
-      if (hitBlock) {
-        /**
-         * 🩹 向后不够 → 向前补差额（2026-09-27）：命中「母块尾片」时后向链为空 ⇒ 旧口径必判荒
-         * （实测 seg_19 / seg_21_sub_2 / seg_26_sub_2 料荒 8%~32%，而其母块前方尚有 2419/1735/9636ms
-         * 未被任何单位使用）。回吃区间以「该父镜头的消费游标」为左界（游标之前的源时间已被前序单位
-         * 吃掉，不得回放重播）；回吃后窗 = [尾 − 需求, 尾]，窗长补齐到碎片总需求 ⇒ 变速归 1.0。
-         */
-        let blkStart = hitBlock.startMs;
-        if (hitBlock.endMs - hitBlock.startMs < needSum) {
-          const back = SemanticAnalyzeStrategy.buildBackwardChain(
-            hitChunkData, siblingPool, backFloorOf(hitParent), reservedHitIds,
-          );
-          if (back) blkStart = Math.max(back.startMs, hitBlock.endMs - needSum);
-        }
-        hitAvail = hitBlock.endMs - blkStart;
-        list.push({
-          startMs: blkStart,
-          endMs: hitBlock.endMs,
-          srcChunkId: String((hitChunkData as any)?.id || ''),
-          srcCover: String((hitChunkData as any)?.coverPath || ''),
-          srcDesc: String((hitChunkData as any)?.description || ''),
-        });
-      }
-      /**
-       * 🎬 方案甲 + 🎯 消费游标：命中镜头链不够长（含「已被前序单位吃光」）→ 顺延次优候选镜头。
-       * 顺序 = 碎片顺序；块内首尾相接；块间为硬切（不同父 ⇒ 导出层不合并）。
-       */
-      let extraCount = 0;
-      if (hitAvail < needSum) {
-        for (const c of Array.isArray(extraChunks) ? extraChunks : []) {
-          const parent = String((c as any)?.parentChunkId || '');
-          /**
-           * 🎯 候选池剔除「已被前序单位消费过」的父镜头（2026-09-26）：游标只管同一镜头顺延续接、
-           * 不管换镜头，实测 seg_2 命中镜头被 seg_0 吃光后顺延到 seg_0/seg_1 已用过的
-           * scene_004/scene_005 ⇒ 仍留 3 对跨单位重叠。这里整体剔除已消费镜头，强制换到未用镜头。
-           * 剔除后若料不足，由下方「不裁剪重算」兜住（只用命中镜头、不回到 20× 慢放）。
-           */
-          if (parent && (cursor?.get(parent) ?? 0) > 0) continue;
-          const sub = SemanticAnalyzeStrategy.trimChainByCursor(
-            SemanticAnalyzeStrategy.buildForwardChain(c, siblingPool),
-            cursorOf(parent),
-          );
-          if (!sub) continue;
-          list.push({
-            startMs: sub.startMs,
-            endMs: sub.endMs,
-            srcFile: String((c as any)?.filePath || ''),
-            srcParent: parent,
-            srcChunkId: String((c as any)?.id || ''),
-            srcCover: String((c as any)?.coverPath || ''),
-            srcDesc: String((c as any)?.description || ''),
-          });
-          extraCount += 1;
-        }
-      }
-      return {
-        blocks: list,
-        totalAvail: list.reduce((s, b) => s + (b.endMs - b.startMs), 0),
-        usedExtras: extraCount > 0,
-      };
-    };
-
-    /**
-     * 🎞️ 依据实际取料区间解析「真正的源切片身份 + 封面」：取与子窗**重叠最多**的同父兄弟片。
-     * 用重叠量而非「起点所属片」——子窗常横跨两片，按起点判定会把画面占比更大的那片漏掉
-     * （实测 scene_494 的 sub_2 只有 771ms 落在 seg0、1479ms 落在 seg1，却仍报 seg0 的封面 ⇒ 缩略图重复）。
-     */
-    const resolveSrc = (parent: string, startMs: number, endMs: number, fb: UnitFragmentWindow) => {
-      const arr = parent ? siblingPool.get(parent) : undefined;
-      let best: Record<string, unknown> | null = null;
-      let bestOverlap = 0;
-      if (Array.isArray(arr)) {
-        for (const c of arr) {
-          const s = Number((c as any)?.startMs ?? NaN);
-          const e = Number((c as any)?.endMs ?? NaN);
-          if (!Number.isFinite(s) || !Number.isFinite(e)) continue;
-          const ov = Math.min(e, endMs) - Math.max(s, startMs);
-          if (ov > bestOverlap) { bestOverlap = ov; best = c as Record<string, unknown>; }
-        }
-      }
-      if (best) {
-        return {
-          id: String((best as any)?.id || '') || String(fb.srcChunkId || ''),
-          cover: String((best as any)?.coverPath || '').trim() || String(fb.srcCover || ''),
-          desc: String((best as any)?.description || '').trim() || String(fb.srcDesc || ''),
-        };
-      }
-      return { id: String(fb.srcChunkId || ''), cover: String(fb.srcCover || ''), desc: String(fb.srcDesc || '') };
-    };
-
-    /**
-     * 🎯 游标是「尽力而为」的去重手段，不是硬约束：按游标裁剪后若料仍不足（顺延不到候选，或候选
-     * 也已被前序单位吃光），改用「不裁剪」重算 —— 此时宁可复用画面（与相邻段重复），也不把整段
-     * 压成极端慢放。实测 seg_2：游标裁后仅剩 206ms 尾料 / 需 4315ms ⇒ 合并组变速 0.048（约 20×
-     * 慢放），而导出层合并组变速无 clamp，画面会近似冻住。
-     */
-    let plan = planBlocks((p) => cursor?.get(p) ?? 0);
-    if (plan.blocks.length === 0 || plan.totalAvail < needSum) {
-      const alt = planBlocks(() => 0, (p) => cursor?.get(p) ?? 0);
-      if (alt.blocks.length > 0 && alt.totalAvail > plan.totalAvail) plan = alt;
-    }
-    const blocks = plan.blocks;
-    const usedExtras = plan.usedExtras;
-    if (blocks.length === 0) return out;   // 命中镜头已被前序单位吃光且无可顺延候选 ⇒ 交回旧口径
-
-    /** 料够：逐片取自身 TTS 时长（变速恒 1.0）；同时推进跨单位消费游标 */
-    if (plan.totalAvail >= needSum) {
-      const wins = new Map<string, UnitFragmentWindow>();
-      let bi = 0;
-      let pos = blocks[0].startMs;
-      let fit = true;
-      for (let i = 0; i < fragments.length; i++) {
-        const need = needs[i];
-        // 首次适配：当前块剩余够则在本块续接（保块内首尾相接），否则跳到下一个候选镜头块首
-        while (bi < blocks.length && blocks[bi].endMs - pos < need) {
-          bi += 1;
-          if (bi < blocks.length) pos = blocks[bi].startMs;
-        }
-        if (bi >= blocks.length) { fit = false; break; }
-        const end = pos + need;
-        const b = blocks[bi];
-        const own = b.srcParent || hitParent;
-        const src = resolveSrc(own, pos, end, b);
-        wins.set(String(fragments[i]?.shotId || ''), {
-          startMs: pos,
-          endMs: end,
-          ...(b.srcFile ? { srcFile: b.srcFile } : {}),
-          ...(b.srcParent ? { srcParent: b.srcParent } : {}),
-          ...(src.id ? { srcChunkId: src.id } : {}),
-          ...(src.cover ? { srcCover: src.cover } : {}),
-          ...(src.desc ? { srcDesc: src.desc } : {}),
-        });
-        if (cursor && own) cursor.set(own, Math.max(cursor.get(own) ?? 0, end));
-        pos = end;
-      }
-      if (fit) {
-        if (stats && usedExtras) stats.extraUnits += 1;
-        return wins;
-      }
-      // 块被单调守卫切分耗尽 → 落入下方比例切分兜底
-    }
-
-    /** 📊 诊断读数（零行为变化）：走到比例切分兜底 ⇒ 该单位必慢放（供末端「组变速分布」计料荒数） */
-    if (stats) stats.degradedUnits = (stats.degradedUnits ?? 0) + 1;
-
-    /** 比例切分兜底（料不足 ⇒ 必然慢放）：切首个可用块，首尾相接且总和 = min(块长, 碎片总时长) */
-    const fb = blocks[0];
-    const fbParent = fb.srcParent || hitParent;
-    const sum = targets.reduce((s, v) => s + v, 0);
-    const scale = Math.min(fb.endMs - fb.startMs, sum);
-    let cum = 0;
-    let prevBoundary = fb.startMs;
-    fragments.forEach((f, i) => {
-      cum += targets[i];
-      const isLast = i === fragments.length - 1;
-      const raw = isLast ? fb.startMs + scale : fb.startMs + Math.round((scale * cum) / sum);
-      const lower = prevBoundary + 1;                                        // 单调守卫（左）：极小/零时长碎片也留 ≥1ms
-      const upper = Math.max(fb.endMs - (fragments.length - 1 - i), lower);   // 单调守卫（右）：为后续每片预留 ≥1ms，避免末尾被钳成零长窗
-      const boundary = Math.min(Math.max(raw, lower), upper);
-      const src = resolveSrc(fbParent, prevBoundary, boundary, fb);
-      out.set(String(f?.shotId || ''), {
-        startMs: prevBoundary,
-        endMs: boundary,
-        ...(fb.srcFile ? { srcFile: fb.srcFile } : {}),
-        ...(fb.srcParent ? { srcParent: fb.srcParent } : {}),
-        ...(src.id ? { srcChunkId: src.id } : {}),
-        ...(src.cover ? { srcCover: src.cover } : {}),
-        ...(src.desc ? { srcDesc: src.desc } : {}),
-      });
-      prevBoundary = boundary;
-    });
-    if (cursor && fbParent) cursor.set(fbParent, Math.max(cursor.get(fbParent) ?? 0, prevBoundary));
+    AppLogger.info(LOG_TAGS.AI_AGENT,
+      `[镜头匹配] 🎬 P4 镜头内连续切窗：出窗碎片 ${stats.windows}/${shotLevelQueries.length}｜`
+      + `顺延起窗 ${stats.advanced}｜变速截短 ${stats.shortened}｜顺延次优镜头 ${stats.reassigned}｜`
+      + `整镜头兜底 ${stats.fallback}｜无窗/未匹配 ${stats.uncovered}`);
     return out;
   }
 

@@ -238,9 +238,10 @@ class Router:
         #   continued   =已续上
         #   same        =主解本已同父（非缺陷）
         #   time_lock   =7s 物理锁强切（非缺陷）
+        #   quota_lock  =镜头可用时长用尽强切（缺陷2 真配额，非缺陷）
         #   limit_3     =连续触顶强切（非缺陷）
         #   fail        =该续未续（真失败）
-        _ok_cont = {'continued', 'same', 'time_lock', 'limit_3', 'fail'}
+        _ok_cont = {'continued', 'same', 'time_lock', 'quota_lock', 'limit_3', 'fail'}
         _cont_ok_hist: Dict[str, int] = {}
         for _it in new_items:
             _sid_c = str(_it.get('shotId') or '')
@@ -255,7 +256,7 @@ class Router:
             if _cont_true_total else 0.0
         _cont_fail = _cont_ok_hist.get('fail', 0)
         _cont_nondefect = _cont_ok_hist.get('time_lock', 0) + _cont_ok_hist.get('limit_3', 0) \
-            + _cont_ok_hist.get('same', 0)
+            + _cont_ok_hist.get('quota_lock', 0) + _cont_ok_hist.get('same', 0)
         # 汇总辅助变量（trace 引用，short/保留原语义）。
         _dd = {k: _degrade_kinds[k] for k in sorted(_degrade_kinds)}
         _dd_txt = str(_dd) if _dd else '无熔断'

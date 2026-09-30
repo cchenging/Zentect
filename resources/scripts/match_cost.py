@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from montage_contract import ContractError
+from montage_contract import ContractError, attribute_adherence_cost
 
 # 复用旧 KM 求解器的纯标量打分助手（唯一打分口径来源，避免重复实现造成口径漂移）。
 from timeline_solver import (
@@ -374,13 +374,15 @@ def build_match_cost(
     _supply_ms = build_supply_ms(chunk_by_id) if supply_on else {}
     _supply_stat = {'short': 0, 'extended': 0, 'enforced': 0, 'none_cover': 0}
     # 供不起候选数 / 可供给链长于自身的候选数 / 近硬约束实际生效句数 / 全候选供不起句数
+    # P5 结构化属性贴合（议题 D 的桥）：命中/落空/中性计数，供「属性命中率」诊断（只读统计容器）。
+    _attr_stat = {'match': 0, 'miss': 0, 'neutral': 0}
 
     def _calc_row(cands: list, sem_values: List[float],
                   apply_supply_penalty: bool = False) -> tuple:
         """按给定语义分序列算综合代价行（供原始/归一化两版复用）。
 
         Args:
-            cands: 本句候选元组列表 (cid, sem, duration, emotion, role, coverable)。
+            cands: 本句候选元组列表 (cid, sem, duration, emotion, role, coverable, attr)。
             sem_values: 与 cands 等长的语义分序列（原始或归一化）。
             apply_supply_penalty: True 时对「可供给时长 < 配音」的候选加近硬约束罚
                 （仅当本句存在可覆盖候选时由调用方置 True；全供不起时置 False 退现状）。
@@ -391,9 +393,10 @@ def build_match_cost(
         row: Dict[str, float] = {}
         _best_cid = None
         _best_cost = 1e9
-        for i, (cid, _s, _d, _e, _r, _cov) in enumerate(cands):
+        for i, (cid, _s, _d, _e, _r, _cov, _attr) in enumerate(cands):
             combined = _compute_combined_score(sem_values[i], _d, _e, _r, weights)
             cost = 1.0 - float(combined)  # 正向分 → 负向代价
+            cost += float(_attr)  # P5 结构化属性贴合（软阻尼、封顶 ±0.20，绝不压过语义主分）
             if apply_supply_penalty and not _cov:
                 cost += SUPPLY_SHORT_PENALTY  # 近硬约束：供不起的片代价远高于任何其它分项之和
             row[cid] = cost
@@ -466,7 +469,9 @@ def build_match_cost(
             if str(chunk.get('charGrain') or 'ok') == 'union_suspect':
                 role_score = 0.5 + (role_score - 0.5) * 0.5
 
-            cands.append((cid, sem_score, duration_penalty, emotion_score, role_score, _coverable))
+            # P5 结构化属性贴合（议题 D 的桥）：工单声明 ↔ 镜头属性逐维软阻尼，并入供给代价。
+            _attr = attribute_adherence_cost(query, chunk, _attr_stat)
+            cands.append((cid, sem_score, duration_penalty, emotion_score, role_score, _coverable, _attr))
 
         # 乙案「近硬约束」判定（仅开关 on 档、非原声段）：
         #   本句存在任一可覆盖候选 ⇒ 对供不起候选加远高于其它分项之和的罚（存在必被选中）；
@@ -520,6 +525,12 @@ def build_match_cost(
             f"[supply-dur] 乙案 on：时长契合改吃可供给时长 ｜ 候选供不起={_supply_stat['short']} "
             f"链长于自身={_supply_stat['extended']} ｜ 供给索引={len(_supply_ms)}/{len(chunk_ids)} 切片"
             f" ｜ 近硬约束生效句={_supply_stat['enforced']} ｜ 无候选可覆盖={_supply_stat['none_cover']}")
+    # P5 属性贴合诊断（验收口径「属性命中率」）：仅在有信号时输出（零信号 = 两侧无声明，恒中性）。
+    _attr_total = sum(_attr_stat.values())
+    if _attr_total:
+        _diag_parts.append(
+            f"[attr-match] 属性贴合命中率: match={_attr_stat['match']}/{_attr_total} "
+            f"miss={_attr_stat['miss']}/{_attr_total} neutral={_attr_stat['neutral']}/{_attr_total}")
     print(" ".join(_diag_parts), file=sys.stderr)
 
     # 及时释放大矩阵引用，缓解常驻内存。

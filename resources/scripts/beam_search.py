@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 from build_context import CandidateContext
-from montage_contract import ContractError, has_motion_contrast
+from montage_contract import ContractError, has_motion_contrast, MONOTONIC_SLACK_MS
 
 # 一票否决的硬门禁代价（补丁21 Tier1）——任何规则返回此值即弃选。
 HARD_DENY_COST = float('inf')
@@ -40,6 +40,10 @@ DEGRADED_CONF_CAP = 0.85
 # 长镜头顺延上限（§8.3 无 PPT 化）：连续顺延句数与累计时长。
 CONTINUE_MAX_SENTENCES = 3
 CONTINUE_MAX_MS = 7000
+# 缺陷2 修法（2026-09-30）：顺延真实配额 = floor(镜头可用时长 / 该句所需窗长)，
+#   `CONTINUE_MAX_SENTENCES` 降级为**安全上限**（防单镜垄断全片）。逐父镜头累计已承载窗长，
+#   与本镜头可用时长比较；0.5ms 仅吸收浮点误差、不放大配额。
+CONTINUE_QUOTA_EPS = 0.5
 # 长镜头顺延由后置对账（reconcile_continuation，对齐 legacy B4）驱动：CONTINUE_PREV 句在
 # 束搜索主核内按语义正常参与，求解完成后统一重排至上一镜父镜头。**不再注入转移奖励**——
 # 强奖励会反向扭曲 NEW_SHOT 句的选取（为占便宜续镜头而牺牲其最优匹配），恰是 legacy 将
@@ -161,6 +165,8 @@ def build_path(path: BeamPath, chunk: dict, shot_id: str, scene_id: int,
             'max_consumed_ms': dict((path.state.get('max_consumed_ms') or {})),
             'fatigue_accum_ms': float(path.state.get('fatigue_accum_ms', 0.0)),
             'last_contrast_ms': float(path.state.get('last_contrast_ms', 0.0)),
+            # 缺陷2：本镜头已承载的顺延窗长累计（换镜头由 _apply_continuation 归零）。
+            'cont_used_ms': float(path.state.get('cont_used_ms', 0.0)),
         },
         trace=dict(path.trace),
     )
@@ -431,7 +437,7 @@ def solve(
                     _advance_state(child, prev_chunk, cand, _anchor_ms)
                     # 长镜头顺延状态继承（CONTINUE_PREV 由模式/规则层驱动真实赋值）。
                     if str(query.get('shotMode') or '') == 'CONTINUE_PREV':
-                        _apply_continuation(child, query, tts_duration_ms.get(sid, 0.0))
+                        _apply_continuation(child, query, tts_duration_ms.get(sid, 0.0), prev_chunk)
                     child.pen += total
                     out.append(child)
             return out
@@ -537,25 +543,32 @@ def _pick_sibling(
     parent: str,
     exclude: str,
     results: Dict[str, dict],
+    floor_ms: float = 0.0,
 ) -> Optional[dict]:
-    """CONTINUE_PREV 顺延取片（级联降级，对齐 legacy `_sb_continue_prev`，防空塞）。
-    「仅取同父且未整片复用」是硬约束：同父切片大概率已被先顺延的主解占用，导致**无米之炊**
-    卡死顺延成功率（真实 51%→31%→37.5% 的根因）。本函数对齐 legacy 已验证的 5 级级联拿片：
-      l0 优先同父 + 时间上续（startMs∈(pre_start, pre_start+窗口)）+ 未整片复用
-      l1 退同父任意未整片复用（取时间最早）
-      l2 退全局空镜（可复用 broll）
-      l3 退全局任意未整片复用切片
-      各级都不满足 → 返回 None（错就错：无可用兄弟，调用方记 miss，不造假镜像）。
-    违规：不再返回 None 时放弃；各级依次降级保证顺延能续即续。
+    """CONTINUE_PREV 顺延取片（同父 + 单向锁下沉，缺陷1 修法 2026-09-30）。
+
+    硬约束（两条，任一不满足即不作候选）：
+      · **只取同父**（`parentChunkId == parent`）：跨父取片会谎报「续上同一镜头」，
+        并让调用方的 `cur_parent` 记账失真（原 l2/l3 全局兜底即此病灶，已摘除）。
+      · **单向锁下沉**：只接受 `startMs ≥ floor_ms − MONOTONIC_SLACK_MS`。
+        `floor_ms` = 该父镜头「已消费最远起点」（reconcile 侧维护，与束搜索
+        `_advance_state` / 补丁11 同口径）——原 l1「取时间最早」恒回 a→b 段（时间倒流）
+        正是缺陷1 直接病灶，此处堵死。
+
+    级联（同父内，仅放宽「时间上续」窗口，单向锁恒生效）：
+      l0 同父 + 紧接上一镜（startMs ∈ (pre_start, pre_start + CONTINUE_MAX_MS]）+ 未整片复用
+      l1 同父 + 合规（≥ floor）+ 未整片复用（取 ≥ floor 的**最早**切片）
+    同父无合规后继 → 返回 None（错就错：调用方记 fail / 保持原解，不造假镜像）。
 
     Args:
         chunk_by_id: 切片资产索引。
         parent: 要续接的父镜头 id。
-        exclude: 已被前句选中的切片 id（避免整片重贴）。
+        exclude: 已被前句占用的切片 id（避免整片重贴）。
         results: 已装配结果（用于跳过全局已整片复用的子切片）。
+        floor_ms: 该父镜头已消费最远起点（单向锁下界；0 表示无约束）。
 
     Returns:
-        Optional[dict]: 续接切片。
+        Optional[dict]: 合规续接切片；无合规后继返回 None。
     """
     prev_start = 0.0
     for cid, c in chunk_by_id.items():
@@ -575,35 +588,82 @@ def _pick_sibling(
                 continue
             yield cid, c
 
+    # 单向锁下界（与补丁11 同容差 MONOTONIC_SLACK_MS：容差只为吸收源时间抖动）。
+    floor = float(floor_ms or 0.0) - MONOTONIC_SLACK_MS
+
     # l0：同父 + 时间上续 + 未整片复用（startMs 紧随上帧，限窗口内避免隔飞）。
     lo_picks = []
     for cid, c in _unreused():
         if str(c.get('parentChunkId') or '') != parent:
             continue
         _s = float(c.get('startMs') or 0)
+        if _s < floor:
+            continue  # 单向锁：早于已消费最远起点 ⇒ 时间倒流，不作候选
         if prev_start < _s <= prev_start + CONTINUE_MAX_MS:
             lo_picks.append((_s, c))
     if lo_picks:
         return min(lo_picks, key=lambda x: x[0])[1]
-    # l1：同父任意未整片复用（取时间最早）。
+    # l1：同父 + 合规（≥ 已消费最远起点）+ 未整片复用（取合规范围内**最早**）。
     l1_picks = []
     for cid, c in _unreused():
         if str(c.get('parentChunkId') or '') != parent:
             continue
-        l1_picks.append((float(c.get('startMs') or 0), c))
+        _s = float(c.get('startMs') or 0)
+        if _s < floor:
+            continue  # 单向锁：时间倒流不作候选（原「取全父最早」路径已修）
+        l1_picks.append((_s, c))
     if l1_picks:
         return min(l1_picks, key=lambda x: x[0])[1]
-    # l2：全局空镜（可复用 broll）。
-    for cid, c in _unreused():
-        if str(c.get('shotType') or c.get('isBroll') or '') or '空镜' in str(c.get('description') or ''):
-            return c
-    # l3：全局任意未整片复用切片（取时间最早）。
-    l3_picks = []
-    for cid, c in _unreused():
-        l3_picks.append((float(c.get('startMs') or 0), c))
-    if l3_picks:
-        return min(l3_picks, key=lambda x: x[0])[1]
     return None
+
+
+def _chunk_avail_ms(chunk: dict) -> float:
+    """切片/镜头的可用时长（ms）：优先显式时长字段，回退 `endMs − startMs`。
+
+    用于缺陷2 顺延配额（`floor(镜头可用时长 / 该句所需窗长)`）与 7s 物理锁的时长基准。
+
+    Args:
+        chunk: 切片资产（含 durationMs/availableMs/startMs/endMs）。
+
+    Returns:
+        float: 可用时长（≥0）；字段皆缺时返回 0（调用方视作「无从约束」）。
+    """
+    for k in ('availableMs', 'durationMs'):
+        v = float(chunk.get(k) or 0)
+        if v > 0:
+            return v
+    s = float(chunk.get('startMs') or 0.0)
+    e = float(chunk.get('endMs') or 0.0)
+    return max(e - s, 0.0)
+
+
+def _parent_avail_ms(chunk_by_id: Dict[str, dict]) -> Dict[str, float]:
+    """逐父镜头可用总时长：其全部切片的源时间跨度 `max(endMs) − min(startMs)`。
+
+    P4 后候选单元=605 物理镜头（与父镜头 1:1）时即该镜头自身时长；旧段级结构下即母块
+    全跨度（长镜头真实可承载时长）。缺 `endMs` 的切片按其自身可用时长外推。
+
+    Args:
+        chunk_by_id: 切片资产索引。
+
+    Returns:
+        Dict[str, float]: {parentChunkId: 可用总时长 ms}；无父镜头字段的切片不入表。
+    """
+    lo: Dict[str, float] = {}
+    hi: Dict[str, float] = {}
+    for c in chunk_by_id.values():
+        pid = str(c.get('parentChunkId') or '')
+        if not pid:
+            continue
+        s = float(c.get('startMs') or 0.0)
+        e = float(c.get('endMs') or 0.0)
+        if e <= 0:
+            e = s + _chunk_avail_ms(c)
+        if pid not in lo or s < lo[pid]:
+            lo[pid] = s
+        if pid not in hi or e > hi[pid]:
+            hi[pid] = e
+    return {pid: max(hi[pid] - lo[pid], 0.0) for pid in lo}
 
 
 def reconcile_continuation(
@@ -634,6 +694,12 @@ def reconcile_continuation(
     prev_conf = 0.0
     cont_count = 0
     last_commit_ms = 0.0
+    # 缺陷1 修法：单向锁下沉 —— 逐父镜头维护「已消费最远起点」（与束搜索 _advance_state /
+    #   补丁11 同口径），作 `_pick_sibling` 取片下界，杜绝顺延取片时间倒流。
+    consumed: Dict[str, float] = {}
+    # 缺陷2 修法：真实顺延配额 = floor(镜头可用时长 / 该句所需窗长)；逐父累计已承载窗长。
+    parent_avail = _parent_avail_ms(ctx.chunk_by_id)
+    parent_used: Dict[str, float] = {}
 
     for query in ctx.queries:
         sid = str(query['shotId'])
@@ -653,34 +719,49 @@ def reconcile_continuation(
         if mode == 'CONTINUE_PREV' and prev_chunk is not None:
             within_time = (float(chunk.get('startMs') or 0) - last_commit_ms) <= CONTINUE_MAX_MS \
                 if last_commit_ms else True
+            # 缺陷2：真实配额 = floor(镜头可用时长 / 该句所需窗长)。逐父累计已承载窗长
+            #   （含本句配音窗长）仍在本镜头可用时长内 ⇒ 尚可续；超出 ⇒ 本镜头已用尽，强切。
+            #   可用时长缺失（0）时无从约束，退回句数安全上限。
+            _need_ms = float(tts_duration_ms.get(sid) or 0.0)
+            _avail_ms = float(parent_avail.get(prev_parent, 0.0))
+            _used_ms = float(parent_used.get(prev_parent, 0.0))
+            within_quota = (_avail_ms <= 0.0) or (_used_ms + _need_ms <= _avail_ms + CONTINUE_QUOTA_EPS)
             sibling = None
             # 权威顺延分类（喂 shadow 对账，消除"数组相邻项读父"误差）：
             #   continued=已续上（picker 换片同父）
             #   same      =主解本已同父，无需续接（非缺陷）
-            #   time_lock / limit_3 =物理锁/触顶强切（非缺陷）
-            #   fail      =该续未续（真失败：异父+可续但无可用兄弟切片）
+            #   time_lock / quota_lock / limit_3 =物理锁/镜头窗用尽/触顶强切（非缺陷）
+            #   fail      =该续未续（真失败：异父+可续但同父无合规后继切片）
             cont_ok = 'same'
             if prev_parent and prev_parent != cur_parent \
-                    and cont_count < CONTINUE_MAX_SENTENCES and within_time:
+                    and cont_count < CONTINUE_MAX_SENTENCES and within_time and within_quota:
                 sibling = _pick_sibling(ctx.chunk_by_id, prev_parent, str(prev_chunk.get('id') or ''),
-                                        results)
+                                        results, consumed.get(prev_parent, 0.0))
                 if sibling is not None:
                     cont_ok = 'continued'
                     r['chosenChunkId'] = sibling['id']
                     r['chunkData'] = sibling
                     cur_parent = prev_parent
                     cont_count += 1
+                    # 缺陷1：换片后记账随真实落点（chunk 同步为 sibling），否则下一句的
+                    #   单向锁下界/时间闸会读「被替换掉的旧切片」，判据失真。
+                    chunk = sibling
+                    consumed[prev_parent] = max(consumed.get(prev_parent, 0.0),
+                                                float(sibling.get('startMs') or 0.0))
+                    parent_used[prev_parent] = _used_ms + _need_ms
                     # 续镜置信度继承上一镜（承接不虚高）：兄弟片无本句综合分，报上一镜实测值。
                     r['confidence'] = round(max(0.0, min(1.0, float(prev_conf or 0.0))), 4)
                     r['score'] = r['confidence']
                 else:
-                    cont_ok = 'fail'               # 异父+可续但池内无兄弟 → 真失败
+                    cont_ok = 'fail'               # 异父+可续但同父无合规后继 → 真失败
             elif mode == 'CONTINUE_PREV' and prev_parent:
-                # 未走 picker 的原因：7s 物理锁/连续触顶/本已同父，均非引擎失败。
+                # 未走 picker 的原因：7s 物理锁/镜头窗用尽/连续触顶/本已同父，均非引擎失败。
                 if cur_parent == prev_parent:
                     cont_ok = 'same'               # 主解本已同父，无需续接
                 elif not within_time:
                     cont_ok = 'time_lock'          # 7s 物理锁强切（非缺陷）
+                elif not within_quota:
+                    cont_ok = 'quota_lock'         # 缺陷2：本镜头可用时长已用尽，强切（非缺陷）
                 elif cont_count >= CONTINUE_MAX_SENTENCES:
                     cont_ok = 'limit_3'            # 连续顺延触顶强切（非缺陷）
             # 权威标记同时落 _cont_block（兼容旧字段）与 _cont_ok（shadow 主判据）。
@@ -711,29 +792,50 @@ def reconcile_continuation(
             prev_parent = cur_parent
             prev_conf = float(r.get('confidence') or 0.0)
             last_commit_ms = float(chunk.get('startMs') or 0)
+            # 缺陷1：本句落点计入该父镜头「已消费最远起点」——下一句顺延取片据此设下界。
+            consumed[cur_parent] = max(consumed.get(cur_parent, 0.0), last_commit_ms)
             if mode != 'CONTINUE_PREV':
                 cont_count = 0  # 新镜重置顺延计数
 
 
-def _apply_continuation(path: BeamPath, query: dict, target_ms: float) -> None:
-    """长镜头顺延状态赋值 + 安全锁（§8.3：≤3 句且 <7s）。
+def _apply_continuation(path: BeamPath, query: dict, target_ms: float,
+                        prev_chunk: Optional[dict] = None) -> None:
+    """长镜头顺延状态赋值 + 安全锁（§8.3 + 缺陷2 修法）。
 
-    若顺延将超过上限，本函数将该句重置为 NEW_SHOT（强切）——
+    三道锁（任一越界即强切，顺延计数与窗长累计清零）：
+      · 句数安全上限 `CONTINUE_MAX_SENTENCES`（防单镜垄断全片，由「真配额」降级而来）；
+      · **真配额**（缺陷2）：本镜头累计承载窗长 + 本句窗长 > 镜头可用时长 ⇒ 镜头窗用尽；
+      · 7s 物理锁：本句落点起点距末次强切 > `CONTINUE_MAX_MS`。
+
+    换镜头（`prev_chunk.id != curr.id`）时窗长累计归零——新镜头重新起算配额。
 
     Args:
         path: 目标路径（原地修改，返回 None）。
         query: 脚本句。
-        target_ms: 本句目标时长。
+        target_ms: 本句目标时长（该句所需窗长）。
+        prev_chunk: 上一镜切片（用于识别是否换镜头；None 时按换镜处理）。
     """
+    cid_now = str(path.curr_chunk.get('id') or '')
+    cid_prev = str((prev_chunk or {}).get('id') or '')
+    if cid_prev and cid_now != cid_prev:
+        # 换镜头 → 本镜头顺延承载窗长重新起算（配额按镜头各自独立）。
+        path.state['cont_used_ms'] = 0.0
+    _used = float(path.state.get('cont_used_ms', 0.0)) + max(float(target_ms or 0.0), 0.0)
+    _avail = _chunk_avail_ms(path.curr_chunk)
+
     path.continuation_count += 1
-    if path.continuation_count > CONTINUE_MAX_SENTENCES:
-        # 超句数 → 强制强切，顺延计数清零。
+    if path.continuation_count > CONTINUE_MAX_SENTENCES \
+            or (_avail > 0 and _used > _avail + CONTINUE_QUOTA_EPS):
+        # 超安全上限 / 镜头可用时长用尽 → 强制强切，顺延计数与窗长累计清零。
         path.continuation_count = 0
+        path.state['cont_used_ms'] = 0.0
         path.last_shot_commit_ms = float(path.curr_chunk.get('startMs') or 0)
         return
+    path.state['cont_used_ms'] = _used
     if (float(path.curr_chunk.get('startMs') or 0) - path.last_shot_commit_ms) > CONTINUE_MAX_MS:
         # 超时长（跨过 7s 物理上限）→ 强切。
         path.continuation_count = 0
+        path.state['cont_used_ms'] = 0.0
         path.last_shot_commit_ms = float(path.curr_chunk.get('startMs') or 0)
 
 

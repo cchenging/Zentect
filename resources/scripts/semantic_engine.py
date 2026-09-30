@@ -42,6 +42,10 @@ class SemanticSearchRequest(BaseModel):
     query: str
     top_k: int = 5
 
+class TextEmbedRequest(BaseModel):
+    texts: List[str]
+    batch_size: int = 32
+
 
 # ==========================================
 # /api/match — CLIP 语义帧匹配
@@ -128,6 +132,35 @@ def api_match(req: MatchReq):
                 })
             return {"success": True, "data": results, "warning": "CLIP unavailable, using histogram fallback"}
     except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# /api/embed_texts — BGE 文本批量编码（帧级召回统一通道）
+# ==========================================
+@router.post("/api/embed_texts")
+def api_embed_texts(req: TextEmbedRequest):
+    """用 BGE 文本通道批量编码，返回 L2 归一化向量（余弦相似度 == 点积）。
+
+    定位（P2 帧向量索引 / P3 帧召回）：与 match_cost 的「文案↔切片」语义主分**同源**
+    （`AIModels.encode_texts`，[CLS] 池化 + L2 归一化），保证「帧召回」与「供给打分」
+    用同一语义空间，召回进白名单的帧不会因编码口径漂移而与打分结论相悖。
+
+    设计取舍：与 `get_text_embedder` 一致——模型缺失/加载失败**直接抛错**（HTTP 500），
+    不静默降级返回常量向量；帧召回没有替代通道，降级会让召回退化为噪声并掩盖真实故障。
+    """
+    try:
+        if not req.texts:
+            return {"success": True, "dim": 0, "vectors": []}
+        vecs = AIModels.encode_texts(req.texts, batch_size=req.batch_size)
+        return {
+            "success": True,
+            "dim": int(vecs.shape[1]) if vecs.size else 0,
+            "vectors": vecs.tolist(),
+        }
+    except Exception as e:
+        print(f"ERROR: BGE 文本编码崩溃 - {str(e)}", file=sys.stderr)
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 

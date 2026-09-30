@@ -140,6 +140,174 @@ def normalize_preferred_shot(value: str) -> str:
     return preferred_shot_from_label(_v)
 
 
+# ===========================================================================
+# 需求单结构化属性贴合（P5 / 议题 D 的桥，2026-09-30）
+#   问题：S2 分镜工单的「画面长什么样」字段（景别/运镜/空间/主体/道具）此前只进 ③ 调度层
+#   （管「接得顺」），不进 ② 供给分（管「配得对不对」）⇒ 语义层只吃 description 一个源。
+#   本块把「工单声明 ↔ 镜头属性」逐维判定为**软阻尼**，并入 ② 供给分（match_cost），
+#   使其真正参与「文案→镜头」配得对不对的排序。仅加分项、逐维封顶，绝不作硬门禁。
+#   两侧词表归一：景别复用上方既有归一表；运镜/空间另立关键词表（工单侧英文枚举 ↔ 切片侧中文标签/地点文本）。
+# ===========================================================================
+ATTR_MATCH_REWARD = -0.04    # 单维命中：轻微降代价（鼓励贴合工单声明）
+ATTR_MISS_PENALTY = 0.04     # 单维落空：轻微加代价
+ATTR_TOTAL_CAP = 0.20        # 逐维累加后封顶（软阻尼，绝不压过语义主分）
+
+# 运镜词表：ShotSpec.cameraDynamic（英文枚举）↔ 切片 cameraMovement（中文标签）——精确等值归一。
+CAMERA_DYNAMIC_BY_LABEL = {
+    '固定': 'STATIC', '固定镜头': 'STATIC', '静止': 'STATIC', '定格': 'STATIC', '静镜': 'STATIC',
+    '推': 'PUSH', '推镜': 'PUSH', '推近': 'PUSH', '前推': 'PUSH', '推进': 'PUSH', '变焦推': 'PUSH',
+    '拉': 'PULL', '拉镜': 'PULL', '拉远': 'PULL', '后拉': 'PULL', '拉出': 'PULL',
+    '摇': 'PAN', '摇镜': 'PAN', '横摇': 'PAN', '左摇': 'PAN', '右摇': 'PAN',
+    '俯仰': 'TILT', '上摇': 'TILT', '下摇': 'TILT', '升降': 'TILT',
+    '跟': 'FOLLOW', '跟镜': 'FOLLOW', '跟拍': 'FOLLOW', '跟随': 'FOLLOW',
+}
+CAMERA_DYNAMIC_CODES = frozenset(CAMERA_DYNAMIC_BY_LABEL.values())
+
+# 空间词表：ShotSpec.spatialType（英文枚举）→ 切片 scene（地点自由文本）关键词集合。
+#   守卫：scene 是自由文本，命中即归一；未命中返回 ''（中性，不误罚）。
+SPATIAL_TOKENS = (
+    ('INDOOR_RESIDENCE', ('住宅', '客厅', '卧室', '厨房', '家中', '家里', '宿舍', '公寓', '民居', '饭厅')),
+    ('INDOOR_PUBLIC', ('餐厅', '办公室', '商场', '大厅', '医院', '学校', '室内', '酒吧', '咖啡', '机舱内', '车厢内')),
+    ('OUTDOOR_STREET', ('街道', '马路', '路口', '巷', '广场', '街区', '城市', '夜市', '天桥')),
+    ('OUTDOOR_NATURE', ('山', '海', '森林', '田野', '湖', '草原', '河边', '公园', '景区', '沙滩')),
+    ('VEHICLE', ('车', '汽车', '出租车', '公交', '地铁', '列车', '船', '驾驶', '机车')),
+    ('TRANSIT_HUB', ('机场', '车站', '码头', '高铁站', '候机', '航站楼', '站台', '候车')),
+)
+SPATIAL_CODES = frozenset(_code for _code, _ in SPATIAL_TOKENS)
+
+
+def normalize_camera_dynamic(value: str) -> str:
+    """运镜信号双向归一 → 契约英文枚举（工单英文枚举原样保留，中文标签归一，未识别→''）。"""
+    _v = str(value or '').strip()
+    if not _v:
+        return ''
+    if _v in CAMERA_DYNAMIC_CODES:
+        return _v
+    return CAMERA_DYNAMIC_BY_LABEL.get(_v, '')
+
+
+def camera_from_label(label: str) -> str:
+    """切片中文运镜标签（cameraMovement）→ 契约英文枚举；未识别返回 ''（中性放行）。"""
+    _v = str(label or '').strip()
+    if not _v:
+        return ''
+    if _v in CAMERA_DYNAMIC_BY_LABEL:
+        return CAMERA_DYNAMIC_BY_LABEL[_v]
+    # 自由文本兜底：关键词包含（如「缓慢推近」）
+    for code, _toks in (('PUSH', ('推',)), ('PULL', ('拉',)), ('PAN', ('摇',)),
+                        ('TILT', ('俯仰', '上摇', '下摇')), ('FOLLOW', ('跟',)),
+                        ('STATIC', ('固定', '静止', '定格'))):
+        if any(t in _v for t in _toks):
+            return code
+    return ''
+
+
+def spatial_from_text(text: str) -> str:
+    """切片地点文本（scene）→ 契约空间枚举；未命中返回 ''（中性，不误罚）。"""
+    _v = str(text or '').strip()
+    if not _v:
+        return ''
+    for code, toks in SPATIAL_TOKENS:
+        if any(t in _v for t in toks):
+            return code
+    return ''
+
+
+def _adherence_dim(declared: str, cand: str, stats: Optional[dict] = None) -> float:
+    """单维贴合判定：任一侧缺省 → 0（中性，不造假）；两侧齐备时命中奖励 / 落空惩罚。"""
+    if not declared or not cand:
+        if stats is not None:
+            stats['neutral'] = stats.get('neutral', 0) + 1
+        return 0.0
+    if declared == cand:
+        if stats is not None:
+            stats['match'] = stats.get('match', 0) + 1
+        return ATTR_MATCH_REWARD
+    if stats is not None:
+        stats['miss'] = stats.get('miss', 0) + 1
+    return ATTR_MISS_PENALTY
+
+
+def _subject_adherence(declared_subjects, chunk: dict, stats: Optional[dict] = None) -> float:
+    """主体贴合：工单 targetSubjects ∩ 镜头 {primarySubject, secondarySubjects}（哨兵 MULTIPLE 视为可容纳）。"""
+    _decl = [str(s).strip() for s in (declared_subjects or []) if str(s or '').strip()]
+    if not _decl:
+        return 0.0
+    _prim = str(chunk.get('primarySubject') or '').strip()
+    if _prim == PRIMARY_SUBJECT_MULTIPLE:
+        return ATTR_MATCH_REWARD  # 多人镜：可容纳任一主体声明
+    _cand = {_prim}
+    _sec = chunk.get('secondarySubjects')
+    if isinstance(_sec, (list, tuple)):
+        _cand.update(str(s).strip() for s in _sec if str(s or '').strip())
+    elif _sec:
+        _cand.add(str(_sec).strip())
+    _cand.discard('')
+    if not _cand:
+        return 0.0
+    if any(d in _cand for d in _decl):
+        if stats is not None:
+            stats['match'] = stats.get('match', 0) + 1
+        return ATTR_MATCH_REWARD
+    if stats is not None:
+        stats['miss'] = stats.get('miss', 0) + 1
+    return ATTR_MISS_PENALTY
+
+
+def _prop_adherence(declared: str, cand: str, stats: Optional[dict] = None) -> float:
+    """道具贴合：工单 keyProp（自由文本）与切片 keyProps（自由文本）双向子串包含。"""
+    _d = str(declared or '').strip()
+    _c = str(cand or '').strip()
+    if not _d or not _c:
+        return 0.0
+    if _d in _c or _c in _d:
+        if stats is not None:
+            stats['match'] = stats.get('match', 0) + 1
+        return ATTR_MATCH_REWARD
+    if stats is not None:
+        stats['miss'] = stats.get('miss', 0) + 1
+    return ATTR_MISS_PENALTY
+
+
+def attribute_adherence_cost(query: dict, chunk: dict,
+                             stats: Optional[dict] = None) -> float:
+    """需求单结构化属性贴合（②供给分软阻尼）：工单声明 ↔ 镜头属性逐维判定。
+
+    五维：景别(preferredShot↔shotScale/shotType) / 运镜(cameraDynamic↔cameraMovement) /
+    空间(spatialType↔scene) / 主体(targetSubjects↔primarySubject+secondarySubjects) /
+    道具(keyProp↔keyProps)。逐维：任一侧缺省 → 中性 0（不造假）；命中 → 负（降代价）；
+    落空 → 正（加代价）。整趟封顶 ±`ATTR_TOTAL_CAP`，仅作软阻尼、绝不压过语义主分。
+
+    Args:
+        query: 归一化脚本句（含 S2 工单字段 preferredShot/cameraDynamic/spatialType/
+            targetSubjects/keyProp）。
+        chunk: 候选镜头切片（含 shotScale/shotType/cameraMovement/scene/primarySubject/
+            secondarySubjects/keyProps）。
+        stats: 可选**只读统计容器**（就地累加 match/miss/neutral 计数，供 属性命中率 诊断）。
+
+    Returns:
+        float: 附加到候选代价上的软阻尼（负=更贴合，正=更不贴合，0=无信号）。
+    """
+    if not query or not chunk:
+        return 0.0
+    total = 0.0
+    # ① 景别：两侧统一走既有归一表（工单英文枚举 ↔ 切片中文标签）。
+    total += _adherence_dim(normalize_preferred_shot(query.get('preferredShot')),
+                           preferred_shot_from_label(chunk.get('shotScale') or chunk.get('shotType') or ''),
+                           stats)
+    # ② 运镜
+    total += _adherence_dim(normalize_camera_dynamic(query.get('cameraDynamic')),
+                           camera_from_label(chunk.get('cameraMovement') or ''), stats)
+    # ③ 空间
+    total += _adherence_dim(str(query.get('spatialType') or '').strip(),
+                           spatial_from_text(chunk.get('scene') or ''), stats)
+    # ④ 主体
+    total += _subject_adherence(query.get('targetSubjects'), chunk, stats)
+    # ⑤ 道具
+    total += _prop_adherence(query.get('keyProp'), chunk.get('keyProps'), stats)
+    return max(-ATTR_TOTAL_CAP, min(ATTR_TOTAL_CAP, total))
+
+
 # 补丁7 气口弹性腔（gap_padding）：句尾必须保留的安全静音红线与判定常量（物理不足即罚）。
 #   唯一允许的时间弹性 = 句尾 ASR 静音气口（silenceGapMs）：两者俱备则出点不侵入发音区。
 GAP_SAFE_SILENCE_MS = 80.0      # 安全静音红线条（ms）：出点落点须 ≥ 说话结尾 + 本线
