@@ -1196,7 +1196,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
        *  数据源即上面的 P0 归属链（chunk.frameHashes）与帧释义（frameDescs），零新增推理、零额外遍历；
        *  编码走 daemon `/api/embed_texts`（与 match_cost 语义主分同源），已索引帧复跑秒级命中。
        *  ⚠️ 不兜底：编码通道不可用即上抛（帧召回是 P3 候选取值的唯一来源，静默空集会让全片匹配不到）。 */
-      if (withFrameHashes > 0) {
+      if (frameDescs.length > 0) {
         const frameDescByHash = new Map<string, { timeMs: number; description: string }>();
         for (const f of frameDescs) {
           const h = (f as any).frameHash;
@@ -1204,15 +1204,37 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
             frameDescByHash.set(h, { timeMs: Number(f.timeMs) || 0, description: String(f.description || '').trim() });
           }
         }
-        const seeds: FrameIndexSeed[] = [];
+        /** 🎬 P2 覆盖口径修正（2026-09-30）：种子改从**全量帧**（frameDescs，即画面样张全集）
+         *  生成，不再只取「被 chunk.frameHashes 归属链引用」的帧——后者会把无归属镜头/窗空档的帧
+         *  整片漏掉。帧→镜头归属：① 优先取引用该 hash 的镜头（P0 归属链）；② 否则按帧 timeMs 落
+         *  [startMs,endMs] 的镜头；③ 再退全局时间最近镜头。索引仍按 frameHash 内容去重（同画面共享
+         *  一条向量，不重复编码），故"画面样张全集"对应去重后的唯一帧数各一条向量。 */
+        const hashToChunk = new Map<string, string>();
         for (const c of chunks) {
+          const cid = String(c.id);
           for (const h of ((c as any).frameHashes || [])) {
-            const fd = frameDescByHash.get(h);
-            if (fd && fd.description) {
-              seeds.push({ frameHash: h, chunkId: String(c.id), timeMs: fd.timeMs, description: fd.description });
-            }
+            if (!hashToChunk.has(h)) hashToChunk.set(h, cid);
           }
         }
+        const spans = chunks.map((c) => ({
+          id: String(c.id), start: Number(c.startMs) || 0, end: Number(c.endMs) || 0,
+        }));
+        const resolveChunkId = (t: number): string => {
+          let bestId = spans.length > 0 ? spans[0].id : '';
+          let bestD = Number.POSITIVE_INFINITY;
+          for (const s of spans) {
+            const d = t < s.start ? s.start - t : (t > s.end ? t - s.end : 0);
+            if (d === 0) return s.id;
+            if (d < bestD) { bestD = d; bestId = s.id; }
+          }
+          return bestId;
+        };
+        const seeds: FrameIndexSeed[] = [];
+        frameDescByHash.forEach((fd, h) => {
+          if (!fd.description) return;
+          const cid = hashToChunk.get(h) || resolveChunkId(fd.timeMs);
+          seeds.push({ frameHash: h, chunkId: cid, timeMs: fd.timeMs, description: fd.description });
+        });
         try {
           const st = await FrameRecallService.ensureIndex(seeds, projectId, sceneMediaId);
           AppLogger.info(LOG_TAGS.AI_AGENT,
@@ -1221,7 +1243,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           throw new Error(`P2 帧向量索引构建失败（帧召回无替代通道，不降级）: ${e?.message || e}`);
         }
       } else {
-        AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] ⚠️ P2 帧向量索引跳过：无镜头携带 frameHashes（帧→镜头归属链为空）`);
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[镜头匹配] ⚠️ P2 帧向量索引跳过：无帧释义（frameDescs 为空，步骤2 无画面样张）`);
       }
       /** 🎬 补丁18 诊断（开关 off 时不打印，日志逐字节零变化）：三态分布 + 30% 时长过滤条数 +
        *  置信度均值——让"点亮 ≠ 可信"（覆盖率/置信度）在日志里可见，作为 A/B 对账基线。 */
