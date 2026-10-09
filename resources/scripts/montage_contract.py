@@ -403,6 +403,11 @@ def default_query() -> dict:
         'actionType': '',             # 动态门禁：动作类别
         'keyProp': '',                # 动态门禁：关键道具
         'preferredShot': '',          # 动态门禁：首选景别
+        # -- P5 属性贴合（议题 D 的桥）：工单声明「画面长什么样」的运镜/主体两维 --
+        #    ⚠️ 必须在本骨架显式占位：merge_orders_into_queries 以 `if key in query` 守卫覆写，
+        #    缺键则工单里带来的 cameraDynamic/targetSubjects 会被二次丢弃（补齐两端断链）。
+        'cameraDynamic': '',          # 运镜（契约英文枚举，daemon 侧统一归一）
+        'targetSubjects': [],         # 主体角色名集合
         'isCrossSceneRecall': False,  # 补丁10：时空互文定向越狱声明
         'recallTargetSceneId': '',    # 补丁10：定向拉入的目标场次
     }

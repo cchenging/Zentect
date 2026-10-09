@@ -75,6 +75,10 @@ export interface SegmentQuery {
   keyProp: string;
   /** 动态门禁：首选景别 */
   preferredShot: string;
+  /** 运镜（契约英文枚举，daemon 侧统一归一） */
+  cameraDynamic: string;
+  /** 主体角色名集合 */
+  targetSubjects: string[];
   /** 补丁10：时空互文定向越狱声明 */
   isCrossSceneRecall: boolean;
   /** 补丁10：定向拉入的目标场次 */

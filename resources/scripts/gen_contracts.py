@@ -52,6 +52,7 @@ _DEFS = [
         {
             'characters': 'string[]',                 # 期望角色名集合
             'charIds': 'string[]',                    # 期望角色注册表主键集合
+            'targetSubjects': 'string[]',             # 期望主体角色名集合（P5 属性贴合）
             'asrAnchorStartMs': 'number | null',      # 原声段 ASR 台词起始
             'asrAnchorEndMs': 'number | null',        # 原声段 ASR 台词结束
         },

@@ -531,6 +531,36 @@ def build_match_cost(
         _diag_parts.append(
             f"[attr-match] 属性贴合命中率: match={_attr_stat['match']}/{_attr_total} "
             f"miss={_attr_stat['miss']}/{_attr_total} neutral={_attr_stat['neutral']}/{_attr_total}")
+        # 🩺 信号链自检（防静默断链）：统计 query 侧各维声明数，暴露「上游应下发却恒空」。
+        #   契约层若丢弃 cameraDynamic/targetSubjects（如 DTO 未声明字段致 model_dump() 丢弃），
+        #   此处声明数恒 0 ⇒ 配合 match/miss 全 0 明确区分「断链」与「本就无声明」。
+        _attr_decl = {'preferredShot': 0, 'cameraDynamic': 0, 'spatialType': 0,
+                      'targetSubjects': 0, 'keyProp': 0}
+        for _q in queries:
+            if str(_q.get('preferredShot') or '').strip():
+                _attr_decl['preferredShot'] += 1
+            if str(_q.get('cameraDynamic') or '').strip():
+                _attr_decl['cameraDynamic'] += 1
+            if str(_q.get('spatialType') or '').strip():
+                _attr_decl['spatialType'] += 1
+            if _q.get('targetSubjects'):
+                _attr_decl['targetSubjects'] += 1
+            if str(_q.get('keyProp') or '').strip():
+                _attr_decl['keyProp'] += 1
+        _decl_total = sum(_attr_decl.values())
+        _diag_parts.append(
+            f"[attr-decl] query 声明数: preferredShot={_attr_decl['preferredShot']} "
+            f"cameraDynamic={_attr_decl['cameraDynamic']} spatialType={_attr_decl['spatialType']} "
+            f"targetSubjects={_attr_decl['targetSubjects']} keyProp={_attr_decl['keyProp']} "
+            f"（共 {_decl_total} / {len(queries)} 句）")
+        if _decl_total > 0 and _attr_stat['match'] == 0 and _attr_stat['miss'] == 0:
+            _diag_parts.append(
+                '⚠️[attr-warn] query 已声明属性却逐维全中性 → 疑似切片侧对应属性恒空(shotScale/'
+                'cameraMovement/scene/primarySubject)或契约层字段丢失，请核对 KMMatchQuery 声明')
+        elif _decl_total == 0:
+            _diag_parts.append(
+                '⚠️[attr-warn] query 侧零属性声明 → 若上游应下发工单字段，疑似 KMMatchQuery 未声明'
+                '致 model_dump() 丢弃(cameraDynamic/targetSubjects 尤甚)')
     print(" ".join(_diag_parts), file=sys.stderr)
 
     # 及时释放大矩阵引用，缓解常驻内存。

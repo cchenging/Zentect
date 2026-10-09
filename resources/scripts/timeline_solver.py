@@ -243,6 +243,22 @@ class KMMatchQuery(BaseModel):
     actionType: str = ''
     keyProp: str = ''
     preferredShot: str = ''
+    """🎬 S3 动态门禁探测项 + P5 属性贴合（议题 D 的桥）续两项：运镜 / 主体。
+    Node 侧由 S2 工单（ShotSpec）回填，此前**未在本 DTO 声明** ⇒ pydantic 默认 extra='ignore'
+    在 req.model_dump() 时静默丢弃 ⇒ montage_contract.attribute_adherence_cost 的
+    运镜维（cameraDynamic↔cameraMovement）/ 主体维（targetSubjects↔primarySubject+secondarySubjects）
+    恒空。此处补声明使其真正到达契约层（保持契约英文枚举，daemon 侧统一归一）。"""
+    cameraDynamic: str = ''
+    targetSubjects: List[str] = []
+    """🎬 原声段标记：True=锁定 ASR 原声时间窗、不配 TTS。此前同样未声明被 model_dump() 丢弃，
+    致使 match_cost.py 近硬约束豁免（_koa，供不起即罚）失效 ⇒ 原声段被误施供给罚。"""
+    keepOriginalAudio: bool = False
+    """🔧 补丁4 幻觉守卫基准：已裁片头偏移（trimStartMs）/ 源视频总时长（sourceDurationMs，ms）。"""
+    trimStartMs: float = 0.0
+    sourceDurationMs: float = 0.0
+    """🔧 补丁20：原声段音频源区间（ms，仅原声段写出，其余恒 None）。此二项此前同样未声明被丢弃。"""
+    audioSourceStartMs: Optional[float] = None
+    audioSourceEndMs: Optional[float] = None
 
 
 # ============================================================
