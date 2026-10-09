@@ -146,6 +146,11 @@ function extractKeyVisualAction(shot: any): {
   interaction?: string;
   shotStyle?: string;
   characters?: string[];
+  /** 🎬 场景/道具/服装/天气环境：步骤2 VLM 结构化真实产出，供阶段A 剧情接地推断（结论必须来源于画面，不可凭空编造） */
+  scene?: string;
+  keyProps?: string;
+  costume?: string;
+  weatherEnv?: string;
   purifiedKeywords: string[];
 } {
   // 1. action 直接取自 VLM 结构化输出（narrativeAction），无需正则清洗
@@ -190,6 +195,11 @@ function extractKeyVisualAction(shot: any): {
     interaction: shot?.interaction || undefined,
     shotStyle: shot?.shotStyle || undefined,
     characters: Array.isArray(shot?.characters) ? shot.characters : undefined,
+    // 🎬 场景/道具/服装/天气环境透传：步骤2 normalizeDownstreamFields 已清洗占位词，此处按原值透传（缺失即 undefined，不造假）
+    scene: shot?.scene || undefined,
+    keyProps: shot?.keyProps || undefined,
+    costume: shot?.costume || undefined,
+    weatherEnv: shot?.weatherEnv || undefined,
     purifiedKeywords,
   };
 }
@@ -504,6 +514,100 @@ export function dedupeAdjacentParagraphs<T extends { text?: string }>(
   return { paragraphs: keptParagraphs, keptIndexes };
 }
 
+/** 阶段A 剧情大纲「接地校验」结果：ok=false 时 violations 为人类可读违规明细（供反馈重生成） */
+export interface OutlineGroundingResult {
+  ok: boolean;
+  violations: string[];
+}
+
+/**
+ * 🎯 阶段A 剧情大纲「接地校验」（代码侧硬校验，非 LLM 自评）：
+ * 剧情必须建立在画面（ContextChunk 的视觉字段 scene/keyProps/costume/weatherEnv/keyAction）
+ * + 台词（asrContext）之上。本函数校验大纲的每个结论能否回溯到「真实存在的 chunk / 角色」，
+ * 从结构上杜绝「无源编造」——凡引用不存在的 chunkId 或角色列表之外的人名，一律判违规。
+ *
+ * 校验项（全部为闭包 / 形态硬约束）：
+ *  1. logline 为非空字符串（剧情骨架存在）
+ *  2. arc 为非空字符串数组（阶段脉络存在）
+ *  3. keyTurns[].chunkId ∈ 实际 chunkId 全集（容 microChunk 前缀命中父 chunk），且 turn 非空
+ *  4. characterMotives 的键（角色名）∈ 已识别角色名集合（无角色列表时跳过该项）
+ *  5. hasClearEnding 为布尔
+ *  6. chapters（两阶段）数量 = 预划分章节数，且 index 从 1 连续、title/summary 非空
+ *
+ * @param outline 阶段A 解析后的 JSON 对象
+ * @param validChunkIds 本片实际存在的 chunkId 全集（含 microChunk 形如 chunk_001_1）
+ * @param validRoleNames 已识别角色名集合（空数组 ⇒ 跳过角色项校验）
+ * @param expectedChapterCount 两阶段预划分章节数（null ⇒ 单阶段，不校验 chapters）
+ */
+export function verifyOutlineGrounding(
+  outline: any,
+  validChunkIds: string[],
+  validRoleNames: string[],
+  expectedChapterCount: number | null,
+): OutlineGroundingResult {
+  const violations: string[] = [];
+  if (!outline || typeof outline !== 'object' || Array.isArray(outline)) {
+    return { ok: false, violations: ['大纲不是 JSON 对象'] };
+  }
+
+  // 1. logline：剧情骨架
+  if (!String(outline.logline || '').trim()) {
+    violations.push('logline 缺失或为空：未给出剧情骨架');
+  }
+
+  // 2. arc：剧情阶段脉络
+  if (!Array.isArray(outline.arc) || outline.arc.filter((s: any) => String(s ?? '').trim()).length === 0) {
+    violations.push('arc 缺失或为空数组：未给出剧情阶段脉络');
+  }
+
+  // 3. keyTurns.chunkId 闭包：转折点必须锚定到真实存在的片段
+  const keyTurns = Array.isArray(outline.keyTurns) ? outline.keyTurns : [];
+  for (let i = 0; i < keyTurns.length; i++) {
+    const cid = String(keyTurns[i]?.chunkId || '').trim();
+    const turn = String(keyTurns[i]?.turn || '').trim();
+    if (!cid) {
+      violations.push(`keyTurns[${i}] 缺 chunkId：转折点未锚定片段`);
+    } else {
+      const matched = validChunkIds.some((v) => v === cid || v.startsWith(cid) || cid.startsWith(v));
+      if (!matched) violations.push(`keyTurns[${i}] chunkId "${cid}" 不在片段流中：转折点无源（疑似编造）`);
+    }
+    if (!turn) violations.push(`keyTurns[${i}] 缺 turn 描述`);
+  }
+
+  // 4. characterMotives 角色名闭包：禁止凭空创造角色列表之外的人名
+  if (
+    Array.isArray(validRoleNames) && validRoleNames.length > 0
+    && outline.characterMotives && typeof outline.characterMotives === 'object' && !Array.isArray(outline.characterMotives)
+  ) {
+    const roleSet = new Set(validRoleNames.map((n) => String(n).trim()).filter(Boolean));
+    for (const name of Object.keys(outline.characterMotives)) {
+      const key = String(name).trim();
+      if (!roleSet.has(key)) violations.push(`characterMotives 出现角色列表之外的角色 "${key}"：疑似凭空创造人物`);
+    }
+  }
+
+  // 5. hasClearEnding 布尔
+  if (typeof outline.hasClearEnding !== 'boolean') {
+    violations.push('hasClearEnding 非布尔值：结局判定缺失');
+  }
+
+  // 6. chapters 形态（两阶段）：数量与编号必须与系统预划分严格对齐
+  if (expectedChapterCount !== null) {
+    if (!Array.isArray(outline.chapters) || outline.chapters.length !== expectedChapterCount) {
+      violations.push(`chapters 数量应为 ${expectedChapterCount}，实际 ${Array.isArray(outline.chapters) ? outline.chapters.length : 0}：章节结构未对齐`);
+    } else {
+      for (let i = 0; i < outline.chapters.length; i++) {
+        const c = outline.chapters[i];
+        if (Number(c?.index) !== i + 1) violations.push(`chapters[${i}].index 应为 ${i + 1}，实际 ${c?.index}：编号不连续`);
+        if (!String(c?.title ?? '').trim()) violations.push(`chapters[${i}] 缺 title`);
+        if (!String(c?.summary ?? '').trim()) violations.push(`chapters[${i}] 缺 summary`);
+      }
+    }
+  }
+
+  return { ok: violations.length === 0, violations };
+}
+
 export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, GeneratedShot[]> {
   readonly nodeType = 'script-gen';
 
@@ -668,6 +772,11 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
           secondarySubjects: Array.isArray(v.secondarySubjects) && v.secondarySubjects.length > 0 ? v.secondarySubjects : undefined,
           interaction: v.interaction || undefined,
           shotStyle: v.shotStyle || undefined,
+          // 🎬 场景/道具/服装/天气环境：阶段A 剧情接地推断的事实依据（画面 = 剧情唯一来源）
+          scene: v.scene || undefined,
+          keyProps: v.keyProps || undefined,
+          costume: v.costume || undefined,
+          weatherEnv: v.weatherEnv || undefined,
         },
       };
     });
@@ -949,6 +1058,11 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
           shotStyle: purifiedVisual.shotStyle,            // 🎬 场景分类（如：双人对峙）
           characters: purifiedVisual.characters,          // 🎭 角色集合（供 step3 角色锚定/step5 组合过滤）
           keywords: purifiedVisual.purifiedKeywords,      // 噑点过滤后的关键词
+          // 🎬 场景/道具/服装/天气环境：步骤2 真实产出，供阶段A 剧情接地推断（画面是剧情唯一事实依据）
+          scene: purifiedVisual.scene,                    // 🎬 场景（如：老旧客厅）
+          keyProps: purifiedVisual.keyProps,              // 🎬 关键道具（如：一把生锈的钥匙）
+          costume: purifiedVisual.costume,                // 🎬 服装（如：褪色工装）
+          weatherEnv: purifiedVisual.weatherEnv,          // 🌦 天气/环境（如：黄昏暴雨）
         },
       });
     }
@@ -1261,36 +1375,143 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
 
     // ========== 阶段A：剧情理解（剧情驱动解说的前置大纲） ==========
     // 🎬 用户核心诉求：解说应"贴合剧情主线 + 加合理解读"，而非"画面翻译"。
-    // 让 LLM 先通读全部片段流 + 角色列表，提炼剧情大纲（logline/arc/动机/转折），
-    // 阶段B 带大纲逐段解说，每段都有全局坐标，保证段间因果连贯、转折处有解读。
-    // 失败处理（设计上的多路径）：剧情理解是增强路径，失败时明确告警并回退"逐段解说"基础路径
-    // （与 BGM 节拍检测失败继续无 BGM 模式同哲学），不静默掩盖。
+    // 严格口径（用户确认）：剧情必须由「画面 + 台词」推断得到、符合度须 > 95%。
+    // 因此本阶段为「生成 → 代码侧接地校验 → LLM 符合度自检」的闭环：任一校验不通过即把违规明细
+    // 回灌 prompt 重生成；连续 MAX_OUTLINE_ATTEMPTS 次仍不达标则整条流水线硬失败，
+    // 绝不把「无源编造 / 低符合度」的大纲静默喂给阶段B（错就错，不降级、不兜底）。
     let plotOutline: any = null;
-    /** 🔧 诊断用：阶段A 原始响应文本缓存，供 catch 告警携带片段（chat 结果在 try 内声明，catch 作用域不可见） */
-    let outlineRawText = '';
-    try {
-      onProgress(15, '正在理解剧情主线（阶段1/2）...');
-      const outlineSystemPrompt = `你是一位顶级的影视剧情分析师。你的任务是从片段流中提炼完整剧情主线，供解说创作者撰写"贴合剧情"的解说文案。
-你绝不描述画面细节（那是画面翻译，不是剧情理解），只提炼剧情逻辑：发生了什么、为什么、人物想要什么、转折在哪里。`;
-      const roleLinesForOutline = (input.roles || [])
-        .filter((r: any) => r && r.name)
-        .map((r: any) => `- ${r.name}${r.representative?.gender !== undefined ? (r.representative.gender === 1 || r.representative.gender === 'M' || r.representative.gender === 'male' ? '（男）' : '（女）') : ''}`)
-        .join('\n');
-      const outlineUserPrompt = `【角色列表】：
+    /** 阶段A/B 共用的精简片段流（含 scene/keyProps/costume/weatherEnv），作为剧情接地的事实依据 */
+    const outlineSourceJson = JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2);
+    /** 本片实际 chunkId 全集（接地校验：keyTurns 的 chunkId 必须落在其中） */
+    const validChunkIds = contextChunks.map((c: any) => String(c?.chunkId || '')).filter(Boolean);
+    /** 已识别角色名集合（接地校验：characterMotives 不得出现列表外人名） */
+    const validRoleNames = (input.roles || [])
+      .filter((r: any) => r && r.name)
+      .map((r: any) => String(r.name).trim())
+      .filter(Boolean);
+    const roleLinesForOutline = (input.roles || [])
+      .filter((r: any) => r && r.name)
+      .map((r: any) => `- ${r.name}${r.representative?.gender !== undefined ? (r.representative.gender === 1 || r.representative.gender === 'M' || r.representative.gender === 'male' ? '（男）' : '（女）') : ''}`)
+      .join('\n');
+    const outlineSystemPrompt = `你是一位顶级的影视剧情分析师。你的任务是从片段流中提炼完整剧情主线，供解说创作者撰写"贴合剧情"的解说文案。
+你绝不描述画面细节（那是画面翻译，不是剧情理解），只提炼剧情逻辑：发生了什么、为什么、人物想要什么、转折在哪里。
+
+【接地契约 · 最高优先级 —— 违反即判不合格】
+1. 你的每一句剧情结论都必须能在「片段流的画面字段（keyAction/scene/keyProps/costume/weatherEnv/emotion/atmosphere）或原声台词（asrContext）」中找到依据，或由可见画面与台词自然推断而来；
+2. 编造红线：严禁凭空新增片段流与【角色列表】中都不存在的人物、事件、道具、场景——这才是必须杜绝的"编造"。但人物的身份、职业、关系、动机、情绪、前因后果，只要能从画面或台词自然推出，就应当写明：这正是「剧情理解」的本职（呼应上方"为什么 / 人物想要什么"），不属于编造，不得回避、也不得用画面复述代替；
+3. keyTurns 的 chunkId 必须取自片段流中真实出现的 chunkId，把每个转折锚定到具体片段；
+4. characterMotives 的键只能使用【角色列表】中出现的人名，无角色时留空对象；
+5. 画面与台词冲突时以画面为准；台词缺失时只依据画面推断，绝不编造台词；
+6. 粒度保真（严禁"细节升级"）：台词/画面给到什么粒度就写到什么粒度。不得把模糊信息具体化——如台词只说"中奖/抽中"不得补成"银行抽奖"；台词只表现"向人求情"不得补出对方职务（刑警/医生）或"司法程序"；台词只说某人怀孕，不得改换怀孕主体、也不得补"私奔"等未出现情节。宁可表述笼统，也绝不把不确定信息具体化；
+7. 角色命名：严格沿用【角色列表】给出的姓名；列表只给代称（如"角色_N"）或只给名未给姓时，可依台词音译补名，但同一角色全篇必须用同一姓名，且不得与台词中的姓名读音冲突。`;
+    /** 阈值与重试上限（用户确认口径：剧情符合度 > 95%） */
+    const FIDELITY_THRESHOLD = 0.95;
+    const MAX_OUTLINE_ATTEMPTS = 3;
+    /** 上一轮违规明细（接地/符合度），回灌下一轮 prompt 定向修正 */
+    let judgeFeedback = '';
+    let lastOutlineErr = '';
+
+    /**
+     * LLM-as-judge：审校阶段A 大纲对「画面 + 台词」的剧情符合度（0~1）。
+     * 判定口径：区分「无源编造」与「合理推断」——只有凭空新增的人物/事件/道具/场景（片段流与
+     * 角色列表中均不存在）、以及与画面/台词明确相悖的结论才扣分；由画面+台词可自然推出的身份、
+     * 动机、前因后果属合理推断，不扣分（不能证伪即不扣分）。
+     * ⚠️ 历史教训：旧口径「任何添加（含动机/道具等推断）逐条扣 0.05」与阈值 0.95（至多 1 条违规）
+     *   相互对冲，导致 15 章长片几乎不可能达标（实测两份完全不同的大纲均精确停在 35.0%），
+     *   闸门恒拦、名师出不了徒。新口径在「不放行编造」与「可达」之间取正。
+     * 契约遵循 ILLMProvider：chat() 不抛异常，返回 { success, text?, error? }，须先查 success。
+     */
+    const judgeOutlineFidelity = async (
+      candidate: any,
+      sourceJson: string,
+      roleLines: string,
+    ): Promise<{ fidelity: number; violations: string[] }> => {
+      const judgeSystem = `你是一位严谨的影视剧情审校员。你只审查【一个维度】：大纲是否包含「无源编造」（片段流与角色列表中都不存在的人物/事件/道具/场景，或与画面/台词明确相悖的结论）。除这一个维度外，任何其他理由都不得扣分——尤其不得因章节顺序、叙事详略、措辞风格、概括程度而扣分。你的职责是抓编造，不是苛责合理推断，也不是评判叙事组织方式。`;
+      const judgeUser = `【唯一事实依据 · 画面描述 + 原声台词（片段流）】：
+${sourceJson}
+
+【已识别角色列表】：
+${roleLines || '（未识别到角色）'}
+
+【待审剧情大纲】：
+${JSON.stringify(candidate, null, 2)}
+
+请判定待审大纲的剧情符合度（0~1）。判分原则：不能证伪即不扣分——只有能明确指出「片段流与角色列表中都不存在」或「与画面/台词明确相悖」时，才计为扣分项。
+
+【计入扣分 · 无源编造】（每处扣 0.05）
+- 凭空新增的人物（片段流与角色列表中均无此人的任何出现/指代）；
+- 凭空新增的关键事件或道具（画面与台词中均无依据，且非由可见情节自然推出）；
+- 凭空新增的场景/地点（画面与台词中均无依据）；
+- 与画面内容或原声台词明确相悖的结论（如画面为 A 却断言 B、台词说甲却断言乙）。
+
+【不计扣分 · 合理推断（视为成立）】
+- 由画面 + 台词可自然推出的身份、职业、关系、动机、情绪、前因后果；
+- 对情节的概括、归纳与措辞润色（如把"几人争执"概括为"关系破裂"）；
+- 时间/地点的合理归纳；对人物外观、称呼的概括（如"女子""男演员""明星"）；
+- 外文（韩语等）人名的汉字音译与姓氏用字选择：同一读音常对应多个汉字（如 유→柳/刘/俞、양→梁/杨），模型无从查证时按音选用汉字属音译用字差异，**不计为编造**；
+- 角色列表仅给代称（如"角色_N"）或仅给名未给姓时，大纲为已存在角色拟定姓名不扣分（该角色须确在片段流或角色列表中出现）。
+⚠️ 上述两条的边界：若同一角色在同份大纲中被判为两个不同姓名，或所用姓名读音与台词明确冲突，仍属扣分项。
+判断标准：在片段流中找不到"明确矛盾"、也找不到"凭空新增的实体"，即视为成立、不扣分。
+
+【明确排除 · 不得据此扣分】
+- 章节（chapters）的数量、编号与先后顺序：章节划分与顺序由系统预先给定，作者无权调整，其时间顺序问题不在本次审查范围内，一律不扣分；
+- 叙事的详略、措辞、概括程度、呈现风格，以及你认为"可以写得更精确/更完整"的任何地方；
+- 情节取舍（大纲未提及片段流中的某些内容）不构成违规。
+即：除上述「计入扣分」四条外，不得以任何其他理由扣分；无明确可指证的无源编造时，fidelity 应为 1.00。
+
+严格输出 JSON（不要 Markdown 包裹，不要解释）：
+{
+  "fidelity": 0.00,
+  "violations": ["具体违规点1（须指明对应哪个 chunkId / 台词）", "违规点2"]
+}`;
+      const resp = await adapter.chat(
+        [
+          { role: 'system', content: judgeSystem },
+          { role: 'user', content: judgeUser },
+        ],
+        modelName,
+        0.0, // 审校用 0 温，保证判分稳定可复现
+        { max_tokens: 1500, response_format: { type: 'json_object' } },
+      );
+      if (!resp.success) throw new Error(`剧情符合度审校请求失败: ${resp.error || '未知错误'}`);
+      if (!resp.text) throw new Error('剧情符合度审校响应为空（可能为推理模型分离输出或后端忙时空返回）');
+      const parsedJudge = NetworkPipeline.strictParseJson(resp.text);
+      const fidelity = Number(parsedJudge?.fidelity);
+      if (!Number.isFinite(fidelity)) throw new Error('剧情符合度审校结果缺少 fidelity 数值');
+      const violations = Array.isArray(parsedJudge?.violations)
+        ? parsedJudge.violations.map((v: any) => String(v ?? '').trim()).filter(Boolean)
+        : [];
+      return { fidelity: Math.max(0, Math.min(1, fidelity)), violations };
+    };
+
+    for (let attempt = 1; attempt <= MAX_OUTLINE_ATTEMPTS && !plotOutline; attempt++) {
+      /** 🔧 诊断用：本轮原始响应文本缓存，供 catch 告警携带片段（chat 结果在 try 内声明，catch 作用域不可见） */
+      let outlineRawText = '';
+      try {
+        onProgress(15, `正在理解剧情主线（阶段1/2 · 第 ${attempt}/${MAX_OUTLINE_ATTEMPTS} 次）...`);
+        const outlineUserPrompt = `【角色列表】：
 ${roleLinesForOutline || '（未识别到角色，以片段流中的代称为准）'}
 ${storyLine ? `\n【全片剧情故事线】（步骤2视觉分析按时间顺序串联的画面动作脉络，供你理解全局剧情走向）：
 ${storyLine}` : ''}
 ${isTwoPhase ? `
-【预划分章节结构】（系统已按时间轴将片段流划分为 ${chapterGroups.length} 个连续章节，你的大纲须严格按此章节编号对齐归纳，不得增删章节数）：
+【预划分章节结构】（系统已按时间轴将片段流划分为 ${chapterGroups.length} 个连续章节。你的 chapters 必须严格按此编号与 chunkId 范围对齐：第 N 章的 title/summary 只能描述「章节N」标注的 chunkId 区间内实际发生的事，严禁跨章重排、严禁把后章事件提前或前章事件推后。不得增删章节数）：
 ${chapterGroups.map((g: any[], i: number) => {
   const head = g[0];
   const tail = g[g.length - 1];
   const asrDigest = g.map((c: any) => c.asrContext || '').filter(Boolean).join(' ').slice(0, 120);
-  return `- 章节${i + 1}（chunk ${head?.chunkId} ~ ${tail?.chunkId}）：${asrDigest || '（无台词段）'}`;
+  // 🔧 章节错位修复（2026-10-08）：此前每章只给「台词摘要」，模型看不到该章画面，只能靠剧情想象填
+  //   title/summary → 跨章错位（实测把「抵达上海」填进上一章）。补上该章画面摘要，让标题与 chunkId 区间一一锚定。
+  const visualDigest = g
+    .map((c: any) => [c?.keyAction, c?.scene, c?.keyProps].filter(Boolean).join('，'))
+    .filter(Boolean)
+    .join(' / ')
+    .slice(0, 120);
+  return `- 章节${i + 1}（chunk ${head?.chunkId} ~ ${tail?.chunkId}）：\n    画面：${visualDigest || '（无画面描述）'}\n    台词：${asrDigest || '（无台词段）'}`;
 }).join('\n')}` : ''}
-
+${judgeFeedback ? `\n【上一轮未通过校验 · 必须逐条修正（不得重复同类错误）】：
+${judgeFeedback}\n` : ''}
 【视频片段流（含时间轴 / 画面描述 / 原声台词）】：
-${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}
+${outlineSourceJson}
 
 请严格输出 JSON（不要 Markdown 包裹，不要解释）：
 {
@@ -1304,30 +1525,58 @@ ${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}
     // ……逐章列出，chapters 数组长度必须等于 ${chapterGroups.length}，index 从 1 开始连续编号
   ]` : ''}
 }`;
-      const outlineResponse = await adapter.chat(
-        [
-          { role: 'system', content: outlineSystemPrompt },
-          { role: 'user', content: outlineUserPrompt },
-        ],
-        modelName,
-        0.3, // 大纲生成用低温，保证剧情归纳稳定
-        { max_tokens: 2500, response_format: { type: 'json_object' } }, // 🔧 防截断：两阶段需额外输出 chapters 数组，1500 在长片场景会截断 JSON 致解析失败；response_format 激活 adapter 的 json_object 降级链，约束大纲输出为 JSON 对象
-      );
-      outlineRawText = outlineResponse.text || '';
-      // 🔧 修复：chat() 失败时不抛异常而是返回 {success:false,error}；必须先检查 success，
-      // 否则 text=undefined 经 `|| ''` 后被误报为 "Unexpected end of JSON input"，真实错误（如 HTTP 503 模型加载中）被吞
-      if (!outlineResponse.success) {
-        throw new Error(`剧情理解请求失败: ${outlineResponse.error || '未知错误'}`);
-      }
-      if (!outlineRawText) {
-        throw new Error('剧情理解响应 content 为空（可能为推理模型分离输出或后端忙时空返回）');
-      }
-      const parsedOutline = NetworkPipeline.strictParseJson(outlineRawText);
-      if (parsedOutline && typeof parsedOutline === 'object' && !Array.isArray(parsedOutline) && parsedOutline.logline) {
+        const outlineResponse = await adapter.chat(
+          [
+            { role: 'system', content: outlineSystemPrompt },
+            { role: 'user', content: outlineUserPrompt },
+          ],
+          modelName,
+          0.3, // 大纲生成用低温，保证剧情归纳稳定
+          // 🔧 防截断（2026-10-01 实测修复）：两阶段需额外输出 chapters 数组（15 章时 logline+arc+characterMotives+keyTurns+chapters 极易超 2500），
+          //   实测 2500 会在 2159 字符处截断 JSON 致解析失败、白白烧掉一次重试；与同文件章节生成口径对齐取 8000。
+          { max_tokens: 8000, response_format: { type: 'json_object' } },
+        );
+        outlineRawText = outlineResponse.text || '';
+        // 🔧 修复：chat() 失败时不抛异常而是返回 {success:false,error}；必须先检查 success，
+        // 否则 text=undefined 经 `|| ''` 后被误报为 "Unexpected end of JSON input"，真实错误（如 HTTP 503 模型加载中）被吞
+        if (!outlineResponse.success) {
+          throw new Error(`剧情理解请求失败: ${outlineResponse.error || '未知错误'}`);
+        }
+        if (!outlineRawText) {
+          throw new Error('剧情理解响应 content 为空（可能为推理模型分离输出或后端忙时空返回）');
+        }
+        const parsedOutline = NetworkPipeline.strictParseJson(outlineRawText);
+
+        // ① 代码侧接地校验：结构闭包（chunkId / 角色名 / 形态），拦截无源编造
+        const grounding = verifyOutlineGrounding(
+          parsedOutline,
+          validChunkIds,
+          validRoleNames,
+          isTwoPhase ? chapterGroups.length : null,
+        );
+        if (!grounding.ok) {
+          judgeFeedback = `【接地校验未通过】以下结论缺乏画面/台词依据或无源编造，必须逐条修正：\n${grounding.violations.map((v) => `- ${v}`).join('\n')}`;
+          throw new Error(`接地校验未通过：${grounding.violations.join('；')}`);
+        }
+
+        // ② LLM 语义符合度自检：剧情 ↔ 画面 + 台词，阈值 95%
+        const judgment = await judgeOutlineFidelity(parsedOutline, outlineSourceJson, roleLinesForOutline);
+        if (judgment.fidelity < FIDELITY_THRESHOLD) {
+          // 🩺 盲区补全（2026-10-01）：审校员的扣分明细此前完全不落日志，导致「35% 到底是真编造还是判分坏了」
+          //   无法从日志坐实。此处把违规明细与事实源体量一并落盘，供离线复盘。
+          AppLogger.warn(
+            LOG_TAGS.AI_AGENT,
+            `[文案生成] 剧情符合度扣分明细（第 ${attempt} 次 · ${(judgment.fidelity * 100).toFixed(1)}% · 事实源 ${contextChunks.length} chunk/${outlineSourceJson.length} 字符）：`
+            + (judgment.violations.length ? `\n${judgment.violations.map((v, i) => `  ${i + 1}. ${v}`).join('\n')}` : '（审校未给出具体条目）'),
+          );
+          judgeFeedback = `【剧情符合度 ${(judgment.fidelity * 100).toFixed(1)}% < ${(FIDELITY_THRESHOLD * 100).toFixed(0)}%】以下结论与画面/台词不符，必须据实修正：\n${judgment.violations.map((v) => `- ${v}`).join('\n') || '- （审校未给出具体条目，请整体复核每个主张是否可在画面/台词中找到依据）'}`;
+          throw new Error(`剧情符合度 ${(judgment.fidelity * 100).toFixed(1)}% 低于阈值 ${(FIDELITY_THRESHOLD * 100).toFixed(0)}%`);
+        }
+
+        // 双校验通过：落定大纲 + 回填章节元信息
         plotOutline = parsedOutline;
-        AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 剧情理解完成：${parsedOutline.logline}`);
-        // 两阶段：从大纲产物中提取 chapters 结构回填章节元信息（标题/概要），
-        // 供 Stage2 每章请求注入剧情定位提示；index 对齐失败或缺失时按位置映射兜底，仍无则保留 null 走本地默认值
+        AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 剧情理解完成（符合度 ${(judgment.fidelity * 100).toFixed(1)}%）：${parsedOutline.logline}`);
+        // 两阶段：从大纲产物中提取 chapters 回填章节元信息（标题/概要），供 Stage2 每章注入剧情定位提示
         if (isTwoPhase && Array.isArray(parsedOutline.chapters) && parsedOutline.chapters.length > 0) {
           chapterMetaList = chapterGroups.map((_g: any[], i: number) => {
             const meta = parsedOutline.chapters.find((c: any) => Number(c?.index) === i + 1) || parsedOutline.chapters[i];
@@ -1341,14 +1590,29 @@ ${JSON.stringify(ScriptGenStrategy.slimContextChunks(contextChunks), null, 2)}
             LOG_TAGS.AI_AGENT,
             `[文案生成] 章节大纲对齐完成：${chapterMetaList.filter(Boolean).length}/${chapterGroups.length} 章获得剧情概要`,
           );
+          /** 🔬 章节错位验证日志（2026-10-09）：章节 title/summary 不落库、原日志只报数量，
+           *  错位问题此前无从观测。逐章打印「章号 | chunkId 区间 | 标题」，一眼可核对标题与区间内画面是否一致。 */
+          AppLogger.info(
+            LOG_TAGS.AI_AGENT,
+            `[文案生成] 章节顺序自检（章节错位修复验证）：\n${chapterGroups
+              .map((g: any[], i: number) => {
+                const head = g[0];
+                const tail = g[g.length - 1];
+                const t = chapterMetaList[i]?.title || '（缺失）';
+                return `  章节${i + 1} | chunk ${head?.chunkId} ~ ${tail?.chunkId} | ${t}`;
+              })
+              .join('\n')}`,
+          );
         }
-      } else {
-        AppLogger.warn(LOG_TAGS.AI_AGENT, '[文案生成] 剧情大纲返回格式异常，降级为逐段解说模式');
+      } catch (e: any) {
+        // 🔧 诊断增强：失败告警携带原始响应片段（前 200 字符），便于区分空响应/截断/脏数据三类根因
+        const snippet = outlineRawText ? `｜响应片段: ${outlineRawText.substring(0, 200)}` : '';
+        lastOutlineErr = `${e?.message || String(e)}${snippet}`;
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[文案生成] 剧情理解未通过（第 ${attempt}/${MAX_OUTLINE_ATTEMPTS} 次）：${lastOutlineErr}`);
       }
-    } catch (e: any) {
-      // 🔧 诊断增强：失败告警携带原始响应片段（前 200 字符），便于区分空响应/截断/脏数据三类根因
-      const snippet = outlineRawText ? `｜响应片段: ${outlineRawText.substring(0, 200)}` : '';
-      AppLogger.warn(LOG_TAGS.AI_AGENT, `[文案生成] 剧情理解失败，降级为逐段解说模式: ${e.message}${snippet}`);
+    }
+    if (!plotOutline) {
+      throw new Error(`剧情理解失败：连续 ${MAX_OUTLINE_ATTEMPTS} 次未通过「接地校验 + 剧情符合度≥${(FIDELITY_THRESHOLD * 100).toFixed(0)}%」校验（末次：${lastOutlineErr}）。请更换模型或重试。`);
     }
 
     // ========== System Prompt 参数包 ==========
@@ -1446,7 +1710,22 @@ ${roleMapLines.join('\n')}
             acc += cutAt;
             break; // 已尽力收满配额，收尾
           }
-          // 越界段无完整句可收：跳过该段，继续尝试后续段落。
+          // 🔧 保底修复（2026-10-09）：到此仍一字未留（首段即为超长的完整句 / 无句末标点）时，
+          //    保留该段首个完整句（宁可轻微超发），避免整章解说被截空——实测曾出现整章截断至 0 字。
+          //    仍严守"不产半句"红线：只取到句末标点为止；无任何标点时整段保留（其本身即完整段）。
+          if (kept.length === 0) {
+            let firstEnd = 0;
+            for (let j = 0; j < txt.length; j++) {
+              if ('。！？!?…'.includes(txt[j])) { firstEnd = j + 1; break; }
+            }
+            const keepTxt = firstEnd > 0 ? txt.slice(0, firstEnd) : txt;
+            if (keepTxt.trim()) {
+              kept.push({ ...s, text: keepTxt });
+              acc += keepTxt.length;
+              break;
+            }
+          }
+          // 越界段无完整句可收、且已有保留内容：跳过该段，继续尝试后续段落。
           // 🔧 修复：旧版在此处硬切 txt.slice(0, budget) 制造"…传"/"…嗓"式无标点半句
           // （绕过上游 assert 直接落库），违反"错就错，不降级"——配额不足宁可留白，绝不产半句。
           continue;
@@ -1634,7 +1913,10 @@ ${roleMapLines.join('\n')}
        *  进度锚定阶段2 终点 85（而非 100），避免与后续反序列化 90 的进度倒退；
        *  streamMeta 标记为单章完成（§五 5.3-C 当前章进度显示用） */
       onProgress(85, '解说文案生成完成', {
-        partialParagraphs: rawShots,
+        /** 🔧 流式主键修复（2026-10-09）：此前直推 LLM 原始对象（无 id），前端 breakLongParagraphs
+         *  对空 id 回落 `para_${idx}`，逐章追加时 idx 每章从 0 重起 → 跨批撞号 → React 重复 key。
+         *  流式推送处即赋唯一主键（与最终 seg_{idx} 同源），前端零改动即可去重。 */
+        partialParagraphs: rawShots.map((p: any, i: number) => ({ ...p, id: p.id || `seg_${i}` })),
         streamMeta: { chapterIndex: 1, totalChapters: 1 },
       });
     } else {
@@ -1771,7 +2053,8 @@ ${roleMapLines.join('\n')}
           Math.min(85, 20 + Math.floor(((k + 1) / N) * 65)),
           `正在撰写第 ${k + 1}/${chapterGroups.length} 章「${meta?.title || `章节${k + 1}`}」解说文案...`,
           {
-            partialParagraphs: chapterRaw,
+            /** 🔧 流式主键修复：章内位置 i 逐章从 0 重起，必须叠加章号 k 才能跨章唯一 */
+            partialParagraphs: chapterRaw.map((p: any, i: number) => ({ ...p, id: p.id || `seg_${k}_${i}` })),
             streamMeta: { chapterIndex: k + 1, totalChapters: N },
           },
         );
@@ -2008,7 +2291,12 @@ ${roleMapLines.join('\n')}
     const totalBudgetChars = targetBudgetChars !== null
       ? targetBudgetChars
       : Math.floor(totalDurationSec * speechRate * densityFillRate * discountFactor);
-    const actualTotalChars = parsedShots.reduce((sum, s) => sum + (s.text || '').length, 0);
+    // 🔧 口径修正（2026-10-09）：原声保留段（keepOriginalAudio）的 text 是「逐字抄录的原台词」，
+    //    不属于解说净字数——与 enforceChapterQuota（narrLens 置 0）、匹配单位诊断（filter !keepOriginalAudio）
+    //    同口径。此前未排除导致总量误报超预算（实测 1256 字中约 725 字是原声原文，解说实际 ≈531 已在预算内）。
+    const actualTotalChars = parsedShots
+      .filter((s) => s.keepOriginalAudio !== true)
+      .reduce((sum, s) => sum + (s.text || '').length, 0);
     if (actualTotalChars > totalBudgetChars) {
       // 定律二除零 Guard：预算基准为 0（如空片段流等异常场景）时跳过比例计算，
       // 直接按超限 100% WARN 暴露，杜绝 NaN 混入日志误导排查
@@ -2163,7 +2451,8 @@ ${args.endingDirective ? `## 🎬 结尾收束（Ending Closure）
 ${args.endingDirective}` : ''}
 
 ${args.chapterQuotaWords !== null ? `## 📏 本章硬性字数配额（Hard Quota）
-本请求只负责撰写整片中的其中一个章节解说：解说词净字数必须控制在 **≤ ${args.chapterQuotaWords} 字**（keepOriginalAudio 原声段不计入）。这是全局预算分摊到你这一章的硬性配额，宁可稍少、严禁超发。` : args.targetSec !== null ? `## 📏 目标解说总时长（总量约束，与"解说占比"独立）
+本请求只负责撰写整片中的其中一个章节解说：解说词净字数必须控制在 **≤ ${args.chapterQuotaWords} 字**（keepOriginalAudio 原声段不计入）。这是全局预算分摊到你这一章的硬性配额，宁可稍少、严禁超发。
+**⚠️ 配额有限，必须择重**：本章配额仅 ${args.chapterQuotaWords} 字，只够覆盖少数关键镜头，切勿平均分配到每个镜头。请挑【关键剧情/冲突/转折】镜头写丰满，其余过渡/次要镜头${args.allowOriginalMark ? '一律标记 "keepOriginalAudio": true 留白给原声' : '尽量不写'}——否则必然超发并触发整段截断。` : args.targetSec !== null ? `## 📏 目标解说总时长（总量约束，与"解说占比"独立）
 本片目标解说总时长约 ${args.targetSec} 秒（约 ${args.targetBudgetChars} 字）。片段流中存在过渡/次要段落时：优先为关键剧情/冲突/转折段落撰写**丰满**解说（每段按字数上限写满，保留解读）；过渡/次要段落应${args.allowOriginalMark ? '标记 "keepOriginalAudio": true 留白给原声' : '精简字数'}，使全部解说总量贴近目标时长。` : ''}
 
 ## ⚡ 爆款短句与卡点硬性规则 (Core Short-Sentence Rules)
@@ -2185,9 +2474,11 @@ ${CONSTRAINTS.NO_DRAFT_ITERATION}
 
 ## 字数预算与参数指引
 【严格字数约束】：每个解说段应写成通顺连贯的完整句子或短句群，确保剧情表达完整，不要为了凑字数而碎成几个字。
-- 单段字数上限 = ⌊ 时长(秒) × ${args.speechRate} × ${(args.densityFillRate * 100).toFixed(0)}% × ${args.discountFactor} ⌋
+${args.chapterQuotaWords !== null ? `- 本章解说总配额 ${args.chapterQuotaWords} 字须摊在本章 ${args.totalDurationSec.toFixed(1)} 秒画面上 = 平均 ${(args.chapterQuotaWords / Math.max(1, args.totalDurationSec)).toFixed(2)} 字/秒（远低于满速解说）。
+- 因此**单段字数上限 = ⌊ 本段时长(秒) × ${(args.chapterQuotaWords / Math.max(1, args.totalDurationSec)).toFixed(3)} ⌋**——数值极小，只够用在关键镜头上。
+- 严禁按"每秒 3~4 字"的常规语速写满每个镜头，那会直接超发数倍；过渡/次要镜头请留白（keepOriginalAudio）给原声让路。` : `- 单段字数上限 = ⌊ 时长(秒) × ${args.speechRate} × ${(args.densityFillRate * 100).toFixed(0)}% × ${args.discountFactor} ⌋
 - 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * args.speechRate * args.densityFillRate * args.discountFactor)} 字
-- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * args.speechRate * args.densityFillRate * args.discountFactor)} 字
+- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * args.speechRate * args.densityFillRate * args.discountFactor)} 字`}
 ${args.chapterQuotaWords !== null ? `- 本章解说词总量严格执行上方硬性配额（≤ ${args.chapterQuotaWords} 字），原声段不计入，严禁超出配额超发` : `- 视频总时长约 ${args.totalDurationSec.toFixed(1)} 秒，解说词总量绝对严禁超过 ${Math.floor(args.totalDurationSec * args.speechRate * args.densityFillRate * args.discountFactor)} 字`}
 
 【专业解说参数指引】：

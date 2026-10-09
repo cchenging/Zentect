@@ -169,6 +169,11 @@ export interface VisionExtractOutput {
       interaction?: string;
       shotStyle?: string;
       characters?: string[];
+      /** 🎬 场景/道具/服装/天气环境：VLM 结构化真实产出，随 ...f.downstream 透传给 step3 供剧情接地推断 */
+      scene?: string;
+      keyProps?: string;
+      costume?: string;
+      weatherEnv?: string;
       asrText?: string;
     }[];
   };

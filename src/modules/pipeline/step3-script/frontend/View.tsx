@@ -612,7 +612,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
 
               return (
                 <div
-                  key={pId}
+                  key={pId || `idx_${index}`}
                   className="group relative p-3.5 rounded-2xl bg-bg-secondary/60 border border-border/30
                     hover:border-accent/40 focus-within:border-accent/60 focus-within:ring-1 focus-within:ring-accent/20
                     transition-all duration-200 backdrop-blur-sm shadow-xs animate-fade-in-up"

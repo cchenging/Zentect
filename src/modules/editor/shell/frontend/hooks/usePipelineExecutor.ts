@@ -117,12 +117,17 @@ export const usePipelineExecutor = () => {
         const nodeId: string = payload.nodeId || '';
         if (nodeId.includes('script')) {
           const s3 = useStep3Store.getState();
-          /** ✅ 身份键统一：段落主键 id 出生处(ScriptGenStrategy)已强制 seg_{idx} 全局唯一，此层仅透传、
-           *  不再做任何去重/追加后缀（删除了旧 idMap 兜底，防线收敛到唯一权威源头）。 */
+          /** ✅ 身份键统一：段落主键以 ScriptGenStrategy 的 seg_* 为唯一权威源；此处补最终防线——
+           *  流式推送若缺 id，用「章号+章内下标」兜底（章内 idx 每章从 0 重起，必须叠加章号才跨章唯一）。 */
+          const chapterIdx = results.streamMeta?.chapterIndex ?? 0;
+          const missingIdCount = results.partialParagraphs.filter((p: any) => !p?.id).length;
+          if (missingIdCount > 0) {
+            console.warn(`[步骤3·流式] 段落主键 id 缺失 ${missingIdCount}/${results.partialParagraphs.length}，已用 seg_${chapterIdx}_{idx} 兜底（请核查后端 partialParagraphs 为何未带 id）`);
+          }
           const paragraphs = results.partialParagraphs.map((p: any, idx: number) => {
             return {
               /** ✅ 身份键统一：id 出生处即段落唯一主键，前端编辑/时间轴定位按此对齐 */
-              id: p.id,
+              id: p.id || `seg_${chapterIdx}_${idx}`,
               text: p.text || p.content || '',
               shotId: p.shotId,
               duration: p.duration,

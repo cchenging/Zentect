@@ -76,7 +76,7 @@ vi.mock('../../prompts/constraints', () => ({
   },
 }));
 
-import { ScriptGenStrategy, dedupeAdjacentParagraphs } from '../ScriptGenStrategy';
+import { ScriptGenStrategy, dedupeAdjacentParagraphs, verifyOutlineGrounding } from '../ScriptGenStrategy';
 import { AppLogger } from '../../../core/AppLogger';
 
 // ---------- 测试用例 ----------
@@ -87,16 +87,22 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
   beforeEach(() => {
     strategy = new ScriptGenStrategy();
     vi.clearAllMocks();
-    // 🎬 两阶段调用：阶段A（剧情理解）返回大纲 JSON；阶段B（主生成）返回合法解说 JSON 数组
+    // 🎬 三阶段调用序列：call0=阶段A 剧情大纲；call1=LLM 符合度审校；call2=阶段B 主生成
     mockChat
       .mockResolvedValueOnce({
         success: true,
         text: JSON.stringify({
           logline: '张三潜入室内寻找证据，最终直面真相',
           arc: ['开场钩子', '铺垫', '冲突升级', '高潮', '结局'],
-          characterMotives: { 张三: '寻找真相' },
+          // characterMotives 留空：本组用例会传入不同 roles（含"王五"），避免触发角色名闭包接地违规
+          characterMotives: {},
           keyTurns: [{ chunkId: 'chunk_001', turn: '发现关键线索' }],
+          hasClearEnding: true,
         }),
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        text: JSON.stringify({ fidelity: 0.98, violations: [] }),
       })
       .mockResolvedValue({
         success: true,
@@ -146,9 +152,9 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    expect(mockChat).toHaveBeenCalledTimes(2);
-    // 第一次调用是阶段A（剧情理解），第二次才是主生成 → 断言 calls[1]（阶段B）的 userContent
-    const userContent = mockChat.mock.calls[1][0][1].content;
+    expect(mockChat).toHaveBeenCalledTimes(3);
+    // call0=阶段A（剧情理解），call1=符合度审校，call2=阶段B 主生成 → 断言 calls[2]（阶段B）的 userContent
+    const userContent = mockChat.mock.calls[2][0][1].content;
     // 应包含全局角色列表段（阶段2：ID→名称显式映射）
     expect(userContent).toContain('【全局已知角色列表】');
     expect(userContent).toContain('r1 -> 张三');
@@ -166,7 +172,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[1][0][1].content;
+    const userContent = mockChat.mock.calls[2][0][1].content;
     // 应有角色写作硬性准则：严禁使用模糊代称
     expect(userContent).toContain('【角色写作硬性准则】');
     expect(userContent).toContain('严禁');
@@ -178,7 +184,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[1][0][1].content;
+    const userContent = mockChat.mock.calls[2][0][1].content;
     expect(userContent).not.toContain('【全局已知角色列表】');
   });
 
@@ -187,7 +193,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[1][0][1].content;
+    const userContent = mockChat.mock.calls[2][0][1].content;
     expect(userContent).not.toContain('【全局已知角色列表】');
   });
 
@@ -200,7 +206,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[1][0][1].content;
+    const userContent = mockChat.mock.calls[2][0][1].content;
     expect(userContent).toContain('r1 -> 张三');
     // 不应包含无 name 的角色 ID 映射
     expect(userContent).not.toContain('r2 ->');
@@ -212,7 +218,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[1][0][1].content;
+    const userContent = mockChat.mock.calls[2][0][1].content;
     // 阶段1 ContextChunk 在前，阶段2 角色列表在后
     const contextIdx = userContent.indexOf('【多模态上下文片段流（ContextChunk）】');
     const rolesIdx = userContent.indexOf('【全局已知角色列表】');
@@ -225,7 +231,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[1][0][1].content;
+    const userContent = mockChat.mock.calls[2][0][1].content;
     expect(userContent).toContain('r1 -> 王五');
     // 不应有空括号
     expect(userContent).not.toContain('（）');
@@ -274,7 +280,7 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[1][0][1].content;
+    const userContent = mockChat.mock.calls[2][0][1].content;
     // 应使用 downstreamContext 的结构化数据，而非 sceneDescriptions
     expect(userContent).toContain('走入室内');
     expect(userContent).toContain('拿起杯子');
@@ -305,12 +311,41 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    const userContent = mockChat.mock.calls[1][0][1].content;
+    const userContent = mockChat.mock.calls[2][0][1].content;
     // 多人物交互动作应进入 LLM 上下文，而非被丢弃
     expect(userContent).toContain('张三举枪质问角落里的李四');
     expect(userContent).toContain('双人对峙');
     expect(userContent).toContain('张三');
     expect(userContent).toContain('李四');
+  });
+
+  it('场景/道具/服装/天气环境字段应透传到 visualContext 供 LLM 消费（剧情的画面事实依据）', async () => {
+    const input = buildInput([{ id: 'r1', name: '张三' }]);
+    // 步骤2 VLM 结构化产出：场景/关键道具/服装/天气环境
+    input.visionResult = {
+      downstreamContext: {
+        shots: [
+          {
+            action: '张三在老旧客厅翻找',
+            emotion: '紧张',
+            keywords: ['客厅', '钥匙'],
+            scene: '老旧客厅',
+            keyProps: '一把生锈的钥匙',
+            costume: '褪色工装',
+            weatherEnv: '黄昏暴雨',
+          },
+        ],
+      },
+    };
+
+    await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
+
+    const userContent = mockChat.mock.calls[2][0][1].content;
+    // 四类字段必须原样进入 LLM 上下文，不得在中途被丢弃（阶段A 剧情接地的事实来源）
+    expect(userContent).toContain('老旧客厅');
+    expect(userContent).toContain('一把生锈的钥匙');
+    expect(userContent).toContain('褪色工装');
+    expect(userContent).toContain('黄昏暴雨');
   });
 });
 
@@ -348,7 +383,7 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
   beforeEach(() => {
     strategy = new ScriptGenStrategy();
     vi.clearAllMocks();
-    // 阶段A：剧情大纲成功；阶段B：主生成解说数组
+    // 阶段A：剧情大纲成功 → 符合度审校通过 → 阶段B：主生成解说数组
     mockChat
       .mockResolvedValueOnce({
         success: true,
@@ -356,8 +391,13 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
           logline: '一个被逼上绝路的人走上复仇之路',
           arc: ['开场钩子', '铺垫', '冲突升级', '高潮', '结局'],
           characterMotives: { 高启强: '从卑微到黑化' },
-          keyTurns: [{ chunkId: 'chunk_003', turn: '第一次反抗' }],
+          keyTurns: [{ chunkId: 'chunk_001', turn: '第一次反抗' }],
+          hasClearEnding: true,
         }),
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        text: JSON.stringify({ fidelity: 0.98, violations: [] }),
       })
       .mockResolvedValue({
         success: true,
@@ -365,20 +405,23 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
       });
   });
 
-  it('应调用两次 LLM：阶段A（剧情理解）在先，阶段B（主生成）在后', async () => {
+  it('应依次调用三次 LLM：阶段A（剧情理解）→ 符合度审校 → 阶段B（主生成）', async () => {
     await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
-    expect(mockChat).toHaveBeenCalledTimes(2);
+    expect(mockChat).toHaveBeenCalledTimes(3);
     // 阶段A 的 userPrompt 应包含"剧情主线"提炼指令与片段流
     const outlineUser = mockChat.mock.calls[0][0][1].content as string;
     expect(outlineUser).toContain('logline');
     expect(outlineUser).toContain('【视频片段流');
     // 阶段A 用低温保证归纳稳定
     expect(mockChat.mock.calls[0][2]).toBe(0.3);
+    // 符合度审校为 call1：0 温、max_tokens 1500（判分稳定可复现）
+    expect(mockChat.mock.calls[1][2]).toBe(0.0);
+    expect(mockChat.mock.calls[1][3]).toEqual({ max_tokens: 1500, response_format: { type: 'json_object' } });
   });
 
   it('阶段A 成功时，阶段B 的 systemPrompt 应注入【全局剧情大纲】', async () => {
     await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
-    const systemContent = mockChat.mock.calls[1][0][0].content as string;
+    const systemContent = mockChat.mock.calls[2][0][0].content as string;
     // 真正的大纲注入块（buildSystemPrompt 内由 args.plotOutline 条件挂载）
     expect(systemContent).toContain('## 📖 全局剧情大纲');
     expect(systemContent).toContain('【全局剧情大纲】');
@@ -388,55 +431,83 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
     expect(systemContent).toContain('解读');
   });
 
-  it('阶段A 失败时，阶段B 降级为逐段解说（无大纲）但主生成仍正常', async () => {
+  it('阶段A 连续 3 次接地校验不通过（返回数组）时，整条流水线硬失败（不降级、不兜底）', async () => {
     // mockReset 清除 beforeEach 的 mockResolvedValueOnce 队列，避免残留大纲被阶段A 消费
     mockChat.mockReset();
-    // 阶段A 返回非法格式（数组而非对象）→ 降级；阶段B 正常
-    mockChat
-      .mockResolvedValueOnce({ success: true, text: JSON.stringify([{ bad: 'array' }]) })
-      .mockResolvedValue({
-        success: true,
-        text: JSON.stringify([{ shotId: 's_01', text: '降级模式解说。', duration: 3.0 }]),
-      });
-    const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
-    // 主生成仍成功
-    expect(result.shots).toBeDefined();
-    expect(result.shots.length).toBeGreaterThan(0);
-    // 阶段B 的 systemPrompt 不含大纲（降级路径）
-    // ⚠️ 不能用字面量 `【全局剧情大纲】` 判断"是否注入了大纲"：它在 buildSystemPrompt 的
-    //    「## 🎬 剧情思维」规则1 里是**静态常驻文本**（指示模型"对照下方大纲"），任何路径都有。
-    //    真正随 plotOutline 条件挂载的注入块头部是 `## 📖 全局剧情大纲（必须首先通读…）`。
-    const systemContent = mockChat.mock.calls[1][0][0].content as string;
-    expect(systemContent).not.toContain('## 📖 全局剧情大纲');
+    // 阶段A 恒返回非法格式（数组而非对象）→ 接地校验每次判"大纲不是 JSON 对象"
+    mockChat.mockResolvedValue({ success: true, text: JSON.stringify([{ bad: 'array' }]) });
+    await expect(
+      (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn()),
+    ).rejects.toThrow(/剧情理解失败/);
+    // 接地校验在符合度审校之前失败 → 每次尝试仅 1 次 LLM 调用，共重试 MAX_OUTLINE_ATTEMPTS=3 次
+    expect(mockChat).toHaveBeenCalledTimes(3);
   });
 
-  it('阶段A 请求失败（success=false）时，降级告警携带真实错误而非 JSON 契约误报，且 max_tokens 为 2500', async () => {
+  it('阶段A 请求失败（success=false）时，重试 3 次后硬失败，告警携带真实错误而非 JSON 契约误报，且 max_tokens 为 8000', async () => {
     // mockReset 清除 beforeEach 的 mockResolvedValueOnce 队列
     mockChat.mockReset();
-    // 阶段A 返回 success=false（模拟模型加载中 HTTP 503 被适配器吞为失败结果）；阶段B 正常
-    mockChat
-      .mockResolvedValueOnce({ success: false, error: 'HTTP 503: 模型 clip 正在加载' })
-      .mockResolvedValue({
-        success: true,
-        text: JSON.stringify([{ shotId: 's_01', text: '降级模式解说。', duration: 3.0 }]),
-      });
-    const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
-    // 主生成仍成功（降级路径不阻断主流程）
-    expect(result.shots).toBeDefined();
-    expect(result.shots.length).toBeGreaterThan(0);
-    // 阶段B 的 systemPrompt 不含大纲（降级路径）
-    // 同前：`【全局剧情大纲】` 在「剧情思维」规则里静态常驻，须以注入块头部判断。
-    const systemContent = mockChat.mock.calls[1][0][0].content as string;
-    expect(systemContent).not.toContain('## 📖 全局剧情大纲');
-    // 🔧 防截断：阶段A 的 max_tokens 应为 2500（第 0 次调用的第 4 个参数）；response_format 激活 adapter 的 json_object 降级链
-    expect(mockChat.mock.calls[0][3]).toEqual({ max_tokens: 2500, response_format: { type: 'json_object' } });
-    // 🔧 降级告警应携带真实错误（HTTP 503），而非被吞后的 "Unexpected end of JSON input"
+    // 阶段A 恒返回 success=false（模拟模型加载中 HTTP 503 被适配器吞为失败结果）
+    mockChat.mockResolvedValue({ success: false, error: 'HTTP 503: 模型 clip 正在加载' });
+    await expect(
+      (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn()),
+    ).rejects.toThrow(/剧情理解失败/);
+    expect(mockChat).toHaveBeenCalledTimes(3);
+    // 🔧 防截断：阶段A 的 max_tokens 应为 8000（第 0 次调用的第 4 个参数）；两阶段需额外输出 chapters 数组，2500 会在长片截断 JSON；response_format 激活 adapter 的 json_object 降级链
+    expect(mockChat.mock.calls[0][3]).toEqual({ max_tokens: 8000, response_format: { type: 'json_object' } });
+    // 🔧 重试告警应携带真实错误（HTTP 503），而非被吞后的 "Unexpected end of JSON input"
     const warnCalls = vi.mocked(AppLogger.warn).mock.calls;
-    const degradeWarn = warnCalls.find((args) => String(args[1]).includes('剧情理解失败，降级'));
-    expect(degradeWarn).toBeDefined();
-    const degradeMsg = String(degradeWarn?.[1] ?? '');
-    expect(degradeMsg).toContain('HTTP 503: 模型 clip 正在加载');
-    expect(degradeMsg).not.toContain('JSON contract damaged');
+    const outlineWarn = warnCalls.find((args) => String(args[1]).includes('剧情理解未通过'));
+    expect(outlineWarn).toBeDefined();
+    const outlineMsg = String(outlineWarn?.[1] ?? '');
+    expect(outlineMsg).toContain('HTTP 503: 模型 clip 正在加载');
+    expect(outlineMsg).not.toContain('JSON contract damaged');
+  });
+
+  it('接地校验不通过时，应把违规明细回灌 prompt 重生成，第二次通过后继续主生成', async () => {
+    mockChat.mockReset();
+    const badOutline = JSON.stringify({
+      logline: '复仇之路', arc: ['开场'], characterMotives: {},
+      keyTurns: [{ chunkId: 'chunk_999', turn: '无源转折' }], hasClearEnding: true,
+    });
+    const goodOutline = JSON.stringify({
+      logline: '复仇之路', arc: ['开场'], characterMotives: {},
+      keyTurns: [{ chunkId: 'chunk_001', turn: '第一次反抗' }], hasClearEnding: true,
+    });
+    mockChat
+      .mockResolvedValueOnce({ success: true, text: badOutline })   // 第 1 次：chunkId 越界 → 接地失败
+      .mockResolvedValueOnce({ success: true, text: goodOutline })  // 第 2 次：修正后接地通过
+      .mockResolvedValueOnce({ success: true, text: JSON.stringify({ fidelity: 0.98, violations: [] }) })
+      .mockResolvedValue({ success: true, text: JSON.stringify([{ shotId: 's_01', text: '剧情解说。', duration: 3.0 }]) });
+
+    const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    expect(result.shots.length).toBeGreaterThan(0);
+    // call0=失败大纲，call1=重生成大纲（接地失败时不经审校），call2=审校，call3=阶段B
+    expect(mockChat).toHaveBeenCalledTimes(4);
+    const retryPrompt = mockChat.mock.calls[1][0][1].content as string;
+    expect(retryPrompt).toContain('接地校验未通过');
+    expect(retryPrompt).toContain('chunk_999');
+  });
+
+  it('剧情符合度低于 95% 时，应把审校违规明细回灌 prompt 重生成，第二次达标后继续主生成', async () => {
+    mockChat.mockReset();
+    const goodOutline = JSON.stringify({
+      logline: '复仇之路', arc: ['开场'], characterMotives: {},
+      keyTurns: [{ chunkId: 'chunk_001', turn: '第一次反抗' }], hasClearEnding: true,
+    });
+    mockChat
+      .mockResolvedValueOnce({ success: true, text: goodOutline })
+      .mockResolvedValueOnce({ success: true, text: JSON.stringify({ fidelity: 0.5, violations: ['臆造了片段流中不存在的动机'] }) })
+      .mockResolvedValueOnce({ success: true, text: goodOutline })
+      .mockResolvedValueOnce({ success: true, text: JSON.stringify({ fidelity: 0.98, violations: [] }) })
+      .mockResolvedValue({ success: true, text: JSON.stringify([{ shotId: 's_01', text: '剧情解说。', duration: 3.0 }]) });
+
+    const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    expect(result.shots.length).toBeGreaterThan(0);
+    // call0=大纲，call1=低分审校，call2=重生成大纲，call3=达标审校，call4=阶段B
+    expect(mockChat).toHaveBeenCalledTimes(5);
+    const retryPrompt = mockChat.mock.calls[2][0][1].content as string;
+    expect(retryPrompt).toContain('剧情符合度');
+    expect(retryPrompt).toContain('臆造了片段流中不存在的动机');
   });
 });
 
@@ -474,7 +545,7 @@ describe('ScriptGenStrategy - 原声无缝衔接准则条件注入', () => {
   beforeEach(() => {
     strategy = new ScriptGenStrategy();
     vi.clearAllMocks();
-    // 两阶段：阶段A 大纲成功；阶段B 主生成成功
+    // 三阶段：call0=阶段A 大纲成功；call1=符合度审校通过；call2=阶段B 主生成成功
     mockChat
       .mockResolvedValueOnce({
         success: true,
@@ -483,7 +554,12 @@ describe('ScriptGenStrategy - 原声无缝衔接准则条件注入', () => {
           arc: ['开场', '高潮'],
           characterMotives: {},
           keyTurns: [],
+          hasClearEnding: true,
         }),
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        text: JSON.stringify({ fidelity: 0.98, violations: [] }),
       })
       .mockResolvedValue({
         // 占位文本需符合碎片化质量校验（assertChapterQuality）要求：
@@ -496,7 +572,8 @@ describe('ScriptGenStrategy - 原声无缝衔接准则条件注入', () => {
   /** 执行 performTask 并返回阶段B 的 systemPrompt 内容 */
   async function getStageBSystemPrompt(input: ReturnType<typeof buildInput>) {
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
-    return mockChat.mock.calls[1][0][0].content as string;
+    // call0=阶段A，call1=符合度审校，call2=阶段B → 取 calls[2]
+    return mockChat.mock.calls[2][0][0].content as string;
   }
 
   it('解说占比 < 100%（留原声空间）时，systemPrompt 应注入【原声无缝衔接准则】', async () => {
@@ -547,7 +624,7 @@ describe('ScriptGenStrategy - 碎片化质量校验（assertChapterQuality）', 
     return { bus: new Map(), projectId: 'test' } as any;
   }
 
-  /** 阶段A 返回合法大纲；阶段B 主生成返回自定义分镜数组 */
+  /** 阶段A 返回合法大纲 → 符合度审校通过；阶段B 主生成返回自定义分镜数组 */
   function mockStageB(shots: any[]) {
     mockChat
       .mockResolvedValueOnce({
@@ -557,7 +634,12 @@ describe('ScriptGenStrategy - 碎片化质量校验（assertChapterQuality）', 
           arc: ['开场', '高潮'],
           characterMotives: {},
           keyTurns: [],
+          hasClearEnding: true,
         }),
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        text: JSON.stringify({ fidelity: 0.98, violations: [] }),
       })
       .mockResolvedValue({ success: true, text: JSON.stringify(shots) });
   }
@@ -731,5 +813,165 @@ describe('ScriptGenStrategy - 相邻重复段落去重（dedupeAdjacentParagraph
     const { paragraphs, keptIndexes } = dedupeAdjacentParagraphs(input);
     expect(paragraphs.map((p) => p.text)).toEqual(['第一句。', '第二句。']);
     expect(keptIndexes).toEqual([0, 1]);
+  });
+});
+
+// ========== 🧭 阶段A 接地校验（verifyOutlineGrounding）纯函数回归测试 ==========
+// 覆盖「剧情必须可回溯到真实 chunk / 角色」的硬约束：任何无源编造（越界 chunkId、
+// 角色列表外人名、缺失结局判定、章节结构不齐）都必须被判违规，供上层回灌重生成。
+
+describe('ScriptGenStrategy - 阶段A 接地校验（verifyOutlineGrounding）', () => {
+  /** 构造一份单阶段合法大纲（可被各用例覆写特定字段以制造违规） */
+  function validOutline(overrides: Record<string, any> = {}) {
+    return {
+      logline: '张三潜入室内寻找证据，最终直面真相',
+      arc: ['开场钩子', '铺垫', '冲突升级', '高潮', '结局'],
+      characterMotives: { 张三: '寻找真相' },
+      keyTurns: [{ chunkId: 'chunk_001', turn: '发现关键线索' }],
+      hasClearEnding: true,
+      ...overrides,
+    };
+  }
+
+  it('单阶段合法大纲（chunkId 与角色名均可回溯）应判通过', () => {
+    const r = verifyOutlineGrounding(validOutline(), ['chunk_001', 'chunk_002'], ['张三'], null);
+    expect(r.ok).toBe(true);
+    expect(r.violations).toEqual([]);
+  });
+
+  it('keyTurns 引用片段流中不存在的 chunkId → 判无源编造', () => {
+    const r = verifyOutlineGrounding(
+      validOutline({ keyTurns: [{ chunkId: 'chunk_999', turn: '无源转折' }] }),
+      ['chunk_001', 'chunk_002'],
+      ['张三'],
+      null,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.violations.join('\n')).toContain('chunk_999');
+    expect(r.violations.join('\n')).toContain('无源');
+  });
+
+  it('microChunk（chunk_001_1）前缀命中父 chunk → 视为合法（不误伤）', () => {
+    const r = verifyOutlineGrounding(
+      validOutline({ keyTurns: [{ chunkId: 'chunk_001_1', turn: '细分片段转折' }] }),
+      ['chunk_001'],
+      ['张三'],
+      null,
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('keyTurns 缺 chunkId / 缺 turn → 均判违规', () => {
+    const r = verifyOutlineGrounding(
+      validOutline({ keyTurns: [{ chunkId: '', turn: '' }] }),
+      ['chunk_001'],
+      ['张三'],
+      null,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.violations.join('\n')).toContain('缺 chunkId');
+    expect(r.violations.join('\n')).toContain('缺 turn');
+  });
+
+  it('characterMotives 出现角色列表之外的人名 → 判凭空创造人物', () => {
+    const r = verifyOutlineGrounding(
+      validOutline({ characterMotives: { 张三: '寻找真相', 李四: '幕后黑手' } }),
+      ['chunk_001'],
+      ['张三'],
+      null,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.violations.join('\n')).toContain('李四');
+    expect(r.violations.join('\n')).toContain('凭空创造人物');
+  });
+
+  it('validRoleNames 为空数组时跳过角色项校验（角色列表缺失不误伤）', () => {
+    const r = verifyOutlineGrounding(
+      validOutline({ characterMotives: { 任意角色: '任意动机' } }),
+      ['chunk_001'],
+      [],
+      null,
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('hasClearEnding 非布尔值 → 判结局判定缺失', () => {
+    const r = verifyOutlineGrounding(
+      validOutline({ hasClearEnding: '是' }),
+      ['chunk_001'],
+      ['张三'],
+      null,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.violations.join('\n')).toContain('hasClearEnding 非布尔值');
+  });
+
+  it('logline / arc 缺失 → 均判违规（剧情骨架与阶段脉络缺失）', () => {
+    const r = verifyOutlineGrounding(
+      validOutline({ logline: '', arc: [] }),
+      ['chunk_001'],
+      ['张三'],
+      null,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.violations.join('\n')).toContain('logline');
+    expect(r.violations.join('\n')).toContain('arc');
+  });
+
+  it('两阶段 chapters 数量与预划分不符 → 判章节结构未对齐', () => {
+    const r = verifyOutlineGrounding(
+      validOutline({
+        chapters: [
+          { index: 1, title: '第一章', summary: '开场' },
+          { index: 2, title: '第二章', summary: '结尾' },
+        ],
+      }),
+      ['chunk_001'],
+      ['张三'],
+      3,
+    );
+    expect(r.ok).toBe(false);
+    expect(r.violations.join('\n')).toContain('chapters 数量应为 3');
+  });
+
+  it('两阶段 chapters 编号不连续 / 缺 title / 缺 summary → 逐项判违规', () => {
+    const r = verifyOutlineGrounding(
+      validOutline({
+        chapters: [
+          { index: 2, title: '', summary: '有小结无标题' },
+          { index: 3, title: '第三章', summary: '' },
+        ],
+      }),
+      ['chunk_001'],
+      ['张三'],
+      2,
+    );
+    expect(r.ok).toBe(false);
+    const msg = r.violations.join('\n');
+    expect(msg).toContain('index 应为 1');
+    expect(msg).toContain('index 应为 2');
+    expect(msg).toContain('缺 title');
+    expect(msg).toContain('缺 summary');
+  });
+
+  it('两阶段 chapters 完全对齐 → 判通过', () => {
+    const r = verifyOutlineGrounding(
+      validOutline({
+        chapters: [
+          { index: 1, title: '潜入', summary: '张三潜入室内' },
+          { index: 2, title: '真相', summary: '直面最终真相' },
+        ],
+      }),
+      ['chunk_001'],
+      ['张三'],
+      2,
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it('大纲非 JSON 对象（数组 / null）→ 判违规', () => {
+    expect(verifyOutlineGrounding([], ['chunk_001'], ['张三'], null).ok).toBe(false);
+    expect(verifyOutlineGrounding(null, ['chunk_001'], ['张三'], null).ok).toBe(false);
+    expect(verifyOutlineGrounding([], [], [], null).violations.join('\n')).toContain('不是 JSON 对象');
   });
 });

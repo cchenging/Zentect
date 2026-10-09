@@ -84,11 +84,18 @@ export const StepScriptGeneration: React.FC = () => {
         const rawData = result?.data || result;
         const nodeResult = rawData["script-1"] || rawData["script"] || rawData;
         if (nodeResult) {
-          /** ✅ 身份键统一：段落主键 id 出生处(ScriptGenStrategy)已强制全局唯一，此层仅透传、
-           *  不再做任何去重/追加后缀（删除了旧 idCountMap 兜底）。 */
-          const rawParagraphs = (nodeResult.paragraphs || nodeResult.shots || []).map((p: any, idx: number) => {
+          /** ✅ 身份键统一：段落主键 id 出生处(ScriptGenStrategy)为 seg_N；异常/历史路径可能缺 id，
+           *  一旦为空，下游 breakLongParagraphs 会回落到 `para_${idx}` 兜底，多批次拼接即撞号
+           *  → React「two children with same key」→ 段落重复/漏渲染（实测 2026-10-08 20:26 日志）。
+           *  此处做最终防线：缺 id 者用 rawParagraphs 下标兜底，保证主键全局唯一。 */
+          const rawSource = nodeResult.paragraphs || nodeResult.shots || [];
+          const missingIdCount = rawSource.filter((p: any) => !p?.id).length;
+          if (missingIdCount > 0) {
+            console.warn(`[步骤3] 段落主键 id 缺失 ${missingIdCount}/${rawSource.length} 个，已用 seg_{idx} 兜底（请核查后端 ScriptGenStrategy 为何未输出 id）`);
+          }
+          const rawParagraphs = rawSource.map((p: any, idx: number) => {
             return {
-              id: p.id,
+              id: p.id || `seg_${idx}`,
               text: p.text || p.content || p.narration || "",
               shotId: p.shotId,
               duration: p.duration,
