@@ -16,10 +16,17 @@ export class CredentialManager {
     return CredentialManager.instance;
   }
 
-  encrypt(value: string): string {
+  /**
+   * 加密凭据
+   *
+   * @param purpose v3 AAD 的 purpose（ADR-004 §4.2，如 "api_profiles.api_key" / "settings:<key>"）。
+   *   **传入即走 v3 信封加密**；不传则保持历史行为（v2 → v1），故未接线的调用方线上零变化。
+   *   v3 写入路径必须带 purpose（缺 AAD 会让密文可被跨字段搬运），由 `encryptData` 结构性保证。
+   */
+  encrypt(value: string, purpose?: string): string {
     if (!value || value.trim() === '') return value;
     try {
-      return encryptData(value);
+      return encryptData(value, purpose);
     } catch (err) {
       AppLogger.error(LOG_TAGS.SYSTEM, '加密凭据失败', err);
       throw err;
@@ -33,15 +40,17 @@ export class CredentialManager {
    * 旧实现「解不出就把密文原样返回」曾让密文被当 Bearer 外发（401 → 连打 429 封禁），
    * 故此处改为归类为 `missing` / `decrypt_failed`。调用方**禁止** `if (!value)` 式模糊判断，
    * 必须显式分支处置（未配置 ≠ 配了但解不开）。
+   *
+   * @param purpose 读 v3 密文时必填且必须与写入时一致（AAD 参与认证）；读 v1/v2 旧格式无需。
    */
-  decrypt(encrypted: string): CredentialResult {
+  decrypt(encrypted: string, purpose?: string): CredentialResult {
     if (!encrypted || encrypted.trim() === '') return { status: 'missing' };
 
-    // decryptData 在 v1/v2 失败时**原样返回密文**（不抛错），故此处 catch 只为兜住解析异常；
+    // decryptData 在 v1/v2/v3 失败时**原样返回密文**（不抛错），故此处 catch 只为兜住解析异常；
     // 两条失败路径最终都由 classifyCredential 统一归到 decrypt_failed。
     let decrypted = '';
     try {
-      decrypted = decryptData(encrypted);
+      decrypted = decryptData(encrypted, purpose);
     } catch (err) {
       AppLogger.warn(LOG_TAGS.SYSTEM, '凭据解密抛出异常', err);
     }

@@ -47,6 +47,8 @@ import { migrateOldApiConfig } from './database/migrations/migrateApiProfiles'
 import { SettingsController } from './controllers/SettingsController'
 import { StoryboardController } from './controllers/StoryboardController'
 import { SettingsRepository } from './database/repositories/SettingsRepository'
+import { ApiProfileRepository } from './database/repositories/ApiProfileRepository'
+import { KeyStore } from '../modules/infra/security/KeyStore'
 import { CrashReporter } from './core/CrashReporter'
 import { TelemetryOptInGate } from './core/TelemetryOptInGate'
 import { UsageStatsCollector } from './core/UsageStatsCollector'
@@ -114,6 +116,44 @@ class AppBootstrap {
       PathManager.initialize()
       AppLogger.info(LOG_TAGS.BOOTSTRAP, `— 1/10 寻址中枢初始化完成 (${mark('PathManager')}ms)`)
 
+      // ADR-004 P2 接线：凭据密钥仓库寻址（必须在 DB 迁移与凭据自检之前）
+      //   KeyStore 需要数据根目录才能定位 <data>/keys/master.key；此前只在启动期凭据自检里
+      //   init，而自检发生在 PathManager.initialize() **之前** ⇒ baseDir 恒为空 ⇒ 拿到 DEK 恒为 null
+      //   ⇒ v3 写入必然抛错（P1 已落但实际不可用）。故前移到此处，自检里的那次 init 变为幂等空操作。
+      try {
+        const ks = KeyStore.getInstance().init(PathManager.getUserDataPath() ?? '')
+        AppLogger.info(LOG_TAGS.BOOTSTRAP,
+          `— 1.5/10 凭据密钥仓库就绪 (status=${ks.status}，dekId=${ks.dekId ?? '-'})`)
+      } catch (e) {
+        AppLogger.warn(LOG_TAGS.BOOTSTRAP, '凭据密钥仓库初始化异常（非致命：凭据层将 fail-closed，不落明文）', e as Error)
+      }
+
+      // 步骤 1.6: ADR-004 G5 凭据自检
+      //   userData 路径 + safeStorage 可用性 + 一次加解密往返 + 现役通道 + v3/KeyStore 状态
+      //   （任一异常以 warn 形式暴露在第一屏日志；自检自身不抛，绝不阻断启动）
+      try {
+        const credCheck = runCredentialSelfCheck();
+        const osWrap = credCheck.safeStorageAvailable
+          ? (credCheck.safeStorageRoundTripOk ? '可用' : '异常')
+          : '不可用';
+        AppLogger.info(LOG_TAGS.BOOTSTRAP, `[凭据自检] userData: ${credCheck.userDataPath} | 平台: ${process.platform}`);
+        AppLogger.info(
+          LOG_TAGS.BOOTSTRAP,
+          `[凭据自检] OS 级通道(safeStorage): ${osWrap} | 现役通道: ${credCheck.activeChannel} | ` +
+          `加解密往返: ${credCheck.roundTripOk ? '成功' : '失败'} | ` +
+          `v3(KeyStore): ${credCheck.v3Available ? '可用' : '不可用'}（status=${credCheck.keyStoreStatus}，开关=${credCheck.v3Enabled ? 'on' : 'off'}）`,
+        );
+        // v3/密钥仓库明细：master.key 落点 + v3 自检说明
+        // （恢复导出已取消：不生成 wrap_recovery、不导出恢复材料，故这一行不再报告「恢复材料缺失」）
+        AppLogger.info(
+          LOG_TAGS.BOOTSTRAP,
+          `[凭据自检] master.key: ${credCheck.masterKeyPath || '(未注入数据根目录)'} | v3 自检: ${credCheck.v3Detail}`,
+        );
+        for (const problem of credCheck.problems) AppLogger.warn(LOG_TAGS.BOOTSTRAP, `[凭据自检] ${problem}`);
+      } catch (err) {
+        AppLogger.warn(LOG_TAGS.BOOTSTRAP, `凭据自检执行异常: ${(err as Error)?.message ?? err}`);
+      }
+
       // ⚡⚡ 性能优化（极致前置）：窗口在第 2 步就创建！
       //    之前的序列把 createWindow 放在步骤 5，导致数据库迁移、IPC 注册
       //    全部串行阻塞窗口显示。现在窗口立即显示，让用户第一时间看到 UI，
@@ -146,6 +186,23 @@ class AppBootstrap {
             //   DB 读写（项目列表加载、配置读取）被挂起等待。
             //   延迟 2 秒确保窗口已显示、前端已渲染后再执行。
             setTimeout(() => {
+              // ADR-004 §4.3②（P2）：v1/v2 → v3 静默迁移（幂等、单事务、失败回滚保留原值）
+              try {
+                const apiReport = ApiProfileRepository.migrateCredentialsToV3();
+                const settingsReport = new SettingsRepository().migrateCredentialsToV3();
+                const migrated = apiReport.migrated + settingsReport.migrated;
+                if (migrated > 0) {
+                  AppLogger.info(LOG_TAGS.BOOTSTRAP,
+                    `— 凭据迁移完成：api_profiles ${apiReport.migrated} 条 / settings ${settingsReport.migrated} 条已升级为 v3 信封加密`);
+                }
+                const broken = apiReport.undecryptable + settingsReport.undecryptable;
+                if (broken > 0) {
+                  AppLogger.warn(LOG_TAGS.BOOTSTRAP,
+                    `— 凭据迁移：${broken} 条旧密文解不开，已保持原值（需到 设置 → AI 重新填写）`);
+                }
+              } catch (e) {
+                AppLogger.error(LOG_TAGS.BOOTSTRAP, '凭据迁移失败（事务已回滚，原值保留）', e as Error);
+              }
               try {
                 const staleKeys = new SettingsRepository().migrateStaleEncryptedData();
                 if (staleKeys.length > 0) {
@@ -542,23 +599,9 @@ process.on('unhandledRejection', (reason: any) => {
 app.whenReady().then(async () => {
   AppLogger.info(LOG_TAGS.SYSTEM, '=== Zentect 核心引擎启动 ===')
 
-  // ADR-004 G5：凭据自检 — userData 路径 + safeStorage 可用性 + 一次加解密往返 + 现役通道 + v3 状态
-  // （原来只打印 safeStorage 布尔值；任一异常现在会以 warn 形式暴露在第一屏日志里）
-  try {
-    const credCheck = runCredentialSelfCheck();
-    const osWrap = credCheck.safeStorageAvailable
-      ? (credCheck.safeStorageRoundTripOk ? '可用' : '异常')
-      : '不可用';
-    AppLogger.info(LOG_TAGS.BOOTSTRAP, `[凭据自检] userData: ${credCheck.userDataPath} | 平台: ${process.platform}`);
-    AppLogger.info(
-      LOG_TAGS.BOOTSTRAP,
-      `[凭据自检] OS 级通道(safeStorage): ${osWrap} | 现役通道: ${credCheck.activeChannel} | ` +
-      `加解密往返: ${credCheck.roundTripOk ? '成功' : '失败'} | v3(KeyStore, P1): ${credCheck.v3Available ? '已落' : '未落'}`,
-    );
-    for (const problem of credCheck.problems) AppLogger.warn(LOG_TAGS.BOOTSTRAP, `[凭据自检] ${problem}`);
-  } catch (err) {
-    AppLogger.warn(LOG_TAGS.BOOTSTRAP, `凭据自检执行异常: ${(err as Error)?.message ?? err}`);
-  }
+  // ADR-004 G5 凭据自检已前移到点火序列 1.6/10（见 AppBootstrap.ignite）：
+  //   自检需要 KeyStore 已注入数据根目录（PathManager 初始化之后），否则 master.key 无从寻址、
+  //   报告只会是「未注入数据根目录」的假象。挪动后 G5 仍早于窗口创建，异常照旧进第一屏日志。
 
   // — 注册 magic:// 协议处理器（实现见 ./protocols/magic.ts）
   session.defaultSession.protocol.handle('magic', handleMagicProtocol);

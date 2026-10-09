@@ -5,6 +5,7 @@ import fs from 'fs';
 import { safeStorage } from 'electron';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
+import { KeyStore, encodeV3, decodeV3 } from '../../modules/infra/security/KeyStore';
 
 // ⚠️ 安全注意：以下硬编码值仅作为 safeStorage 不可用时的回退方案
 // Electron 桌面应用打包后无法读取环境变量，因此保留硬编码回退
@@ -30,10 +31,21 @@ function getLegacyKey(): Buffer {
 const LEGACY_ALGORITHM = 'aes-256-gcm';
 
 /**
- * 使用 Electron safeStorage 加密（OS 级密钥链）
- * 回退到基于 scrypt 的 AES-256-GCM 加密
+ * v3 通道开关（ADR-004 §5 P1）：缺省 on；`ZENTECT_CRED_V3=0|false` 关闭并整体回退旧通道
+ *
+ * ⚠️ 关闭只影响**新写入**：已落库的 v3 密文在读取路径上仍按优先级尝试（否则会读不出自己的数据）。
  */
-export function encryptData(text: string): string {
+export function isV3Enabled(): boolean {
+  const v = process.env.ZENTECT_CRED_V3;
+  return !(v === '0' || v === 'false');
+}
+
+/**
+ * 历史通道加密（v2 → v1）—— 保持原样，未传 purpose 时**完全走这条路**
+ *
+ * 使用 Electron safeStorage 加密（OS 级密钥链），回退到基于 scrypt 的 AES-256-GCM 加密
+ */
+function encryptLegacy(text: string): string {
   try {
     if (safeStorage.isEncryptionAvailable()) {
       const encrypted = safeStorage.encryptString(text);
@@ -57,17 +69,67 @@ export function encryptData(text: string): string {
 }
 
 /**
- * 解密 Electron safeStorage 加密的数据
- * 兼容 v1（传统 AES）和 v2（OS 密钥链）格式
+ * 加密（ADR-004 §4.2）
  *
- * 返回规则：
- * - 解密成功 → 返回明文
- * - 解密失败 → 返回原值 text（调用方应自行判断 looksEncrypted 并降级处理）
- * - 空值/非加密格式 → 原样返回
+ * - **传 `purpose`**：走 v3 信封加密（AES-256-GCM + dekId + random 12B IV，purpose 作 AAD）。
+ *   v3 写入路径**必须**有 purpose —— 少了 AAD 就失去「密文不可跨字段搬运」这一层保护，
+ *   故无 purpose 时根本不会产出 v3 密文（结构性保证，不靠调用方自觉）。
+ * - **不传 `purpose`**：完全保持历史行为（v2 → v1），故未接线的调用方线上零变化。
+ *
+ * DEK 不可用时**抛错**（fail-closed）：绝不静默降级成 v2 —— 那正是 D1「唯一钥匙托管在会消失的目录」的老路。
  */
-export function decryptData(text: string): string {
+export function encryptData(text: string, purpose?: string): string {
+  if (!purpose) return encryptLegacy(text);
+
+  if (!isV3Enabled()) return encryptLegacy(text);
+
+  const store = KeyStore.getInstance();
+  const got = store.getDek();
+  if (!got) {
+    const st = store.getState();
+    throw new Error(
+      `v3 加密失败：DEK 不可用（status=${st.status}${st.detail ? '：' + st.detail : ''}）。` +
+      '按 fail-closed 处理，不回退 v2（v2 依赖会消失的 Chromium profile）',
+    );
+  }
+  return encodeV3(got.dek, got.dekId, purpose, text);
+}
+
+/**
+ * 解密（ADR-004 §4.3）：优先级 **v3(DEK) → v2(safeStorage) → v1(legacy 派生)**
+ *
+ * 返回规则（与历史完全一致，便于上层统一处置）：
+ * - 解密成功 → 返回明文
+ * - 解密失败 → 返回原值 text（`classifyCredential` 据此归为 `decrypt_failed`，绝不把密文当明文外发）
+ * - 空值/非加密格式 → 原样返回
+ *
+ * ⚠️ v3 密文的 AAD 由 `purpose` 参与认证，故**读 v3 必须传与写入时相同的 purpose**；
+ *    缺 purpose / purpose 不符 / 密钥不符 / 数据损坏 一律返回原密文（fail-closed），不抛异常。
+ * ⚠️ v1/v2 是**不带 AAD** 的旧格式，解密时不存在 AAD 参与，故迁移期（§4.3 ②）现有 5 条密文不受影响。
+ */
+export function decryptData(text: string, purpose?: string): string {
   if (!text || text === '') return text;
 
+  // ① v3：信封加密（唯一带 AAD 的格式）
+  if (text.startsWith('v3:')) {
+    if (!purpose) {
+      AppLogger.warn(LOG_TAGS.SYSTEM, 'v3 密文解密时未提供 purpose，无法校验 AAD —— 按 fail-closed 处理');
+      return text;
+    }
+    const got = KeyStore.getInstance().getDek();
+    if (!got) {
+      AppLogger.warn(LOG_TAGS.SYSTEM, 'v3 密文解密失败：DEK 不可用（master.key 缺失/损坏或两个 wrap 均失效）');
+      return text;
+    }
+    const plain = decodeV3(got.dek, purpose, text);
+    if (plain === null) {
+      AppLogger.warn(LOG_TAGS.SYSTEM, 'v3 密文认证失败（密钥不符 / purpose 不符的跨字段搬运 / 数据损坏）');
+      return text;
+    }
+    return plain;
+  }
+
+  // ② v2：OS 级密钥链（历史主通道，D1 的根因所在）
   try {
     if (text.startsWith('v2:')) {
       if (safeStorage.isEncryptionAvailable()) {
@@ -82,6 +144,7 @@ export function decryptData(text: string): string {
     return text;
   }
 
+  // ③ v1：legacy scrypt 派生（无 AAD，跨 profile 稳定但强度最低，仅兼容历史数据）
   try {
     const payload = text.startsWith('v1:') ? text.slice(3) : text;
     const parts = payload.split(':');

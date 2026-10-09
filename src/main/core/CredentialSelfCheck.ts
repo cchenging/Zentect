@@ -9,11 +9,14 @@
 //   ③ 一次真实的加解密往返是否成功
 //   ④ 当前实际生效的通道 + v3/KeyStore（P1）是否已落
 //
-// ⚠️ 本自检**不引入新格式**（P0 约束）：v3/KeyStore 属 P1，未落时如实报告，不伪造可用。
+// ⚠️ P1 已落 v3/KeyStore：`v3Available` 不再是写死的 false，而是 `KeyStore.selfTest()` 的**真实探测**
+//    （DEK 可用性 + v3 往返 + N1 IV 唯一性 + N2 AAD 绑定），未落时如实报告，绝不伪造可用。
 //    G5 与 G1/G2/G3 一样**不受 `ZENTECT_CRED_V3` 开关控制**，任何档位都必须生效。
 
 import { app, safeStorage } from 'electron';
-import { encryptData, decryptData } from '../utils/crypto';
+import { encryptData, decryptData, isV3Enabled } from '../utils/crypto';
+import { KeyStore, type KeyStoreStatus } from '../../modules/infra/security/KeyStore';
+import { PathManager } from '../utils/pathManager';
 import { AppLogger } from './AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
 
@@ -31,14 +34,25 @@ export interface CredentialSelfCheckReport {
   activeChannel: CredentialChannel;
   /** 一次加解密往返是否成功（失败 ⇒ 所有凭据读写都会异常） */
   roundTripOk: boolean;
-  /** v3 / KeyStore（P1）是否已落 —— P0 阶段恒 false，仅做「未落」可见化，不用它做判定 */
+  /** v3 / KeyStore 是否真实可用（P1：`KeyStore.selfTest()` 的真实探测结果，非写死值） */
   v3Available: boolean;
+  /** master.key 绝对路径（`<data>/keys/master.key`；数据根目录未注入时为空串） */
+  masterKeyPath: string;
+  /** KeyStore 状态判别（ready / missing_master_key / corrupted_master_key / no_usable_wrap） */
+  keyStoreStatus: KeyStoreStatus;
+  /** v3 自检说明（成功/失败原因，直接进第一屏日志） */
+  v3Detail: string;
+  /** v3 写入通道开关是否打开（`ZENTECT_CRED_V3`，缺省 on） */
+  v3Enabled: boolean;
   /** 需要启动期告警的问题项（空数组 = 一切正常） */
   problems: string[];
 }
 
 /**
- * 执行启动期凭据自检（纯读取，不写库、不改任何凭据）
+ * 执行启动期凭据自检
+ *
+ * 不改动任何**已存在**的凭据（不解密、不回写、不删改）；唯一副作用是：master.key 缺失且 OS 通道可用时
+ * 由 KeyStore 惰性生成一次首启主密钥（P1 的装配点就在这里 —— 见 KeyStore 头注释）。
  *
  * @param probeText 可选：自检探针明文（默认自动生成，仅在测试中显式传入）
  */
@@ -93,8 +107,27 @@ export function runCredentialSelfCheck(probeText?: string): CredentialSelfCheckR
     problems.push(`加解密往返自检失败（现役通道 ${activeChannel}）：写入的密文读不回明文，凭据层已损坏`);
   }
 
-  // ③ v3 / KeyStore 状态（P1）—— 如实报告，不用它做判定
-  const v3Available = false;
+  // ③ v3 / KeyStore（P1）：真实探测 —— DEK 是否取得 + v3 往返 + N1/N2 断言
+  //    数据根目录由 PathManager 注入（本模块不自己拼路径，避免与寻址中枢出现第二份真源）
+  const v3Enabled = isV3Enabled();
+  const store = KeyStore.getInstance();
+  let v3Available = false;
+  let v3Detail = '';
+  try {
+    store.init(PathManager.getUserDataPath() ?? '');
+    const probe = store.selfTest();
+    v3Available = probe.ok;
+    v3Detail = probe.detail;
+  } catch (err) {
+    v3Detail = `v3 自检执行异常：${(err as Error)?.message ?? err}`;
+  }
+  const ks = store.getState();
+
+  // 只有「本来该有 master.key 却坏了/不可用」才算启动期问题；
+  // 全新安装尚未生成（missing_master_key）不算故障（数据根未注入也不算，此时上层尚未接线）。
+  if (!v3Available && ks.status !== 'missing_master_key') {
+    problems.push(`v3 密钥仓库异常（status=${ks.status}）：${v3Detail}`);
+  }
 
   return {
     userDataPath,
@@ -103,6 +136,10 @@ export function runCredentialSelfCheck(probeText?: string): CredentialSelfCheckR
     activeChannel,
     roundTripOk,
     v3Available,
+    masterKeyPath: ks.filePath,
+    keyStoreStatus: ks.status,
+    v3Detail,
+    v3Enabled,
     problems,
   };
 }

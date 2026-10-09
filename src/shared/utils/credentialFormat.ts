@@ -23,8 +23,22 @@ export type CredentialResult =
   | { status: 'missing' }
   | { status: 'decrypt_failed'; reason: CredentialFailureReason };
 
-/** 已知密文前缀（`v3:` 为 ADR-004 预留格式，尚未产出，但须识别以防误当明文落库） */
+/** 已知密文前缀（`v3:` 为 ADR-004 P1 已落的信封加密格式） */
 export const ENCRYPTED_PREFIXES = ['v1:', 'v2:', 'v3:'] as const;
+
+/**
+ * v3 AAD 的 purpose 取值（ADR-004 §4.2）
+ *
+ * purpose 必须**与写入字段一一对应**并参与 GCM 认证 —— 它保证密文不可跨字段搬运：
+ * 把 A 字段的密文塞进 B 字段，认证阶段就会失败（而不是被当成合法明文读出来）。
+ * 新增 v3 写入字段时必须在这里登记，禁止在调用点手写裸字符串（否则口径漂移 = 静默失效）。
+ */
+export const CREDENTIAL_PURPOSE = {
+  /** `api_profiles.api_key` 列 */
+  apiProfileApiKey: 'api_profiles.api_key',
+  /** `settings` 表敏感项：purpose 为 `settings:<configKey>` */
+  settings: (configKey: string) => `settings:${configKey}`,
+} as const;
 
 /**
  * 判断字符串「看起来像」密文
