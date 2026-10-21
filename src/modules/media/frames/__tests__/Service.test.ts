@@ -76,7 +76,7 @@ function createMockSpawn(
 
 // === 测试 ===
 
-import { FrameExtractionService, resolveStrategy } from '../backend/Service';
+import { FrameExtractionService, resolveStrategy, pairShowinfoPtsMs } from '../backend/Service';
 
 describe('resolveStrategy', () => {
   it('应识别新版 2 值枚举', () => {
@@ -577,5 +577,37 @@ describe('FrameExtractionService', () => {
 
       expect(result.files).toHaveLength(0);
     });
+  });
+});
+
+// ==================== pairShowinfoPtsMs（精确 PTS 配对 · 事故回归） ====================
+
+describe('pairShowinfoPtsMs', () => {
+  const files = [
+    'C:/out/frame_00000001.jpg',
+    'C:/out/frame_00000002.jpg',
+    'C:/out/frame_00000003.jpg',
+  ];
+
+  it('showinfo 尾部多余行（pts 行数 > 文件数）时仍按 n 序号逐帧配对', () => {
+    // 实测场景：写盘 3 张，showinfo 打印 4 行（n=0..3；n=3 超出 -to 停止点，属尾部冗余）
+    const ptsByN = new Map<number, number>([[0, 227357], [1, 229986], [2, 232615], [3, 2629000]]);
+    expect(pairShowinfoPtsMs(files, ptsByN, [...ptsByN.values()]))
+      .toEqual([227357, 229986, 232615]);
+  });
+
+  it('n 序号缺失时应退回「数量相等才采信」', () => {
+    expect(pairShowinfoPtsMs(files, new Map(), [1000, 2000, 3000])).toEqual([1000, 2000, 3000]);
+    expect(pairShowinfoPtsMs(files, new Map(), [1000, 2000])).toBeUndefined();
+  });
+
+  it('单帧缺失时沿用前一帧精确值，绝不回落到估算网格', () => {
+    const ptsByN = new Map<number, number>([[0, 1000], [2, 3000]]);
+    expect(pairShowinfoPtsMs(files, ptsByN, [1000, 3000])).toEqual([1000, 1000, 3000]);
+  });
+
+  it('首帧即缺失时整批退回估算（返回 undefined）', () => {
+    const ptsByN = new Map<number, number>([[1, 2000], [2, 3000]]);
+    expect(pairShowinfoPtsMs(files, ptsByN, [2000, 3000])).toBeUndefined();
   });
 });

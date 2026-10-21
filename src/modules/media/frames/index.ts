@@ -21,3 +21,17 @@ export {
   resolveStrategy,
   FACE_FRAME_LONG_EDGE,
 } from './backend/Service';
+
+export type {
+  AsrRefillConfig,
+  AsrRefillTarget,
+  AsrRefillResult,
+  AsrSingleFrameRunner,
+} from './backend/AsrFrameRefiller';
+
+export {
+  AsrFrameRefiller,
+  computeLinesMissingFrames,
+  createAsrRefillRunner,
+  refillAsrLineFrames,
+} from './backend/AsrFrameRefiller';

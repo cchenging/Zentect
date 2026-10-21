@@ -59,6 +59,40 @@ export function resolveStrategy(raw: string): FrameStrategy {
   return normalizeFrameStrategy(raw);
 }
 
+/**
+ * 🎬 精确 PTS 配对（纯函数，可单测）
+ *
+ * showinfo 的 `n` 是滤镜输出帧序号，写盘文件 `frame_%08d.jpg` 的序号 = n + 1，因此可逐帧精确配对。
+ * ⚠️ 不能再用「pts 行数 === 文件数」判定精度：`-to` 是 muxer 级停止点，滤镜链仍会处理超界帧，
+ *    showinfo 尾部必然多出 1~2 行（实测 写盘 1091 / pts 1093）→ 旧门槛恒不成立，
+ *    整批时间戳静默退化成「等距估算网格」，随帧序线性偏移（末帧可达 +200s）。
+ *
+ * @param files FFmpeg 写盘的帧绝对路径（frame_%08d.jpg）
+ * @param ptsByOutputIndex showinfo 的 n → pts（毫秒）
+ * @param ptsOrderedMs 按 stderr 出现顺序的 pts（毫秒）；仅在 n 序号缺失时兜底
+ * @returns 与 files 一一对齐的精确毫秒数组；无法可靠配对时返回 undefined（交由下游按估算处理）
+ */
+export function pairShowinfoPtsMs(
+  files: string[],
+  ptsByOutputIndex: Map<number, number>,
+  ptsOrderedMs: number[],
+): number[] | undefined {
+  if (ptsByOutputIndex.size === 0) {
+    // 异常兜底：stderr 未携带 n 序号 → 退回「数量相等才采信」（宁可估算，不给错值）
+    return ptsOrderedMs.length === files.length ? ptsOrderedMs : undefined;
+  }
+  const dense: number[] = [];
+  for (let i = 0; i < files.length; i++) {
+    const frameNo = parseInt(path.basename(files[i]).slice('frame_'.length, 'frame_'.length + 8), 10);
+    if (!Number.isFinite(frameNo)) return undefined;
+    // 单帧缺失（pts_time 异常）→ 沿用前一帧精确值（最多 1 帧误差），绝不回落到估算网格
+    const ms = ptsByOutputIndex.get(frameNo - 1) ?? dense[i - 1];
+    if (ms === undefined) return undefined; // 首帧即缺失：保守起见整批退回估算
+    dense.push(ms);
+  }
+  return dense;
+}
+
 /** 判断是否为 PRECISE_SINGLE 历史输入（大小写/下划线兼容）
  *  true 时应拒绝进入抽帧主流程，提示走 screenshotAt 独立 API
  */
@@ -84,7 +118,11 @@ export interface ExtractOptions {
   /** 最小帧间隔；AUTO_ADAPTIVE + densityPreset 提供时默认从预设派生 */
   minFrameInterval?: number;
   timePoint?: number;
+  /** 源坐标【绝对】起点（秒）：作为 ffmpeg -ss 前置 input seek，输出 PTS 归零为 body 坐标 */
   inPoint?: number;
+  /** 源坐标【绝对】终点（秒，与 inPoint 同一坐标系；缺省 = 探针总时长）。
+   *  ⚠️ 契约：这是绝对终点，不是时长。内部换算 `-to (outPoint - inPoint)`（-ss 前置 seek 后 PTS 归零，
+   *  muxer 的 -to 吃的是输出时长），`videoDurationSec` 亦以同一口径计算。 */
   outPoint?: number;
   abortSignal?: AbortSignal;
   /** 追加式后处理：清晰度/黑屏过滤 + 静态去重 + 时序元数据 + 预算封顶（默认关闭，非破坏） */
@@ -284,9 +322,13 @@ export class FrameExtractionService {
 
     // 长视频自适应（在 preset 派生后再施加，避免 preset 的 1.7s 高密档被意外放大）
     const probedDurationSec = probeResult.duration ?? 0;
+    // 🎬 源窗口口径（单一语义）：inPoint / outPoint 均为【源坐标绝对秒】。
+    //   -ss 前置 input seek 后输出 PTS 归零（body 坐标），故 muxer 的 -to 吃的是【输出时长】= outPoint - inPoint；
+    //   videoDurationSec 必须同口径（曾被当「时长」传进来又二次相减，窗口被算小 offsetSec → 时间戳整体压缩）。
     const actualIn = inPoint ?? 0;
     const actualOut = outPoint ?? probedDurationSec;
     const videoDurationSec = Math.max(0, actualOut - actualIn);
+    const filterOutSec = outPoint !== undefined ? videoDurationSec : undefined;
     // 解码进度分母：FFmpeg -ss 前置(input seek)后 time= 输出自 0 起，解码目标 = body 窗口时长
     const decodeTargetSec = Math.max(0.001, videoDurationSec);
     // 真实进度回调（无回调时不产生任何开销/副作用）
@@ -314,7 +356,8 @@ export class FrameExtractionService {
       minFrameInterval: adaptiveMinInterval,
       width: goldenWidth,
       inPoint,
-      outPoint,
+      // -ss 前置 seek 使输出 PTS 归零 → 命令层只认【时长】，此处换算后下发（命令构建器契约不变）
+      outPoint: filterOutSec,
       timePoint,
       threads: 0,
       // 后处理启用时附加 showinfo，捕获每帧精确 PTS
@@ -328,8 +371,10 @@ export class FrameExtractionService {
       const child = spawn(ffmpegExe, args);
 
       let stderrLog = '';
-      // 🎭 后处理时序元数据：累积 showinfo 输出的 pts_time（秒）
-      const ptsSeconds: number[] = [];
+      // 🎭 后处理时序元数据：累积 showinfo 输出的 pts_time（毫秒）
+      //   ptsOrderedMs：按 stderr 出现顺序（兜底用）；ptsByOutputIndex：按 showinfo 的 n 序号（主用，见下方配对逻辑）
+      const ptsOrderedMs: number[] = [];
+      const ptsByOutputIndex = new Map<number, number>();
       // 🛠 P0 修复：pts_time 解析必须「行缓冲 + 容忍负值」。
       //   旧实现逐 chunk 直接正则且只认无符号数，任一条丢失都会让下方
       //   「数量一致才采用」的判定失败，从而丢弃【全片】精确时间戳：
@@ -345,11 +390,14 @@ export class FrameExtractionService {
           const lines = stderrLineBuf.split('\n');
           stderrLineBuf = lines.pop() ?? ''; // 末尾不完整行留待下一 chunk 拼接
           for (const line of lines) {
-            const m = line.match(/pts_time:\s*(-?\d+(?:\.\d+)?)/);
-            if (m) {
-              const sec = parseFloat(m[1]);
-              if (!Number.isNaN(sec)) ptsSeconds.push(sec);
-            }
+            const mTime = line.match(/pts_time:\s*(-?\d+(?:\.\d+)?)/);
+            if (!mTime) continue;
+            const ms = Math.round(parseFloat(mTime[1]) * 1000);
+            if (!Number.isFinite(ms)) continue;
+            ptsOrderedMs.push(ms);
+            // showinfo 的 n 是滤镜输出帧序号（n+1 = 写盘文件 frame_%08d 的序号）→ 可逐帧精确配对
+            const mIdx = line.match(/\bn:\s*(\d+)/);
+            if (mIdx) ptsByOutputIndex.set(parseInt(mIdx[1], 10), ms);
           }
         }
         // 🆕 真实解码进度：解析 FFmpeg 输出的 time= 时间戳，除以解码目标时长得到动态百分比
@@ -386,8 +434,10 @@ export class FrameExtractionService {
         }
 
         try {
+          // 只取本批抽帧产物（frame_%08d.jpg），排除 gap_refill_/asr_refill_ 等历史残留，
+          // 避免 files.length 被污染（曾使「精确 PTS 数量校验」恒失败 → 全片时间戳退化成估算网格）
           const files = fs.readdirSync(safeOutputDir)
-            .filter(f => f.endsWith('.jpg'))
+            .filter(f => /^frame_\d{8}\.jpg$/.test(f))
             .map(f => path.join(safeOutputDir, f))
             .sort();
 
@@ -396,9 +446,12 @@ export class FrameExtractionService {
           let keptFiles = files;
           let frameDetails: import('../types').FrameAssetDetail[] = [];
           if (postProcess && files.length > 0) {
-            const ptsMs = ptsSeconds.map(s => Math.round(s * 1000));
-            // ptsSeconds 不含文件名配对，仅当数量一致时才作为精确时间戳使用
-            const exactPtsMs = files.length > 0 && ptsMs.length === files.length ? ptsMs : undefined;
+            // 🎬 精确 PTS 配对（本次事故根因修复）：
+            //   `-to` 是 muxer 级停止点，滤镜链（select/scale/showinfo）仍会继续处理超界帧 →
+            //   showinfo 尾部会多出 1~2 行（实测 写盘 1091 / pts 1093）。旧实现要求「数量完全相等才采信」，
+            //   因此恒不成立 → 整批时间戳静默退化成「等距估算网格」，随帧序线性偏移（末帧可达 +200s）。
+            //   改为按 showinfo 的 n 序号 → 文件序号逐帧配对，尾部多余行天然被忽略。
+            const exactPtsMs = pairShowinfoPtsMs(files, ptsByOutputIndex, ptsOrderedMs);
             // P0：videoDurationMinutes 基于探针实际时长（考虑 in/out point）
             const videoDurationMinutes = videoDurationSec > 0 ? videoDurationSec / 60 : undefined;
 
