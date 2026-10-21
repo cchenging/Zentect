@@ -26,7 +26,7 @@ export interface ILLMProvider {
   readonly providerName: string;
   /**
    * 测试模型/中转站连通性与鉴权
-   * @param model 可选：传入要验证的真实模型名（如 gpt-4o / ep-xxx / qwen-vl-max 等）。
+   * @param model 可选：传入要验证的真实模型名（如 gpt-4o / ep-xxx / qwen3.7-plus 等）。
    *              - 传入时：真实发 POST /chat/completions 最小文字推理请求，验证"该模型是否有权限/有余额/有推理能力"（强烈推荐，避免测试用小模型蒙混过关）。
    *              - 不传时：回退为 GET /models（只校验 baseURL 是否可达 + Authorization 是否合法，不涉及具体模型），适用于不知道可用模型名的兜底场景。
    */

@@ -19,6 +19,16 @@ import {
 /** v3 AAD 的 purpose（ADR-004 §4.2）：读写两路必须用同一个，否则 v3 密文读不回来 */
 const PURPOSE = CREDENTIAL_PURPOSE.apiProfileApiKey;
 
+/**
+ * 模型条目（存储选型 A）：`api_profiles.models` 列存 `[{ name, checked }]` JSON
+ * - `checked` 仅代表「是否勾选」标记位，不决定是否落库
+ * - 兼容旧数据：历史 `string[]` 在读取处按「已勾选」归一化，无需 SQL 迁移
+ */
+export interface ProfileModelRef {
+  name: string;
+  checked: boolean;
+}
+
 export interface ApiProfile {
   id: string;
   name: string;
@@ -31,7 +41,7 @@ export interface ApiProfile {
   /** 凭据读取状态（ok / missing / decrypt_failed）——供 UI 区分「未配置」与「已失效」 */
   apiKeyStatus?: CredentialStatus;
   baseUrl: string;
-  models: string[];
+  models: ProfileModelRef[];
   isActive: boolean;
   sortOrder: number;
   extraConfig?: Record<string, unknown>;

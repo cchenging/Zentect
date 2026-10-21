@@ -18,7 +18,7 @@ const DEFAULT_SETTINGS_SCHEMA: Record<string, any> = {
   doubaoKey: '', doubaoModels: null,
   tencentKey: '', tencentModels: null,
   openaiKey: '', openaiBaseUrl: 'https://api.openai.com/v1', openaiModels: null,
-  taskVisualModel: 'qwen-vl-max', taskScriptModel: 'deepseek-chat',
+  taskVisualModel: 'qwen3.7-flash', taskScriptModel: 'deepseek-chat',
   taskTranslateModel: 'qwen-plus', taskHelperModel: 'gpt-4o-mini',
   ttsProvider: 'edge',
   doubaoTtsAppId: '', doubaoTtsToken: '', doubaoTtsVoice: 'zh_female_meilinvyou_saturn_bigtts',
@@ -89,7 +89,7 @@ export const useSettingsManager = () => {
           logPath: dynamicSettings.logPath || systemPaths.logs,
           // 单独对需要清洗的 Model 字段进行防脏数据拦截
           deepseekModels: parseModels(dynamicSettings.deepseekModels, ['deepseek-chat', 'deepseek-reasoner']),
-          qwenModels: parseModels(dynamicSettings.qwenModels, ['qwen-max', 'qwen-plus', 'qwen-vl-max']),
+          qwenModels: parseModels(dynamicSettings.qwenModels, ['qwen3.7-max', 'qwen3.7-plus', 'qwen3.7-flash']),
           doubaoModels: parseModels(dynamicSettings.doubaoModels, []),
           tencentModels: parseModels(dynamicSettings.tencentModels, ['hunyuan-lite', 'hunyuan-pro', 'hunyuan-vision']),
           openaiModels: parseModels(dynamicSettings.openaiModels, ['gpt-4o', 'claude-3-5-sonnet-20240620']),

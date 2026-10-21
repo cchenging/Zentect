@@ -31,7 +31,9 @@ export function migrateOldApiConfig(): void {
       if (!apiKey || apiKey.trim() === '') continue;
 
       const models = settings.get<string>(mapping.modelsField, '');
-      const modelList = models ? models.split(',').map(s => s.trim()).filter(Boolean) : [mapping.defaultModel];
+      // 落库形状 [{ name, checked }]：迁移来的旧模型名一律视为已勾选
+      const modelList = (models ? models.split(',').map(s => s.trim()).filter(Boolean) : [mapping.defaultModel])
+        .map((name) => ({ name, checked: true }));
       const baseUrl = mapping.baseUrlField 
         ? settings.get<string>(mapping.baseUrlField, '') || mapping.defaultBaseUrl
         : mapping.defaultBaseUrl;

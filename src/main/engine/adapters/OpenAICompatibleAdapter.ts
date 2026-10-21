@@ -18,6 +18,33 @@ const BASE_BACKOFF_MS = 1000;
 /** 指数退避乘数（1s → 2s → 4s） */
 const BACKOFF_MULTIPLIER = 2;
 
+/**
+ * 💰 用量审计：把服务端返回的 `usage` 落日志
+ *
+ * 背景：`usage` 此前在解析响应后被直接丢弃，而本地 `usage_stats` 表只记 category/action/value、
+ * 不存 token → 真实成本无处可查（只能靠猜）。此日志覆盖所有非流式调用（VLM 画面描述 / 文案 / 全局摘要），
+ * 单条即可还原「本次调用烧了多少 token」，配合各模型单价即可算出真实花费。
+ *
+ * @param model 实际请求的模型名
+ * @param usage 服务端返回的 usage 对象（缺失或未统计时直接跳过，不产生噪声）
+ * @param messages 请求消息（用于附带图片数，便于把成本归因到「拼图批次数」）
+ */
+function logLlmUsage(model: string, usage: any, messages: any[]): void {
+  const prompt = usage?.prompt_tokens;
+  const completion = usage?.completion_tokens;
+  if (prompt == null && completion == null) return;
+  let imageCount = 0;
+  for (const m of Array.isArray(messages) ? messages : []) {
+    const parts = Array.isArray(m?.content) ? m.content : [];
+    for (const p of parts) {
+      if (p && (p.type === 'image_url' || p.image_url)) imageCount++;
+    }
+  }
+  AppLogger.info(LOG_TAGS.AI_AGENT,
+    `[Adapter][用量] model=${model} prompt=${prompt ?? '-'} completion=${completion ?? '-'} `
+    + `total=${usage?.total_tokens ?? '-'} images=${imageCount}`);
+}
+
 /* ============ 🔧 进程级 HTTP 请求全局限流器 ============
  * 兜底用：防止并发请求在"同一毫秒"瞬时打爆服务商 QPS 尖峰。
  * 🚀 提速：根因（API Key/路径）已解决，RPM=3 / QPS≤0.4 的保守门槛已废除，
@@ -297,6 +324,8 @@ export class OpenAICompatibleAdapter implements ILLMProvider {
           `大概率是 DeepSeek 思考模式耗尽 max_tokens 被截断，请关闭思考或提高 max_tokens`,
         );
       }
+      // 💰 用量审计：token 数此前被直接丢弃 → 本地无法还原真实成本（见 logLlmUsage 注释）
+      logLlmUsage(model, data.usage, messages);
       return { success: true, text: data.choices[0].message.content };
     } catch (error: any) { return { success: false, error: error.message }; }
   }

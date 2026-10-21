@@ -1,7 +1,7 @@
 // AI 服务配置 Tab - V3 设计系统风格
 // Provider 卡片（扁平式，不可展开）+ 管线映射 + TTS 配置
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Eye, EyeOff, Server, Play, ExternalLink, Zap, Plus, Trash2 } from 'lucide-react';
+import { Eye, EyeOff, Server, Play, ExternalLink, Zap, Plus, Trash2, CircleMinus } from 'lucide-react';
 import { Input } from '@renderer/components/ui/input';
 import { Button } from '@renderer/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@renderer/components/ui/select';
@@ -69,16 +69,33 @@ const ALL_PIPELINE_NODES = [
 const MODEL_CATEGORIES = ['全部', '视觉', '语音', '生图/视频', '向量/重排', '文本'] as const;
 /**
  * 按小写关键词给模型名归类，供筛选 chip 使用
- * 顺序敏感：先匹配到的先返回（如 qwen-vl-max 归「视觉」而非「文本」）
+ * 一个模型**可同时属于多个类目**：官方目录里同一个模型常同时挂在「视觉理解」和「通用文本」下，
+ * 如 Qwen3.7/3.8 主线是「原生视觉语言」——既能看图，也仍是通用文本模型，硬分到单边会让人在一侧找不到它
  */
-function classifyModel(name: string): string {
+function classifyModelCategories(name: string): string[] {
   const n = name.toLowerCase();
-  if (/(embedding|rerank)/.test(n)) return '向量/重排';
-  if (/(tts|asr|audio|speech|livetranslate|s2s|voice)/.test(n)) return '语音';
-  if (/(image|seedream|seedance|video|^wan)/.test(n)) return '生图/视频';
-  if (/(vl|omni|qvq|ocr)/.test(n)) return '视觉';
-  return '文本';
+  const cats: string[] = [];
+  if (/(embedding|rerank)/.test(n)) cats.push('向量/重排');
+  if (/(tts|asr|audio|speech|livetranslate|s2s|voice)/.test(n)) cats.push('语音');
+  if (/(image|seedream|seedance|video|^wan)/.test(n)) cats.push('生图/视频');
+  // Qwen3.7/3.8 **主线**（max/plus/flash）官方定位「原生视觉语言」——文本通道与视觉通道同一套权重
+  // 只用 `qwen3\.[78]` 宽匹配会误伤 qwen3.7-text-embedding / qwen3.7-text-rerank（纯向量模型），故限定到主线三档
+  const isQwenMultimodal = /(^|-)qwen3\.[78]-(max|plus|flash)/.test(n);
+  if (/(vl|omni|qvq|ocr)/.test(n) || isQwenMultimodal) cats.push('视觉');
+  // 通用文本：什么都没匹配上按文本兜底；上面的多模态主线额外再挂一条「文本」
+  if (cats.length === 0 || isQwenMultimodal) cats.push('文本');
+  return cats;
 }
+function classifyModel(name: string): string {
+  return classifyModelCategories(name).join(' · ');
+}
+
+/**
+ * 把「库全集 + 勾选集」编码为落库载荷 `[{ name, checked }]`
+ * （存储选型 A：沿用 `api_profiles.models` 列存 JSON，不建表、不写 migration）
+ */
+const toModelPayload = (names: string[], checked: string[]) =>
+  names.map((n) => ({ name: n, checked: checked.includes(n) }));
 
 /* ====== Toggle Switch ====== */
 const ToggleSwitch: React.FC<{ checked: boolean; onChange: (v: boolean) => void; disabled?: boolean }> = ({ checked, onChange, disabled }) => (
@@ -151,6 +168,11 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   const apiProfiles = internalApiProfiles;
   const bindings = internalBindings;
 
+  /* ---------- 应用内确认卡（替代原生 window.confirm） ---------- */
+  const [confirmState, setConfirmState] = useState<{ desc: string; resolve: (v: boolean) => void } | null>(null);
+  const askConfirm = useCallback((desc: string) => new Promise<boolean>((resolve) => setConfirmState({ desc, resolve })), []);
+  const closeConfirm = (v: boolean) => { confirmState?.resolve(v); setConfirmState(null); };
+
   /* ---------- Modal 状态 ---------- */
   const [modalOpen, setModalOpen] = useState(false);
   const [modalStep, setModalStep] = useState<'provider' | 'form'>('provider');
@@ -162,7 +184,10 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   const [formBaseUrl, setFormBaseUrl] = useState('');
   const [formApiKey, setFormApiKey] = useState('');
   const [formAlias, setFormAlias] = useState('');
+  /** 落库模型全集（name 列表）—— 含已勾选与未勾选；勾选态见 `checkedModels` */
   const [formModels, setFormModels] = useState<string[]>([]);
+  /** 已勾选的模型名集合（`formModels` 的子集）—— 取消勾选只从此处移除，名字仍保留在库中 */
+  const [checkedModels, setCheckedModels] = useState<string[]>([]);
   const [customModelsText, setCustomModelsText] = useState('');
   const [formKeyVisible, setFormKeyVisible] = useState(false);
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'fail'>('idle');
@@ -179,13 +204,13 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
    * - `draftPromiseRef`：草稿行创建中的 promise —— 用户可能在 create 落库前就失焦，
    *   用它串行化，避免「草稿未建好又建一条」产生重复行
    * - `dirtyRef`：用户是否真的改过字段；关闭时「有草稿行且从未改动」⇒ 回滚删除，避免垃圾行
-   * - `originalModelsRef`：打开弹窗时的模型列表 —— 联动清理（删模型 ⇒ 清绑定）的比较基准，
+   * - `originalCheckedRef`：打开弹窗时的「已勾选」模型集合 —— 联动清理（取消勾选/移除 ⇒ 清绑定）的比较基准，
    *   不能读 `apiProfiles`（每次落库都在变）
    */
   const draftRowIdRef = useRef<string | null>(null);
   const draftPromiseRef = useRef<Promise<string | null> | null>(null);
   const dirtyRef = useRef(false);
-  const originalModelsRef = useRef<string[]>([]);
+  const originalCheckedRef = useRef<string[]>([]);
 
   /* ---------- 删除确认 ---------- */
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
@@ -322,7 +347,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
       if (field === 'models') {
         const models = isCustom
           ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
-          : formModels;
+          : checkedModels;
         if (models.length === 0) next.models = '请至少选择一个模型';
       }
       return next;
@@ -331,11 +356,11 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
 
   /* ---------- Modal 操作 ---------- */
   /** 重置感知保存的会话级 refs（每次打开弹窗都要清，否则会串上一轮的状态） */
-  const resetDraftRefs = (originalModels: string[] = []) => {
+  const resetDraftRefs = (originalChecked: string[] = []) => {
     draftRowIdRef.current = null;
     draftPromiseRef.current = null;
     dirtyRef.current = false;
-    originalModelsRef.current = originalModels;
+    originalCheckedRef.current = originalChecked;
   };
 
   const openAddModal = () => {
@@ -343,7 +368,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
     setIsNewProfile(true);
     setModalStep('provider');
     setSelectedProvider(''); setFormBaseUrl(''); setFormApiKey(''); setFormAlias('');
-    setFormModels([]); setCustomModelsText(''); setFormKeyVisible(false); setTestStatus('idle');
+    setFormModels([]); setCheckedModels([]); setCustomModelsText(''); setFormKeyVisible(false); setTestStatus('idle');
     setApiKeyChanged(false); setFormErrors({}); setCredentialWarning(''); setSaveError('');
     resetDraftRefs();
     setModalOpen(true);
@@ -354,7 +379,12 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
     setIsNewProfile(false);
     // 🔧 修复 Bug1：后端返回 camelCase，旧代码读 snake_case 导致预设类型恒为 undefined
     const presetType = profile.presetType || profile.provider;
-    const models: string[] = Array.isArray(profile.models) ? profile.models : [];
+    // 归一化 models：新格式 [{ name, checked }]；旧格式（string[]）视为全部已勾选，无需 SQL 迁移
+    const normalized = (Array.isArray(profile.models) ? profile.models : [])
+      .map((m: any) => (typeof m === 'string' ? { name: m, checked: true } : { name: m?.name, checked: !!m?.checked }))
+      .filter((m: any) => m.name);
+    const names: string[] = normalized.map((m: any) => m.name);
+    const checked: string[] = normalized.filter((m: any) => m.checked).map((m: any) => m.name);
     setSelectedProvider(presetType);
     setFormBaseUrl(profile.baseUrl || '');
     // 🔧 修复：编辑模式回填真实 Key（后端已解密），用户可查看和修改
@@ -366,12 +396,13 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
       ? '该配置的 API Key 已失效（无法解密，通常因系统密钥库重建）。请重新填写明文 Key，否则该通道不可用。'
       : '');
     setFormAlias(profile.alias || profile.name || '');
-    setFormModels(models);
-    setCustomModelsText(models.join('\n'));
+    setFormModels(names);
+    setCheckedModels(checked);
+    setCustomModelsText(names.join('\n'));
     setFormKeyVisible(false); setTestStatus('idle');
     setApiKeyChanged(false); setFormErrors({}); setSaveError('');
-    // 🔧 方案 1：编辑既有配置**不建草稿行**；联动清理的比较基准取打开时的模型列表
-    resetDraftRefs(models);
+    // 🔧 方案 1：编辑既有配置**不建草稿行**；联动清理的比较基准取打开时的「已勾选」集合
+    resetDraftRefs(checked);
     setModalStep(presetType ? 'form' : 'provider');
     setModalOpen(true);
   };
@@ -380,10 +411,10 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
    *
    * - ADR-004 G4：密文形态的 Key **绝不外发**（此处拦截 + 后端 `assertPlaintextApiKey` 双保险）
    * - 仅当用户实际输入过 Key 才写 `apiKey` 字段，否则不传 ⇒ 不会把既有 Key 覆盖成空
-   * @param overrides.models 显式指定模型列表（勾选复选框时用，避免读到未提交的 state）
+   * @param overrides.models 显式指定落库载荷（勾选/移除以避免读到未提交的 state）
    * @returns true = 已写入；false = 被拒/失败（原因已由 `saveError` / `formErrors` 呈现）
    */
-  const persistProfile = async (overrides?: { models?: string[] }): Promise<boolean> => {
+  const persistProfile = async (overrides?: { models?: Array<{ name: string; checked: boolean }> }): Promise<boolean> => {
     if (!selectedProvider) return false;
 
     // G4：对密文再加密不可逆 ⇒ 直接拒绝写入
@@ -394,9 +425,17 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
 
     const preset = (PROVIDER_CONFIGS as any)[selectedProvider];
     const alias = formAlias.trim();
-    const models = overrides?.models ?? (isCustom
-      ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
-      : formModels);
+    // 落库形状：[{ name, checked }]（存储选型 A：沿用 models 列 JSON，不建表/不迁移）
+    // custom 分支按行视为全部已勾选
+    let models = overrides?.models;
+    if (!models) {
+      if (isCustom) {
+        const lines = customModelsText.split('\n').map((s) => s.trim()).filter(Boolean);
+        models = toModelPayload(lines, lines);
+      } else {
+        models = toModelPayload(formModels, checkedModels);
+      }
+    }
 
     const patch: any = {
       name: alias || preset?.name || selectedProvider,
@@ -445,26 +484,25 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   };
 
   /**
-   * 提交模型变更（勾选复选框 / 回车追加 都走这里）
+   * 提交模型变更（勾选复选框 / 回车追加 / ⊖ 移除 都走这里）
    *
-   * 含「删模型 ⇒ 清受影响管线绑定」的联动确认 —— 原挂在保存按钮上，感知保存后前移到提交时刻。
-   * @returns false = 用户取消了确认框（调用方须回滚 UI 勾选态）；写入失败不回滚（用户意图应保留）
+   * 含「取消勾选或移除 ⇒ 清受影响管线绑定」的联动确认 —— 原挂在保存按钮上，感知保存后前移到提交时刻。
+   * @returns false = 用户取消了确认框（调用方须回滚 UI 状态）；写入失败不回滚（用户意图应保留）
    */
-  const commitModels = async (next: string[]): Promise<boolean> => {
-    const removed = originalModelsRef.current.filter((m) => !next.includes(m));
-    if (editingProfileId && removed.length > 0) {
+  const commitModels = async (nextNames: string[], nextChecked: string[]): Promise<boolean> => {
+    // 停用判定：原本已勾选、现在不再勾选（取消勾选/移除皆适用）—— 这些模型的绑定要清
+    const deactivated = originalCheckedRef.current.filter((m) => !nextChecked.includes(m));
+    if (editingProfileId && deactivated.length > 0) {
       const affected = (Object.values(bindings) as any[]).filter(
-        (b) => b?.profileId === editingProfileId && removed.includes(b?.modelName)
+        (b) => b?.profileId === editingProfileId && deactivated.includes(b?.modelName)
       );
       if (affected.length > 0) {
         const taskList = affected
           .map((b) => ALL_PIPELINE_NODES.find((n) => n.taskType === b.taskType)?.label || b.taskType)
           .join('、');
-        const confirmMsg =
-          `本次修改删除了模型：${removed.join(', ')}\n` +
-          `以下管线节点引用了这些模型：${taskList}\n` +
-          `保存后将自动清空上述绑定，是否继续？`;
-        if (!window.confirm(confirmMsg)) return false;
+        // 取消勾选/移除模型会清空引用它的管线绑定 → 用应用内确认卡（非原生 confirm）
+        const ok = await askConfirm(`取消「${deactivated.join('、')}」会清空引用它的节点绑定：${taskList}`);
+        if (!ok) return false;
 
         // 先清空受影响的绑定，避免管线节点残留无效 model_name
         for (const b of affected) {
@@ -477,8 +515,8 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         });
       }
     }
-    originalModelsRef.current = next;
-    await persistProfile({ models: next });
+    originalCheckedRef.current = nextChecked;
+    await persistProfile({ models: toModelPayload(nextNames, nextChecked) });
     return true;
   };
 
@@ -501,7 +539,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   const selectProvider = (type: string) => {
     setSelectedProvider(type);
     const preset = (PROVIDER_CONFIGS as any)[type];
-    setFormBaseUrl(preset?.baseUrl || ''); setFormModels([]); setCustomModelsText('');
+    setFormBaseUrl(preset?.baseUrl || ''); setFormModels([]); setCheckedModels([]); setCustomModelsText('');
     setFormKeyVisible(false); setTestStatus('idle'); setApiKeyChanged(false); setFormErrors({});
     setCredentialWarning(''); setSaveError('');
     setModalStep('form');
@@ -540,36 +578,56 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   /**
    * 统一的模型勾选入口（预设列表与自定义文本两条线都走这里）
    *
-   * - 当前列表 = custom ? textarea 按行 : formModels
-   * - 保留 `commitModels`「删模型弹确认框、取消则回滚」的既有语义
+   * - custom：textarea 按行增删，无「未勾选但保留」概念
+   * - 预设：勾选只是**标记位** —— 取消勾选只改 `checkedModels`，名字仍留在库中；
+   *   勾选拉取池中的新模型时，把它补进库（落库全集）
+   * - 保留 `commitModels`「取消勾选/移除弹确认框、取消则回滚」的既有语义
    */
   const toggleModelSelection = async (model: string) => {
-    const current = isCustom
-      ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
-      : formModels;
-    const next = current.includes(model)
-      ? current.filter((m) => m !== model)
-      : [...current, model];
     const clearModelError = () => {
       if (formErrors.models) setFormErrors((prev) => { const n = { ...prev }; delete n.models; return n; });
     };
     if (isCustom) {
+      const current = customModelsText.split('\n').map((s) => s.trim()).filter(Boolean);
+      const next = current.includes(model) ? current.filter((m) => m !== model) : [...current, model];
       const prevText = customModelsText;
       setCustomModelsText(next.join('\n'));
       dirtyRef.current = true;
       clearModelError();
       // 用户取消联动确认 ⇒ 回滚勾选态
-      const ok = await commitModels(next);
+      const ok = await commitModels(next, next);
       if (!ok) setCustomModelsText(prevText);
-    } else {
-      const prevModels = formModels;
-      setFormModels(next);
-      dirtyRef.current = true;
-      clearModelError();
-      // 用户取消联动确认 ⇒ 回滚勾选态
-      const ok = await commitModels(next);
-      if (!ok) setFormModels(prevModels);
+      return;
     }
+    const prevNames = formModels;
+    const prevChecked = checkedModels;
+    const isChecked = prevChecked.includes(model);
+    // 库中已有该名字则只切标记位；否则补齐进库
+    const nextNames = prevNames.includes(model) ? prevNames : [...prevNames, model];
+    const nextChecked = isChecked ? prevChecked.filter((m) => m !== model) : [...prevChecked, model];
+    setFormModels(nextNames);
+    setCheckedModels(nextChecked);
+    dirtyRef.current = true;
+    clearModelError();
+    // 用户取消联动确认 ⇒ 回滚勾选态
+    const ok = await commitModels(nextNames, nextChecked);
+    if (!ok) { setFormModels(prevNames); setCheckedModels(prevChecked); }
+  };
+
+  /**
+   * 「移除」按钮（⊖）：从库中彻底删掉该名字 —— 与「取消勾选」不同，后者只改标记位、名字保留
+   * 若该模型原本已勾选，等价于停用 ⇒ 交由 `commitModels` 走清绑定确认
+   */
+  const removeModel = async (model: string) => {
+    const prevNames = formModels;
+    const prevChecked = checkedModels;
+    const nextNames = prevNames.filter((m) => m !== model);
+    const nextChecked = prevChecked.filter((m) => m !== model);
+    setFormModels(nextNames);
+    setCheckedModels(nextChecked);
+    dirtyRef.current = true;
+    const ok = await commitModels(nextNames, nextChecked);
+    if (!ok) { setFormModels(prevNames); setCheckedModels(prevChecked); }
   };
   const isCustom = selectedProvider === 'custom';
   // 🔧 修复：仅「新增预设供应商」时 baseUrl 只读（自动填入 preset.baseUrl）
@@ -580,7 +638,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   const [testFailReason, setTestFailReason] = useState('');
   const [fetchingModels, setFetchingModels] = useState(false);
   const [fetchHint, setFetchHint] = useState('');
-  /** 拉取到的「可选项池」—— 只作为候选来源，不自动勾选、不落库 */
+  /** 拉取到的「可选项池」—— 作为候选来源补充；拉取时按 name 合并进库，新名字默认未勾选 */
   const [fetchedPool, setFetchedPool] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState('');
   const [modelCategory, setModelCategory] = useState<string>('全部');
@@ -610,10 +668,10 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
       setTestFailReason('接口地址不能为空');
       return;
     }
-    // 取当前表单选中的第一个模型作为真实推理测试目标
+    // 取当前表单「已勾选」的第一个模型作为真实推理测试目标
     const currentModels = isCustom
       ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
-      : formModels;
+      : checkedModels;
     const testModel = currentModels[0] || '';
     if (!testModel) {
       setTestStatus('fail');
@@ -651,10 +709,10 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
   /**
    * 拉取账户可用模型列表
    *
-   * 调用 OpenAI 兼容 /models 接口，把去重后的结果填入「可选项池」（fetchedPool），
-   * **不自动勾选、不落库** —— 由用户从候选列表里挑，避免 230 个模型被全选灌库。
-   * - 成功：可选项池变大，已选数量保持原样
-   * - 失败：保留 PROVIDER_CONFIGS 参考列表，显示错误提示
+   * 调用 OpenAI 兼容 /models 接口，按 name 去重后**合并进候选库**：
+   * - 拉取到的名字与手填的一样都落库（存储选型 A），勾选只是标记位、不是「存不存数据」
+   * - 同名且已存在 ⇒ 保留原勾选态，不做任何操作
+   * - 新名字补进库并置为**未勾选**（绝不自动勾选灌库）
    */
   const handleFetchModels = async () => {
     if (!formApiKey.trim()) { setFetchHint('请先填写 API Key'); return; }
@@ -676,13 +734,20 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         setFetchHint('拉取成功但返回空列表（已保留参考列表）');
         return;
       }
-      // 只填「可选项池」：去重后供搜索/分类筛选，绝不自动勾选、绝不落库
       const deduped = Array.from(new Set(models)).filter((m) => typeof m === 'string' && m.trim() !== '');
-      setFetchedPool(deduped);
-      const selectedCount = isCustom
-        ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean).length
-        : formModels.length;
-      setFetchHint(`✓ 拉取成功，共 ${deduped.length} 个模型可选 —— 请勾选需要的（已选 ${selectedCount} 个）`);
+      setFetchedPool((prev) => Array.from(new Set([...prev, ...deduped])));
+      if (isCustom) {
+        setFetchHint(`✓ 拉取成功，共 ${deduped.length} 个模型可选 —— 请勾选需要的`);
+      } else {
+        // 按 name 合并进库：新名字（未勾选）补进、已存在的保持原勾选态
+        const prevNames = formModels;
+        const nextNames = Array.from(new Set([...prevNames, ...deduped]));
+        const added = nextNames.length - prevNames.length;
+        setFormModels(nextNames);
+        dirtyRef.current = true;
+        await commitModels(nextNames, checkedModels);
+        setFetchHint(`✓ 拉取成功，共 ${deduped.length} 个模型可选 —— 已并入候选（新增 ${added} 个，已选 ${checkedModels.length} 个）`);
+      }
     } catch (err: any) {
       setFetchHint(`拉取失败：${err?.message || String(err)}（已保留参考列表）`);
     } finally {
@@ -692,32 +757,34 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
 
   /* ---------- 构建管线模型选项 ---------- */
   const enabledProfiles = apiProfiles.filter((p: any) => (p.enabled ?? 1) !== 0);
+  // 映射下拉只列「已勾选」的模型（未勾选的不作为可绑定项）
   const modelOptions = enabledProfiles.flatMap((p: any) =>
-    (Array.isArray(p.models) ? p.models : []).map((m: string) => ({
-      modelName: m, profileId: p.id, profileName: p.alias || p.name || p.provider,
-    }))
+    (Array.isArray(p.models) ? p.models : [])
+      .map((m: any) => (typeof m === 'string' ? { name: m, checked: true } : m))
+      .filter((m: any) => m?.checked && m?.name)
+      .map((m: any) => ({
+        modelName: m.name, profileId: p.id, profileName: p.alias || p.name || p.provider,
+      }))
   );
 
   /* ---------- 模型选择区（搜索 / 分类 / 候选） ---------- */
-  // 当前已选：custom 走 textarea 按行，预设走 formModels
+  // 当前已选（勾选态）：custom 走 textarea 按行（全视为已选），预设走 checkedModels
   const selectedModelList = isCustom
     ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
+    : checkedModels;
+  // 候选 = 去重(库全集 ∪ 拉取池)；不再拼接预设内置列表
+  const libraryNames = isCustom
+    ? customModelsText.split('\n').map((s) => s.trim()).filter(Boolean)
     : formModels;
-  // 候选 = 去重(预设 ∪ 拉取池 ∪ 已选)
-  const candidateModels = Array.from(new Set([
-    ...((PROVIDER_CONFIGS as any)[selectedProvider]?.models || []),
-    ...fetchedPool,
-    ...selectedModelList,
-  ]));
+  const candidateModels = Array.from(new Set([...libraryNames, ...fetchedPool]));
   // 分类计数按「未过滤的池子」算
   const categoryCounts = candidateModels.reduce<Record<string, number>>((acc, m) => {
-    const c = classifyModel(m);
-    acc[c] = (acc[c] || 0) + 1;
+    for (const c of classifyModelCategories(m)) acc[c] = (acc[c] || 0) + 1;
     return acc;
   }, {});
   // 先分类过滤，再按不区分大小写的子串搜索
   const filteredCandidates = candidateModels.filter((m) => {
-    const catOk = modelCategory === '全部' || classifyModel(m) === modelCategory;
+    const catOk = modelCategory === '全部' || classifyModelCategories(m).includes(modelCategory);
     const searchOk = !modelSearch || m.toLowerCase().includes(modelSearch.toLowerCase());
     return catOk && searchOk;
   });
@@ -775,7 +842,18 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
             <label key={model} className={`flex items-center gap-2 px-2.5 py-1.5 cursor-pointer text-[13px] transition-colors hover:bg-[var(--bg-hover)] ${selectedModelList.includes(model) ? 'bg-accent/8' : ''}`}>
               <input type="checkbox" checked={selectedModelList.includes(model)} onChange={() => void toggleModelSelection(model)} className="accent-[var(--accent)]" />
               <span className="truncate" title={model}>{model}</span>
-              <span className="text-[11px] text-muted-foreground/60 ml-auto shrink-0">{classifyModel(model)}</span>
+              {/* ⊖ 移除：从库中彻底删掉该名字（与「取消勾选」不同）；custom 走行文本暂不提供 */}
+              {!isCustom && (
+                <button
+                  type="button"
+                  title="从列表移除该模型名"
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); void removeModel(model); }}
+                  className="ml-auto shrink-0 text-muted-foreground/60 hover:text-[var(--accent-rose)] transition-colors cursor-pointer outline-none"
+                >
+                  <CircleMinus size={13} />
+                </button>
+              )}
+              <span className={`text-[11px] text-muted-foreground/60 shrink-0 ${isCustom ? 'ml-auto' : ''}`}>{classifyModel(model)}</span>
             </label>
           ))
         )}
@@ -810,7 +888,10 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
               const providerName = (PROVIDER_CONFIGS as any)[p.presetType || p.provider]?.name || p.provider;
               const icon = getIcon(p.presetType || p.provider);
               const displayName = p.alias || p.name || providerName;
-              const modelList: string[] = Array.isArray(p.models) ? p.models : [];
+              // models 现为 [{ name, checked }]（兼容旧 string[]，视为已勾选）
+              const modelList: any[] = Array.isArray(p.models) ? p.models : [];
+              const totalModels = modelList.length;
+              const checkedModelCount = modelList.filter((m: any) => (typeof m === 'string' ? true : m?.checked)).length;
 
               return (
                 <div key={p.id} className={`bg-[var(--input)] border border-[var(--border)] rounded-lg overflow-hidden transition-opacity ${!enabled ? 'opacity-45' : ''}`}>
@@ -826,7 +907,7 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                           {p.alias && <span className="text-[12px] text-muted-foreground/60 truncate">({providerName})</span>}
                         </div>
                         <span className="text-[12px] text-muted-foreground">
-                          {modelList.length} 个模型
+                          已选 {checkedModelCount} / 共 {totalModels}
                         </span>
                       </div>
                     </div>
@@ -998,6 +1079,20 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
         </div>
       </section>
 
+      {/* ===== 删除模型确认卡（应用内样式，替代原生 window.confirm） ===== */}
+      {confirmState && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-[14px] w-[400px] p-[22px]">
+            <div className="text-[14px] font-semibold text-foreground mb-2">确认删除模型？</div>
+            <div className="text-[13px] text-muted-foreground leading-relaxed mb-5">{confirmState.desc}</div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => closeConfirm(false)} className="px-3.5 py-1.5 rounded-md border border-[var(--border)] bg-[var(--input)] text-[13px] text-foreground hover:bg-[var(--bg-hover)] transition-colors cursor-pointer outline-none">取消</button>
+              <button onClick={() => closeConfirm(true)} className="px-3.5 py-1.5 rounded-md bg-[var(--accent-rose)] text-white text-[13px] hover:opacity-90 transition-colors cursor-pointer outline-none">继续</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ===== Add/Edit Modal ===== */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
@@ -1091,10 +1186,12 @@ export const AITab: React.FC<AITabProps> = ({ data, onUpdate, onTest, onTestTTS,
                             e.preventDefault();
                             const val = (e.target as HTMLInputElement).value.trim();
                             if (val && !formModels.includes(val)) {
-                              const next = [...formModels, val];
-                              setFormModels(next);
+                              const nextNames = [...formModels, val];
+                              const nextChecked = [...checkedModels, val];
+                              setFormModels(nextNames);
+                              setCheckedModels(nextChecked);
                               dirtyRef.current = true;
-                              void commitModels(next);
+                              void commitModels(nextNames, nextChecked);
                               (e.target as HTMLInputElement).value = '';
                             }
                           }

@@ -52,7 +52,7 @@ export class ProfileBindingRepository {
    * 无效绑定判定（满足任一即删）：
    * 1. profile_id 为 NULL（早期 ON DELETE SET NULL 残留，model_name 未清）
    * 2. profile_id 指向的 Profile 已不存在（DB 不一致）
-   * 3. model_name 不在对应 Profile 的 models 列表中（模型被编辑删除后未联动清理）
+   * 3. model_name 未被对应 Profile 勾选（模型被取消勾选/移除后未联动清理）
    *
    * 返回删除行数，供前端日志/提示使用
    */
@@ -61,11 +61,21 @@ export class ProfileBindingRepository {
 
     if (rows.length === 0) return 0;
 
-    // 加载所有 Profile 的 id → models 映射（一次性，避免逐行查询）
+    // 加载所有 Profile 的 id → 「已勾选模型名」集合（一次性，避免逐行查询）
+    // models 现为 [{ name, checked }]（兼容旧 string[]，视为已勾选）
     const profileRows = this.db.prepare('SELECT id, models FROM api_profiles').all() as Array<{ id: string; models: string | null }>;
-    const profileMap = new Map<string, string[]>();
+    const profileMap = new Map<string, Set<string>>();
     for (const r of profileRows) {
-      try { profileMap.set(r.id, r.models ? JSON.parse(r.models) : []); } catch { profileMap.set(r.id, []); }
+      try {
+        const parsed: any[] = r.models ? JSON.parse(r.models) : [];
+        const checked = new Set<string>(
+          (Array.isArray(parsed) ? parsed : [])
+            .map((m: any) => (typeof m === 'string' ? { name: m, checked: true } : m))
+            .filter((m: any) => m?.checked && m?.name)
+            .map((m: any) => m.name)
+        );
+        profileMap.set(r.id, checked);
+      } catch { profileMap.set(r.id, new Set()); }
     }
 
     const invalidTaskTypes: string[] = [];
@@ -73,7 +83,7 @@ export class ProfileBindingRepository {
       const isInvalid =
         !b.profile_id ||                                          // 条件1: profile_id 为 NULL
         !profileMap.has(b.profile_id) ||                          // 条件2: Profile 不存在
-        !profileMap.get(b.profile_id)!.includes(b.model_name);    // 条件3: model_name 不在 Profile.models 中
+        !profileMap.get(b.profile_id)!.has(b.model_name);          // 条件3: model_name 未被勾选（或已被移除）
       if (isInvalid) invalidTaskTypes.push(b.task_type);
     }
 

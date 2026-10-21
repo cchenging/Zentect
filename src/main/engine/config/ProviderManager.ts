@@ -53,7 +53,12 @@ export class ProviderManager {
           case 'tencent': profileBaseURL = 'https://api.hunyuan.cloud.tencent.com/v1'; break;
         }
       }
-      const profileModel = activeProfile.models?.[0] || '';
+      // models 现为 [{ name, checked }]（兼容旧 string[]）——取第一个「已勾选」的名字
+      const rawModels: any[] = Array.isArray(activeProfile.models) ? activeProfile.models : [];
+      const firstChecked = rawModels
+        .map((m: any) => (typeof m === 'string' ? { name: m, checked: true } : m))
+        .find((m: any) => m?.checked && m?.name);
+      const profileModel = firstChecked?.name || '';
       return { provider, model: profileModel, baseURL: profileBaseURL, apiKey: activeProfile.apiKey, apiKeyStatus: 'ok', temperature: 0.5 };
     }
 switch (provider) {
