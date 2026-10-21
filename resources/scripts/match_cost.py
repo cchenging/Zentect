@@ -36,6 +36,7 @@ from timeline_solver import (
     ACTION_CLASSES,
     AIModels,
     ENTITY_CLASSES,
+    _abstract_semantic_score,
     _action_of_chunk,
     _char_ids_of_chunk,
     _char_ids_of_query,
@@ -45,6 +46,7 @@ from timeline_solver import (
     _compute_role_score,
     _emotion_compatibility,
     _prop_of_chunk,
+    _shot_type_level,
     _smart_truncate_desc,
 )
 
@@ -395,6 +397,20 @@ def _read_entity_boost() -> bool:
     return str(os.environ.get('ZENTECT_KM_ENTITY_BOOST', '1')).strip().lower() in ('1', 'on', 'true')
 
 
+def _read_abstract_route() -> bool:
+    """读取「抽象旁白分流」开关（env `ZENTECT_KM_ABSTRACT_ROUTE`，缺省 off）。
+
+    on = 抽象句（`query.isAbstractNarration`）的语义主分改取景别分级抽象分
+    （复用旧链 `_abstract_semantic_score`，单一真源），并跳过帧描述/实体/属性三类噪声信号。
+    off（缺省）= 逐字节回退旧口径，一行回退；此时仍统计抽象句数量供取证，日志仅在 N>0 时输出。
+
+    Returns:
+        bool: True 表示启用抽象句景别先验分流。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_ABSTRACT_ROUTE', '0')).strip().lower() in ('1', 'on', 'true')
+
+
 def build_match_cost(
     queries: List[dict],
     chunk_by_id: Dict[str, dict],
@@ -519,6 +535,13 @@ def build_match_cost(
     # / flip=降代价后综合 Top-1 被翻盘的句数）。
     entity_on = _read_entity_boost()
     _eb_stat = {'query_hits': 0, 'cand_hits': 0, 'flip': 0}
+    # 抽象旁白分流（P1 方案 A，2026-10-21）：开关 + 只读诊断容器。
+    #   queries=抽象句数（开关 off 也计，供取证）｜ routed=景别分实际生效句｜ pool_wide=候选含≥全景句
+    #   ｜ pool_no_wide=候选全为近景句｜ hit_wide/hit_close=综合 Top-1 落在宽景/近景带句数
+    #   ｜ no_level=存在无景别标记候选的句数。
+    abstract_on = _read_abstract_route()
+    _ar_stat = {'queries': 0, 'routed': 0, 'pool_wide': 0, 'pool_no_wide': 0,
+                'hit_wide': 0, 'hit_close': 0, 'no_level': 0}
 
     def _calc_row(cands: list, sem_values: List[float], decisive: bool = False,
                   stat: Optional[dict] = None) -> tuple:
@@ -560,9 +583,16 @@ def build_match_cost(
 
     for qi, query in enumerate(queries):
         sid = str(query['shotId'])
+        # 🎬 抽象旁白分流（P1 方案 A）：抽象文本与任何具体画面低相关，BGE 相似度即噪声。
+        #   `abstract_flag` 无论开关都统计（供「本片抽象句=N」取证）；真正改分仅开关 on。
+        _abstract_flag = bool(query.get('isAbstractNarration'))
+        _is_abstract = abstract_on and _abstract_flag
+        if _abstract_flag:
+            _ar_stat['queries'] += 1
         # 🔍 实体命中降代价（方案 C）：提取本句命中的词表实体词（开关 off / 零命中 ⇒ 空集，整句零开销）。
+        #   抽象句禁用该通道：抽象文本里的词不指向画面实体，命中即假信号。
         _qi_entities = ([w for w in FRAME_ENTITY_LEXICON if w in query_concat_texts[qi]]
-                        if entity_on else [])
+                        if entity_on and not _is_abstract else [])
         _hit_cids: set = set()
         if _qi_entities:
             _eb_stat['query_hits'] += 1
@@ -593,6 +623,7 @@ def build_match_cost(
 
         # 逐候选收集：β 融合语义分 + 时长/情绪/角色分（一次计算，供两版语义序列复用）。
         cands: list = []
+        _cand_levels: list = []   # 抽象句诊断：本句各候选的景别等级（None=无景别标记）
         for cid in cand_ids:
             chunk = chunk_by_id.get(cid)
             if chunk is None:
@@ -603,26 +634,38 @@ def build_match_cost(
                 _fb_txt = str(((frame_hints or {}).get(sid) or {}).get(cid) or '')
                 if any(_w in chunk_desc_texts[ci] or _w in _fb_txt for _w in _qi_entities):
                     _hit_cids.add(cid)
-            sem_score = float(semantic_sim[qi, ci])
-            # 🔬 跨模态重排候选盘排序用（可选只读导出，对齐离线 BGE 榜的拼接口径）。
-            #   在 β 融合「之前」记录，导出的恒为拼接语义分；sem_out=None 时整段零开销。
-            if sem_out is not None:
-                sem_out.setdefault(sid, {})[cid] = sem_score
-            # P1′-a 精排融合：β=1.0 → 纯 text；β=0 → 纯拼接；中间 → 线性混合。
-            if beta > 0.0 and text_sim is not None:
-                sem_score = float((1.0 - beta) * sem_score + beta * float(text_sim[qi, ci]))
+            if _is_abstract:
+                # 🎬 抽象旁白分流：语义主分 = 景别分级抽象分（空镜/全景/远景 0.90 ＞ 近景/特写 0.80
+                #   ＞ 中景 0.55 ＞ 未识别 0.45），与旧链决策 #6 同表同函数（单一打分真源）。
+                #   契约键优先：build_chunk_index 已由 CHUNK_KEY_ALIASES 把 shotType 补到 shotScale。
+                _shot_label = str(chunk.get('shotScale') or chunk.get('shotType') or '')
+                sem_score = _abstract_semantic_score(_shot_label)
+                _cand_levels.append(_shot_type_level(_shot_label))
+                # 重排盘导出同样给景别分（否则重排盘排序仍吃文本噪声）。
+                if sem_out is not None:
+                    sem_out.setdefault(sid, {})[cid] = sem_score
+            else:
+                sem_score = float(semantic_sim[qi, ci])
+                # 🔬 跨模态重排候选盘排序用（可选只读导出，对齐离线 BGE 榜的拼接口径）。
+                #   在 β 融合「之前」记录，导出的恒为拼接语义分；sem_out=None 时整段零开销。
+                if sem_out is not None:
+                    sem_out.setdefault(sid, {})[cid] = sem_score
+                # P1′-a 精排融合：β=1.0 → 纯 text；β=0 → 纯拼接；中间 → 线性混合。
+                if beta > 0.0 and text_sim is not None:
+                    sem_score = float((1.0 - beta) * sem_score + beta * float(text_sim[qi, ci]))
 
-            # 帧描述并入：帧证据候选的语义分来源（方案 D 取代 / 方案 B 只升不降）。
-            _fs = _frame_sem.get((sid, str(cid)))
-            if _fs is not None:
-                _fstat['cands'] += 1
-                if frame_primary:
-                    _fstat['replaced'] += 1
-                    sem_score = _fs          # 帧描述升唯一主力：直接取代切片描述语义
-                elif _fs > sem_score:
-                    _fstat['lifted'] += 1
-                    _fstat['max_lift'] = max(_fstat['max_lift'], _fs - sem_score)
-                    sem_score = _fs
+                # 帧描述并入：帧证据候选的语义分来源（方案 D 取代 / 方案 B 只升不降）。
+                #   抽象句不走此通道：帧描述是具体画面内容，对抽象文本同属噪声。
+                _fs = _frame_sem.get((sid, str(cid)))
+                if _fs is not None:
+                    _fstat['cands'] += 1
+                    if frame_primary:
+                        _fstat['replaced'] += 1
+                        sem_score = _fs          # 帧描述升唯一主力：直接取代切片描述语义
+                    elif _fs > sem_score:
+                        _fstat['lifted'] += 1
+                        _fstat['max_lift'] = max(_fstat['max_lift'], _fs - sem_score)
+                        sem_score = _fs
 
             # 时长契合（非对称裁剪友好型）
             c_start = float(chunk.get('startMs') or 0.0)
@@ -654,13 +697,17 @@ def build_match_cost(
             # P5 结构化属性贴合（议题 D 的桥）：工单声明 ↔ 镜头属性逐维软阻尼，并入供给代价。
             #   主体维复用 char-id 桥（chunk_roles 同上）、道具维复用 ENTITY_CLASSES 类别桥
             #   （`_prop_of_chunk` 与动态门禁同表）——两维均不再跨坐标系裸比较（修伪惩罚）。
-            chunk_prop = _prop_of_chunk(chunk)
-            chunk_action = _action_of_chunk(chunk)
-            _attr = attribute_adherence_cost(
-                query, chunk, _attr_stat,
-                query_roles=query_roles, chunk_roles=chunk_roles,
-                query_prop=query_prop, chunk_prop=chunk_prop,
-                query_action=query_action, chunk_action=chunk_action)
+            #   抽象句跳过该通道：软阻尼与景别先验重复计分，且抽象句工单往往无逐维声明。
+            if _is_abstract:
+                _attr = 0.0
+            else:
+                chunk_prop = _prop_of_chunk(chunk)
+                chunk_action = _action_of_chunk(chunk)
+                _attr = attribute_adherence_cost(
+                    query, chunk, _attr_stat,
+                    query_roles=query_roles, chunk_roles=chunk_roles,
+                    query_prop=query_prop, chunk_prop=chunk_prop,
+                    query_action=query_action, chunk_action=chunk_action)
             cands.append((cid, sem_score, duration_penalty, emotion_score, role_score, _coverable, _attr))
 
         # 「可供给 ≥ 配音」约束判定（仅开关 on 档、非原声段）：
@@ -687,8 +734,11 @@ def build_match_cost(
                 cands = _kept
 
         # 方向2 量纲对齐：候选内 min-max 归一化后参与综合分（不改语义排序，只重排相对权重）。
+        #   抽象句豁免归一化：景别分是 0.90/0.80/0.55/0.45 的**绝对刻度**（旧链口径），
+        #   min-max 会把同档候选拉平、把跨档放大成 1.0 vs 0.0，破坏景别先验的相对权重。
         raw_sems = [c[1] for c in cands]
-        norm_sems = _norm_cand_sem(raw_sems) if sem_norm != 'off' else raw_sems
+        norm_sems = (raw_sems if _is_abstract or sem_norm == 'off'
+                     else _norm_cand_sem(raw_sems))
         row, _best_cid = _calc_row(cands, norm_sems, attr_decisive)
         # 🔍 实体命中降代价（方案 C）：命中词表实体的候选扣 ENTITY_BOOST_REWARD，再取新的综合 Top-1。
         #   ⚠️ 不覆盖 `_best_cid`——其仍为 _calc_row 原始最优，供下方 β/量纲/属性决胜诊断正确归因。
@@ -705,26 +755,46 @@ def build_match_cost(
         # 🔍 属性维决胜诊断（只读）：回答「属性到底有没有参与决胜」——
         #   ① band = 本句近分带内候选数（≥2 才有决胜余地）；② flip = 属性放大后综合 Top-1 被翻盘的句数；
         #   ③ spans = 行内属性值跨度（全同值 ⇒ 该句属性毫无判别力，放大多少都不动排序）。
-        _ad_row = {}
-        _, _best_plain = _calc_row(cands, norm_sems, False, stat=_ad_row)
-        if _best_plain != _best_cid:
-            _ad_stat['flip'] += 1
-        _ad_stat['band_cands'] += _ad_row.get('band', 0)
-        if _ad_row.get('band', 0) >= 2:
-            _ad_stat['band_rows'] += 1
-        _attrs_row = [float(c[6]) for c in cands]
-        _span_row = max(_attrs_row) - min(_attrs_row)
-        _ad_stat['spans'].append(_span_row)
-        if _span_row <= 1e-9:
-            _ad_stat['span0'] += 1
+        #   抽象句不参与该口径（属性维已被跳过，计入会污染「属性命中率」诊断）。
+        if not _is_abstract:
+            _ad_row = {}
+            _, _best_plain = _calc_row(cands, norm_sems, False, stat=_ad_row)
+            if _best_plain != _best_cid:
+                _ad_stat['flip'] += 1
+            _ad_stat['band_cands'] += _ad_row.get('band', 0)
+            if _ad_row.get('band', 0) >= 2:
+                _ad_stat['band_rows'] += 1
+            _attrs_row = [float(c[6]) for c in cands]
+            _span_row = max(_attrs_row) - min(_attrs_row)
+            _ad_stat['spans'].append(_span_row)
+            if _span_row <= 1e-9:
+                _ad_stat['span0'] += 1
+
+        # 🎬 抽象旁白分流诊断（只读）：回答「景别先验到底有没有可用候选」——
+        #   pool_no_wide 高 ⇒ 候选池全是近景（扩池问题，见方案档 D3）；no_level 高 ⇒ 先补景别覆盖。
+        if _is_abstract:
+            _ar_stat['routed'] += 1
+            _lv_known = [l for l in _cand_levels if l is not None]
+            if len(_lv_known) < len(_cand_levels):
+                _ar_stat['no_level'] += 1
+            if any(l >= 4 for l in _lv_known):
+                _ar_stat['pool_wide'] += 1
+            else:
+                _ar_stat['pool_no_wide'] += 1
+            _best_level = next((l for c, l in zip(cands, _cand_levels) if c[0] == _best_cid), None)
+            if _best_level is not None and _best_level >= 4:
+                _ar_stat['hit_wide'] += 1
+            elif _best_level is not None and _best_level <= 2:
+                _ar_stat['hit_close'] += 1
 
         # DIAG：β 融合后语义主分 Top-1 相对纯拼接发生变更的句数（可测量精排是否翻盘）。
-        if beta > 0.0 and _concat_best_cid is not None and _best_cid is not None \
+        if beta > 0.0 and not _is_abstract and _concat_best_cid is not None and _best_cid is not None \
                 and _best_cid != _concat_best_cid:
             _beta_changed_n += 1
         # DIAG：量纲对齐前后综合 Top-1 变更 + 综合 Top-1 的候选内语义名次分布（回答「墙在哪」：
         #   r1 占比高 ⇒ 语义第一即综合第一，墙在语义判别本身；占比低 ⇒ 被其他因子翻盘，量纲/权重可调）。
-        if sem_norm != 'off':
+        #   抽象句豁免归一化 ⇒ 不参与「归一化前后变更」统计（否则是恒 0 的假样本）。
+        if sem_norm != 'off' and not _is_abstract:
             _row_raw, _best_raw = _calc_row(cands, raw_sems)
             if _best_raw != _best_cid:
                 _norm_changed_n += 1
@@ -768,6 +838,17 @@ def build_match_cost(
         _diag_parts.append(
             f"[entity-boost] 实体命中降代价 on ｜ 命中实体句={_eb_stat['query_hits']}/{len(result)} "
             f"降代价候选={_eb_stat['cand_hits']} 翻盘句={_eb_stat['flip']}/{len(result)}")
+    # 🎬 抽象旁白分流诊断（P1 方案 A）：开关 off 且无抽象句 ⇒ 不输出（日志零变化）；
+    #   开关 off 但有抽象句 ⇒ 只打印计数（取证：回答「本片到底几句抽象」）。
+    #   pool_no_wide 高 ⇒ 抽象句候选池全是近景（排序救不了，需扩池，见方案档 D3）。
+    if abstract_on or _ar_stat['queries']:
+        _ar_parts = [f"[abstract-route] {'on' if abstract_on else 'off(仅计数)'} 抽象句={_ar_stat['queries']}/{len(result)}"]
+        if abstract_on:
+            _ar_parts.append(
+                f"景别分生效句={_ar_stat['routed']} ｜ 候选含宽景={_ar_stat['pool_wide']} "
+                f"无宽景候选={_ar_stat['pool_no_wide']} 无景别标记={_ar_stat['no_level']} ｜ "
+                f"命中宽景={_ar_stat['hit_wide']} 命中近景/特写={_ar_stat['hit_close']}")
+        _diag_parts.append(' '.join(_ar_parts))
     # P5 属性贴合诊断（验收口径「属性命中率」）：仅在有信号时输出（零信号 = 两侧无声明，恒中性）。
     #   ⚠️ 容器除三个计数外还挂了 dims/samples 分账子树（2026-10-09），求和须只取整型项。
     _attr_total = sum(_v for _v in _attr_stat.values() if isinstance(_v, int))
