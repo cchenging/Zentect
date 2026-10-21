@@ -208,6 +208,17 @@ export function assembleExportProjectSync(
       );
     }
     const audioPath = buildAudioPath(tts, deps.dehydratePath);
+    // 🎙️ 目标时长基准（用户口径：配音时长即切片基准，源窗多了就裁到与配音等长）：
+    //   解说段（非原声）以「真实配音时长」tts.duration 为 shot 目标时长——配音已 ffprobe 实测，
+    //   下游 resolveCutWindow 据此对更长的源窗做子窗裁剪（start/end 仍保留源窗，供切片定位）；
+    //   原声段（原片原声承载、无 TTS）与缺配音时长的段落，仍以源窗时长为准（保持原有语义）。
+    const sourceWinSec = (endMs - startMs) / 1000;
+    const ttsDurationSec = Number(tts?.duration);
+    const useTtsDuration = m?.keepOriginalAudio !== true
+      && tts?._failed !== true
+      && Number.isFinite(ttsDurationSec)
+      && ttsDurationSec > 0;
+    const durationSec = useTtsDuration ? ttsDurationSec : sourceWinSec;
     return {
       id: m.id,
       mediaId: m?.mediaId || '',
@@ -215,7 +226,7 @@ export function assembleExportProjectSync(
       aiText: m?.aiText,
       start: startMs / 1000,
       end: endMs / 1000,
-      duration: (endMs - startMs) / 1000,
+      duration: durationSec,
       audioPath,
       chunkData: chunk,
       videoTimelineStartMs: startMs,

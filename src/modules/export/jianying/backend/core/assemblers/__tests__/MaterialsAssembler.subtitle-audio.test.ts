@@ -181,3 +181,32 @@ describe('轨道层集成（TracksAssembler 透传音量）', () => {
     expect(videoSegments[0].volume).toBe(1.5);
   });
 });
+
+// 回归：素材时长必须取「素材文件真实时长」，否则 segment.source_timerange 用源坐标（可达数千秒）
+// 会远超素材声明时长，被剪映钳制到错误帧（全片画面被拉到源片头部附近）。
+describe('视频素材时长（回归：源窗越界钳制）', () => {
+  const probeMap = new Map<string, VideoProbeResult>([[SOURCE_PATH, sourceProbe]]);
+
+  it('普通解说段：素材时长 = 源视频真实时长（而非目标时长），源窗不越界', () => {
+    const { videos, shotRefs } = assembleMaterials([makeShot()], SOURCE_PATH, probeMap, {});
+    const mat = videos[0] as any;
+    // 修复前为 totalTargetUs(3s)，源起点 1s 尚可；一旦源坐标较深即被钳制
+    expect(mat.duration).toBe(sourceProbe.durationSec * MICRO);
+    expect(mat.path).toBe(SOURCE_PATH);
+    expect(shotRefs[0].sourceStartUs + (shotRefs[0].sourceDurationUs ?? 0)).toBeLessThanOrEqual(mat.duration);
+  });
+
+  it('原声段：素材时长取源真实时长，深源窗（500s）起点不被越界钳制', () => {
+    const { videos, shotRefs } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: true, videoTimelineStartMs: 500_000, videoTimelineEndMs: 510_000 })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    const mat = videos[0] as any;
+    // 修复前 mat.duration = 目标时长(3s) < 源起点 500s → 剪映把源起点钳到素材头部
+    expect(mat.duration).toBe(sourceProbe.durationSec * MICRO);
+    expect(shotRefs[0].sourceStartUs).toBe(500_000 * 1000);
+    expect(shotRefs[0].sourceStartUs).toBeLessThan(mat.duration);
+  });
+});

@@ -93,10 +93,17 @@ export function assembleTracks(
     // 🎬 阶段 A：合并 clip 的 speed 用「源总时长 / 目标总时长」整体换算。
     // 组内各成员已按各自 speed 换算过 target 时长，speed 不整体换算则
     // source_timerange.duration 与 target_timerange.duration 比例不自洽（用户评审隐患2）。
+    // 🛑 2026-10-15 慢放修复：**下限钳死 1.0×**——源总时长 < 目标总时长（欠覆盖）时，
+    //   旧式自洽换算会派生出任意倍慢放（把 0.2s 源窗放慢撑满 3s 槽），这正是成片「慢放」的
+    //   实际发生点（MaterialsAssembler 内 resolveCutWindow 的 ±8% clamp 只管单成员组，管不到此处）。
+    //   0.2s 素材宁可如实放 0.2s（剪映按源范围不足槽长保持末帧）也不放慢；上游「交付窗长 ≥
+    //   配音时长」硬不变量下该分支为残差（不该出现）⇒ 如实暴露、不再线性拉伸。
     const totalTargetUs = openVideo.totalTargetUs;
     const totalSourceUs = openVideo.totalSourceUs;
     const mergedSpeed =
-      totalTargetUs > 0 && totalSourceUs > 0 ? totalSourceUs / totalTargetUs : openVideo.speed;
+      totalTargetUs > 0 && totalSourceUs > 0
+        ? Math.max(1.0, totalSourceUs / totalTargetUs)
+        : openVideo.speed;
     videoTrack.segments.push(
       buildVideoSegment(
         openVideo.ref.videoId,

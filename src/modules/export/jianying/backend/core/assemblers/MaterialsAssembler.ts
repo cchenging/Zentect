@@ -127,11 +127,6 @@ function resolveSourceDurationUs(shot: CompileShot): number {
   return resolveDurationUs(shot);
 }
 
-/** 🔧 E域（§10.2.6）：变速钳制上下界（用户 ±8% 铁律）。超出此范围拒绝 linear stretch，
- *  一律回退"多镜头级联 / 子窗裁剪"（见 E 域动作3）。 */
-const SPEED_MAX = 1.08;
-const SPEED_MIN = 1 / SPEED_MAX;
-
 /**
  * 🔧 E域（§10.2.6 动作1）：解析"裁剪优先、变速兜底"的源窗决策。
  *
@@ -141,8 +136,12 @@ const SPEED_MIN = 1 / SPEED_MAX;
  *       · 默认取源窗**靠后**段（解说语料多聚焦后半段动作高潮，出点↔入点优先对齐句尾），
  *         子窗时长为目标时长（不越源窗右界）。
  *       · 动作未落点允许源窗起点前移 ≤300ms（Drop Lead-in，削除起手准备段，叠补丁7 弹性腔）。
- *   - 源时长 < 目标时长且覆盖 <0.97 → 保留变速（由级联兄弟 seg 兜底，solver 已产出 merge 提示），
- *     但 clamp 到 [1/1.08, 1.08]，越界即回退全窗（禁止线性拉伸）。
+ *   - 源时长 < 目标时长 → **禁止线性拉伸**：回退全窗 + speed 恒 1.00x（2026-10-15 慢放修复）。
+ *     上游硬不变量「交付窗长 ≥ 配音时长」（solver 侧供给硬过滤 + 重排落点换片）生效后，本分支
+ *     即为**欠覆盖残差**（不该出现的数据缺陷）：此时如实按 1.00x 放原始源窗，缺料差额由剪映
+ *     自身的「源范围不足槽长 ⇒ 末帧保持」承担，绝不靠放慢画面把 0.2s 素材撑满 3s 槽。
+ *     ⚠️ 本函数只被**单成员组**调用（见下）；多成员合并组根本不经此处，其 speed 由轨道层按
+ *     「源总时长 / 目标总时长」派生 ⇒ 慢放修复必须同时在 TracksAssembler 落同样下限。
  *   - isExactSpeed 哨兵（动作2）：为 true 时强制 speed=1.00x、只准子窗裁剪，杜绝 linear stretch。
  *
  * @param chunkData 切片数据（startMs/endMs/motionScore，源坐标）
@@ -184,20 +183,12 @@ function resolveCutWindow(
     };
   }
 
-  // —— 变速兜底：clamp 到 ±8%，越界即回退全窗（杜绝线性拉伸）——
-  const rawSpeed = sourceDurMs > 0 ? sourceDurMs / Math.max(targetDurMs, 1) : 1.0;
-  if (rawSpeed > 1) {
-    const clamped = Math.min(rawSpeed, SPEED_MAX);
-    return {
-      sourceStartUs: Math.round(sourceStartMs * 1000),
-      sourceDurationUs: Math.round(sourceDurMs * 1000),
-      speed: clamped,
-    };
-  }
+  // —— 欠覆盖残差（源窗 < 目标）：回退全窗 + 1.00x，**禁止线性拉伸** ——
+  //   上游「交付窗长 ≥ 配音时长」硬不变量下该分支不该出现；出现即如实暴露（源窗原样、不放慢）。
   return {
     sourceStartUs: Math.round(sourceStartMs * 1000),
     sourceDurationUs: Math.round(sourceDurMs * 1000),
-    speed: Math.max(rawSpeed, SPEED_MIN),
+    speed: 1.0,
   };
 }
 
@@ -725,11 +716,12 @@ export function assembleMaterials(
   const groupVideoId = new Map<string, string>();
   const groupSpeedId = new Map<string, string>();
   for (const [gid, g] of groups) {
-    // 末帧定格（未匹配镜头）整组独占源视频：素材时长用源视频真实时长（源坐标末帧定位落在其内），
-    // 否则素材时长 = 目标时长会让 source 末帧起点越界被剪映钳制到错误帧。
-    const groupAssetDurationUs = g.leadShot.unmatched
-      ? Math.round(g.probe.durationSec * MICRO_SECOND)
-      : g.totalTargetUs;
+    // 素材时长恒取「素材文件真实时长」（ffprobe durationSec）：
+    //   schema v2 起普通段 chunk.filePath 与原声段素材均指向源视频整片，segment.source_timerange
+    //   一律用源坐标（如 3844.84s）。若素材时长 = 目标时长（几秒），source 起点会远超素材时长，
+    //   被剪映钳制到错误帧（全片每段画面都被拉到源片头部附近 → 「原声/画面全排在一起」）。
+    //   末帧定格（未匹配镜头）分支原本即为此口径，现统一到全部组，杜绝越界钳制。
+    const groupAssetDurationUs = Math.round(g.probe.durationSec * MICRO_SECOND);
 
     // A. 组视频素材（54 字段）：整组一个素材，duration = 素材时长（未匹配=源视频真实时长）
     const vMatId = genHexId();
@@ -794,8 +786,8 @@ export function assembleMaterials(
     //   - keepOriginalAudio（原声段回归）与 unmatched（末帧定格）分支不触碰，保持各自既有源窗逻辑。
     //   - 仅对**单成员组**施加裁剪：多成员合并组（sceneGroupId 同父连续兄弟段）依赖逐段 chunk 全窗+组变速
     //     保证源时间连续、无假转场，若逐段独立裁剪会产生源窗交叠/缝隙，破坏阶段 A 的合并连续性保证；
-    //     且合并 clip 的 speed 由「源总时长/目标总时长」自洽派生，本无随意拉伸问题。
-    //   结果用函数返回值覆盖源起点/源时长/变速（speed 已钳制到 [1/1.08, 1.08]）。
+    //     且合并 clip 的 speed 由「源总时长/目标总时长」自洽派生（其下限钳制见 TracksAssembler）。
+    //   结果用函数返回值覆盖源起点/源时长/变速（speed ∈ {1.00x 或 ≥1.0 的快进}，无慢放）。
     if (
       shot.keepOriginalAudio !== true
       && shot.unmatched !== true

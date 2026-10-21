@@ -353,14 +353,23 @@ describe('JianyingExportService - Aug 6 Real Data Integration Test', () => {
       }
     });
 
-    it('video segment 的 source_timerange 应使用 chunkData 的毫秒时间戳', () => {
+    it('video segment 的 source_timerange 应遵循 E域裁剪契约（子窗对齐句尾 + 300ms Drop Lead-in）', () => {
       const input = loadFixture();
       const shots = JianyingExportService.buildCompileShots(input);
       const draft = JianyingExportService.compileDraft(shots, input.mediaPath!) as any;
 
       const seg0 = draft.tracks[0].segments[0];
-      // s_01: chunkData.startMs = 212966.7 → 212966700 us
-      expect(seg0.source_timerange.start).toBe(Math.round(212966.7 * 1000));
+      /**
+       * E域契约（MaterialsAssembler.resolveCutWindow，2026-10-15）：
+       *   s_01 源窗 212966.7ms~216933.3ms（3966.6ms）≥ 目标 3000ms ⇒ 变速锁定 1.00x，纯子窗裁剪：
+       *   · 右端对齐源窗末（句尾对齐）：子窗起点 = 216933300 - 3000000 = 213933300 us
+       *   · Drop Lead-in 前移 ≤300ms（削起手准备段）：213933300 - 300000 = 213633300 us
+       *   旧口径直接取 chunkData.startMs（212966700）是 E域裁剪落地前的断言，已废弃。
+       */
+      expect(seg0.source_timerange.start).toBe(213_633_300);
+      expect(seg0.source_timerange.duration).toBe(3_000_000);
+      // 只许快不许慢：单成员组源/目标同为 3000ms ⇒ 1.00x
+      expect(seg0.speed).toBe(1.0);
     });
 
     it('前 21 段 video segment 的 source 路径应为源视频', () => {
