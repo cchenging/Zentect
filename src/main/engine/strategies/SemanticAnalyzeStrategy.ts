@@ -1731,6 +1731,16 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  候选单元同时收敛为**物理镜头 605**（P4）：段作为匹配单元退场，只保留在 DB 缓存/替换弹窗侧。 */
     const shotById = new Map<string, any>();
     for (const c of chunks) shotById.set(String(c.id), c);
+    // 🎯 召回面（A/B 开关，2026-10-21 诊断驱动）：池宽 = 每句候选镜头数，是当前选片质量的第一约束。
+    //   实测：池 = 24/句（705 镜头仅取 3.4%）｜综合 Top1 语义名次 r1=66/80、r≤3=80/80
+    //   ⇒ 池内排序不是瓶颈，问题在池面太窄（典型错配样例的对应画面压根没进池）。
+    //   缺省保持 40/24 ⇒ 逐字节零行为变化；`ZENTECT_RECALL_TOPF` / `ZENTECT_RECALL_TOPSHOTS` 可放大做 A/B。
+    const _recallInt = (name: string, dflt: number, min: number, max: number): number => {
+      const n = Number(process.env[name]);
+      return Number.isFinite(n) && n > 0 ? Math.min(max, Math.max(min, Math.floor(n))) : dflt;
+    };
+    const recallTopFrames = _recallInt('ZENTECT_RECALL_TOPF', 40, 1, 400);
+    const recallTopShots = _recallInt('ZENTECT_RECALL_TOPSHOTS', 24, 1, 705);
     const recallHits = await FrameRecallService.recall(
       kmQueries.map((q: any) => ({
         shotId: String(q.shotId),
@@ -1740,7 +1750,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       })),
       projectId,
       sceneMediaId,
-      { topFrames: 40, topShots: 24 },
+      { topFrames: recallTopFrames, topShots: recallTopShots },
     );
     /** 逐句镜头候选白名单 + 命中帧入点（P4 取料用）：白名单只收"帧召回确实命中"的镜头 */
     const candidateIdsForKm: Record<string, string[]> = {};
