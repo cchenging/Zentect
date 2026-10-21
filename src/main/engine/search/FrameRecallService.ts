@@ -22,6 +22,7 @@ import {
   FrameIndexRepository,
   FRAME_INDEX_MODEL,
   type FrameIndexRecord,
+  type FrameIndexRow,
 } from '../../database/repositories/FrameIndexRepository';
 
 /** 建索引输入：一帧一行的最小必需字段（归属镜头由调用方按 P0 归属链解析后给出） */
@@ -50,6 +51,13 @@ export interface ShotRecallHit {
   /** 最高分帧的身份：帧 hash + 源时间 —— 供 P4 作为取料入点 */
   bestFrameHash: string;
   bestTimeMs: number;
+  /** 最高分帧的**帧级释义**（2026-10-21 方案 B）：供 daemon 打分侧做「帧描述并入」。
+   *  动机（实测）：切片级描述会漏掉镜头内的关键瞬间 —— chunk_084 的切片描述是「女子手持黑色
+   *  卡片夹」，而它某一帧的释义是「墙面展示合影照片」；只吃切片描述时，靠帧证据召回的镜头
+   *  在打分侧拿不到任何支撑。 */
+  bestFrameDesc?: string;
+  /** 该镜头是否为「实体定向补召」新增（非语义召回所得）：打分侧据此决定是否吃帧描述 */
+  entitySupplemented?: boolean;
 }
 
 /** 召回参数 */
@@ -69,12 +77,123 @@ export interface FrameIndexBuildStats {
   encoded: number;
 }
 
-/** query 拼接文本：与帧召回口径一致（句文案 + 画面意图 + 真锚点释义） */
+/**
+ * query 拼接文本：句文案 + 画面意图 + 真锚点释义。
+ *
+ * ⚠️ 这里**刻意重复拼接 visualIntent**：`q.text` 在 SemanticAnalyzeStrategy 已拼成
+ *    `${正文} | ${visualIntent}`，故 VI 实际出现两次（与 daemon 语义主分只吃一次不同）。
+ *    看似冗余，但 2026-10-10 端到端裁判 A/B（qwen3-vl-plus，64 单位 × 3 采样）实测：
+ *    去掉这次重复拼接后均分反而下降（0.1328 → 0.1250，subject 0.4031 → 0.3078），
+ *    ⇒ 重复拼接在帧召回里起「往画面意图方向拉」的作用，属实测有效、刻意保留，**勿当 bug 删除**。
+ */
 export function buildFrameRecallQueryText(q: FrameRecallQuery): string {
-  return [q.text || '', q.visualIntent || '', q.refFrameDesc || '']
+  /** 🔧 2026-10-19：移除 refFrameDesc 拼接。
+   *  离线实证（本项目 442 帧向量 + bge-small-zh-v1.5 复算 P3 召回）：
+   *  参考帧描述是「素材原本是什么画面」，把它拼进召回 query 会把该画面本身及其语义邻域
+   *  硬拉进候选白名单，挤占真实候选名额。
+   *  典型：seg_2 文案「越经不起一张照片的考验」，其 refFrameDesc=「旁人举手机拍照」
+   *  → 选中「手指持握手机浏览屏幕评论」镜头；而该镜头在纯文案召回里只排第 42 名，
+   *  本不该进 top-24。visualIntent 已足够表达目标画面，不再叠加来源画面描述。 */
+  return [q.text || '', q.visualIntent || '']
     .map((s) => String(s).trim())
     .filter(Boolean)
     .join(' ');
+}
+
+// ============================================================================
+// 🧩 实体定向补召（方案 A，2026-10-20）
+//   问题（实测取证，已离线复现 P3 召回）：seg_2 文案「可越是甜到发腻的誓言，越经不起一张照片的考验。」
+//   的帧召回 top-24 池里**一个照片镜头都没有** —— 池内 24 个全是「男女对话 + 情绪」近景。离线用本项目
+//   787 条帧向量 + bge-small-zh-v1.5 复算的名次：chunk_084「墙面合影照片」第 48、chunk_195 第 115、
+//   chunk_308 第 123、chunk_210「手持拍立得照片特写」第 130 ⇒ **全在召回池外**。
+//   后果：后续一切排序手段（语义权重 / 属性阻尼 / 决胜带）都救不了它 —— 池外候选根本不参与打分。
+//   根因：召回 query 是「文案 + VI」的长句，BGE 被整体语义（甜到发腻的誓言 / 氛围转向不安）主导，
+//   「照片」这类**显式名词**被淹没。
+//   做法：query 里命中词表的显式实体词 → 对帧描述做「包含该词」定向匹配 → 命中帧上卷成镜头，
+//   **保底补进候选池**（另辟 ENTITY_RESERVED 席，不吃语义召回的席位；池总量恒 topShots 不变）。
+//   零行为变化前提：query 未命中任何词表实体词 ⇒ 整段不启用（池与排序逐字节同旧）。
+// ============================================================================
+
+/** 实体词表：只收「画面上能被描述出来的具体物」；抽象名词/情绪词一律不入表（避免把池拉向无关镜头）。
+ *  命中判据是**帧描述子串**——帧描述带「主体:/场景:/道具:/看点:」字段，实体词会如实落在文本里。 */
+const FRAME_ENTITY_LEXICON: readonly string[] = [
+  // 影像 / 纸本
+  '照片', '相片', '拍立得', '合影', '贺卡', '报纸', '杂志', '卡片', '信封', '信纸', '日记',
+  // 通信 / 数码
+  '手机', '相机', '电话', '耳机',
+  // 凭证 / 文书
+  '证书', '票据', '机票', '车票', '登机牌', '护照', '合同', '文件', '名单', '病历', '超声',
+  // 随身 / 容器
+  '钱包', '现金', '钞票', '钥匙', '门卡', '行李箱', '行囊', '背包', '手提包', '礼物',
+  // 餐饮 / 饰品 / 其它
+  '酒杯', '酒瓶', '餐具', '咖啡', '戒指', '花束', '玫瑰', '口红', '眼镜', '手表', '药瓶', '绷带',
+];
+
+/** 判别力红线：该词命中帧数超过全池帧数的本比例 ⇒ 视为泛化词（如「手机」），不参与补召 */
+const ENTITY_MAX_DF_RATIO = 0.05;
+
+/** 候选池里为实体补召保留的最大席位数（只吃「语义召回没捞到」的镜头；已在池内者不占席） */
+const ENTITY_RESERVED = 6;
+
+/**
+ * 从召回 query 文本里挑出「有判别力」的显式实体词。
+ *
+ * 判别力红线：该词在本片帧描述里的命中帧数必须落在 [1, ⌊max(3, 帧数×5%)⌋] 内 ——
+ * 命中的是「既在文案里被点名、又在片子里真实出现且不泛滥」的词，这类词的镜头才是被漏召的真候选。
+ *
+ * Args:
+ *   queryText: 本句召回 query 文本（= buildFrameRecallQueryText 产物）。
+ *   dfByWord: 词 → 本项目帧描述命中帧数（调用方一次性预扫得出）。
+ *   frameTotal: 本项目帧总数（定判别力红线上限）。
+ *
+ * Returns:
+ *   string[]: 命中的实体词（按词表顺序，稳定可复现）。
+ */
+export function pickEntityWords(
+  queryText: string,
+  dfByWord: Map<string, number>,
+  frameTotal: number,
+): string[] {
+  const maxDf = Math.max(3, Math.floor(frameTotal * ENTITY_MAX_DF_RATIO));
+  return FRAME_ENTITY_LEXICON.filter((w) => {
+    if (!queryText.includes(w)) return false;
+    const df = dfByWord.get(w) || 0;
+    return df > 0 && df <= maxDf;
+  });
+}
+
+/**
+ * 合并「语义召回镜头」与「实体补召镜头」为最终候选池。
+ *
+ * 池总量恒为 topShots：实体补召只占用「语义召回没捞到」的票数（已在语义池内的镜头不重复占席），
+ * 且只为真正挤进来的镜头腾出席位 ⇒ 无实体命中时逐字节等于旧行为（`semShots.slice(0, topShots)`）。
+ *
+ * Args:
+ *   semShots: 语义召回上卷后的镜头（按分降序）。
+ *   entShots: 实体补召上卷后的镜头（按「命中词数 → query 余弦」降序）。
+ *   topShots: 池上限席位。
+ *   reserved: 实体补召可用席位数上限。
+ *
+ * Returns:
+ *   ShotRecallHit[]: 最终候选池（语义镜头在前后接补召镜头）。
+ */
+export function mergeEntityShots(
+  semShots: ShotRecallHit[],
+  entShots: ShotRecallHit[],
+  topShots: number,
+  reserved: number = ENTITY_RESERVED,
+): ShotRecallHit[] {
+  if (entShots.length === 0) return semShots.slice(0, topShots);
+  const semIds = new Set(semShots.map((s) => s.chunkId));
+  // 补召席位不越界：最多 min(reserved, topShots−1)——语义侧至少保 1 席，池总量恒不超 topShots
+  const cap = Math.max(0, Math.min(reserved, topShots - 1));
+  const extra = entShots
+    .filter((s) => !semIds.has(s.chunkId))
+    .slice(0, cap)
+    .map((s) => ({ ...s, entitySupplemented: true }));   // 打标：供打分侧识别「帧证据入池」的镜头
+  if (extra.length === 0) return semShots.slice(0, topShots);
+  const semCap = Math.max(1, topShots - extra.length);
+  return [...semShots.slice(0, semCap), ...extra];
 }
 
 export class FrameRecallService {
@@ -169,9 +288,26 @@ export class FrameRecallService {
       .filter((x) => x.text.length > 0);
     if (usable.length === 0) return result;
 
+    // 实体补召索引：**词表每词只扫一遍全池帧描述**（一次预扫，非逐句重复扫）⇒ 逐句零额外 IO。
+    const wordHits = new Map<string, FrameIndexRow[]>();
+    const dfByWord = new Map<string, number>();
+    for (const w of FRAME_ENTITY_LEXICON) {
+      const hit = frames.filter((f) => String(f.description || '').includes(w));
+      if (hit.length > 0) {
+        wordHits.set(w, hit);
+        dfByWord.set(w, hit.length);
+      }
+    }
+
     const qVecs = await FrameRecallService.encode(usable.map((x) => x.text));
     const topFrames = Math.max(1, opts?.topFrames || 40);
     const topShots = Math.max(1, opts?.topShots || 24);
+    // 帧 hash → 帧级释义（方案 B 的取数源：命中帧的释义要随候选一起下发打分侧）
+    const descByHash = new Map<string, string>();
+    for (const f of frames) descByHash.set(f.frameHash, String(f.description || ''));
+    let entityQueryCount = 0;   // 命中词表实体词的句数
+    let entityAdded = 0;        // 实体补召「新进池」的镜头数
+    const entityExamples: string[] = [];
 
     usable.forEach((x, qi) => {
       const qv = qVecs[qi];
@@ -185,6 +321,8 @@ export class FrameRecallService {
         scored.push({ chunkId: f.chunkId, frameHash: f.frameHash, timeMs: f.timeMs, score: dot });
       }
       scored.sort((a, b) => b.score - a.score);
+      const scoreByHash = new Map<string, number>();
+      for (const s of scored) scoreByHash.set(s.frameHash, s.score);
       /** 上卷：按 chunkId 聚合，取最高分（Q5），并记命中帧数与最高分帧身份 */
       const byShot = new Map<string, ShotRecallHit>();
       for (const s of scored.slice(0, topFrames)) {
@@ -193,6 +331,7 @@ export class FrameRecallService {
           byShot.set(s.chunkId, {
             chunkId: s.chunkId, score: s.score, hitCount: 1,
             bestFrameHash: s.frameHash, bestTimeMs: s.timeMs,
+            bestFrameDesc: descByHash.get(s.frameHash) || '',
           });
         } else {
           prev.hitCount += 1;
@@ -200,13 +339,67 @@ export class FrameRecallService {
             prev.score = s.score;
             prev.bestFrameHash = s.frameHash;
             prev.bestTimeMs = s.timeMs;
+            prev.bestFrameDesc = descByHash.get(s.frameHash) || '';
           }
         }
       }
-      result.set(String(x.q.shotId), Array.from(byShot.values())
-        .sort((a, b) => b.score - a.score)
-        .slice(0, topShots));
+      const semShots = Array.from(byShot.values()).sort((a, b) => b.score - a.score);
+
+      /** 实体定向补召（方案 A）：query 命中词表实体 ⇒ 定向捞「描述含该词」的帧 → 上卷成镜头。
+       *  仅对**已有语义召回**的句子启用；语义召回为空的句子维持「不设白名单 ⇒ 全域可选」旧语义。 */
+      let entShots: ShotRecallHit[] = [];
+      const eWords = pickEntityWords(x.text, dfByWord, frames.length);
+      if (eWords.length > 0 && semShots.length > 0) {
+        const acc = new Map<string, { hit: ShotRecallHit; words: Set<string> }>();
+        for (const w of eWords) {
+          for (const f of wordHits.get(w) || []) {
+            const sc = scoreByHash.get(f.frameHash) ?? 0;
+            const cur = acc.get(f.chunkId);
+            if (!cur) {
+              acc.set(f.chunkId, {
+                hit: {
+                  chunkId: f.chunkId, score: sc, hitCount: 1,
+                  bestFrameHash: f.frameHash, bestTimeMs: f.timeMs,
+                  bestFrameDesc: descByHash.get(f.frameHash) || '',
+                },
+                words: new Set([w]),
+              });
+            } else {
+              cur.hit.hitCount += 1;
+              cur.words.add(w);
+              if (sc > cur.hit.score) {
+                cur.hit.score = sc;
+                cur.hit.bestFrameHash = f.frameHash;
+                cur.hit.bestTimeMs = f.timeMs;
+                cur.hit.bestFrameDesc = descByHash.get(f.frameHash) || '';
+              }
+            }
+          }
+        }
+        // 排序：命中词数优先（判别力强），同词数按 query 余弦（与整体语义更贴者先）
+        entShots = Array.from(acc.values())
+          .sort((a, b) => (b.words.size - a.words.size) || (b.hit.score - a.hit.score))
+          .map((e) => e.hit);
+      }
+
+      const merged = mergeEntityShots(semShots, entShots, topShots);
+      const semIds = new Set(semShots.slice(0, topShots).map((s) => s.chunkId));
+      const addedNew = merged.filter((s) => !semIds.has(s.chunkId));
+      if (addedNew.length > 0) {
+        entityQueryCount += 1;
+        entityAdded += addedNew.length;
+        if (entityExamples.length < 3) {
+          entityExamples.push(
+            `${String(x.q.shotId)}「${eWords.join('/')}」→ ${addedNew.map((s) => s.chunkId).join(',')}`);
+        }
+      }
+      result.set(String(x.q.shotId), merged);
     });
+    AppLogger.info(LOG_TAGS.AI_AGENT,
+      entityQueryCount > 0
+        ? `[FrameRecall] 🧩 实体定向补召：句 ${entityQueryCount}/${usable.length} 命中词表实体｜`
+          + `新进池镜头 ${entityAdded} 个｜例: ${entityExamples.join(' ｜ ')}`
+        : `[FrameRecall] 🧩 实体定向补召：0 句命中词表实体 ⇒ 未启用（池与排序零行为变化）`);
     return result;
   }
 }

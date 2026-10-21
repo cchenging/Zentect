@@ -778,16 +778,54 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     /** 🎬 P0（2026-09-30）：帧内容 hash 解析（帧身份基准）。
      *  优先取帧对象自带 frameHash（步骤2 落库字段），缺失时以 url 现算 md5 兜底
      *  （与 vlm_frame_cache.frame_hash 同源，均为帧图像二进制的 md5）。
-     *  magic:// 为未 hydrate 的逻辑路径、http 为远端，均无法读盘 → 跳过（不造假值）。
+     *  http 为远端，无法读盘 → 跳过（不造假值）；magic:// 与项目相对路径按项目根还原后再读盘。
      *  Map 记忆化：同 url 只读盘一次，且避免失败 warn 刷屏。 */
     const frameHashCache = new Map<string, string>();
+    /** 🎬 2026-10-18：帧身份（frameHash）兜底 —— 项目目录惰性解析。
+     *  项目根 = `data/projects/<projectId>`，用于把 magic:// / 相对 url 还原成可读盘绝对路径。 */
+    let frameBaseDir: string | null | undefined;
+    const frameBase = (): string | null => {
+      if (frameBaseDir === undefined) {
+        try {
+          frameBaseDir = projectId ? PathManager.getProjectDir(projectId) : null;
+        } catch {
+          frameBaseDir = null;
+        }
+      }
+      return frameBaseDir;
+    };
+    /** 🎬 2026-10-18：把帧 url 还原成**可读盘的绝对路径**（md5 兜底真正可用）。
+     *  ⚠️ 实测：项目加载时 ProjectService.hydratePaths 会把项目内相对路径统一改写成
+     *  `magic://<projectId>/nodes/...`（跨盘/项目外为 `magic://local/<abs>`），
+     *  运行时**拿不到裸相对路径**。旧代码一道 `startsWith('magic://')` 卫语句把所有 url
+     *  全挡掉 → md5 兜底形同虚设（实证：442 帧全部无帧身份 → 全片 0 匹配）。
+     *  现按协议还原：magic://local/ → 绝对路径；magic://<id>/<rel> → 项目根拼接；
+     *  file:// → 去协议；其余相对路径 → 项目根拼接。 */
+    const resolveFramePath = (url: string): string => {
+      if (url.startsWith('magic://local/')) {
+        return url.slice('magic://local/'.length).replace(/\//g, '\\');
+      }
+      if (url.startsWith('magic://')) {
+        const rest = url.slice('magic://'.length);
+        const slash = rest.indexOf('/');
+        const rel = slash >= 0 ? rest.slice(slash + 1) : rest;
+        const base = frameBase();
+        return base ? path.join(base, rel.replace(/\//g, '\\')) : rel;
+      }
+      if (url.startsWith('file://')) {
+        return decodeURIComponent(url.replace(/^file:\/\/\/?/, '')).replace(/\//g, '\\');
+      }
+      if (path.isAbsolute(url)) return url;
+      const base = frameBase();
+      return base ? path.join(base, url) : url;
+    };
     const frameHashOf = (f: any): string => {
       const own = typeof f?.frameHash === 'string' ? f.frameHash.trim() : '';
       if (own) return own;
       const url = typeof f?.url === 'string' ? f.url : '';
-      if (!url || url.startsWith('magic://') || url.startsWith('http')) return '';
+      if (!url || url.startsWith('http')) return '';
       if (frameHashCache.has(url)) return frameHashCache.get(url)!;
-      const h = PerceptualHasher.computeContentHash(url)?.contentHash || '';
+      const h = PerceptualHasher.computeContentHash(resolveFramePath(url))?.contentHash || '';
       frameHashCache.set(url, h);
       return h;
     };
@@ -1235,6 +1273,19 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           const cid = hashToChunk.get(h) || resolveChunkId(fd.timeMs);
           seeds.push({ frameHash: h, chunkId: cid, timeMs: fd.timeMs, description: fd.description });
         });
+        /** 🛑 2026-10-18 fail-fast：帧描述有 N 条但种子为 0 —— 说明帧身份（frameHash）全部丢失
+         *  （且 url 兜底也读不到盘）。帧召回是 P3 候选的**唯一**来源，静默空集会让全片 0 匹配
+         *  （实证：本项目 705 镜头 / 80 句 → 无窗/未匹配 80，用户界面表现为"一个画面都没匹配到"）。
+         *  此前该情形被静默吞掉，必须先在这里把原因打出来。 */
+        if (seeds.length === 0) {
+          const s0: any = frameDescs[0] || {};
+          const rawUrl = typeof s0.url === 'string' ? s0.url : '';
+          AppLogger.error(LOG_TAGS.AI_AGENT,
+            `[镜头匹配] 🛑 P2 帧向量索引 0 种子：帧描述 ${frameDescs.length} 条，但全部缺帧身份`
+            + `（frameHash 缺失且 url 不可读盘）。样例：url=${rawUrl} → 还原=${resolveFramePath(rawUrl)}`
+            + `。继续跑必然全片 0 匹配，故终止。请检查步骤2 产物是否落库 frameHash，或帧文件是否已被清理。`);
+          throw new Error('P2 帧向量索引 0 种子（帧身份丢失：frameHash 缺失且 url 不可读盘）');
+        }
         try {
           const st = await FrameRecallService.ensureIndex(seeds, projectId, sceneMediaId);
           AppLogger.info(LOG_TAGS.AI_AGENT,
@@ -1694,6 +1745,12 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     /** 逐句镜头候选白名单 + 命中帧入点（P4 取料用）：白名单只收"帧召回确实命中"的镜头 */
     const candidateIdsForKm: Record<string, string[]> = {};
     const frameHitsForKm: Record<string, { chunkId: string; timeMs: number; frameHash: string }> = {};
+    /** 🧩 帧描述并入（方案 B/C 之后，方案 D，2026-10-21）：{ shotId: { chunkId: 帧级释义 } }，
+     *  对**全部候选镜头**下发（不再只限实体补召）。动机（实测）：切片级描述会漏掉镜头内的关键瞬间
+     *  （chunk_084 切片描述「女子手持黑色卡片夹」，但它有一帧是「墙面展示合影照片」）⇒ 打分侧吃
+     *  切片描述会选到说话镜头。方案 D 让帧描述升为**唯一主力**（取代切片描述），切片描述仅作
+     *  「无帧证据候选」的兜底；daemon 侧由 ZENTECT_KM_FRAME_PRIMARY 控制 取代 / 只升不降。 */
+    const frameHintsForKm: Record<string, Record<string, string>> = {};
     let recallCoveredUnits = 0;
     let recallCandidateShots = 0;
     for (const [sid, hits] of recallHits) {
@@ -1702,6 +1759,12 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       recallCandidateShots += hits.length;
       candidateIdsForKm[sid] = hits.map((h: ShotRecallHit) => h.chunkId);
       frameHitsForKm[sid] = { chunkId: hits[0].chunkId, timeMs: hits[0].bestTimeMs, frameHash: hits[0].bestFrameHash };
+      for (const h of hits) {
+        const desc = String(h.bestFrameDesc || '').trim();
+        if (desc) {
+          (frameHintsForKm[sid] ||= {})[h.chunkId] = desc;
+        }
+      }
     }
     AppLogger.info(LOG_TAGS.AI_AGENT,
       `[镜头匹配] 🎬 P3 帧召回上卷：句 ${kmQueries.length}｜有候选句 ${recallCoveredUnits}｜`
@@ -1822,6 +1885,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         candidateIds: candidateIdsForKm,
         /** 🎬 P4（2026-09-30）帧命中入点 { shotId: {chunkId, timeMs, frameHash} }：取料层据此定首句入点 */
         frameHits: frameHitsForKm,
+        /** 🧩 帧描述并入（方案 B）：{ shotId: { chunkId: 帧级释义 } }，仅实体补召镜头；空则 daemon 不启用 */
+        ...(Object.keys(frameHintsForKm).length > 0 ? { frameHints: frameHintsForKm } : {}),
         bgmBeats,
         bpm: bgmBpm,
         weights: { sem: 0.62, emotion: 0.08, duration: 0.2, role: 0.1 },
@@ -3072,6 +3137,14 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       endMsOut = Math.max(endMsOut, t.startMs + t.durationMs);
     }
     const durationMsOut = shots.length === 1 ? headTiming.durationMs : Math.max(0, endMsOut - startMsOut);
+    /** 🎙️ 上游时间槽重算（2026-10-13，实测驱动）：解说段（非原声）的段落时间槽 durationMs 由步骤3 按
+     *  源台词/字幕估算，与步骤4 真实配音时长系统性错配（实测：槽 4286ms vs 真实配音 2626ms；22 字槽 16000ms）；
+     *  daemon 目标时长口径 `max(2000, audioDurationMs, durationMs)` 会让"估算槽"抢占"真实配音时长"当目标，
+     *  源窗随后按该错目标拉长/压缩（用户症状：配音读完画面还在 / 配音没读完画面就切）。
+     *  解说段一律以真实配音时长（audioDurationMs，步骤4 ffprobe 实测毫秒）重算时间槽，让"多了裁到等长、
+     *  不足就近补足"在 daemon 内自然成立；配音缺失/非正（_failed/未跑 TTS）保持原估算槽（不造数）。
+     *  原声段不适用：无 TTS，槽 = ASR 精确台词窗，原样透传 startMs/durationMs。 */
+    const slotDurationMs = !isOriginal && audioDurationMs > 0 ? audioDurationMs : durationMsOut;
     /** 📗 步骤1 ③ 气口 + 🎬 补丁20（ISSUE-7）ASR 台词边界：原声段按「原声时间窗 ↔ ASR 行」最大重叠匹配，
      *  一次匹配同时派生句尾静音气口与台词边界（避免二次扫描，保证同源）。
      *   - 仅原声段（keepOriginalAudio）匹配（TTS 旁白无 ASR 数据，恒 undefined → 补丁卡中性放行，不造假）；
@@ -3120,7 +3193,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       charIds,
       visualIntent,
       startMs: startMsOut,
-      durationMs: durationMsOut,
+      durationMs: slotDurationMs,
       keepOriginalAudio: isOriginal,
       sceneGroup,
       moodIntent,
@@ -3752,10 +3825,17 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
    * 契约（spec §1.2）：同一镜头被多句复用时，按文案顺序在镜头内**连续前移**分配窗口，起点单调不减、
    * 不回头重放：句1 [a──b] → 句2 [b──c] → 句3 [c──d]，且 Σ 窗长 ≤ 镜头时长。
    * - 入点：该句命中帧的瞬间（P3 `frameHits` 真锚点）；同镜头已有消费游标时以游标为准（顺延续接）。
-   * - 窗长：该碎片自身配音时长（无配音时退化为 3s，再按镜头余量截断）。
-   * - 镜头余量不足整窗 ⇒ 截短该窗（变速系数由 `retimeFragmentWindow` 按新窗重算）；
-   *   余量吃尽后该句**顺延到次优候选镜头**（P3 召回白名单顺序，最多 MAX_EXTRA_SHOTS 个），
-   *   候选全耗尽才退回「命中镜头整镜头」兜底窗（不造零长窗、不回头重放）。
+   * - 窗长：该碎片自身配音时长（无配音时退化为 3s，再按镜头余量夹取）。
+   * - 🔴 交付不变量（2026-10-15）：**窗长恒 ≥ 配音时长**。镜头余量不足以承载整窗 ⇒ **不截短**，
+   *   该句直接**顺延到次优候选镜头**（P3 召回白名单顺序，最多 MAX_EXTRA_SHOTS 个），
+   *   候选全耗尽才退回「命中镜头整镜头」兜底窗（不造零长窗、不回头重放）；
+   *   仅当兜底镜头本身比配音还短时才会出现窗长 < 配音（如实计入 diag「窗长不足配音」，期望 0）。
+   *   旧口径「截短该窗 + retimeFragmentWindow 写 0.06~0.89 慢放系数把槽拉满」是成片慢放/定格的真正来源，
+   *   且发生在求解器修复之后逐段覆盖其成果，已废弃。
+   * - 🔗 可供给上界（2026-10-19 乙案③，开关 `ZENTECT_KM_SUPPLY_DUR`，缺省 off = 零行为变化）：
+   *   上文「镜头余量」不再是**本片余量**，而是**同文件源时间连续片链（相邻间隔 ≤ 100ms）的可供给长度**
+   *   （本片末 + 后继连续片）；链上每片如实登记消费（后续句不回头重放）。断链 / 无 filePath ⇒
+   *   逐字节退回本片余量旧口径。动机与实测见 `allocate` 内注释。
    *
    * @param shotLevelQueries 碎片级 query（顺序 = 文案顺序；含 shotId/matchUnitId/audioDurationMs）
    * @param matchById 匹配单位 id → KM 命中结果（含 chunkId/chunkData）
@@ -3781,9 +3861,50 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     const DEFAULT_WINDOW_MS = 3000;
 
     const out = new Map<string, UnitFragmentWindow>();
-    const stats = { windows: 0, advanced: 0, shortened: 0, reassigned: 0, fallback: 0, uncovered: 0 };
+    /** shortfall = 不变量自检计数：窗长 < 配音时长的碎片数，正常恒 0（仅整镜头兜底的短镜头可能为 1） */
+    const stats = { windows: 0, advanced: 0, shortfall: 0, reassigned: 0, fallback: 0, uncovered: 0, supplied: 0 };
     /** 物理镜头 → 已消费到的源时间（跨句生效、只增不减 ⇒ 起点单调不减） */
     const cursorByShot = new Map<string, number>();
+
+    /**
+     * 🔗 乙案③（2026-10-19）交付端「可供给链」——与 daemon 打分期 `build_supply_ms` 同口径：
+     *   源片**同一文件内源时间连续**（相邻间隔 ≤ CHAIN_GAP_MS）的镜头可 1.0× 连播取满，
+     *   故「本片余量」不是交付上限，「本片 + 后继连续片链」才是。
+     * 开关与乙案同源（`ZENTECT_KM_SUPPLY_DUR`，缺省 off = 零行为变化，逐字节退回旧口径）。
+     * 动机（seg_1 实测）：P3 命中镜头 chunk_052「特写·女子笑容绽放」自身仅 2000ms < 配音 3588ms，
+     *   旧口径按「自身余量 ≥ 配音」判 null ⇒ 顺延到 KM 命中镜头 chunk_302「手指持握手机浏览评论」，
+     *   交付画面整体错位；而本项目全片单一文件、705 片首尾相接 0 断链 ⇒ 自命中帧起连续取 3588ms
+     *   完全可取，纯粹被「单镜头余量」口径挡住。本层即放开该口径（身份仍记命中镜头，不换片）。
+     */
+    const SUPPLY_ON = ['1', 'on', 'true'].includes(
+      String(process.env.ZENTECT_KM_SUPPLY_DUR || '').trim().toLowerCase());
+    /** 源时间连续判据（ms，与 daemon `SUPPLY_CHAIN_GAP_MS` 同值） */
+    const CHAIN_GAP_MS = 100;
+    /** 同文件按 startMs 升序的镜头序列（仅供源时间连续链扩展） */
+    const chainByFile = new Map<string, any[]>();
+    if (SUPPLY_ON) {
+      for (const c of chunkById.values()) {
+        const fp = String(c?.filePath || '');
+        if (!fp) continue;
+        const arr = chainByFile.get(fp) || [];
+        arr.push(c);
+        chainByFile.set(fp, arr);
+      }
+      for (const arr of chainByFile.values()) arr.sort((a, b) => Number(a.startMs) - Number(b.startMs));
+    }
+    /** 自该镜头起、沿源时间连续的后继镜头序列（含自身；无 filePath / 遇断链即止） */
+    const contiguousChain = (chunk: any): any[] => {
+      const arr = chainByFile.get(String(chunk?.filePath || '')) || [];
+      const idx = arr.findIndex((c) => String(c?.id) === String(chunk?.id));
+      if (idx < 0) return [chunk];
+      const seq: any[] = [arr[idx]];
+      for (let i = idx + 1; i < arr.length; i += 1) {
+        const prev = seq[seq.length - 1];
+        if (Math.abs(Number(arr[i].startMs) - Number(prev.endMs)) <= CHAIN_GAP_MS) seq.push(arr[i]);
+        else break;
+      }
+      return seq;
+    };
 
     /** 构造子窗：srcFile 恒给（同镜头时与命中镜头同一文件）；跨镜头才带 srcParent（供导出层按硬切处理） */
     const windowOf = (chunk: any, startMs: number, endMs: number, isCross: boolean): UnitFragmentWindow => ({
@@ -3804,13 +3925,56 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       if (!cid || !Number.isFinite(s0) || !Number.isFinite(e0) || e0 - s0 <= EPS) return null;
       const cursor = cursorByShot.get(cid);
       const hit = Number.isFinite(hitMs) && hitMs >= s0 && hitMs <= e0 ? hitMs : NaN;
-      const rawEntry = cursor !== undefined ? Math.max(cursor, s0) : (Number.isFinite(hit) ? hit : s0);
+      /**
+       * 入点裁决（方案 B，2026-10-19，随乙案开关 `ZENTECT_KM_SUPPLY_DUR`）：**命中片优先** ——
+       *  让画面尽量落在命中片内，使卡片身份/封面与画面「对得上」。旧口径入点恒 = 命中帧，
+       *  命中片尾部不够即沿连续链顺延后继镜头（实测 seg_1 命中片仅贡献 814/3588ms，其余是
+       *  手指/手机镜头，与身份「女子笑容」脱节）。现规则：入点尽量取命中帧；若「命中帧 + 配音」
+       *  越出本片末，则**前移**入点使整窗尽量装进命中片 —— 前移上界 = 本片起点（`own < 配音`
+       *  时退化为「从本片起点起、用满本片，再沿连续链向后扩」）。本片已有消费游标时不动
+       *  （守住「起点单调不减、不回头重放」；关掉开关 = 逐字节旧口径）。
+       */
+      let rawEntry: number;
+      if (cursor !== undefined) {
+        rawEntry = Math.max(cursor, s0);
+      } else if (SUPPLY_ON && Number.isFinite(hit) && neededMs > EPS) {
+        rawEntry = Math.max(s0, Math.min(hit, e0 - neededMs));
+      } else {
+        rawEntry = Number.isFinite(hit) ? hit : s0;
+      }
       const entry = Math.min(Math.max(rawEntry, s0), e0);
-      const avail = e0 - entry;
-      if (avail <= MIN_TAIL_MS) return null;                       // 余量不足以承载画面
+      if (e0 - entry <= MIN_TAIL_MS) return null;                  // 命中片自身余量不足以承载画面起点
+      /**
+       * 可供给上界 cover：旧口径 = 本片末（`e0`）；乙案开 ⇒ 沿同文件**源时间连续**的后继镜头链延伸，
+       * 直到够承载本句配音为止（链上每片都如实登记消费，后续句不回头重放）。
+       */
+      const seq = SUPPLY_ON ? contiguousChain(chunk) : [chunk];
+      const consumed: Array<{ id: string; end: number }> = [];
+      let cover = e0;
+      const target = neededMs > EPS ? neededMs : DEFAULT_WINDOW_MS;
+      for (let i = 1; i < seq.length && cover - entry < target - EPS; i += 1) {
+        consumed.push({ id: String(seq[i].id), end: Number(seq[i].endMs) });
+        cover = Number(seq[i].endMs);
+      }
+      const avail = cover - entry;
+      /**
+       * 🔴 交付不变量（2026-10-15）：**窗长必须 ≥ 配音时长**。可供给仍不足时不得截断该窗 ——
+       *  旧口径 `end = min(镜头末, 入点+需要)` 会把窗切成 200ms~needed 的短窗（实测 201ms 窗撑 3350ms 槽），
+       *  再由 retimeFragmentWindow 写 0.06~0.89 的慢放系数"拉满"目标槽 ⇒ 成片慢放/定格的真正来源，
+       *  且发生在求解器（timeline_solver）修好之后的同一轮内，逐段覆盖其成果（实测 11 段）；
+       *  现口径：可供给 < 需要 ⇒ **弃该镜头**（不推进游标、不白耗余料），交候选链后续镜头（顺延）或
+       *  整镜头兜底收口。宁可不取这一镜的料，也绝不把画面拉长成慢放。
+       */
+      if (neededMs > EPS && avail < neededMs - EPS) return null;
       const want = neededMs > EPS ? neededMs : Math.min(avail, DEFAULT_WINDOW_MS);
-      const end = Math.min(e0, entry + want);
-      cursorByShot.set(cid, end);                                  // 单向锁：只增不减
+      const end = Math.min(cover, entry + want);
+      cursorByShot.set(cid, Math.min(end, e0));                    // 单向锁：只增不减
+      for (const c of consumed) {                                  // 链上邻片同步登记消费（只增不减）
+        const v = Math.min(end, c.end);
+        const prev = cursorByShot.get(c.id);
+        if (v > (prev === undefined ? -Infinity : prev)) cursorByShot.set(c.id, v);
+      }
+      if (consumed.length > 0) stats.supplied += 1;                // 本窗靠后继连续片链补齐
       if (cursor !== undefined && entry > cursor + EPS) stats.advanced += 1;
       return windowOf(chunk, entry, end, isCross);
     };
@@ -3869,14 +4033,16 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       if (!win) { stats.uncovered += 1; continue; }
 
       stats.windows += 1;
-      if (win.endMs - win.startMs < neededMs - EPS) stats.shortened += 1;
+      /** 不变量自检（期望 0）：出窗长度不得 < 配音时长；仅「整镜头兜底」遇到本身比配音还短的镜头才会如实计 1 */
+      if (win.endMs - win.startMs < neededMs - EPS) stats.shortfall += 1;
       if (pickedId && pickedId !== (list[0] || '')) stats.reassigned += 1;
       out.set(fragId, win);
     }
 
     AppLogger.info(LOG_TAGS.AI_AGENT,
       `[镜头匹配] 🎬 P4 镜头内连续切窗：出窗碎片 ${stats.windows}/${shotLevelQueries.length}｜`
-      + `顺延起窗 ${stats.advanced}｜变速截短 ${stats.shortened}｜顺延次优镜头 ${stats.reassigned}｜`
+      + `顺延起窗 ${stats.advanced}｜窗长不足配音 ${stats.shortfall}｜顺延次优镜头 ${stats.reassigned}｜`
+      + `连续片链补窗 ${stats.supplied}｜`
       + `整镜头兜底 ${stats.fallback}｜无窗/未匹配 ${stats.uncovered}`);
     return out;
   }
@@ -3918,13 +4084,16 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  （实测 seg_2_sub_3：窗 1683ms = 配音 1683ms 却记 0.946 ⇒ 画面被拉长约 96ms）。
      *  口径与 daemon 同源（源窗长 / 目标配音时长，3 位小数）；原声段恒 1.0（守"原声不变速"）；
      *  配音时长缺失/非正或窗长无效 ⇒ 保持原值（不造数）。
+     *  ⚠️ 2026-10-15「只许快不许慢」：分母恒为配音时长、分子 = 源窗长 ⇒ 比值 <1 即**慢放**。本层加下限
+     *  `Math.max(1.0, …)`：源窗 < 配音（P4 已不再产出，仅异常/兜底形态残留）时恒速 1.0，绝不写出 <1.0 的
+     *  慢放系数 —— 与 timeline_solver 的 `BEAT_SNAP_MIN_RATE=1.0` 同向（成片慢放清零口径）。
      */
     const winLen = Number(win.endMs) - Number(win.startMs);
     const audioMs = Number(result.audioDurationMs);
     const speedFactor = result.keepOriginalAudio === true
       ? 1.0
       : (Number.isFinite(winLen) && winLen > 0 && Number.isFinite(audioMs) && audioMs > 0
-        ? Math.round((winLen / audioMs) * 1000) / 1000
+        ? Math.max(1.0, Math.round((winLen / audioMs) * 1000) / 1000)
         : null);
     return {
       ...result,

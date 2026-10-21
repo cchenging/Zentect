@@ -8,11 +8,12 @@
 //
 // 覆盖：
 //   A. buildShotWindowTable：同镜多碎片按文案顺序连续前移开窗（游标单调不减、首尾相接、不回头重放）
+//   A2. 🔴 交付不变量（2026-10-15）：同镜余量不足以承载整窗 ⇒ **不截短**，改走整镜头兜底，源窗恒 ≥ 配音
 //   B. buildShotWindowTable：同镜余量用尽（剩余 ≤200ms）⇒ 顺延次优候选镜头（跨镜带 srcParent 供硬切）
 //   C. buildShotWindowTable：候选截断为 1+MAX_EXTRA_SHOTS=4；截断外候选一律不取 ⇒ 整镜头兜底
 //   D. buildShotWindowTable：原声段跳过、未匹配计 uncovered、diag 口径
 //   E. buildShotWindowTable：命中帧真锚点决定入点、越界回退镜头起点、配音缺失退化默认窗长
-//   F. retimeFragmentWindow：只改窗三件套 / 身份三件套同源 / 变速重算 / 不可变（8 条自旧文件迁回）
+//   F. retimeFragmentWindow：只改窗三件套 / 身份三件套同源 / 变速重算（**只许快不许慢**，下限 1.0）/ 不可变
 
 import { describe, it, expect, vi } from 'vitest';
 
@@ -95,12 +96,14 @@ describe('buildShotWindowTable（P4 镜头内连续切窗取料）', () => {
     const diag = lastShotWindowDiag();
     expect(diag).toContain('出窗碎片 3/3');
     expect(diag).toContain('顺延起窗 0');
-    expect(diag).toContain('变速截短 0');
+    expect(diag).toContain('窗长不足配音 0');
     expect(diag).toContain('顺延次优镜头 0');
     expect(diag).toContain('整镜头兜底 0');
   });
 
-  it('A2. 窗长超镜头余量 ⇒ 截短该窗并计「变速截短」，余料吃尽后该镜不得再选', () => {
+  it('A2. 同镜余量不足整窗 ⇒ 不截短：弃该镜余料，改走整镜头兜底（源窗恒 ≥ 配音时长）', () => {
+    /** 🔴 旧口径此处产出的是 300ms 短窗（配音 1200ms）+ 由 retimeFragmentWindow 写出的 0.25 慢放系数
+     *  —— 成片慢放/定格的真正来源（实测 11 段），故本用例为该不变量的守门用例。 */
     const shot = mkChunk('scene_001_seg0', 'scene_001', 0, 1500);
     const queries = [
       { shotId: 'u1_sub_1', matchUnitId: 'u1', audioDurationMs: 1200 },
@@ -112,12 +115,15 @@ describe('buildShotWindowTable（P4 镜头内连续切窗取料）', () => {
       queries, matchById, chunkById, null, { u1: { chunkId: 'scene_001_seg0', timeMs: 0 } },
     );
     const w0 = table.get('u1_sub_1')!;
-    expect(w0).toMatchObject({ startMs: 0, endMs: 1200 });   // 未超余量
+    expect(w0).toMatchObject({ startMs: 0, endMs: 1200 });   // 余量足够 ⇒ 正常整窗
     const w1 = table.get('u1_sub_2')!;
-    expect(w1).toMatchObject({ startMs: 1200, endMs: 1500 }); // 余量仅 300ms ⇒ 截短
+    // 余量仅 300ms < 配音 1200ms ⇒ 不截短；本用例无候选可顺延 ⇒ 退回命中镜头整镜头兜底
+    expect(w1).toMatchObject({ startMs: 0, endMs: 1500 });
+    expect(w1.endMs - w1.startMs).toBeGreaterThanOrEqual(1200);   // 交付不变量：窗长 ≥ 配音
     const diag = lastShotWindowDiag();
-    expect(diag).toContain('变速截短 1');
-    expect(diag).toContain('顺延次优镜头 0');                 // 截短仍算取到料，不算顺延
+    expect(diag).toContain('整镜头兜底 1');
+    expect(diag).toContain('窗长不足配音 0');                 // 自检：绝不产出源窗 < 配音
+    expect(diag).toContain('顺延次优镜头 0');                 // 兜底落回命中镜头，不算顺延
   });
 
   it('B. 同镜余量用尽（剩余 ≤200ms）⇒ 顺延次优候选镜头，跨镜带 srcParent', () => {
@@ -144,6 +150,7 @@ describe('buildShotWindowTable（P4 镜头内连续切窗取料）', () => {
     expect(diag).toContain('出窗碎片 2/2');
     expect(diag).toContain('顺延次优镜头 1');
     expect(diag).toContain('整镜头兜底 0');
+    expect(diag).toContain('窗长不足配音 0');               // 顺延镜头余量充足 ⇒ 源窗恒 ≥ 配音
   });
 
   it('C. 候选截断为 1+MAX_EXTRA_SHOTS=4；截断外候选一律不取 ⇒ 整镜头兜底', () => {
@@ -164,6 +171,7 @@ describe('buildShotWindowTable（P4 镜头内连续切窗取料）', () => {
     expect(w.srcParent).toBeUndefined();
     const diag = lastShotWindowDiag();
     expect(diag).toContain('整镜头兜底 1');
+    expect(diag).toContain('窗长不足配音 1');   // 兜底镜头本身仅 200ms < 配音 2000ms ⇒ 无可取料，如实计数
   });
 
   it('D. 原声段跳过（不进表、不污染游标）；未匹配计 uncovered；diag 口径', () => {
@@ -202,7 +210,7 @@ describe('buildShotWindowTable（P4 镜头内连续切窗取料）', () => {
     expect(outOfRange.get('u2_a')).toMatchObject({ startMs: 10000, endMs: 12000 });
   });
 
-  it('E2. 配音时长缺失/非正 ⇒ 窗长退化默认 3s（仍受镜头余量截断）', () => {
+  it('E2. 配音时长缺失/非正 ⇒ 窗长退化默认 3s（仍受镜头余量夹取）', () => {
     const narrow = mkChunk('scene_003_seg0', 'scene_003', 0, 2000);
     const t1 = S.buildShotWindowTable(
       [{ shotId: 'u3_a', matchUnitId: 'u3' }],
@@ -249,8 +257,8 @@ describe('retimeFragmentWindow（改窗三件套 / 身份三件套同源 / 变�
     expect(out.chunkData.id).toBe('scene_001_seg0');
     expect(out.chunkData.parentChunkId).toBe('scene_001');
     expect(out.thumbnail).toBeUndefined();
-    // 🎛️ 变速随新窗重算：502ms 源窗 / 2233ms 配音 = 0.225（原样按比例切分的慢放，与导出层实际一致）
-    expect(out.appliedSpeedFactor).toBe(0.225);
+    // 🎛️ 变速随新窗重算 + **只许快不许慢**：502ms 源窗 / 2233ms 配音 = 0.225 < 1 ⇒ 下限 1.0（不写慢放）
+    expect(out.appliedSpeedFactor).toBe(1);
     // 不可变：原对象未被改写
     expect(result.chunkData.endMs).toBe(66296);
     expect((result.chunkData as any).durationMs).toBeUndefined();
@@ -332,7 +340,7 @@ describe('retimeFragmentWindow（改窗三件套 / 身份三件套同源 / 变�
     expect(S.retimeFragmentWindow({ id: 'y', chunkData: null }, { startMs: 0, endMs: 5 })).toEqual({ id: 'y', chunkData: null });
   });
 
-  it('retimeFragmentWindow：变速系数随新窗重算（窗长=配音时长 ⇒ 1.0，治实测 0.946 错配）', () => {
+  it('retimeFragmentWindow：变速系数随新窗重算（窗长=配音 ⇒ 1.0；源窗<配音 ⇒ 恒速 1.0，只许快不许慢）', () => {
     /** 实测形态 seg_2_sub_3：窗 1753544~1755227（1683ms）= 配音 1683ms，daemon 旧系数却记 0.946
      *  ⇒ 导出层按 0.946 变速会把画面拉长约 96ms（画面与配音错配） */
     const result = {
@@ -344,12 +352,20 @@ describe('retimeFragmentWindow（改窗三件套 / 身份三件套同源 / 变�
     expect(out.appliedSpeedFactor).toBe(1);
     expect(result.appliedSpeedFactor).toBe(0.946);   // 不可变：原对象不动
 
-    /** 料不足（窗 3370ms / 配音 5081ms，实机 seg_0 形态）⇒ 如实记慢放，与导出层实际播放一致 */
+    /** 料不足（窗 3370ms / 配音 5081ms，实机 seg_0 形态）⇒ **不再记慢放**：下限 1.0、恒速播出
+     *  （2026-10-15「只许快不许慢」；旧口径此处写 0.663 慢放，是成片慢放的残留出口之一） */
     const slow = S.retimeFragmentWindow(
       { audioDurationMs: 5081, appliedSpeedFactor: 1.0, chunkData: { startMs: 0, endMs: 10 } },
       { startMs: 3416376, endMs: 3419746 },
     );
-    expect(slow.appliedSpeedFactor).toBe(0.663);
+    expect(slow.appliedSpeedFactor).toBe(1);
+
+    /** 反向对照：源窗 > 配音（快放方向）⇒ 原样写比值 1.2，绝不夹到 1.0（下限只管慢放侧） */
+    const fast = S.retimeFragmentWindow(
+      { audioDurationMs: 1000, chunkData: { startMs: 0, endMs: 10 } },
+      { startMs: 0, endMs: 1200 },
+    );
+    expect(fast.appliedSpeedFactor).toBe(1.2);
 
     /** 原声段恒 1.0（守「原声不变速」铁律） */
     const orig = S.retimeFragmentWindow(
