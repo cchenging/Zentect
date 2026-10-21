@@ -1,12 +1,13 @@
 """
-test_supply_hard.py — 🧩 乙案「可供给≥配音」近硬约束（落码点3，仅 `ZENTECT_KM_SUPPLY_DUR` on 档）
+test_supply_hard.py — 🧩 乙案「可供给≥配音」约束（落码点3；2026-10-15 第1步升级为硬过滤）
 
 锁定 bug「配音没念完就跳走」的根治约束：只要某句存在任一**可覆盖**候选（可供给时长 ≥ 配音时长），
-其综合代价必须低于任何供不起的候选（罚量 SUPPLY_SHORT_PENALTY 远大于其它分项之和），
-使束搜索「有可覆盖候选时必须被选中」；全候选供不起 ⇒ 不罚、逐字节退回现状并计数。
+供不起的候选必须**退出候选集**（结构性硬过滤，`_kept = [c for c in cands if c[5]]`），
+使束搜索「有可覆盖候选时只能选到可覆盖的」；全候选供不起 ⇒ 不过滤、逐字节退回现状并计数。
 
 覆盖点：
-  1. 存在可覆盖候选 ⇒ 供不起候选被罚到 100+，可覆盖候选胜出（off 档语义仍可翻盘，验证零行为变化）。
+  1. 存在可覆盖候选 ⇒ 供不起候选被剔出代价行（不在 row 键中），可覆盖候选胜出
+     （off 档不过滤，语义序仍可翻盘，验证零行为变化）。
   2. 全候选供不起 ⇒ on 档代价与 off 档逐字节一致（退回现状，不破坏置信度量纲）。
   3. 原声段（keepOriginalAudio）⇒ 不适用该约束（窗长由 ASR 段决定）⇒ on 档与 off 档一致。
 
@@ -23,7 +24,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import match_cost
-from match_cost import SUPPLY_SHORT_PENALTY, build_match_cost
+from match_cost import build_match_cost
 
 # 显式权重集（避免运行环境 ZENTECT_KM_DUR_WEIGHT 等 env 覆盖干扰断言）
 W = dict(sem=0.64, emotion=0.05, duration=0.22, role=0.09)
@@ -91,7 +92,7 @@ _BASE = {'ZENTECT_KM_SEM_NORM': 'off', 'ZENTECT_KM_TEXT_BETA': '1.0',
 
 
 def test_supply_hard_penalizes_uncoverable_candidate():
-    """存在可覆盖候选 ⇒ 供不起候选被罚到远高于其它分项之和，可覆盖候选胜出。"""
+    """存在可覆盖候选 ⇒ 供不起候选被硬过滤剔出候选集，可覆盖候选胜出。"""
     restore = _patch_encode()
     try:
         queries = [{'shotId': 's1', 'text': '文案A', 'visualIntent': '画面意图B',
@@ -101,21 +102,19 @@ def test_supply_hard_penalizes_uncoverable_candidate():
                        'c2': _short_chunk('c2', 'c2desc', 5000, 'Q')}
         cands = {'s1': ['c1', 'c2']}
 
-        # off 档：零行为变化，语义精确的 c1 胜（无供给罚）。
+        # off 档：零行为变化，语义精确的 c1 胜（无供给约束）。
         m_off = _run({**_BASE, 'ZENTECT_KM_SUPPLY_DUR': None}, queries, chunk_by_id, cands)
         assert m_off['s1']['c1'] < m_off['s1']['c2'], \
             f"off 档应保持语义序（c1 胜），实际 {m_off['s1']}"
-        assert m_off['s1']['c1'] < 1.0, "off 档不得引入供给罚（cost 仍 ∈[0,1]）"
+        assert m_off['s1']['c1'] < 1.0, "off 档不得引入供给约束（cost 仍 ∈[0,1]）"
 
-        # on 档：c1 供不起被罚 ⇒ c2 胜；罚量远大于其它分项之和。
+        # on 档：c1 供不起被硬过滤 ⇒ 代价行只剩 c2（结构性，不靠数值罚）。
         m_on = _run({**_BASE, 'ZENTECT_KM_SUPPLY_DUR': '1'}, queries, chunk_by_id, cands)
-        assert m_on['s1']['c2'] < m_on['s1']['c1'], \
-            f"on 档存在可覆盖候选时必须选 c2，实际 {m_on['s1']}"
-        assert m_on['s1']['c1'] >= SUPPLY_SHORT_PENALTY, \
-            f"供不起候选须被罚到 ≥{SUPPLY_SHORT_PENALTY}，实际 {m_on['s1']['c1']}"
+        assert list(m_on['s1'].keys()) == ['c2'], \
+            f"on 档存在可覆盖候选时，供不起候选须被剔出候选集，实际键={list(m_on['s1'])}"
     finally:
         restore()
-    print("✓ test_supply_hard_penalizes_uncoverable_candidate: 可覆盖候选被强制选中")
+    print("✓ test_supply_hard_penalizes_uncoverable_candidate: 供不起候选被硬过滤剔出")
 
 
 def test_supply_hard_all_uncoverable_falls_back_to_status_quo():

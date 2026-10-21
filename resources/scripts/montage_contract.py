@@ -140,6 +140,26 @@ def normalize_preferred_shot(value: str) -> str:
     return preferred_shot_from_label(_v)
 
 
+# 景别「带」（贴合判定容差的真源）：契约英文枚举 → 近/中/远三带序号。
+#   根因（2026-10-10 实测）：工单 `preferredShot` 是**段级单档**声明（StoryboardAgent 取段级 shotDist
+#   的主导档只声明一档），比较对象是**切片级实际**景别 ⇒ 段内非主导档全判落空，景别维落空 61%。
+#   为何不用契约的 7 档逐档档序：本片实测切片侧景别只有 5 个取值（特写/近景/中景/全景/远景），
+#   契约 7 档中的 `中近景`(MEDIUM_CLOSE) / `中全景`(FULL_SHOT) **从不出现**，却把
+#   `中景(3) ↔ 近景(1)` 撑成相隔 2 档 —— 而这是本片主流配对（声明 `中景` 占 50%、切片 `近景` 占 43%）。
+#   逐档 ±1 修不到它（粗估命中仅 ~47%）。观感上 特写/近景 同属近景带、中近景/中景 同属中景带、
+#   中全景/全景/远景 同属远景带 ⇒ 判定按「相邻带算命中」（见 `SHOT_BAND_TOLERANCE`）。
+PREFERRED_SHOT_BAND = {
+    'EXTREME_CLOSE': 0,   # 近景带
+    'CLOSE_SHOT': 0,      # 近景带
+    'MEDIUM_CLOSE': 1,    # 中景带
+    'MEDIUM_SHOT': 1,     # 中景带
+    'FULL_SHOT': 2,       # 远景带
+    'LONG_SHOT': 2,       # 远景带
+    'EXTREME_LONG': 2,    # 远景带
+}
+SHOT_BAND_TOLERANCE = 1   # 相邻带（如 中景带↔近景带）算命中；跨两带（近景↔远景）才是真落空
+
+
 # ===========================================================================
 # 需求单结构化属性贴合（P5 / 议题 D 的桥，2026-09-30）
 #   问题：S2 分镜工单的「画面长什么样」字段（景别/运镜/空间/主体/道具）此前只进 ③ 调度层
@@ -164,14 +184,26 @@ CAMERA_DYNAMIC_BY_LABEL = {
 CAMERA_DYNAMIC_CODES = frozenset(CAMERA_DYNAMIC_BY_LABEL.values())
 
 # 空间词表：ShotSpec.spatialType（英文枚举）→ 切片 scene（地点自由文本）关键词集合。
-#   守卫：scene 是自由文本，命中即归一；未命中返回 ''（中性，不误罚）。
+#   守卫：scene 是自由文本，命中最具体（最长）的 token 才归一；未命中返回 ''（中性，不误罚）。
+#   2026-10-10 修（空间维落空 29% 的根因，已用落盘切片复核）：
+#     ① 删过泛 token `'室内'`：它挂在 INDOOR_PUBLIC 下，把 342 片住宅内景（室内沙发区/室内走廊/
+#        室内对话/室内近景…）伪判成「公共室内」⇒ 主流伪落空 `INDOOR_RESIDENCE→INDOOR_PUBLIC`。
+#        删除后这些无细分依据的室内场景回归 **中性**（诚实不造假，宁可中性也不谎报）。
+#     ② 删过泛 token `'大厅'`（改具体 `'大堂'`）：原首命中优先让它抢走 `机场大厅`(19 片)/`到达大厅`
+#        （应属 TRANSIT_HUB）。
+#     ③ 补 314 片未命中的高频场景词：酒店系（前台/房间/大堂/走廊/接待）、航空系（机舱/客舱/过道）、
+#        店铺系（服装店/演播厅）。`'机舱内'` 由 INDOOR_PUBLIC 挪归 VEHICLE。
+#   匹配口径同步由「首命中」改为「最长 token 优先」（具体者胜），消除 `机场大厅` 类抢占冲突。
+#     ④ 删过泛单字 token `'车'`（改具体 `'车内'`）：它把 `地下车库`(8 片，实为室内) 伪判成 VEHICLE，
+#        是最终选片里唯一坐实的「假串场」（`车内后座/车内驾驶座` 仍由 `'车内'` 命中，真车内不误伤）。
 SPATIAL_TOKENS = (
-    ('INDOOR_RESIDENCE', ('住宅', '客厅', '卧室', '厨房', '家中', '家里', '宿舍', '公寓', '民居', '饭厅')),
-    ('INDOOR_PUBLIC', ('餐厅', '办公室', '商场', '大厅', '医院', '学校', '室内', '酒吧', '咖啡', '机舱内', '车厢内')),
+    ('INDOOR_RESIDENCE', ('住宅', '客厅', '卧室', '厨房', '家中', '家里', '宿舍', '公寓', '民居', '饭厅', '沙发区', '沙发')),
+    ('INDOOR_PUBLIC', ('餐厅', '办公室', '商场', '医院', '学校', '酒吧', '咖啡', '柜台', '演播厅',
+                       '酒店', '宾馆', '旅馆', '前台', '接待', '大堂', '客房', '走廊', '服装店', '店铺')),
     ('OUTDOOR_STREET', ('街道', '马路', '路口', '巷', '广场', '街区', '城市', '夜市', '天桥')),
     ('OUTDOOR_NATURE', ('山', '海', '森林', '田野', '湖', '草原', '河边', '公园', '景区', '沙滩')),
-    ('VEHICLE', ('车', '汽车', '出租车', '公交', '地铁', '列车', '船', '驾驶', '机车')),
-    ('TRANSIT_HUB', ('机场', '车站', '码头', '高铁站', '候机', '航站楼', '站台', '候车')),
+    ('VEHICLE', ('机舱', '客舱', '飞机', '舷窗', '车内', '汽车', '出租车', '公交', '地铁', '列车', '船', '驾驶', '机车')),
+    ('TRANSIT_HUB', ('机场', '车站', '码头', '高铁站', '候机', '航站楼', '站台', '候车', '登机', '值机', '到达大厅')),
 )
 SPATIAL_CODES = frozenset(_code for _code, _ in SPATIAL_TOKENS)
 
@@ -203,14 +235,27 @@ def camera_from_label(label: str) -> str:
 
 
 def spatial_from_text(text: str) -> str:
-    """切片地点文本（scene）→ 契约空间枚举；未命中返回 ''（中性，不误罚）。"""
+    """切片地点文本（scene）→ 契约空间枚举；未命中返回 ''（中性，不误罚）。
+
+    匹配口径（2026-10-10 修）：**最长 token 命中优先**（最具体者胜），而非旧的「表内首命中」——
+    后者让泛化 token 抢占更具体的场景（如 `机场大厅` 被 `大厅` 判成 INDOOR_PUBLIC）。
+    平局（等长 token 命中不同 code）时取 `SPATIAL_TOKENS` 内更靠前者，保证结果确定可复现。
+
+    Args:
+        text: 切片 scene 自由文本（如「机场大厅」「室内沙发区」）。
+
+    Returns:
+        str: 契约空间枚举；未命中任何 token 返回 ''（中性，不误罚）。
+    """
     _v = str(text or '').strip()
     if not _v:
         return ''
+    _best_code, _best_len = '', 0
     for code, toks in SPATIAL_TOKENS:
-        if any(t in _v for t in toks):
-            return code
-    return ''
+        for t in toks:
+            if t in _v and len(t) > _best_len:
+                _best_code, _best_len = code, len(t)
+    return _best_code
 
 
 def _adherence_dim(declared: str, cand: str, stats: Optional[dict] = None) -> float:
@@ -228,83 +273,288 @@ def _adherence_dim(declared: str, cand: str, stats: Optional[dict] = None) -> fl
     return ATTR_MISS_PENALTY
 
 
-def _subject_adherence(declared_subjects, chunk: dict, stats: Optional[dict] = None) -> float:
-    """主体贴合：工单 targetSubjects ∩ 镜头 {primarySubject, secondarySubjects}（哨兵 MULTIPLE 视为可容纳）。"""
+def _shot_adherence(declared: str, cand: str, stats: Optional[dict] = None) -> float:
+    """景别贴合：两侧归一为契约英文枚举后按**景别带差**判定（相邻带算命中）。
+
+    与其它四维的「精确等值」不同，景别放宽到相邻带（据 `PREFERRED_SHOT_BAND`）：
+      任一侧缺省 → 0（中性，不造假）；两侧均在带表内 →
+      |声明带−候选带| ≤ `SHOT_BAND_TOLERANCE` 命中奖励，否则落空惩罚。
+
+    两侧均须**已由调用方归一**（`normalize_preferred_shot` / `preferred_shot_from_label`）；
+    不在带表（含归一后为空串，已被上方拦截）→ 中性。
+
+    Args:
+        declared: 工单 preferredShot 归一后的契约英文枚举。
+        cand: 候选切片景别归一后的契约英文枚举。
+        stats: 可选只读统计容器（就地累加 match/miss/neutral）。
+    """
+    if not declared or not cand:
+        if stats is not None:
+            stats['neutral'] = stats.get('neutral', 0) + 1
+        return 0.0
+    _rd = PREFERRED_SHOT_BAND.get(declared)
+    _rc = PREFERRED_SHOT_BAND.get(cand)
+    if _rd is None or _rc is None:
+        if stats is not None:
+            stats['neutral'] = stats.get('neutral', 0) + 1
+        return 0.0
+    if abs(_rd - _rc) <= SHOT_BAND_TOLERANCE:
+        if stats is not None:
+            stats['match'] = stats.get('match', 0) + 1
+        return ATTR_MATCH_REWARD
+    if stats is not None:
+        stats['miss'] = stats.get('miss', 0) + 1
+    return ATTR_MISS_PENALTY
+
+
+# 主体「视觉称谓」特征词（2026-10-09）：用于在 char-id 桥不可用时判定某条主体声明是
+#   **角色名**（宋慧乔）还是**视觉称谓**（卷发女子 / 穿紫上衣女子）——只有两侧都落在
+#   "视觉称谓"这一坐标系内，比对才有判别力（角色名 ↔ 视觉称谓永不交融，只能置中性）。
+SUBJECT_PERSON_TOKENS = (
+    '男子', '女子', '男人', '女人', '男孩', '女孩', '男性', '女性', '男士', '女士',
+    '老人', '老者', '少年', '青年', '中年', '儿童', '孩子', '人物', '人群', '人影',
+    '主角', '众', '两人', '一群',
+)
+
+
+# 人数泛称词表（2026-10-20）：工单声明常写「多人/两人/一群」，切片侧给的是具体视觉称谓
+#   （「一男一女背影」）。字面子串比对必然落空 —— 但两者是**同一坐标系下的同意图**
+#   （都在回答"画里有几个主体"），故按**人数**对齐，不按字面。
+SUBJECT_MULTI_TOKENS = (
+    '多人', '两人', '二人', '三人', '双人', '一对', '一群', '众人', '人群', '人影', '男女',
+)
+
+
+def _is_visual_subject(text: str) -> bool:
+    """主体文本是否为「视觉称谓」型（含人物特征词）；角色名（如「宋慧乔」）返回 False。
+
+    Args:
+        text: 单条主体声明，或切片 characters 里的一个角色字面值。
+
+    Returns:
+        bool: True 表示可视作视觉称谓，可参与同坐标系比对。
+    """
+    _t = str(text or '').strip()
+    return bool(_t) and any(tok in _t for tok in SUBJECT_PERSON_TOKENS)
+
+
+def _looks_multi(text: str) -> bool:
+    """该主体描述是否指示「画面里 ≥2 个主体」（人数泛称 / 「A 和 B」并列）。
+
+    Args:
+        text: 单条主体声明，或切片 primarySubject。
+
+    Returns:
+        bool: True 表示该描述指向多主体画面。
+    """
+    _t = str(text or '').strip()
+    if not _t:
+        return False
+    if any(tok in _t for tok in SUBJECT_MULTI_TOKENS):
+        return True
+    # 男女**同现**（「一男一女」「一男一女背影」这类并列写法，子串「男女」不连续命中）→ 多主体
+    if all(mark in _t for mark in ('男', '女')):
+        return True
+    # 「A 和 B」/「A 与 B」/「A 及 B」并列且两侧像人 → 多主体
+    if any(sep in _t for sep in ('和', '与', '及')) and _is_visual_subject(_t):
+        return True
+    return False
+
+
+def _cand_visible_multi(chunk: dict) -> bool:
+    """候选切片侧是否 ≥2 个可见主体：characters 去重 ≥2，或 primarySubject 指向多主体。
+
+    只读 chunk['characters'] / chunk['primarySubject']，不引入新字段。
+
+    Args:
+        chunk: 候选镜头切片。
+
+    Returns:
+        bool: True 表示该切片画面里有 ≥2 个可见主体。
+    """
+    _chars = {str(x).strip() for x in (chunk.get('characters') or []) if str(x).strip()}
+    if len(_chars) >= 2:
+        return True
+    return _looks_multi(str(chunk.get('primarySubject') or ''))
+
+
+def _subject_adherence(declared_subjects, chunk: dict, stats: Optional[dict] = None,
+                       query_roles=None, chunk_roles=None) -> float:
+    """主体贴合：两侧必须落在**同一坐标系**才判别，否则置中性（绝不输出伪惩罚）。
+
+    根因（2026-10-09 实测，已落盘切片数据复核）：工单 `targetSubjects` 是**角色名与视觉称谓的混合**
+    （如 ["宋慧乔","车智恩","卷发女子"]），而切片侧的 `primarySubject`/`characters` 是**纯视觉称谓**
+    （如「卷发女子」「穿紫上衣女子」）。旧实现拿角色名去比视觉称谓 → 两套坐标系永不交融，
+    声明了角色名的句子反被判落空加正惩罚（主体维落空 98%）。
+
+    判定序（两侧必须同坐标系，否则中性）：
+      ① 声明为空 → 中性（无期望，不造假）；
+      ② char-id 桥两侧均有值（query.charIds/characters ∩ chunk.charIds/characters）→ 集合相交：
+        命中奖励 / 不相交惩罚（同一坐标系，差异才具判别力）；
+      ③ 桥不可用 → 退到「视觉称谓」坐标系：仅当**两侧都含视觉称谓条目**时比对
+        （工单里的「卷发女子」↔ 切片 characters 里的「卷发女子/戴眼镜卷发女子」，子串互相包含即命中）；
+        两侧都有视觉称谓却无交集 → 落空（同坐标系内的真实差异）；任一侧无视觉称谓
+        （声明全是角色名、或切片无人物）→ **中性**（无可比依据，不造假、不误罚）。
+
+    Args:
+        declared_subjects: 工单 targetSubjects（角色名与视觉称谓的混合列表）。
+        chunk: 候选切片（读 chunk['characters'] 视觉称谓集合 + primarySubject）。
+        stats: 可选只读统计容器（就地累加 match/miss/neutral）。
+        query_roles: query 侧归一角色主键（`_char_ids_of_query` 输出）；None/空 → 桥不可用。
+        chunk_roles: 候选侧归一角色主键（`_char_ids_of_chunk` 输出）；None/空 → 桥不可用。
+    """
     _decl = [str(s).strip() for s in (declared_subjects or []) if str(s or '').strip()]
     if not _decl:
+        if stats is not None:
+            stats['neutral'] = stats.get('neutral', 0) + 1
         return 0.0
+    # ② 同源 char-id 桥（唯一可跨坐标系比对"是不是同一个人"的信号源）
+    _q = [str(x).strip() for x in (query_roles or []) if str(x).strip()]
+    _c = [str(x).strip() for x in (chunk_roles or []) if str(x).strip()]
+    if _q and _c:
+        if set(_q) & set(_c):
+            if stats is not None:
+                stats['match'] = stats.get('match', 0) + 1
+            return ATTR_MATCH_REWARD
+        if stats is not None:
+            stats['miss'] = stats.get('miss', 0) + 1
+        return ATTR_MISS_PENALTY
+    # ③-0 人数泛称对齐（2026-10-20）：声明含「多人/两人/一群」等人数泛称，且候选侧确实 ≥2 个主体
+    #   → 命中。**只做命中侧、不新增落空**（原先这类对里，其他视觉称谓不匹配时会误判落空，
+    #   正是「多人→一男一女背影」这类假阴性的来源；声明多人而候选是单人时行为保持不变）。
+    if any(_looks_multi(x) for x in _decl) and _cand_visible_multi(chunk):
+        if stats is not None:
+            stats['match'] = stats.get('match', 0) + 1
+        return ATTR_MATCH_REWARD
+    # ③ 桥不可用 → 「视觉称谓」坐标系内比对（两侧都含视觉称谓才判别，否则中性、不造假）。
     _prim = str(chunk.get('primarySubject') or '').strip()
-    if _prim == PRIMARY_SUBJECT_MULTIPLE:
-        return ATTR_MATCH_REWARD  # 多人镜：可容纳任一主体声明
-    _cand = {_prim}
-    _sec = chunk.get('secondarySubjects')
-    if isinstance(_sec, (list, tuple)):
-        _cand.update(str(s).strip() for s in _sec if str(s or '').strip())
-    elif _sec:
-        _cand.add(str(_sec).strip())
-    _cand.discard('')
-    if not _cand:
-        return 0.0
-    if any(d in _cand for d in _decl):
+    _cands = [_prim] + [str(x).strip() for x in (chunk.get('characters') or []) if str(x).strip()]
+    _d_vis = [x for x in _decl if _is_visual_subject(x)]
+    _c_vis = [x for x in _cands if _is_visual_subject(x)]
+    if _d_vis and _c_vis:
+        for _a in _d_vis:
+            for _b in _c_vis:
+                if _a in _b or _b in _a:
+                    if stats is not None:
+                        stats['match'] = stats.get('match', 0) + 1
+                    return ATTR_MATCH_REWARD
         if stats is not None:
-            stats['match'] = stats.get('match', 0) + 1
-        return ATTR_MATCH_REWARD
+            stats['miss'] = stats.get('miss', 0) + 1
+        return ATTR_MISS_PENALTY
     if stats is not None:
-        stats['miss'] = stats.get('miss', 0) + 1
-    return ATTR_MISS_PENALTY
+        stats['neutral'] = stats.get('neutral', 0) + 1
+    return 0.0
 
 
-def _prop_adherence(declared: str, cand: str, stats: Optional[dict] = None) -> float:
-    """道具贴合：工单 keyProp（自由文本）与切片 keyProps（自由文本）双向子串包含。"""
-    _d = str(declared or '').strip()
-    _c = str(cand or '').strip()
-    if not _d or not _c:
-        return 0.0
-    if _d in _c or _c in _d:
-        if stats is not None:
-            stats['match'] = stats.get('match', 0) + 1
-        return ATTR_MATCH_REWARD
-    if stats is not None:
-        stats['miss'] = stats.get('miss', 0) + 1
-    return ATTR_MISS_PENALTY
+def _prop_adherence(declared_cat: str, cand_cat: str, stats: Optional[dict] = None) -> float:
+    """道具贴合：两侧均须为**同一张类别表**归一后的类别名，精确等值即命中。
+
+    根因（2026-10-09 实测）：旧实现拿工单 `keyProp`（**具体物件**，如「奖品券」）与切片 `keyProps`
+    （**步骤2 的固定 7 类别枚举**，如「文书证件/其他关键道具」）裸串比较——跨坐标系恒不等，
+    道具维落空 95% 全是伪惩罚。两侧归一的唯一真源 = `timeline_solver.ENTITY_CLASSES`
+    （query 侧经 `_class_of_query`、切片侧经 `_prop_of_chunk`，与动态门禁 L0 探测**同一张表**）。
+    任一侧未识别（''）→ 中性（无可靠映射依据，绝不跨坐标系裸比较）。
+    """
+    return _adherence_dim(str(declared_cat or '').strip(), str(cand_cat or '').strip(), stats)
 
 
 def attribute_adherence_cost(query: dict, chunk: dict,
-                             stats: Optional[dict] = None) -> float:
+                             stats: Optional[dict] = None,
+                             query_roles=None, chunk_roles=None,
+                             query_prop=None, chunk_prop=None,
+                             query_action=None, chunk_action=None) -> float:
     """需求单结构化属性贴合（②供给分软阻尼）：工单声明 ↔ 镜头属性逐维判定。
 
-    五维：景别(preferredShot↔shotScale/shotType) / 运镜(cameraDynamic↔cameraMovement) /
-    空间(spatialType↔scene) / 主体(targetSubjects↔primarySubject+secondarySubjects) /
-    道具(keyProp↔keyProps)。逐维：任一侧缺省 → 中性 0（不造假）；命中 → 负（降代价）；
-    落空 → 正（加代价）。整趟封顶 ±`ATTR_TOTAL_CAP`，仅作软阻尼、绝不压过语义主分。
+    六维：景别(preferredShot↔shotScale/shotType) / 运镜(cameraDynamic↔cameraMovement) /
+    空间(spatialType↔scene) / 主体(targetSubjects↔char-id 桥) / 道具(keyProp↔ENTITY_CLASSES 类别桥) /
+    动作(actionType↔ACTION_CLASSES 类别桥，2026-10-14 接入)。
+    逐维：任一侧缺省 → 中性 0（不造假）；命中 → 负（降代价）；落空 → 正（加代价）。
+    整趟封顶 ±`ATTR_TOTAL_CAP`，仅作软阻尼、绝不压过语义主分。
+
+    ⚠️ 主体/道具两维的**跨坐标系根因**（2026-10-09 实测落空 98%/95%）已修：两维各自改为
+    「同一坐标系桥接」——主体优先走 char-id 桥（与 role_score 同源），桥不通则退到「视觉称谓」
+    坐标系（targetSubjects 与 chunk.characters 同为视觉称谓时子串归一）；道具走 `ENTITY_CLASSES`
+    类别桥（与动态门禁 L0 同表）。两侧无法归一到同一坐标系 → **置中性**，
+    停止输出伪惩罚（这不是兜底，是不再谎报"落空"）。
+
+    ⚠️ 景别维（2026-10-10 修）：工单是**段级单档**声明、比较对象是**切片级实际**景别 ⇒ 段内非主导档
+    全判落空（落空 61%）。景别改按 `PREFERRED_SHOT_BAND` 近/中/远三带判定，|声明带−候选带| ≤ 1 即命中
+    （相邻景别带算贴合，与规范蒙太奇 ±1 档推拉律一致）；跨两带（近景↔远景）才是真落空。
 
     Args:
-        query: 归一化脚本句（含 S2 工单字段 preferredShot/cameraDynamic/spatialType/
-            targetSubjects/keyProp）。
-        chunk: 候选镜头切片（含 shotScale/shotType/cameraMovement/scene/primarySubject/
-            secondarySubjects/keyProps）。
+        query: 归一化脚本句（含 S2 工单字段 preferredShot/cameraDynamic/spatialType/targetSubjects/keyProp）。
+        chunk: 候选镜头切片（含 shotScale/shotType/cameraMovement/scene/primarySubject/keyProps）。
         stats: 可选**只读统计容器**（就地累加 match/miss/neutral 计数，供 属性命中率 诊断）。
+        query_roles: query 侧归一角色主键（`_char_ids_of_query` 输出）；缺省 → 主体维置中性。
+        chunk_roles: 候选侧归一角色主键（`_char_ids_of_chunk` 输出）；缺省 → 主体维置中性。
+        query_prop: query 侧 keyProp 经 `_class_of_query(..., ENTITY_CLASSES)` 归一的类别名；缺省 → 道具维置中性。
+        chunk_prop: 候选侧经 `_prop_of_chunk(chunk)` 归一的类别名；缺省 → 道具维置中性。
+        query_action: query 侧 actionType 经 `_class_of_query(..., ACTION_CLASSES)` 归一的类别名；缺省 → 动作维置中性。
+        chunk_action: 候选侧经 `_action_of_chunk(chunk)` 归一的类别名；缺省 → 动作维置中性。
 
     Returns:
         float: 附加到候选代价上的软阻尼（负=更贴合，正=更不贴合，0=无信号）。
     """
     if not query or not chunk:
         return 0.0
+    # 🔍 逐维分账（2026-10-09）：五维各自**独立容器**判定，结果同时写两处——
+    #   ① stats 顶层（match/miss/neutral）＝ 旧口径原值，[attr-match] 汇总一字不变；
+    #   ② stats['dims'][维度]＝ 逐维分布（此前只有合计，无法回答"miss 落在哪一维"）。
+    #   另在 miss 时留 ≤4 组「声明值→候选值」样例（stats['samples']），供判定
+    #   "枚举命名对不齐" 还是 "切片侧缺值"。合计量与逐维量恒等，可交叉校验。
+    _dims = stats.setdefault('dims', {}) if stats is not None else None
+    _samples = stats.setdefault('samples', {}) if stats is not None else None
+
+    def _fmt(v) -> str:
+        """样例值可读化：列表/元组按顿号连接（targetSubjects/角色主键集合），其余转字符串。"""
+        if isinstance(v, (list, tuple)):
+            return '、'.join(str(x) for x in v)
+        return str(v or '')
+
+    def _one(dim: str, decl, cand, fn) -> float:
+        """单维判定 + 分账（隔离容器 ⇒ 天然分维，不依赖各维函数内部行为）。"""
+        _st = {'match': 0, 'miss': 0, 'neutral': 0}
+        _val = fn(_st)
+        if stats is not None:
+            for _k in ('match', 'miss', 'neutral'):
+                stats[_k] = stats.get(_k, 0) + _st[_k]
+            _slot = _dims.setdefault(dim, {'match': 0, 'miss': 0, 'neutral': 0})
+            for _k in ('match', 'miss', 'neutral'):
+                _slot[_k] += _st[_k]
+            if _st['miss'] and _samples is not None:
+                _lst = _samples.setdefault(dim, [])
+                _pair = (_fmt(decl).replace('\n', ' ')[:24],
+                         _fmt(cand).replace('\n', ' ')[:24])
+                if len(_lst) < 4 and _pair not in _lst:
+                    _lst.append(_pair)
+        return _val
+
     total = 0.0
-    # ① 景别：两侧统一走既有归一表（工单英文枚举 ↔ 切片中文标签）。
-    total += _adherence_dim(normalize_preferred_shot(query.get('preferredShot')),
-                           preferred_shot_from_label(chunk.get('shotScale') or chunk.get('shotType') or ''),
-                           stats)
-    # ② 运镜
-    total += _adherence_dim(normalize_camera_dynamic(query.get('cameraDynamic')),
-                           camera_from_label(chunk.get('cameraMovement') or ''), stats)
-    # ③ 空间
-    total += _adherence_dim(str(query.get('spatialType') or '').strip(),
-                           spatial_from_text(chunk.get('scene') or ''), stats)
-    # ④ 主体
-    total += _subject_adherence(query.get('targetSubjects'), chunk, stats)
-    # ⑤ 道具
-    total += _prop_adherence(query.get('keyProp'), chunk.get('keyProps'), stats)
+    # ① 景别：两侧统一走既有归一表（工单英文枚举 ↔ 切片中文标签），再按档序差判定（±1 档算命中）。
+    _d1 = normalize_preferred_shot(query.get('preferredShot'))
+    _c1 = preferred_shot_from_label(chunk.get('shotScale') or chunk.get('shotType') or '')
+    total += _one('景别', _d1, _c1, lambda st: _shot_adherence(_d1, _c1, st))
+    # ② 运镜（契约键 camera 优先，回退生产者旧键 cameraMovement —— 与景别双键口径一致）
+    _d2 = normalize_camera_dynamic(query.get('cameraDynamic'))
+    _c2 = camera_from_label(chunk.get('camera') or chunk.get('cameraMovement') or '')
+    total += _one('运镜', _d2, _c2, lambda st: _adherence_dim(_d2, _c2, st))
+    # ③ 空间（契约键 location 优先，回退生产者旧键 scene —— 与景别双键口径一致）
+    _d3 = str(query.get('spatialType') or '').strip()
+    _c3 = spatial_from_text(chunk.get('location') or chunk.get('scene') or '')
+    total += _one('空间', _d3, _c3, lambda st: _adherence_dim(_d3, _c3, st))
+    # ④ 主体：② char-id 桥（同源 role_score）优先；桥不通则退「视觉称谓」坐标系比对
+    #    （工单 targetSubjects 与切片 characters 同为视觉称谓时子串归一）。样例给出切片角色集合便于核对。
+    _d4 = query.get('targetSubjects')
+    total += _one('主体', _d4, chunk_roles or chunk.get('characters') or chunk.get('primarySubject'),
+                  lambda st: _subject_adherence(_d4, chunk, st, query_roles, chunk_roles))
+    # ⑤ 道具：两侧均为 ENTITY_CLASSES 归一后的类别名（与动态门禁同表），精确等值即命中。
+    _d5 = query_prop or ''
+    _c5 = chunk_prop or ''
+    total += _one('道具', _d5, _c5, lambda st: _prop_adherence(_d5, _c5, st))
+    # ⑥ 动作：两侧均为 ACTION_CLASSES 归一后的类别名（与动态门禁 L0 表同源，单一真源），精确等值即命中。
+    _d6 = query_action or ''
+    _c6 = chunk_action or ''
+    total += _one('动作', _d6, _c6, lambda st: _adherence_dim(_d6, _c6, st))
     return max(-ATTR_TOTAL_CAP, min(ATTR_TOTAL_CAP, total))
 
 

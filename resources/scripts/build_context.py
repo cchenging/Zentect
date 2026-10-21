@@ -51,6 +51,9 @@ class CandidateContext:
     cands_by_shotid: Dict[str, List[str]] = field(default_factory=dict)
     shotid_to_segment: Dict[str, int] = field(default_factory=dict)
     batch_orders: List[dict] = field(default_factory=list)
+    """🧩 帧描述并入（方案 B）：{ shotId: { chunkId: 帧级释义 } }，仅实体补召镜头（Node 侧下发）。
+    供 match_cost 对该候选取 max(切片描述相似度, 帧描述相似度)；空 dict = 旧口径。"""
+    frame_hints: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
 
 # ===========================================================================
@@ -173,8 +176,21 @@ def merge_orders_into_queries(
         if order is not None:
             # 工单字段显式覆盖查询默认（工单为 S2/S3 的权威派工结果）。
             for key, value in order.items():
+                if key == 'emotion':
+                    # 方案1（2026-10-21）：剔除 emotion 覆盖。工单 emotion 是英文枚举
+                    #   （WARM/TENSE/JOYFUL/SAD/NEUTRAL），daemon 情绪归一表 EMOTION_CATEGORIES
+                    #   全中文关键词，同名覆盖会把 query.emotion 中文原值（如「温馨」）替换成
+                    #   「WARM」→ _normalize_emotion 匹配不到 → 恒归「中性」，情绪软排失效。
+                    #   情绪维的正确输入是文案侧中文 emotion / moodIntent，工单情绪不落地。
+                    continue
                 if key in query:
                     query[key] = value
+            # 🎬 键名错位对齐：ShotSpec 契约用 `mode`（NEW_SHOT/CONTINUE_PREV），
+            #   daemon 契约字段是 `shotMode`（default_query 占位）。二者键名不同，
+            #   上面的 `if key in query` 会静默丢弃 `mode` ⇒ B4 段内顺延读不到 shotMode
+            #   而把 CONTINUE_PREV 句当 NEW_SHOT 抢 KM 名额（顺延队列恒空，§24.15-B4 失效）。
+            if 'mode' in order and 'shotMode' in query:
+                query['shotMode'] = order['mode']
         normalized.append(query)
     return normalized
 
@@ -415,6 +431,7 @@ def build_req_context(req: dict) -> CandidateContext:
         chunk_by_id=chunk_by_id,
         seg_by_id=seg_by_id,
         batch_orders=list(orders),
+        frame_hints=req.get('frameHints') or {},
     )
 
     for query in merged:

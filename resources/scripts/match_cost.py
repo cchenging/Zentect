@@ -29,17 +29,22 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from montage_contract import ContractError, attribute_adherence_cost
+from montage_contract import ATTR_TOTAL_CAP, ContractError, attribute_adherence_cost
 
 # 复用旧 KM 求解器的纯标量打分助手（唯一打分口径来源，避免重复实现造成口径漂移）。
 from timeline_solver import (
+    ACTION_CLASSES,
     AIModels,
+    ENTITY_CLASSES,
+    _action_of_chunk,
     _char_ids_of_chunk,
     _char_ids_of_query,
+    _class_of_query,
     _compute_combined_score,
     _compute_duration_score,
     _compute_role_score,
     _emotion_compatibility,
+    _prop_of_chunk,
     _smart_truncate_desc,
 )
 
@@ -56,14 +61,18 @@ from timeline_solver import (
 # ---------------------------------------------------------------------------
 SUPPLY_CHAIN_GAP_MS = 100.0   # 源时间连续判据（与 SemanticAnalyzeStrategy 单位内切窗同口径）
 
-# 乙案「近硬约束」罚量（落码点3，仅开关 on 档生效）：
+# 乙案「可供给 ≥ 配音」约束（落码点3 近硬约束 → 2026-10-15 第1步 升级为结构性硬过滤）：
 #   现状软惩罚权重（时长权重 0.22 × 曲线分差）太小 ⇒ 语义分一翻盘就选中「供不起」的片，
 #   交付端再靠 ±3% clamp 硬凑 ⇒ 配音被截断（实测 6 句窗长远短于配音）。
-#   这里把「本候选可供给时长 < 本句配音时长」的代价抬到远大于其它分项之和（cost∈[0,1] 量级，
-#   罚量取 100），使「本句只要存在任一可覆盖候选，综合代价最小的必是可覆盖候选」成立。
-#   ⚠️ 仅当该句**存在**可覆盖候选时才施加（全供不起 ⇒ 不罚，逐字节退回现状、保置信度量纲）；
-#   原声段（keepOriginalAudio）不适用该约束（其窗长由 ASR 段决定）⇒ 不判不可覆盖、不罚。
-SUPPLY_SHORT_PENALTY = 100.0
+#   旧口径：对「供不起」候选加 cost +100 的数值罚（成本 100 ≫ 其它分项之和），靠「数值差」取胜。
+#   新口径（第1步，2026-10-15）：同一判据改为**结构性硬过滤**——本句存在可覆盖候选时，把供不起
+#   候选从候选集里**直接剔除**（`build_match_cost` 内 `_kept = [c for c in cands if c[5]]`）。
+#   升级动机：数值罚可以被后续任何归一化/权重调整稀释（罚成立性依赖 100 这个数），硬过滤是
+#   结构性事实（候选集里根本没有它）⇒ 不变量「交付窗长 ≥ 配音时长」不再依赖打分标度。
+#   取证：`候选供不起=68 ｜ 近硬约束生效句=40 ｜ 无候选可覆盖=0`（本项目 40 句全有可覆盖候选）
+#   ⇒ 过滤后候选集必非空，不引入「空中池」（束搜索跳过该句 = 空段）的新失效态。
+#   ⚠️ 仅当该句**存在**可覆盖候选时才过滤（全候选供不起 ⇒ 不过滤、不罚，逐字节退回现状、
+#   保置信度量纲）；原声段（keepOriginalAudio）不适用（窗长由 ASR 段决定）⇒ 不判不过滤。
 
 
 def _read_supply_dur() -> bool:
@@ -292,6 +301,100 @@ def _build_chunk_semantic_text(chunk: dict, desc_aug: bool) -> str:
     return _smart_truncate_desc(aug + (' | ' + desc if desc else ''))
 
 
+# ---------------------------------------------------------------------------
+# 属性维「决胜带」（2026-10-20 方案1，开关 `ZENTECT_KM_ATTR_DECISIVE`，缺省 on）
+#   问题（实测取证）：工单声明的画面属性（景别/运镜/空间/主体/道具/动作）此前只以 ±0.04/维、
+#   整趟封顶 ±0.20 的软阻尼并入候选代价 —— 量纲不小，却对**最终选片零贡献**：以 2026-10-20
+#   两次真实步骤5 运行为证（主体维命中 651→710，59 处 miss↔match 翻转），选片序列 81 段仍
+#   **逐段完全相同**、综合 Top1 语义名次 r1 恒为 69/80。根因：软阻尼在**语义难分伯仲的近分簇**
+#   里与其他候选同向平移（相对序不变），即便局部有差也被语义主分（权重 0.64）淹没。
+#   做法：把属性贴合度按**本句 base 代价刻度**做带内放大 —— 仅当候选与「本句 base 最优」的差
+#   ≤ `ATTR_DECISIVE_BAND`（语义上难分伯仲）时，属性权重按线性衰减放大（带中心 ×(1+1.6)，
+#   衰减到带沿归零）。带外候选**逐字节保持原 ±0.20 软阻尼**（零行为变化）⇒ 语义差距明显时不
+#   越带翻盘，只在近分簇内由工单声明的画面属性决定选谁。仍受 `ATTR_TOTAL_CAP` 归一（不引入新量纲）。
+# ---------------------------------------------------------------------------
+ATTR_DECISIVE_BAND = 0.10   # 近分带宽（base 代价差 ≤ 此值 ⇒ 视为「语义难分伯仲」）
+ATTR_DECISIVE_GAIN = 0.12   # 带内额外放大上限（叠加在 ±ATTR_TOTAL_CAP 之上，带中心最大 ×1.6）
+
+
+def _read_attr_decisive() -> bool:
+    """读取「属性维决胜带」开关（env `ZENTECT_KM_ATTR_DECISIVE`，缺省 on）。
+
+    缺省 on = 属性维在近分簇内参与决胜（用户 2026-10-20 明确要求，见本文件上方常量块取证件）；
+    '0/off' = 零行为变化（逐字节回退「base + ±0.20 软阻尼」原口径），供 A/B 对账。
+
+    Returns:
+        bool: True 表示启用近分簇内的属性放大。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_ATTR_DECISIVE', '1')).strip().lower() in ('1', 'on', 'true')
+
+
+def _read_frame_desc() -> bool:
+    """读取「帧描述并入」开关（env `ZENTECT_KM_FRAME_DESC`，缺省 on）。
+
+    缺省 on = 对 Node 下发的帧证据候选取 `max(切片描述相似度, 帧描述相似度)`（方案 B）；
+    '0/off' = 零行为变化（逐字节回退旧口径），供 A/B 对账。
+
+    Returns:
+        bool: True 表示启用帧描述并入。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_FRAME_DESC', '1')).strip().lower() in ('1', 'on', 'true')
+
+
+def _read_frame_primary() -> bool:
+    """读取「帧描述唯一主力」开关（env `ZENTECT_KM_FRAME_PRIMARY`，缺省 on）。
+
+    缺省 on（方案 D，2026-10-21）= 帧证据候选的语义分**直接取帧描述语义**（取代切片描述语义），
+    切片描述仅作「无帧证据候选」的兜底（整片无帧索引 ⇒ frame_hints 空 ⇒ 整段回退切片描述旧口径）；
+    '0/off' = 回退方案 B 的 max(切片, 帧) 只升不降口径，供 A/B 对账。
+
+    Returns:
+        bool: True 表示帧描述取代切片描述为唯一主力。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_FRAME_PRIMARY', '1')).strip().lower() in ('1', 'on', 'true')
+
+
+# ---------------------------------------------------------------------------
+# 实体命中降代价（方案 C，2026-10-21）
+#   目的：显式实体名词（照片/戒指/机票…）被 BGE 长句余弦淹没，切片描述又是「高频 top8」聚合、
+#   天生丢低频实体 —— 即便帧描述已并入（方案 B），语义主分对「query 点名实体词 ↔ 候选含该词」
+#   仍零奖励。于是 seg_2「越经不起一张照片的考验」即便帧召回捞到「墙面合影照片」镜头，
+#   依然输给「女子侧脸说话」（cost 0.154 vs 0.284，gap 0.13 超决胜带）。
+#   做法：候选文本（切片描述 **或** 帧描述）包含 query 命中的词表实体词 ⇒ 扣一小笔代价（离散可解释）。
+#   词表与 TS 侧 FrameRecallService.FRAME_ENTITY_LEXICON 同源（48 词，只收画面可描述的具体物）。
+#   零行为变化前提：query 未命中词表 / 开关 off ⇒ 整段不启用（逐字节回退旧口径）。
+# ---------------------------------------------------------------------------
+FRAME_ENTITY_LEXICON = (
+    # 影像 / 纸本
+    '照片', '相片', '拍立得', '合影', '贺卡', '报纸', '杂志', '卡片', '信封', '信纸', '日记',
+    # 通信 / 数码
+    '手机', '相机', '电话', '耳机',
+    # 凭证 / 文书
+    '证书', '票据', '机票', '车票', '登机牌', '护照', '合同', '文件', '名单', '病历', '超声',
+    # 随身 / 容器
+    '钱包', '现金', '钞票', '钥匙', '门卡', '行李箱', '行囊', '背包', '手提包', '礼物',
+    # 餐饮 / 饰品 / 其它
+    '酒杯', '酒瓶', '餐具', '咖啡', '戒指', '花束', '玫瑰', '口红', '眼镜', '手表', '药瓶', '绷带',
+)
+ENTITY_BOOST_REWARD = 0.15
+
+
+def _read_entity_boost() -> bool:
+    """读取「实体命中降代价」开关（env `ZENTECT_KM_ENTITY_BOOST`，缺省 on）。
+
+    缺省 on = 候选文本（切片描述 或 帧描述）包含 query 命名实体词 ⇒ 代价扣 `ENTITY_BOOST_REWARD`；
+    '0/off' = 零行为变化（逐字节回退旧口径），供 A/B 对账。
+
+    Returns:
+        bool: True 表示启用实体命中降代价。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_ENTITY_BOOST', '1')).strip().lower() in ('1', 'on', 'true')
+
+
 def build_match_cost(
     queries: List[dict],
     chunk_by_id: Dict[str, dict],
@@ -299,6 +402,7 @@ def build_match_cost(
     weights: Optional[dict] = None,
     text_beta: Optional[float] = None,
     sem_out: Optional[Dict[str, Dict[str, float]]] = None,
+    frame_hints: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> Dict[str, Dict[str, float]]:
     """计算每句候选切片的综合贴合代价矩阵 {shotId: {chunkId: base_cost}}。
 
@@ -321,6 +425,8 @@ def build_match_cost(
         sem_out: 可选**只读导出**容器，就地填入 {shotId: {chunkId: 拼接口径语义分}}。
             供跨模态重排构候选盘排序用（对齐离线实验的 BGE 榜口径），**不参与任何生产代价计算**；
             不传（None）时零额外开销、零行为变化。
+        frame_hints: 可选「帧证据」映射 {shotId: {chunkId: 帧级释义}}（方案 B，Node 侧实体补召下发）。
+            命中候选的语义分取 `max(切片描述相似度, 帧描述相似度)` —— 只升不降；缺省/空 ⇒ 旧口径。
 
     Returns:
         Dict[str, Dict[str, float]]: {shotId: {chunkId: base_cost}}；
@@ -362,6 +468,34 @@ def build_match_cost(
     # 供后续按列定位切片：chunkId → 语义矩阵列下标
     chunk_order = {cid: idx for idx, cid in enumerate(chunk_ids)}
 
+    # ---- 1.5 帧描述并入（方案 B 只升不降 / 方案 D 唯一主力，2026-10-21）----
+    #   根因（实测）：切片级描述会漏掉镜头内的关键瞬间 —— chunk_084 切片描述是「女子手持黑色卡片夹」，
+    #   而它被帧召回命中的那一帧是「墙面展示合影照片」。只吃切片描述 ⇒ 靠帧证据进池的镜头在语义项
+    #   上零支撑，seg_2「越经不起一张照片的考验」仍会选到说话镜头。
+    #   方案 B：`sem = max(切片相似度, 帧描述相似度)`（只升不降，帧证据作为补充）。
+    #   方案 D（缺省）：帧描述升**唯一主力**，直接取代切片描述语义；切片描述仅作无帧证据候选的兜底。
+    #   零行为变化前提：无 frame_hints / 开关 off ⇒ 整段不启用（逐字节回退旧口径）。
+    frame_on = _read_frame_desc() and bool(frame_hints)
+    frame_primary = _read_frame_primary()   # 方案 D：帧描述取代切片（off 回退方案 B max）
+    _fstat = {'cands': 0, 'lifted': 0, 'max_lift': 0.0, 'climbed': 0, 'replaced': 0}
+    _frame_sem: Dict[tuple, float] = {}
+    if frame_on:
+        _qi_by_sid = {str(q.get('shotId')): i for i, q in enumerate(queries)}
+        _items = []
+        for _sid, _m in (frame_hints or {}).items():
+            for _cid, _txt in (_m or {}).items():
+                _t = str(_txt or '').strip()
+                if _t and str(_cid) in chunk_order and str(_sid) in _qi_by_sid:
+                    _items.append((str(_sid), str(_cid), _t))
+        if _items:
+            _fe = AIModels.encode_texts([t for _, _, t in _items])
+            for _i, (_sid, _cid, _t) in enumerate(_items):
+                _qi = _qi_by_sid[_sid]
+                _sim = float(np.dot(_qc_emb[_qi], _fe[_i]))
+                if beta > 0.0 and text_sim is not None:
+                    _sim = float((1.0 - beta) * _sim + beta * float(np.dot(_qt_emb[_qi], _fe[_i])))
+                _frame_sem[(_sid, _cid)] = _sim
+
     # ---- 2. 逐句逐候选算贴合分并转负向代价 ----
     sem_norm = _read_sem_norm_mode()
     result: Dict[str, Dict[str, float]] = {}
@@ -372,33 +506,52 @@ def build_match_cost(
     # 可供给时长口径（乙案，落码点3）：仅开关 on 档构建索引（off 档零开销、零行为变化）。
     supply_on = _read_supply_dur()
     _supply_ms = build_supply_ms(chunk_by_id) if supply_on else {}
-    _supply_stat = {'short': 0, 'extended': 0, 'enforced': 0, 'none_cover': 0}
+    _supply_stat = {'short': 0, 'extended': 0, 'enforced': 0, 'none_cover': 0, 'filtered': 0}
     # 供不起候选数 / 可供给链长于自身的候选数 / 近硬约束实际生效句数 / 全候选供不起句数
+    # / 被硬过滤剔除的供不起候选数（第1步 选片硬过滤，见下）
     # P5 结构化属性贴合（议题 D 的桥）：命中/落空/中性计数，供「属性命中率」诊断（只读统计容器）。
     _attr_stat = {'match': 0, 'miss': 0, 'neutral': 0}
+    # 属性维决胜带（方案1，2026-10-20）：开关 + 只读诊断容器（flip=属性翻盘句数 / band_*=近分簇规模
+    # / spans=行内属性跨度分布 / span0=属性全同值句数，即「放大也无判别力」的句数）。
+    attr_decisive = _read_attr_decisive()
+    _ad_stat = {'flip': 0, 'band_rows': 0, 'band_cands': 0, 'span0': 0, 'spans': []}
+    # 实体命中降代价（方案 C）：开关 + 只读诊断容器（query_hits=命中实体句数 / cand_hits=被降代价候选数
+    # / flip=降代价后综合 Top-1 被翻盘的句数）。
+    entity_on = _read_entity_boost()
+    _eb_stat = {'query_hits': 0, 'cand_hits': 0, 'flip': 0}
 
-    def _calc_row(cands: list, sem_values: List[float],
-                  apply_supply_penalty: bool = False) -> tuple:
+    def _calc_row(cands: list, sem_values: List[float], decisive: bool = False,
+                  stat: Optional[dict] = None) -> tuple:
         """按给定语义分序列算综合代价行（供原始/归一化两版复用）。
 
         Args:
             cands: 本句候选元组列表 (cid, sem, duration, emotion, role, coverable, attr)。
             sem_values: 与 cands 等长的语义分序列（原始或归一化）。
-            apply_supply_penalty: True 时对「可供给时长 < 配音」的候选加近硬约束罚
-                （仅当本句存在可覆盖候选时由调用方置 True；全供不起时置 False 退现状）。
+            decisive: 是否启用属性维「决胜带」（近分簇内放大属性权重，见 `ATTR_DECISIVE_BAND`）。
+            stat: 可选只读容器，就地写入本行的 `band`（近分带内候选数），供决胜诊断。
 
         Returns:
             tuple: (row {cid: cost}, 综合最优 cid)。
         """
+        # base = 1 − 综合贴合分（语义/时长/情绪/角色），**不含属性**：决胜带以 base 差定「近分」。
+        _bases = [1.0 - float(_compute_combined_score(sem_values[i], c[2], c[3], c[4], weights))
+                  for i, c in enumerate(cands)]
+        _base_best = min(_bases) if _bases else 0.0
+        if stat is not None:
+            stat['band'] = sum(1 for _b in _bases if _b - _base_best <= ATTR_DECISIVE_BAND)
         row: Dict[str, float] = {}
         _best_cid = None
         _best_cost = 1e9
         for i, (cid, _s, _d, _e, _r, _cov, _attr) in enumerate(cands):
-            combined = _compute_combined_score(sem_values[i], _d, _e, _r, weights)
-            cost = 1.0 - float(combined)  # 正向分 → 负向代价
-            cost += float(_attr)  # P5 结构化属性贴合（软阻尼、封顶 ±0.20，绝不压过语义主分）
-            if apply_supply_penalty and not _cov:
-                cost += SUPPLY_SHORT_PENALTY  # 近硬约束：供不起的片代价远高于任何其它分项之和
+            _a = float(_attr)
+            cost = _bases[i] + _a  # P5 结构化属性贴合（软阻尼、封顶 ±0.20，绝不压过语义主分）
+            # 属性维决胜带（方案1）：与「本句 base 最优」的差落在带内 ⇒ 属性权重线性放大到带沿归零。
+            #   带外（差 > 带）恒 +0.00 ⇒ 逐字节保持原软阻尼口径（语义差距明显时属性不越带翻盘）。
+            if decisive:
+                _gap = _bases[i] - _base_best
+                if _gap <= ATTR_DECISIVE_BAND:
+                    cost += (ATTR_DECISIVE_GAIN * (_a / ATTR_TOTAL_CAP)
+                             * (1.0 - _gap / ATTR_DECISIVE_BAND))
             row[cid] = cost
             if cost < _best_cost:
                 _best_cost = cost
@@ -407,11 +560,23 @@ def build_match_cost(
 
     for qi, query in enumerate(queries):
         sid = str(query['shotId'])
+        # 🔍 实体命中降代价（方案 C）：提取本句命中的词表实体词（开关 off / 零命中 ⇒ 空集，整句零开销）。
+        _qi_entities = ([w for w in FRAME_ENTITY_LEXICON if w in query_concat_texts[qi]]
+                        if entity_on else [])
+        _hit_cids: set = set()
+        if _qi_entities:
+            _eb_stat['query_hits'] += 1
         cand_ids = cands_by_shotid.get(sid) or []
         if not cand_ids:
             continue  # 空候选：不产出代价行（交给束搜索跳过，不造假象）
         query_emotion = _query_emotion(query)
         query_roles = _char_ids_of_query(query)
+        # 道具维「同表归一」（2026-10-09）：query.keyProp 自由文本 → ENTITY_CLASSES 类别名
+        #   （与动态门禁 `_dynamic_gate` 同表同函数），使两侧落在同一坐标系后再比对。
+        query_prop = _class_of_query(str(query.get('keyProp') or ''), ENTITY_CLASSES)
+        # 动作维「同表归一」（2026-10-14）：query.actionType 自由文本 → ACTION_CLASSES 类别名
+        #   （与动态门禁 `_dynamic_gate` 同表同函数，单一真源），使两侧落在同一坐标系后再比对。
+        query_action = _class_of_query(str(query.get('actionType') or ''), ACTION_CLASSES)
         t_audio_ms = float(query.get('audioDurationMs') or 0.0)
 
         # DIAG 基线：本句纯拼接语义分的 Top-1 候选（供「变化」对账，不改主流程）。
@@ -433,6 +598,11 @@ def build_match_cost(
             if chunk is None:
                 raise ContractError(f'MatchCost: 候选切片 {cid} 不在资产索引中')
             ci = chunk_order[cid]
+            if _qi_entities:
+                # 候选文本（切片描述 或 帧描述）包含任一本句命中实体词 ⇒ 标记为命中候选。
+                _fb_txt = str(((frame_hints or {}).get(sid) or {}).get(cid) or '')
+                if any(_w in chunk_desc_texts[ci] or _w in _fb_txt for _w in _qi_entities):
+                    _hit_cids.add(cid)
             sem_score = float(semantic_sim[qi, ci])
             # 🔬 跨模态重排候选盘排序用（可选只读导出，对齐离线 BGE 榜的拼接口径）。
             #   在 β 融合「之前」记录，导出的恒为拼接语义分；sem_out=None 时整段零开销。
@@ -441,6 +611,18 @@ def build_match_cost(
             # P1′-a 精排融合：β=1.0 → 纯 text；β=0 → 纯拼接；中间 → 线性混合。
             if beta > 0.0 and text_sim is not None:
                 sem_score = float((1.0 - beta) * sem_score + beta * float(text_sim[qi, ci]))
+
+            # 帧描述并入：帧证据候选的语义分来源（方案 D 取代 / 方案 B 只升不降）。
+            _fs = _frame_sem.get((sid, str(cid)))
+            if _fs is not None:
+                _fstat['cands'] += 1
+                if frame_primary:
+                    _fstat['replaced'] += 1
+                    sem_score = _fs          # 帧描述升唯一主力：直接取代切片描述语义
+                elif _fs > sem_score:
+                    _fstat['lifted'] += 1
+                    _fstat['max_lift'] = max(_fstat['max_lift'], _fs - sem_score)
+                    sem_score = _fs
 
             # 时长契合（非对称裁剪友好型）
             c_start = float(chunk.get('startMs') or 0.0)
@@ -470,23 +652,71 @@ def build_match_cost(
                 role_score = 0.5 + (role_score - 0.5) * 0.5
 
             # P5 结构化属性贴合（议题 D 的桥）：工单声明 ↔ 镜头属性逐维软阻尼，并入供给代价。
-            _attr = attribute_adherence_cost(query, chunk, _attr_stat)
+            #   主体维复用 char-id 桥（chunk_roles 同上）、道具维复用 ENTITY_CLASSES 类别桥
+            #   （`_prop_of_chunk` 与动态门禁同表）——两维均不再跨坐标系裸比较（修伪惩罚）。
+            chunk_prop = _prop_of_chunk(chunk)
+            chunk_action = _action_of_chunk(chunk)
+            _attr = attribute_adherence_cost(
+                query, chunk, _attr_stat,
+                query_roles=query_roles, chunk_roles=chunk_roles,
+                query_prop=query_prop, chunk_prop=chunk_prop,
+                query_action=query_action, chunk_action=chunk_action)
             cands.append((cid, sem_score, duration_penalty, emotion_score, role_score, _coverable, _attr))
 
-        # 乙案「近硬约束」判定（仅开关 on 档、非原声段）：
-        #   本句存在任一可覆盖候选 ⇒ 对供不起候选加远高于其它分项之和的罚（存在必被选中）；
-        #   全候选都供不起 ⇒ 不罚（逐字节退回现状，保置信度量纲），仅计数 + 打日志暴露缺料。
+        # 「可供给 ≥ 配音」约束判定（仅开关 on 档、非原声段）：
+        #   本句存在任一可覆盖候选 ⇒ 供给约束成立（下游「硬过滤」剔除供不起候选）；
+        #   全候选都供不起 ⇒ 约束不成立（不过滤、不罚，逐字节退回现状），仅计数 + 打日志暴露缺料。
         _koa = bool(query.get('keepOriginalAudio'))
         _any_cov = any(c[5] for c in cands)
         _apply_supply_penalty = supply_on and not _koa and _any_cov
         if supply_on and not _koa:
             _supply_stat['enforced' if _any_cov else 'none_cover'] += 1
 
+        # 🛑 慢放修复·第1步「选片供给硬过滤」（2026-10-15）：把「可供给时长 ≥ 配音时长」从
+        #   「罚 100 分」升级为结构性硬过滤——本句存在可覆盖候选时，供不起的候选**直接退出候选集**
+        #   （不进 beam 展开、不进重排盘），不再依赖数值罚在后续任何归一/权重变动中继续成立。
+        #   取证依据：`候选供不起=68 ｜ 近硬约束生效句=40 ｜ 无候选可覆盖=0`（本句 40 句全有可覆盖
+        #   候选）⇒ 过滤后候选集必非空，不引入「空中池」（束搜索跳过该句 = 空段）的新失效态。
+        #   回退口径（逐字节保现状）：全候选都供不起（`_any_cov=False`）⇒ **不过滤也不罚**，
+        #   候选集与排序完全等于过滤前 —— 「按 supply 降序取最长、语义分作 tie-break」不在本轮，
+        #   当前项目 0 例、无从测量，守「禁止未测量即上线」。原声段同样不判不滤（窗长由 ASR 决定）。
+        if _apply_supply_penalty:
+            _kept = [c for c in cands if c[5]]
+            if len(_kept) < len(cands):
+                _supply_stat['filtered'] += len(cands) - len(_kept)
+                cands = _kept
+
         # 方向2 量纲对齐：候选内 min-max 归一化后参与综合分（不改语义排序，只重排相对权重）。
         raw_sems = [c[1] for c in cands]
         norm_sems = _norm_cand_sem(raw_sems) if sem_norm != 'off' else raw_sems
-        row, _best_cid = _calc_row(cands, norm_sems, _apply_supply_penalty)
+        row, _best_cid = _calc_row(cands, norm_sems, attr_decisive)
+        # 🔍 实体命中降代价（方案 C）：命中词表实体的候选扣 ENTITY_BOOST_REWARD，再取新的综合 Top-1。
+        #   ⚠️ 不覆盖 `_best_cid`——其仍为 _calc_row 原始最优，供下方 β/量纲/属性决胜诊断正确归因。
+        if _hit_cids:
+            for _hc in _hit_cids:
+                if _hc in row:
+                    row[_hc] -= ENTITY_BOOST_REWARD
+                    _eb_stat['cand_hits'] += 1
+            _eb_best = min(row, key=row.get) if row else _best_cid
+            if _eb_best != _best_cid:
+                _eb_stat['flip'] += 1
         result[sid] = row
+
+        # 🔍 属性维决胜诊断（只读）：回答「属性到底有没有参与决胜」——
+        #   ① band = 本句近分带内候选数（≥2 才有决胜余地）；② flip = 属性放大后综合 Top-1 被翻盘的句数；
+        #   ③ spans = 行内属性值跨度（全同值 ⇒ 该句属性毫无判别力，放大多少都不动排序）。
+        _ad_row = {}
+        _, _best_plain = _calc_row(cands, norm_sems, False, stat=_ad_row)
+        if _best_plain != _best_cid:
+            _ad_stat['flip'] += 1
+        _ad_stat['band_cands'] += _ad_row.get('band', 0)
+        if _ad_row.get('band', 0) >= 2:
+            _ad_stat['band_rows'] += 1
+        _attrs_row = [float(c[6]) for c in cands]
+        _span_row = max(_attrs_row) - min(_attrs_row)
+        _ad_stat['spans'].append(_span_row)
+        if _span_row <= 1e-9:
+            _ad_stat['span0'] += 1
 
         # DIAG：β 融合后语义主分 Top-1 相对纯拼接发生变更的句数（可测量精排是否翻盘）。
         if beta > 0.0 and _concat_best_cid is not None and _best_cid is not None \
@@ -495,7 +725,7 @@ def build_match_cost(
         # DIAG：量纲对齐前后综合 Top-1 变更 + 综合 Top-1 的候选内语义名次分布（回答「墙在哪」：
         #   r1 占比高 ⇒ 语义第一即综合第一，墙在语义判别本身；占比低 ⇒ 被其他因子翻盘，量纲/权重可调）。
         if sem_norm != 'off':
-            _row_raw, _best_raw = _calc_row(cands, raw_sems, _apply_supply_penalty)
+            _row_raw, _best_raw = _calc_row(cands, raw_sems)
             if _best_raw != _best_cid:
                 _norm_changed_n += 1
         _cand_pool_sizes.append(len(cand_ids))
@@ -524,18 +754,59 @@ def build_match_cost(
         _diag_parts.append(
             f"[supply-dur] 乙案 on：时长契合改吃可供给时长 ｜ 候选供不起={_supply_stat['short']} "
             f"链长于自身={_supply_stat['extended']} ｜ 供给索引={len(_supply_ms)}/{len(chunk_ids)} 切片"
-            f" ｜ 近硬约束生效句={_supply_stat['enforced']} ｜ 无候选可覆盖={_supply_stat['none_cover']}")
+            f" ｜ 近硬约束生效句={_supply_stat['enforced']} ｜ 无候选可覆盖={_supply_stat['none_cover']}"
+            f"｜ 硬过滤剔除候选={_supply_stat['filtered']}")
+    # 帧描述并入诊断（方案 B）：回答「帧证据在打分侧到底兑现了多少」——
+    #   候选数 / 实际被抬升数 / 最大抬升幅度（语义分绝对刻度）。
+    if frame_on:
+        _diag_parts.append(
+            f"[frame-desc] 帧描述并入={'on' if _frame_sem else 'off(无帧证据候选)'} primary={'on' if frame_primary else 'off'} ｜ "
+            f"帧证据候选={_fstat['cands']} 帧取代切片={_fstat['replaced']} 只升={_fstat['lifted']} "
+            f"最大抬升={_fstat['max_lift']:.4f}")
+    # 实体命中降代价诊断（方案 C）：仅开关 on 时输出（off 逐字节回退旧口径，日志零变化）。
+    if entity_on:
+        _diag_parts.append(
+            f"[entity-boost] 实体命中降代价 on ｜ 命中实体句={_eb_stat['query_hits']}/{len(result)} "
+            f"降代价候选={_eb_stat['cand_hits']} 翻盘句={_eb_stat['flip']}/{len(result)}")
     # P5 属性贴合诊断（验收口径「属性命中率」）：仅在有信号时输出（零信号 = 两侧无声明，恒中性）。
-    _attr_total = sum(_attr_stat.values())
+    #   ⚠️ 容器除三个计数外还挂了 dims/samples 分账子树（2026-10-09），求和须只取整型项。
+    _attr_total = sum(_v for _v in _attr_stat.values() if isinstance(_v, int))
     if _attr_total:
         _diag_parts.append(
             f"[attr-match] 属性贴合命中率: match={_attr_stat['match']}/{_attr_total} "
             f"miss={_attr_stat['miss']}/{_attr_total} neutral={_attr_stat['neutral']}/{_attr_total}")
+        # 🔍 逐维分布（2026-10-09）：回答"落空的 2367 次到底在哪一维、值差在何处"。
+        #   按 miss 降序，附 ≤2 组「声明值→候选值」样例，直接区分 枚举命名对不齐 / 切片侧缺值。
+        _attr_dims = _attr_stat.get('dims') or {}
+        if _attr_dims:
+            _attr_samples = _attr_stat.get('samples') or {}
+            _dim_txt = []
+            for _dn, _dv in sorted(_attr_dims.items(), key=lambda kv: -kv[1]['miss']):
+                _n = _dv['match'] + _dv['miss'] + _dv['neutral']
+                _eg = '、'.join(f'{_a}→{_b}' for _a, _b in _attr_samples.get(_dn, [])[:2])
+                _dim_txt.append(
+                    f"{_dn}: 命中/落空/中性={_dv['match']}/{_dv['miss']}/{_dv['neutral']}"
+                    f"(共{_n} 落空{(_dv['miss'] / _n * 100) if _n else 0:.0f}%)"
+                    + (f" 例:{_eg}" if _eg else ""))
+            _diag_parts.append('[attr-dim] 逐维分布(按 miss 降序): ' + ' ｜ '.join(_dim_txt))
+        # 属性维决胜诊断（2026-10-20 方案1）：回答「属性参与决胜了没有」——只看这四项即可判读：
+        #   ① 近分簇规模（≥2 候选才有决胜余地）；② 属性翻盘句数（>0 = 属性真的改变了选片）；
+        #   ③ 行内属性跨度（全同值句数高 ⇒ 属性在该句无判别力，放大多少都不动排序）。
+        _sp = _ad_stat['spans']
+        _sp_min = min(_sp) if _sp else 0.0
+        _sp_med = _stats.median(_sp) if _sp else 0.0
+        _sp_max = max(_sp) if _sp else 0.0
+        _diag_parts.append(
+            f"[attr-decisive] 决胜带={'on' if attr_decisive else 'off'}(带={ATTR_DECISIVE_BAND:.2f} "
+            f"放大上限={ATTR_DECISIVE_GAIN:.2f}) ｜ 近分簇句={_ad_stat['band_rows']}/{len(result)}"
+            f"(带内候选{_ad_stat['band_cands']}) ｜ 属性翻盘句数={_ad_stat['flip']}/{len(result)}"
+            f" ｜ 行内属性跨度(±{ATTR_TOTAL_CAP:.2f}封顶): min={_sp_min:.2f} med={_sp_med:.2f} "
+            f"max={_sp_max:.2f} 同值句={_ad_stat['span0']}/{len(result)}")
         # 🩺 信号链自检（防静默断链）：统计 query 侧各维声明数，暴露「上游应下发却恒空」。
         #   契约层若丢弃 cameraDynamic/targetSubjects（如 DTO 未声明字段致 model_dump() 丢弃），
         #   此处声明数恒 0 ⇒ 配合 match/miss 全 0 明确区分「断链」与「本就无声明」。
         _attr_decl = {'preferredShot': 0, 'cameraDynamic': 0, 'spatialType': 0,
-                      'targetSubjects': 0, 'keyProp': 0}
+                      'targetSubjects': 0, 'keyProp': 0, 'actionType': 0}
         for _q in queries:
             if str(_q.get('preferredShot') or '').strip():
                 _attr_decl['preferredShot'] += 1
@@ -547,11 +818,14 @@ def build_match_cost(
                 _attr_decl['targetSubjects'] += 1
             if str(_q.get('keyProp') or '').strip():
                 _attr_decl['keyProp'] += 1
+            if str(_q.get('actionType') or '').strip():
+                _attr_decl['actionType'] += 1
         _decl_total = sum(_attr_decl.values())
         _diag_parts.append(
             f"[attr-decl] query 声明数: preferredShot={_attr_decl['preferredShot']} "
             f"cameraDynamic={_attr_decl['cameraDynamic']} spatialType={_attr_decl['spatialType']} "
             f"targetSubjects={_attr_decl['targetSubjects']} keyProp={_attr_decl['keyProp']} "
+            f"actionType={_attr_decl['actionType']} "
             f"（共 {_decl_total} / {len(queries)} 句）")
         if _decl_total > 0 and _attr_stat['match'] == 0 and _attr_stat['miss'] == 0:
             _diag_parts.append(
