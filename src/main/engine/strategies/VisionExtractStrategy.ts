@@ -793,6 +793,29 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           if (cleaned && cleaned.length <= 16) keywordsSet.add(cleaned);
         },
       },
+      // —— keywords: 道具 / 关键道具（登记为已知字段名，同时吃掉值本体）——
+      //   ⚠️ 未登记时的真实故障：`道具` 不在 namesUnion 内，不构成取值边界，会被并进上一个字段的值里
+      //   （如 `空间:中景 道具:无道具` → 按空白切分后 `道具:无道具` 原样漏进 keywords，
+      //   「标签:占位值」这种脏词污染 step5 的关键词匹配信号）。故：① 登记为边界 ② 只取真值 ③ 剔除占位。
+      {
+        names: ['道具', '关键道具'],
+        handler: (v) => {
+          const cleaned = v.trim();
+          // 占位/否定值不是关键词：无道具 / 无 / 空 / none / 未检测
+          if (!cleaned || /^(无道具|无|空|无人物|none|未检测)$/i.test(cleaned)) return;
+          const parts = cleaned.split(/[、，,；;\/\s]+/).map(s => s.trim()).filter(Boolean);
+          for (const p of parts) {
+            if (p.length <= 16) keywordsSet.add(p);
+          }
+        },
+      },
+      // —— 视线 / 造型 等标签：仅登记为「取值边界」，本身不进 keywords ——
+      //   （视线=LEFT|RIGHT|FRONT 属方向枚举；造型/服装属 costume，均非本函数输出契约的一部分；
+      //    登记的唯一目的是防止它们像 `道具` 一样被吞进前一个字段的值）
+      {
+        names: ['视线', '视线方向', '造型', '服装', '穿着'],
+        handler: () => { /* 仅作取值边界 */ },
+      },
       // —— keywords: 显式 关键词/关键字/标签 ——
       {
         names: ['关键词', '关键字', '标签', '关键标签'],
@@ -1182,6 +1205,11 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           || '';
         details.push({
           url,
+          /** 🎬 2026-10-18：补 frameHash —— 流式推送帧必须与最终产物 frameDetails 同构。
+           *  此前漏此字段：每批完成即推前端 store 并随项目落库，导致持久化的 vlmFrames
+           *  全无帧身份；步骤5 单步重跑只拿到这份 vlmFrames → 帧归属链 0/705 →
+           *  P0 无 chunk.frameHashes → P2 帧向量索引 0 帧 → 帧召回返回空集 → 全片 0 匹配。 */
+          frameHash: contentHashMap.get(allFrames[fi]) || '',
           description: frameDescriptions[fi],
           asrText: frameAsrText,
           asrTime: matchedAsr.length > 0
@@ -1300,10 +1328,23 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
        * 🎭 注入 roles：让 VLM 知道画面中可能出现的人物名称，描述时直接用名称 */
       const { systemPrompt } = PromptBuilder.buildVisionExtractPrompt(asrText, '', 'vlm_optimized', undefined, input.roles);
 
-      /** 构建帧清单文本：让 VLM 知道每张图的序号和时间 */
-      const frameListText = batchFrames.map((f, i) =>
-        `第${i + 1}张（视频第${f.idx + 1}帧，时间约${formatTimeStr(frameTimesMs[f.idx] / 1000)}）`
-      ).join('\n');
+      /** 构建帧清单文本：让 VLM 知道每张图的序号、时间及该帧对应台词（台词↔帧映射）。
+       *  — 精确配对：只有当「帧时刻」落在某句台词区间（含 ±0.3s 容差）内时才绑定该台词，
+       *    而非用帧的时间跨度去覆盖（后者会把相邻台词的标签错配到该帧，造成对应偏差）。
+       *    补帧后每句台词中点已有对应帧，故配对几乎一一对应。 */
+      const ASR_FRAME_TOL_SEC = 0.3;
+      const frameListText = batchFrames.map((f, i) => {
+        const fSec = frameTimesMs[f.idx] / 1000;
+        const frameAsr = asrLines
+          .filter(line => fSec >= line.startTime - ASR_FRAME_TOL_SEC && fSec <= line.endTime + ASR_FRAME_TOL_SEC)
+          .map(line => line.text)
+          .join(' ');
+        const asrSeg = frameAsr ? `｜该帧台词："${frameAsr}"` : '';
+        return `第${i + 1}张（视频第${f.idx + 1}帧，时间约${formatTimeStr(fSec)}${asrSeg}）`;
+      }).join('\n');
+      /** 台词↔帧映射使用指引（拼图/1x1 两条路径共用，避免重复注入） */
+      const frameAsrHint = '【台词↔帧映射】下方每张图后标注了该帧时刻对应的台词（该帧落在台词区间内才标注，若无则不标）。'
+        + '请结合对应台词理解该帧的剧情语境，但仍严禁复述台词原文、严禁描述画面中不存在的事物。\n';
 
       // P3: 构建全局上下文注入段（有全局摘要时要求增量描述，减少 Output Token）
       const globalContextPrompt = globalContext
@@ -1339,7 +1380,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           : '3×3 网格图（9 个子图，按 [1]~[9] 编号排列）';
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 只写该帧画面中**肉眼可见的人物**：优先用客观外观描述（如"穿蓝色条纹衬衫的男子""短发女子"）；仅在能确定身份时（如与提供的人物名单一致）才使用其姓名\n- 🔴 characters 严禁（违反即错误）：① 严禁写道具/布景/家具/车辆/植物/食物/建筑等**非人物**（如"绿植""窗外路灯""三人围坐沙发""飞机""沙发"）；② 严禁凭脸猜测演员名或角色名（禁止"XX饰演的YY"这类推断，也不许硬套明星名）；无法确定身份就用①中的外观描述\n- 🔴 characters 无人物时输出**空数组 []**（禁止写"无主体人物""无人物"等占位串）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameAsrHint}${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 只写该帧画面中**肉眼可见的人物**：优先用客观外观描述（如"穿蓝色条纹衬衫的男子""短发女子"）；仅在能确定身份时（如与提供的人物名单一致）才使用其姓名\n- 🔴 characters 严禁（违反即错误）：① 严禁写道具/布景/家具/车辆/植物/食物/建筑等**非人物**（如"绿植""窗外路灯""三人围坐沙发""飞机""沙发"）；② 严禁凭脸猜测演员名或角色名（禁止"XX饰演的YY"这类推断，也不许硬套明星名）；无法确定身份就用①中的外观描述\n- 🔴 characters 无人物时输出**空数组 []**（禁止写"无主体人物""无人物"等占位串）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容
 - 🎬 keyProps 写画面中关键道具**类别枚举**：必须从 [无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具] 中选一类（如"武器""文书证件"），无关键道具写"无道具"；严禁写具体道具名，具体道具（如"手枪""旧信封""裂开的牌匾"）写进 scene 或 narrativeAction\n- 👀 eyelineDirection 写主体视线朝向类别枚举：必须从 [LEFT|RIGHT|FRONT|NONE] 中选，仅视线方向清晰可判时写 LEFT/RIGHT/FRONT，视线不可判/空镜/无主体写 NONE（补丁14 跳轴守卫依赖）
 - 👗 costume 写主要人物的上装造型（颜色+款式，如"白衬衫""黑色风衣""病号服"）；多人写最突出的一个；空镜/无人物写"无人物"
 - 🌦 weatherEnv 写环境介质与时段（如"雨夜街头""室内白天"；可选 晴/阴/雨/雪/雾/夜/黄昏），无法判断写"室内"或"不明"
@@ -1353,7 +1394,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         /** 1x1 模式或拼图降级：多图独立发送 */
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 只写该帧画面中**肉眼可见的人物**：优先用客观外观描述（如"穿蓝色条纹衬衫的男子""短发女子"）；仅在能确定身份时（如与提供的人物名单一致）才使用其姓名\n- 🔴 characters 严禁（违反即错误）：① 严禁写道具/布景/家具/车辆/植物/食物/建筑等**非人物**（如"绿植""窗外路灯""三人围坐沙发""飞机""沙发"）；② 严禁凭脸猜测演员名或角色名（禁止"XX饰演的YY"这类推断，也不许硬套明星名）；无法确定身份就用①中的外观描述\n- 🔴 characters 无人物时输出**空数组 []**（禁止写"无主体人物""无人物"等占位串）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容\n- 🎬 keyProps 写画面中与剧情相关或主体交互的关键道具/物品（如"裂开的牌匾""手枪""旧信封"），无关键道具写"无道具"\n- 👗 costume 写主要人物的上装造型（颜色+款式，如"白衬衫""黑色风衣"）；多人写最突出的一个；空镜/无人物写"无人物"\n- 🌦 weatherEnv 写环境介质与时段（如"雨夜街头""室内白天"），无法判断写"室内"或"不明"\n- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","eyelineDirection":"LEFT|RIGHT|FRONT|NONE","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么（15字以内）","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keyProps":"道具类别枚举:无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具","costume":"人物上装造型（无人物写无人物）","weatherEnv":"环境介质/时段","characters":["该帧可见人物的客观外观描述，如穿蓝色条纹衬衫的男子；无人物写 []"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameAsrHint}${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 只写该帧画面中**肉眼可见的人物**：优先用客观外观描述（如"穿蓝色条纹衬衫的男子""短发女子"）；仅在能确定身份时（如与提供的人物名单一致）才使用其姓名\n- 🔴 characters 严禁（违反即错误）：① 严禁写道具/布景/家具/车辆/植物/食物/建筑等**非人物**（如"绿植""窗外路灯""三人围坐沙发""飞机""沙发"）；② 严禁凭脸猜测演员名或角色名（禁止"XX饰演的YY"这类推断，也不许硬套明星名）；无法确定身份就用①中的外观描述\n- 🔴 characters 无人物时输出**空数组 []**（禁止写"无主体人物""无人物"等占位串）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容\n- 🎬 keyProps 写画面中与剧情相关或主体交互的关键道具/物品（如"裂开的牌匾""手枪""旧信封"），无关键道具写"无道具"\n- 👗 costume 写主要人物的上装造型（颜色+款式，如"白衬衫""黑色风衣"）；多人写最突出的一个；空镜/无人物写"无人物"\n- 🌦 weatherEnv 写环境介质与时段（如"雨夜街头""室内白天"），无法判断写"室内"或"不明"\n- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","eyelineDirection":"LEFT|RIGHT|FRONT|NONE","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么（15字以内）","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keyProps":"道具类别枚举:无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具","costume":"人物上装造型（无人物写无人物）","weatherEnv":"环境介质/时段","characters":["该帧可见人物的客观外观描述，如穿蓝色条纹衬衫的男子；无人物写 []"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
         });
         for (const f of batchFrames) {
           userContent.push({
