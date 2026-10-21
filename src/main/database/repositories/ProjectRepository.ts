@@ -71,6 +71,51 @@ export class ProjectRepository {
     transaction();
   }
 
+  /**
+   * 读取项目物理目录（projects.path）。
+   * 删除流程专用：**不经过 PathManager.getProjectDir** —— 后者在目录缺失时会 mkdir 重建，
+   * 会把刚删掉的目录又造回来（删除链路历史隐患）。
+   */
+  public getProjectPath(id: string): string | null {
+    const row = this.db.prepare('SELECT path FROM projects WHERE id = ?').get(id) as { path?: string } | undefined;
+    return row?.path || null;
+  }
+
+  /**
+   * 🧨 彻底清除项目数据（2026-10-16 删除功能修复）：
+   *  动态发现**所有含 project_id 列的表**并硬删除该项目的行 —— 新增业务表自动被覆盖，杜绝遗漏残留
+   *  （旧实现只软删 projects/media_assets/roles/shots 四表，pipeline_checkpoints、step_results、
+   *   project_assets、editor_drafts、chat_history 等全部 project_id 维度数据被遗留 = 「数据没删掉」）。
+   *  - projects 主表不在此处删除：由 delete() 软删，维持「列表 is_deleted=0 过滤」契约。
+   *  - 单表失败不阻断其余表（失败表名回传调用方记日志）。
+   */
+  public purgeProjectScopedData(id: string): { tables: string[]; rows: number; failed: string[] } {
+    const tables: string[] = [];
+    const failed: string[] = [];
+    let rows = 0;
+    const all = this.db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all() as Array<{ name: string }>;
+    for (const { name } of all) {
+      if (name === 'projects' || name.startsWith('sqlite_')) continue;
+      let cols: Array<{ name: string }>;
+      try {
+        cols = this.db.prepare(`PRAGMA table_info("${name}")`).all() as Array<{ name: string }>;
+      } catch {
+        continue;
+      }
+      if (!cols.some((c) => c.name === 'project_id')) continue;
+      try {
+        const res = this.db.prepare(`DELETE FROM "${name}" WHERE project_id = ?`).run(id);
+        if (res.changes > 0) {
+          tables.push(name);
+          rows += res.changes;
+        }
+      } catch {
+        failed.push(name);
+      }
+    }
+    return { tables, rows, failed };
+  }
+
   public updateName(id: string, name: string) {
     this.db.prepare(PROJECT_SQL.UPDATE_NAME).run({ id, name });
   }

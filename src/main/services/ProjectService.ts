@@ -292,31 +292,73 @@ export class ProjectService {
   }
 
   public async deleteProject(id: string): Promise<void> {
-    // 先获取真实物理目录（可能在改名后不再是 {root}/{id}）
-    const realDir = PathManager.getProjectDir(id);
-    // 🧹 级联清理 .trim_cache：仅清「源文件已不存在」的孤儿缓存，共享媒体缓存保留
+    // 1) 快照媒体真实路径（用于孤儿 .trim_cache 清理），失败不阻断
+    let assets: Array<{ id: string; file_path: string }> = [];
     try {
-      const assets = this.repo.getAllMediaAssets(id);
+      assets = this.repo.getAllMediaAssets(id);
+    } catch {
+      /* 忽略 */
+    }
+
+    // 2) 解析物理目录：优先 DB path。⚠️ 绝不调用 PathManager.getProjectDir —— 它在目录缺失时会 mkdir 重建，
+    //    会把「已删除的目录」又造回来，是删除链路的历史隐患。
+    const realDir = this.repo.getProjectPath(id) || path.join(PathManager.getProjectsRootPath(), id);
+
+    // 3) 🎬 物理清理**前置**（顺序修正）：先「改名旁置」——原子操作；目录被占用时立即失败，
+    //    此时可干净中止且 DB 数据未动，用户释放占用后重试即可；成功则项目目录已立刻移出沙盒可见范围。
+    //    旧实现的缺陷：先改 DB 再 `fs.rm`（无重试、错误被 `catch{}` 静默吞掉），一旦文件被占用/进程被中断，
+    //    2.4GB 素材（实测 7146 文件）原地残留，用户看到「没删掉」却收到成功提示。
+    let trashedDir: string | null = null;
+    if (fsSync.existsSync(realDir)) {
+      const trashDir = `${realDir}.trash_${Date.now()}`;
+      try {
+        await fs.rename(realDir, trashDir);
+        trashedDir = trashDir;
+      } catch (e: any) {
+        AppLogger.error(LOG_TAGS.PROJECT, `[delete] 项目目录被占用，删除中止: ${realDir} → ${e.message}`);
+        throw new AppError(ErrorCode.FS_WRITE_ERROR, '删除失败：项目文件被占用，请关闭正在使用该项目的程序后重试');
+      }
+    }
+
+    // 4) DB：项目软删（保住「列表 is_deleted=0 过滤」契约）+ 全维度硬删该项目数据
+    this.repo.delete(id);
+    const purged = this.repo.purgeProjectScopedData(id);
+    PathManager.clearProjectDirCache(id);
+    AppLogger.info(
+      LOG_TAGS.PROJECT,
+      `[delete] 项目已删除 ${id}｜数据清理 ${purged.tables.length} 张表 / ${purged.rows} 行`
+      + (purged.failed.length ? `｜失败表: ${purged.failed.join(',')}` : ''),
+    );
+
+    // 5) 🧹 级联清理 .trim_cache：仅清「源文件已不存在」的孤儿缓存，共享媒体缓存保留（best-effort）
+    try {
       const toClean = assets
-        .map((a) => ({ id: a.id, filePath: this.resolveMediaRealPath(id, a.file_path) }))
+        // ⚠️ 传删除前的物理目录 realDir（非 getProjectDir）：后者会 mkdir 重建刚删掉的空目录
+        .map((a) => ({ id: a.id, filePath: this.resolveMediaRealPath(realDir, a.file_path) }))
         .filter((a) => a.filePath);
       if (toClean.length) await cleanupMediaCaches(toClean);
-    } catch (e) {
-      // 清理失败不影响项目删除主流程
+    } catch {
+      /* 清理失败不影响项目删除主流程 */
     }
-    this.repo.delete(id);
-    PathManager.clearProjectDirCache(id);
-    try {
-      await fs.rm(realDir, { recursive: true, force: true });
-    } catch (e) {
-      // 目录不存在，跳过
+
+    // 6) 尽最大努力物理抹杀旁置目录：Windows 文件占用用 maxRetries 退避重试；仍失败只告警（不再静默吞错谎报成功），
+    //    残留的 `.trash_*` 目录会在下次启动由 CacheGarbageCollector 兜底清扫。
+    if (trashedDir) {
+      try {
+        await fs.rm(trashedDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+      } catch (e: any) {
+        AppLogger.warn(LOG_TAGS.PROJECT, `[delete] 旁置目录物理删除未完成，留待下次启动清扫: ${trashedDir} → ${e.message}`);
+      }
     }
   }
 
-  /** magic:// 或相对路径 → 项目目录下的真实绝对路径 */
-  private resolveMediaRealPath(projectId: string, filePath: string): string {
+  /**
+   * magic:// 或相对路径 → 项目物理目录下的真实绝对路径
+   * ⚠️ 由调用方**直接传入物理目录**（删除流程传删除前的 realDir）—— 绝不在此调用 PathManager.getProjectDir：
+   *    后者在目录缺失时会 mkdir 重建，会把刚删掉的空目录又造回来（删除链路第二处历史隐患）。
+   */
+  private resolveMediaRealPath(projectDir: string, filePath: string): string {
     if (!filePath) return '';
-    const projectDir = PathManager.getProjectDir(projectId);
     if (filePath.startsWith('magic://')) {
       return path.join(projectDir, filePath.replace(/^magic:\/\/[^/]+\//, ''));
     }
