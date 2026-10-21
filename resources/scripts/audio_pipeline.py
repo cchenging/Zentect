@@ -347,9 +347,14 @@ def _asr_postprocess_segments(segments):
                 prev["text"] = (prev["text"] + " " + seg["text"]).strip()
             continue
 
-        # 3) 时间完全一致或文本完全相同 → 去重
-        if (abs(prev["start"] - seg["start"]) < 0.2 and abs(prev["end"] - seg["end"]) < 0.2) \
-                or prev["text"].strip() == seg["text"].strip():
+        # 3) 真重复去重：文本完全相同【且】时间窗高度重叠（≥50%）才算重复
+        #    ⚠️ 旧逻辑「|start 差| < 0.2 且 |end 差| < 0.2」单凭时间接近就删段：
+        #    funasr Paraformer 逐字时间戳下，紧跟段落首字之后的第 2 个字
+        #    start/end 差 ≈ 一个字时长（实测 160/180ms，均 < 0.2s），会被误判为
+        #    "重复"而静默丢字（「结婚」→「结」、「喜欢」→「喜」）。改为要求
+        #    时间窗真正重叠，逐字连续片段交由 step4 合并，叠字（「谢谢」）也不会被误删。
+        same_text = prev["text"].strip() == seg["text"].strip()
+        if same_text and overlap_ratio >= 0.5:
             continue
 
         # 4) 紧邻（间隔 < 0.2 秒）且文本较短（< 15 字）的片段合并，
@@ -444,6 +449,15 @@ def _merge_fragments(segments, max_dur=1.0, max_gap=1.0):
     例：
       裂纹(0.3s) + 横亘在鼎青楼三个字中间(2.1s) → 裂纹横亘在鼎青楼三个字中间
       他...藏起(2.7s) + 也(0.06s) + 藏着一份沉默的等待 → 他...藏起 | 也藏着一份沉默的等待
+
+    阈值说明（修复"台词被 VAD 切成两行、末尾少一个字"，如「不用谁来证明我有多特」
+    + 「别」→「不用谁来证明我有多特别」）：
+      - max_dur 保持 1.0s（勿放宽）：实测放宽到 1.5s 会"合过头"——把本该断开的两个
+        整句串成一行。反例（《美人余》ep1，源 00:06:16）：原应为
+        「哪只有短短几天的相遇」+「未不会有任何的交集」两行，放宽后被并成
+        「哪只有短短几天的相遇未不会有任何的交集」一行。
+      - 「短文本碎片」豁免（文本 ≤2 字时无视时长门槛，但仍受 max_gap 约束）才是
+        "别"(1.345s、1 字) 能并回的关键；单纯放宽时长门槛既非必要、也有副作用。
     """
     import re
     if not segments:
@@ -464,7 +478,11 @@ def _merge_fragments(segments, max_dur=1.0, max_gap=1.0):
         cur_dur = cur["end"] - cur["start"]
         prev = out[-1] if out else None
         nxt = segs[i + 1] if i + 1 < len(segs) else None
-        if cur_dur < max_dur and (prev is not None or nxt is not None):
+        # 短文本碎片（≤2 字，去掉标点/空白后计数）即便时长超过 max_dur 也视为
+        # "被断句器切出来的残片"，允许并回相邻整句（仍受 max_gap 距离约束）
+        cur_txt = re.sub(r"[\s\W_]+", "", cur.get("text") or "")
+        is_short_fragment = len(cur_txt) <= 2
+        if (cur_dur < max_dur or is_short_fragment) and (prev is not None or nxt is not None):
             gap_prev = cur["start"] - prev["end"] if prev is not None else float("inf")
             gap_next = nxt["start"] - cur["end"] if nxt is not None else float("inf")
             # 并入更近的邻居（优先并入后句，避免左并导致顺序错乱）

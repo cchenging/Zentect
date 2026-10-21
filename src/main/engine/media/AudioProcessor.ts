@@ -213,6 +213,93 @@ export class AudioProcessor {
   }
 
   /**
+   * 🎵 B1′ 音频门控：按台词时间段统计 vocals/bgm 两路能量（RMS），供标记「疑似歌词/音乐」行。
+   *
+   * 背景：ASR 会把歌曲段落逐句转写，污染台词；纯文本启发式经验证不可用（片头真歌词 0 命中），
+   *       故改用音频能量占比——歌词段通常 BGM 占比高、人声能量低于全片中位。
+   *
+   * 实现：vocals/bgm 先降采样为 16k mono（复用 downsampleTo16k，得到可稳定解析的 PCM16），
+   *       再解析 data 段为 Int16Array，逐 segment 求平均 RMS；任一环节失败返回 null（不抛）。
+   *
+   * @param vocalsPath 人声分离产物（44.1k stereo WAV）
+   * @param bgmPath    背景音分离产物
+   * @param segments   逐行时间段（body 坐标 ms），数组顺序即返回顺序
+   * @param outputDir  16k 中间产物落盘目录（复用音频缓存目录）
+   * @returns 与 segments 等长的 {vocalsRms,bgmRms}[]；不可用时 null
+   */
+  public static async computeSegmentRms(
+    vocalsPath: string | undefined,
+    bgmPath: string | undefined,
+    segments: { startMs: number; endMs: number }[],
+    outputDir: string,
+    signal?: AbortSignal
+  ): Promise<{ vocalsRms: number; bgmRms: number }[] | null> {
+    if (!vocalsPath || !bgmPath || segments.length === 0) return null;
+    const v16 = path.join(outputDir, 'gate_vocals_16k.wav');
+    const b16 = path.join(outputDir, 'gate_bgm_16k.wav');
+    try {
+      const [vOk, bOk] = await Promise.all([
+        AudioProcessor.downsampleTo16k(vocalsPath, v16, signal),
+        AudioProcessor.downsampleTo16k(bgmPath, b16, signal),
+      ]);
+      if (!vOk || !bOk) return null;
+      const vSamples = AudioProcessor.readWavPcm16Mono(v16);
+      const bSamples = AudioProcessor.readWavPcm16Mono(b16);
+      if (!vSamples || !bSamples) return null;
+      const SAMPLE_RATE = 16000;
+      const rmsOf = (samples: Int16Array, startMs: number, endMs: number): number => {
+        const s = Math.max(0, Math.floor((startMs / 1000) * SAMPLE_RATE));
+        const e = Math.min(samples.length, Math.ceil((endMs / 1000) * SAMPLE_RATE));
+        if (e <= s) return 0;
+        let sum = 0;
+        for (let i = s; i < e; i++) {
+          const v = samples[i] / 32768;
+          sum += v * v;
+        }
+        return Math.sqrt(sum / (e - s));
+      };
+      return segments.map((seg) => ({
+        vocalsRms: rmsOf(vSamples, seg.startMs, seg.endMs),
+        bgmRms: rmsOf(bSamples, seg.startMs, seg.endMs),
+      }));
+    } catch (e: any) {
+      AppLogger.warn('AudioProcessor', `音频门控能量统计失败: ${e?.message || e}`);
+      return null;
+    } finally {
+      fs.unlink(v16, () => {});
+      fs.unlink(b16, () => {});
+    }
+  }
+
+  /** 解析 16k mono PCM16 WAV 的 data 段为 Int16Array；格式不符返回 null */
+  private static readWavPcm16Mono(filePath: string): Int16Array | null {
+    if (!fs.existsSync(filePath)) return null;
+    try {
+      const buf = fs.readFileSync(filePath);
+      if (buf.length < 44 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') return null;
+      let offset = 12;
+      let bits = 16;
+      let dataStart = -1;
+      let dataLen = 0;
+      while (offset + 8 <= buf.length) {
+        const id = buf.toString('ascii', offset, offset + 4);
+        const size = buf.readUInt32LE(offset + 4);
+        const body = offset + 8;
+        if (id === 'fmt ') bits = buf.readUInt16LE(body + 14);
+        else if (id === 'data') { dataStart = body; dataLen = Math.min(size, buf.length - body); break; }
+        offset = body + size + (size % 2);
+      }
+      if (dataStart < 0 || bits !== 16) return null;
+      const count = Math.floor(dataLen / 2);
+      const samples = new Int16Array(count);
+      for (let i = 0; i < count; i++) samples[i] = buf.readInt16LE(dataStart + i * 2);
+      return samples;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * 单流方案：一次提取 44.1kHz stereo → 分离 → 按用途分发
    *   - 分离成功：vocals 降采样到 16k mono 给 ASR，bgm 保留 44.1k stereo 给渲染
    *   - 分离失败：从 44.1k 降采样到 16k mono 给 ASR 作为 fallback

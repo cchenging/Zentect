@@ -30,6 +30,7 @@ from audio_pipeline import (  # noqa: E402
     _filter_hallucination_segments,
     _merge_fragments,
     _fallback_split_by_punctuation,
+    clean_and_merge_to_sentences,
 )
 
 # ── 模块级配置（集中管理，预留环境变量覆盖入口）──
@@ -49,6 +50,21 @@ def _clean_zh_spaces(text: str) -> str:
     if not text:
         return text
     return re.sub(r'(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])', '', text)
+
+
+def _normalize_ts_pairs(raw_ts) -> list | None:
+    """把 funasr 时间戳统一成 [[start_ms, end_ms], ...]。
+
+    兼容两种形态：① 已是成对列表 [[s,e],...]；② 扁平 [s1,e1,s2,e2,...]。
+    形状无法识别时返回 None（由调用方走兜底）。
+    """
+    if not raw_ts:
+        return None
+    if all(isinstance(x, (list, tuple)) and len(x) == 2 for x in raw_ts):
+        return [[float(x[0]), float(x[1])] for x in raw_ts]
+    if all(isinstance(x, (int, float)) for x in raw_ts) and len(raw_ts) % 2 == 0:
+        return [[float(raw_ts[i]), float(raw_ts[i + 1])] for i in range(0, len(raw_ts), 2)]
+    return None
 
 
 def _split_text_by_timestamp(text: str, timestamps) -> list | None:
@@ -112,6 +128,25 @@ def transcribe_paraformer(req, task_id: str = ""):
             if not raw_text:
                 continue
             raw_timestamps = item.get("timestamp", item.get("word_timestamp", None))
+            # 📌 实测契约（funasr Paraformer + CharTokenizer）：
+            #   text = 【逐字空格分隔】的整段文本（"结 婚 五 周 年 快 乐 …"）；
+            #   timestamp = 与之逐字对齐的毫秒级 [[s,e],...]（实测 73 字 ↔ 73 个时间戳）。
+            # ⚠️ 旧逻辑把 text 按标点重切再与时间戳 zip，因 text 本就逐字带空格，
+            #   第二道「按空格切」的兜底必然把它切成【逐字片段】流；这些单字片段进入
+            #   _asr_postprocess_segments 后，会因相邻单字时间窗过近
+            #   （|start 差| < 0.2 且 |end 差| < 0.2，实测相邻字 ≈ 160/180ms）被
+            #   误判为「重复」而静默丢弃 —— 恰好永远是紧跟首字之后的第 2 个字
+            #   （「结婚」→「结」、「我想学会克服恐高」→「我学会克服恐高」）。
+            #   改用 funasr 契约专用的字符流断句器：按发音气口/字数上限生成自然整句，
+            #   时间轴与文本同步推进，彻底不产生可被误删的单字片段。
+            words = raw_text.split()
+            ts_pairs = _normalize_ts_pairs(raw_timestamps)
+            if ts_pairs and len(ts_pairs) == len(words):
+                sentences = clean_and_merge_to_sentences(ts_pairs, raw_text, "zh", words=words)
+                if sentences:
+                    all_segments.extend(sentences)
+                    continue
+            # 兼容旧路径：时间戳数量与字符数不匹配时，退回按标点/空格重切
             if raw_timestamps:
                 segments = _split_text_by_timestamp(raw_text, raw_timestamps)
                 if segments:

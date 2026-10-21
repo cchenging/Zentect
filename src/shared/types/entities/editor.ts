@@ -23,6 +23,11 @@ export interface AsrLine {
   /** 步骤1 ③ 句尾静音气口时长（毫秒）：本句结尾到下一句开头的静音间隙，末句为 0。
    *  供步骤5 gap_padding(补丁7)/beat_snap(补丁2) 卡做句尾磁吸。 */
   silenceGapMs?: number;
+  /** 🎵 B1′ 音频门控：该行疑似歌曲歌词/音乐段落（bgm 占比高且人声能量显著低于全片中位），
+   *  前端弱化提示；未跑门控（极速模式无分离产物）时为 undefined。 */
+  suspectedMusic?: boolean;
+  /** 🎵 音乐占比 = bgmRms/(vocalsRms+bgmRms)，保留 2 位小数；未跑门控时为 undefined */
+  musicShare?: number;
   editing: boolean;
 }
 
