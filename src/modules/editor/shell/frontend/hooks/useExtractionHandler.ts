@@ -21,6 +21,26 @@ function formatSeconds(seconds: number): string {
 const STEP1_SUBSTEPS = ['frames', 'audio', 'whisper', 'faces'] as const;
 
 /**
+ * 🎬 帧真实时间轴归一化（步骤1 产物 → 前端 store）
+ * 广播侧 `media.framesTimeMs` 存在两种下发形态：数组（内存对象）
+ * 与 JSON 字符串（PipelineResultWriter 落库形态，见其 `updatedMedia.framesTimeMs = JSON.stringify(...)`）。
+ * 若原样塞进 store，store 的 `Array.isArray` 判定会失败并保留上一轮旧时间轴 →
+ * 单步重跑步骤2 会用旧时间轴给 VLM 描述打时间戳（帧↔切片归属再次错位）。此处统一归一为 number[]。
+ */
+function normalizeFrameTimes(raw: unknown): number[] | undefined {
+  let arr: unknown[] | undefined;
+  if (Array.isArray(raw)) arr = raw;
+  else if (typeof raw === 'string' && raw.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) arr = parsed;
+    } catch { /* 解析失败按缺失处理 */ }
+  }
+  if (!arr || arr.length === 0) return undefined;
+  return arr.map((t) => Math.round(Number(t) || 0));
+}
+
+/**
  * 根据子任务状态推导步骤1总状态
  * - 全 completed → 'completed' + stepCompleted=true
  * - 任一 failed → 'failed' + stepCompleted=false
@@ -108,6 +128,9 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             endMs,
             text: original,
             originalText: original,
+            // 🎵 B1′ 音频门控标记：透传后端 shots 上的疑似歌词标记，供列表徽标展示
+            suspectedMusic: s.suspectedMusic,
+            musicShare: s.musicShare,
             editing: false,
           };
         });
@@ -131,7 +154,14 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             typeof frame === 'string' ? frame : (frame.path || frame.filePath || frame.thumbnail || '')
           ).filter(Boolean);
           if (frameUrls.length > 0) {
-            useProjectStore.getState().setExtractedData({ framePaths: frameUrls, frameCount: frameUrls.length });
+            // 🎬 帧真实时间轴必须与 framePaths 同步落 store：漏传会让 store 保留上一轮旧时间轴，
+            //   步骤2 单步重跑即用旧时间轴标注 VLM 描述（本次实测偏差达 ±50s）
+            const frameTimes = normalizeFrameTimes(media.framesTimeMs);
+            useProjectStore.getState().setExtractedData({
+              framePaths: frameUrls,
+              frameCount: frameUrls.length,
+              ...(frameTimes ? { frameTimeMs: frameTimes } : {}),
+            });
           }
         }
 

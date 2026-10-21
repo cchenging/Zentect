@@ -102,7 +102,18 @@ export const useEditorHydration = (id: string | undefined) => {
             useStep1Store.getState().setAudioSeparated(true);
           }
 
-          // 💥 步骤5 数据恢复：匹配结果/切片池/BGM 节拍（步骤5 完成时已写入 metadata）
+          // � 修复跨项目泄漏（P0）：extractionConfig（含 ASR 识别语言/引擎）必须按『本项目』恢复。
+          //   旧版 bug：resetAllProjectStores 刻意保留了 persist 里的 extractionConfig，
+          //   new 项目进场时沿用了上一个项目选的「识别语言」（如韩语）→ 中文剧被强制按韩语转写。
+          //   现改为：DB 是唯一真相源，用项目 metadata.extractionConfig 无条件覆盖 store。
+          //   注意：不做「中文目标 → 强制中文识别」的自动纠正——targetLanguage 是解说稿语言，
+          //   韩剧解说的合法组合正是「识别语言=韩语 + 目标语言=中文」，强纠会误伤该工作流。
+          const snapshotExtraction = projectSnapshot.extractionConfig;
+          if (snapshotExtraction && typeof snapshotExtraction === 'object') {
+            useStep1Store.getState().updateExtractionConfig(snapshotExtraction as any);
+          }
+
+          // �� 步骤5 数据恢复：匹配结果/切片池/BGM 节拍（步骤5 完成时已写入 metadata）
           const step5State = useStep5Store.getState();
           if (Array.isArray(projectSnapshot.matchResults) && projectSnapshot.matchResults.length > 0) {
             // ✅ 身份键统一：legacy 匹配结果可能只有 shotId 无 id，于此归一 id=id||shotId，消费端一律只读 id

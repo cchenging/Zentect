@@ -182,4 +182,36 @@ describe('🔧 8/19 项目 ASR 秒→毫秒时间单位 bug 修复（Phase 3 tim
       expect(qs[0].shotId).toBe('s2');
     });
   });
+
+  // =================================================================================
+  // Part 3：上游时间槽重算（2026-10-13）——解说段 durationMs ← 真实配音时长
+  // =================================================================================
+  describe('🎙️ 上游时间槽重算：解说段 durationMs ← 真实配音时长（步骤4 ffprobe 实测）', () => {
+    it('解说段：估算槽 12000ms / 真实配音 3260ms → durationMs 与 audioDurationMs 均为 3260，源锚 startMs 不动', () => {
+      const scriptShots = [{ id: 'seg_0', type: 'narration', text: '测试解说文案', startMs: 65000, durationMs: 12000 }];
+      const qs = SemanticAnalyzeStrategy.buildMatchQueries(scriptShots, [{ id: 'seg_0', duration: 3.26, audioUrl: 'F:/tts/seg_0.mp3' }]);
+      expect(qs).toHaveLength(1);
+      expect(qs[0].durationMs).toBe(3260);
+      expect(qs[0].audioDurationMs).toBe(3260);
+      expect(qs[0].startMs).toBe(65000);
+    });
+
+    it('解说段缺配音（TTS 失败/未跑）→ 保持原估算槽，不造数', () => {
+      const scriptShots = [{ id: 'seg_1', type: 'narration', text: '无配音文案', startMs: 1000, durationMs: 9000 }];
+      const qs = SemanticAnalyzeStrategy.buildMatchQueries(scriptShots, []);
+      expect(qs[0].durationMs).toBe(9000);
+      expect(qs[0].audioDurationMs).toBe(0);
+    });
+
+    it('原声段（无 TTS，槽 = ASR 精确台词窗）→ 原样透传 durationMs', () => {
+      const scriptShots = [{
+        id: 'seg_2', type: 'original_audio', text: '原声：你好', startMs: 30000, durationMs: 2400,
+        audioSource: { sourceStartMs: 30000, sourceEndMs: 32400, transcript: '你好' },
+      }];
+      const qs = SemanticAnalyzeStrategy.buildMatchQueries(scriptShots, []);
+      expect(qs).toHaveLength(1);
+      expect(qs[0].keepOriginalAudio).toBe(true);
+      expect(qs[0].durationMs).toBe(2400);
+    });
+  });
 });

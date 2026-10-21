@@ -13,12 +13,16 @@ import { useEditorStore } from '@renderer/store/useStore';
 import { usePlayerStore } from '@modules/editor/stores/usePlayerStore';
 import { useI18n } from '@renderer/store/useI18n';
 
-const formatTimecode = (seconds: number) => {
+/** 🎞 默认帧率：素材真实 fps 缺失或非法时的回退值 */
+const DEFAULT_TC_FPS = 30;
+
+/** 🕐 秒 → HH:MM:SS:FF 时间码，帧号按传入 fps 计算（与素材真实帧率一致） */
+const formatTimecode = (seconds: number, fps: number = DEFAULT_TC_FPS) => {
   if (isNaN(seconds) || seconds < 0) return '00:00:00:00';
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
-  const f = Math.floor((seconds % 1) * 30);
+  const f = Math.floor((seconds % 1) * fps);
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}:${f.toString().padStart(2, '0')}`;
 };
 
@@ -48,6 +52,10 @@ export const PlayerControls: React.FC = () => {
 
   const displayDuration = globalFocusMode === 'media' && activePlaySource ?
     parseDuration(activePlaySource.duration) : videoDuration;
+
+  /** 🎞 帧率：优先当前播放素材真实 fps（ffprobe r_frame_rate，如 23.976/25/30/60），缺失回退 30fps */
+  const TC_FPS = (activePlaySource?.fps && Number.isFinite(activePlaySource.fps) && activePlaySource.fps > 0)
+    ? activePlaySource.fps : DEFAULT_TC_FPS;
 
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(80);
@@ -194,8 +202,8 @@ export const PlayerControls: React.FC = () => {
       </div>
 
       <div className="flex items-center gap-2 font-mono tabular-nums tracking-wider whitespace-nowrap min-w-max">
-        <span className="text-[var(--foreground)] text-[12px] font-semibold shrink-0">{formatTimecode(currentTime)}</span>
-        <span className="text-[var(--muted-foreground)] text-[12px] shrink-0">/ {formatTimecode(displayDuration)}</span>
+        <span className="text-[var(--foreground)] text-[12px] font-semibold shrink-0">{formatTimecode(currentTime, TC_FPS)}</span>
+        <span className="text-[var(--muted-foreground)] text-[12px] shrink-0">/ {formatTimecode(displayDuration, TC_FPS)}</span>
       </div>
 
       <div className="flex-1" />

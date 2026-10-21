@@ -42,7 +42,13 @@ export interface PipelineStep1Result {
   vocalsIsFallback: boolean;
   separationMode: string;
   separationEngine: string;
-  shots: Array<{ id: string; originalText: string; start: number; end: number }>;
+  shots: Array<{
+    id: string; originalText: string; start: number; end: number;
+    /** 🎵 B1′ 音频门控：疑似歌词标记（随 shots/extractedText 透传持久化） */
+    suspectedMusic?: boolean;
+    /** 🎵 B1′ 音乐占比（0~1，保留 2 位小数） */
+    musicShare?: number;
+  }>;
   roles: any[];
   /** 🎬 P1-1 裁剪指纹：本次抽帧/分离所用 trim 配置指纹，落库供增量执行校验 */
   framesTrimSig?: string | null;
@@ -134,8 +140,14 @@ export class PipelineResultWriter {
       updatedMedia.extractedText = JSON.stringify(
         result.shots.map((s: any) => ({
           start: s.start,
+          // ⏱️ 一并持久化毫秒时间戳：回读时优先用它，避免 mm:ss 字符串把精度截断为整秒
+          startMs: typeof s.startMs === 'number' ? s.startMs : undefined,
           end: s.end,
+          endMs: typeof s.endMs === 'number' ? s.endMs : undefined,
           text: s.originalText || '',
+          // 🎵 B1′ 音频门控标记：随 extractedText 持久化，供增量跳过重跑时回读透传
+          suspectedMusic: s.suspectedMusic,
+          musicShare: s.musicShare,
         }))
       );
 

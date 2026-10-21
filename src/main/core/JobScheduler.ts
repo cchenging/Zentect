@@ -1,7 +1,7 @@
 // — 路径: src/main/core/JobScheduler.ts
 import { JobRepository } from '../database/repositories/JobRepository';
 import { MediaRepository } from '../database/repositories/MediaRepository';
-import { SettingsRepository } from '../database/repositories/SettingsRepository';
+import { ProjectRepository } from '../database/repositories/ProjectRepository';
 import { MainNotifier } from './MainNotifier';
 import { PipelineEngine } from '../engine/PipelineEngine';
 import { ProjectService } from '../services/ProjectService';
@@ -25,6 +25,15 @@ export class JobScheduler {
   private blacklistCleanupTimer: NodeJS.Timeout | null = null;
 
   private constructor() {}
+
+  /** 🔢 兼容旧契约：把 `mm:ss`（或纯数字）时间解析为秒；解析失败回退 0 */
+  private static mmssToSec(t: any): number {
+    if (typeof t === 'number' && Number.isFinite(t)) return t;
+    const parts = String(t ?? '00:00').split(':');
+    const m = parseInt(parts[0], 10) || 0;
+    const s = parseInt(parts[1], 10) || 0;
+    return m * 60 + s;
+  }
 
   public static getInstance(): JobScheduler {
     if (!JobScheduler.instance) {
@@ -215,25 +224,24 @@ export class JobScheduler {
           shots: (step1Data.asr?.lines || []).map((line: any, idx: number) => {
             // 🔧 修复：为每个 shot 生成全局唯一 id，避免 ProjectRepository 跳过无 id 的 shot
             const shotId = `shot_${Date.now()}_${idx}`;
-            if (typeof line.start === 'number') {
-              return {
-                id: shotId,
-                originalText: line.text || line.originalText || '',
-                start: line.start,
-                end: line.end,
-              };
-            }
+            const startSec = typeof line.start === 'number'
+              ? line.start
+              : JobScheduler.mmssToSec(line.start);
+            const endSec = typeof line.end === 'number'
+              ? line.end
+              : JobScheduler.mmssToSec(line.end);
             return {
               id: shotId,
               originalText: line.text || line.originalText || '',
-              start: (() => {
-                const parts = (line.start || '00:00').split(':');
-                return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
-              })(),
-              end: (() => {
-                const parts = (line.end || '00:00').split(':');
-                return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
-              })(),
+              // 🎵 B1′ 音频门控标记透传给前端与持久化链路
+              suspectedMusic: line.suspectedMusic,
+              musicShare: line.musicShare,
+              // 秒级 start/end：兼容 shots 表(startTime/endTime)与下游按秒消费的旧契约
+              start: startSec,
+              end: endSec,
+              // ⏱️ 毫秒时间戳：透传 ASR 原始精度，避免下游用 mm:ss×1000 重建把时间截断为整秒
+              startMs: typeof line.startMs === 'number' ? line.startMs : startSec * 1000,
+              endMs: typeof line.endMs === 'number' ? line.endMs : endSec * 1000,
             };
           }),
           roles: step1Data.faces?.roles || [],
@@ -299,6 +307,38 @@ export class JobScheduler {
   }
 
   /**
+   * 极速导入 ASR 配置：读取「本项目」metadata.extractionConfig.whisper。
+   * 项目无配置（全新项目）→ 中文 + Paraformer 默认值。
+   * 铁律：绝不读全局 settings（asrLanguage/asrEngine），否则识别语言会跨项目串用。
+   */
+  private buildQuickWhisperFromProject(projectId: string): Record<string, unknown> {
+    const DEFAULT_WHISPER = { enabled: true, engine: 'paraformer', language: 'zh', modelSize: 'large-v3' };
+    try {
+      const row = new ProjectRepository().findById(projectId);
+      const meta = row?.metadata
+        ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata)
+        : {};
+      const w = meta?.extractionConfig?.whisper;
+      if (!w || typeof w !== 'object') return { ...DEFAULT_WHISPER };
+      // paraformer 仅支持中文：显式指定它时语言一律 zh，避免中文引擎去解外文产出乱码
+      const engine = w.engine === 'faster-whisper' ? 'faster-whisper' : 'paraformer';
+      const language = engine === 'paraformer'
+        ? 'zh'
+        : (Object.prototype.hasOwnProperty.call(w, 'language') && w.language ? w.language : 'zh');
+      return {
+        enabled: w.enabled !== false,
+        engine,
+        language,
+        modelSize: w.modelSize || 'large-v3',
+      };
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.SCHEDULER,
+        `[线性向导中枢] 读取项目 extractionConfig 失败，回退默认中文 ASR: ${e?.message || e}`);
+      return { ...DEFAULT_WHISPER };
+    }
+  }
+
+  /**
    * 极速线性向导：复用一个 step1-material 节点，复用 Step1MaterialStrategy 编排
    * 与主流水线共用同一套子任务(SDK) + PipelineResultWriter 写库 + 统一进度通道。
    *
@@ -317,16 +357,12 @@ export class JobScheduler {
       const targetMedia = projectMedias.find((m: any) => m.type === 'video');
       const mediaId = targetMedia?.id || `media_${Date.now()}`;
 
-      // 🎬 2026-09-08 方案B：极速导入的 ASR 不再写死中文——语言/引擎从全局设置读取
-      //   （步骤1「识别语言/引擎」选择后持久化到 asrLanguage/asrEngine，极速导入自动沿用）。
-      //   韩语/日语/粤语等经 Faster-Whisper 正确识别；paraformer 仅支持中文，选它时强制 zh，
-      //   避免中文引擎去解韩语产出乱码。SenseVoice 已删除（2026-09-14）。
-      const settingsRepo = new SettingsRepository();
-      const quickAsrEngine = settingsRepo.get<string>('asrEngine', 'paraformer') || 'paraformer';
-      const quickAsrLang = settingsRepo.get<string>('asrLanguage', 'zh') || 'zh';
-      const quickWhisper: Record<string, unknown> = { enabled: true, engine: quickAsrEngine };
-      if (quickAsrEngine === 'paraformer') quickWhisper.language = 'zh';
-      else quickWhisper.language = quickAsrLang;
+      // 🎬 2026-10-17 方案B：极速导入的 ASR 语言/引擎一律取自「本项目」的 extractionConfig，
+      //   不再读全局 settings.asrLanguage/asrEngine。
+      //   旧版 bug：全局设置被上一个项目（如韩剧）的「识别语言」写脏后，新建中文剧项目
+      //   走极速导入会沿用 ko → 中文语音被强制渲染成韩文。与此前 store 侧的修复同一根因：
+      //   识别语言必须按项目隔离，绝不跨项目共享。
+      const quickWhisper = this.buildQuickWhisperFromProject(projectId);
 
       // 复用 PipelineEngine + Step1MaterialStrategy，编排抽帧/音频分离/ASR/人脸
       const engine = new PipelineEngine();
@@ -385,11 +421,19 @@ export class JobScheduler {
         separationEngine: 'mdx',
         shots: (step1Data.asr?.lines || []).map((line: any, idx: number) => {
           const shotId = `shot_${Date.now()}_${idx}`;
-          if (typeof line.start === 'number') {
-            return { id: shotId, originalText: line.text || line.originalText || '', start: line.start, end: line.end };
-          }
-          const parse = (t: string) => { const p = (t || '00:00').split(':'); return parseInt(p[0], 10) * 60 + parseInt(p[1], 10); };
-          return { id: shotId, originalText: line.text || line.originalText || '', start: parse(line.start), end: parse(line.end) };
+          const startSec = typeof line.start === 'number' ? line.start : JobScheduler.mmssToSec(line.start);
+          const endSec = typeof line.end === 'number' ? line.end : JobScheduler.mmssToSec(line.end);
+          return {
+            id: shotId,
+            originalText: line.text || line.originalText || '',
+            suspectedMusic: line.suspectedMusic,
+            musicShare: line.musicShare,
+            start: startSec,
+            end: endSec,
+            // ⏱️ 毫秒时间戳透传（同主流水线），避免下游按秒重建截断
+            startMs: typeof line.startMs === 'number' ? line.startMs : startSec * 1000,
+            endMs: typeof line.endMs === 'number' ? line.endMs : endSec * 1000,
+          };
         }),
         roles: step1Data.faces?.roles || [],
         // 🎬 帧真实时间戳（源坐标，与 frames 顺序对齐）：随产物透传给 PipelineResultWriter 落库
