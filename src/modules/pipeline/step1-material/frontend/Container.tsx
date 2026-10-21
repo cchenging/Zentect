@@ -1,7 +1,8 @@
 // Module: pipeline/step1-material - Container
 // @migrated 阶段三：从 useStore → useStep1Store + useProjectStore + usePlayerStore
 
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useMemo, useRef } from "react";
+import type { AsrLine } from "../../../../shared/types/entities/editor";
 import { useStep1Store } from "../../stores/useStep1Store";
 import { useProjectStore } from "@modules/editor/stores/useProjectStore";
 import { usePlayerStore } from "@modules/editor/stores/usePlayerStore";
@@ -137,6 +138,35 @@ export const StepMaterialAnalysis: React.FC = () => {
     [updateExtractionConfig]
   );
 
+  /**
+   * 台词手工订正落库（防抖）。
+   * 根因：canvas_data（草稿通道，SyncDaemon 写入）中的 asrLines 在重进项目时被 CANVAS_SKIP_KEYS 排除，
+   * 一律以 metadata 为准；而 metadata.asrLines 只在管线步骤完成时更新。
+   * 故手工编辑若只改内存 store（仅进草稿），重启后必被 metadata 的旧 ASR 结果覆盖而丢失。
+   * 这里在编辑后显式把当前 asrLines 写回 metadata（后端"空数组不覆盖"合并）。
+   */
+  const persistAsrLinesTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const persistAsrLines = useCallback((lines: AsrLine[]) => {
+    if (persistAsrLinesTimer.current) clearTimeout(persistAsrLinesTimer.current);
+    persistAsrLinesTimer.current = setTimeout(() => {
+      const pid = useProjectStore.getState().projectId;
+      if (!pid || !Array.isArray(lines) || lines.length === 0) return;
+      API.project.saveData(pid, { asrLines: lines }).catch((e) => {
+        console.warn('[Step1] 台词订正落库失败:', e);
+      });
+    }, 800);
+  }, []);
+
+  const handleUpdateAsrLine = useCallback((idx: number, text: string) => {
+    updateAsrLine(idx, text);
+    persistAsrLines(useStep1Store.getState().asrLines);
+  }, [updateAsrLine, persistAsrLines]);
+
+  const handleRemoveAsrLine = useCallback((idx: number) => {
+    removeAsrLine(idx);
+    persistAsrLines(useStep1Store.getState().asrLines);
+  }, [removeAsrLine, persistAsrLines]);
+
   return (
     <StepMaterialAnalysisView
       asrLines={asrLines}
@@ -150,8 +180,8 @@ export const StepMaterialAnalysis: React.FC = () => {
       subStepTimings={subStepTimings}
       extractionConfig={extractionConfig as Step1Config | null}
       extractedData={extractedData}
-      onUpdateAsrLine={updateAsrLine}
-      onRemoveAsrLine={removeAsrLine}
+      onUpdateAsrLine={handleUpdateAsrLine}
+      onRemoveAsrLine={handleRemoveAsrLine}
       onSetAsrLines={setAsrLines}
       onSetCurrentTime={seekTo}
       onSetActivePlaySource={setActivePlaySource}

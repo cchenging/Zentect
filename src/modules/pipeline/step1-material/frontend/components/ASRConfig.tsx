@@ -12,7 +12,7 @@ import {
 } from '@renderer/components/ui/select';
 // 从 store 的 ExtractionConfig 派生 whisper 配置类型（含 modelSize）
 // 🔧 去 sensevoice：ASR 引擎二选一 —— 中文(Paraformer) / 多语言(Faster-Whisper)。SenseVoice 已删除（2026-09-14）
-type WhisperConfig = { enabled: boolean; engine: 'paraformer' | 'faster-whisper'; language?: string; modelSize?: string };
+type WhisperConfig = { enabled: boolean; engine: 'paraformer' | 'faster-whisper'; language?: string; modelSize?: string; hotwords?: string[] };
 
 interface ASRConfigProps {
   isRunning?: boolean;
@@ -116,10 +116,14 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
     ? (whisper.language as LanguageValue)
     : (currentEngine === 'faster-whisper' ? 'en' : 'zh');
 
-  /** 🎬 方案B：同步持久化到全局设置，让「极速导入」沿用同一语言/引擎 */
-  const persistAsrDefaults = (engine: EngineValue, language: LanguageValue) => {
-    API.system.setSetting('asrEngine', engine).catch(() => { /* fire-and-forget */ });
-    API.system.setSetting('asrLanguage', language).catch(() => { /* fire-and-forget */ });
+  // 🔤 专名热词：本地字符串 ↔ 数组（blur 时提交写库，避免逐字触发全量更新）
+  const hotwordsJoined = (whisper.hotwords || []).join('，');
+  const [hotwordsText, setHotwordsText] = useState<string>(hotwordsJoined);
+  useEffect(() => { setHotwordsText(hotwordsJoined); }, [hotwordsJoined]);
+  const commitHotwords = () => {
+    if (isRunning) return;
+    const list = hotwordsText.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean);
+    updateExtractionConfig({ whisper: { ...whisper, hotwords: list } });
   };
 
   /** 切换引擎：同时联动语言（中文→Paraformer + zh，多语言→Faster-Whisper + en） */
@@ -127,7 +131,6 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
     if (isRunning) return;
     const language: LanguageValue = engine === 'faster-whisper' ? 'en' : 'zh';
     updateExtractionConfig({ whisper: { ...whisper, engine, language } });
-    persistAsrDefaults(engine, language);
   };
 
   /** 🎬 方案B：切换识别语言（auto/中/日/韩/粤/英）。
@@ -137,7 +140,6 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
     const lang = value as LanguageValue;
     const engine: EngineValue = (currentEngine === 'paraformer' && lang !== 'zh') ? 'faster-whisper' : currentEngine;
     updateExtractionConfig({ whisper: { ...whisper, engine, language: lang } });
-    persistAsrDefaults(engine, lang);
   };
 
   /** 切换 faster-whisper 模型大小 */
@@ -233,6 +235,28 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
           </p>
         </div>
       )}
+
+      {/* 🔤 专名热词（仅 Paraformer 生效）：提升人名/专名识别准确率 */}
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-row items-center justify-between gap-2">
+          <span className="text-[12px] text-muted-foreground">专名热词</span>
+          {currentEngine !== 'paraformer' && (
+            <span className="text-[11px] text-muted-foreground/60">当前引擎不生效</span>
+          )}
+        </div>
+        <textarea
+          value={hotwordsText}
+          onChange={(e) => setHotwordsText(e.target.value)}
+          onBlur={commitHotwords}
+          disabled={isRunning}
+          rows={2}
+          placeholder="逗号或换行分隔，如：孔高，京海市"
+          className="w-full resize-y rounded-lg border border-border/50 bg-muted/30 px-2.5 py-1.5 text-[12px] leading-relaxed outline-none focus:border-accent disabled:opacity-50"
+        />
+        <p className="text-[11px] text-muted-foreground/70 leading-relaxed">
+          仅 Paraformer（中文）生效；剧名与本项目已有人物名会自动加入，此处只需补充额外专名。
+        </p>
+      </div>
 
       <p className="text-[11px] text-muted-foreground/70 leading-relaxed bg-muted/30 p-2 rounded border border-border/30">
         {activeHint}

@@ -60,7 +60,7 @@ export interface ExtractionConfig {
     density?: SharedFrameDensityPreset | string;
   };
   audio: AudioConfig;
-  whisper: { enabled: boolean; engine: 'paraformer' | 'faster-whisper'; language?: string; modelSize?: string };
+  whisper: { enabled: boolean; engine: 'paraformer' | 'faster-whisper'; language?: string; modelSize?: string; hotwords?: string[] };
   faces: {
     enabled: boolean;
     engine: 'insightface' | 'mediapipe';
@@ -168,11 +168,11 @@ export interface Step1Store {
   // setSubStepStatus / setAllSubStepsCompleted 已迁移至 usePipelineStore
   setSubStepProgress: (key: string, progress: number) => void;
 
-  /** 重置运行时数据(保留 extractionConfig 持久化配置) */
+  /** 重置运行时数据 + 配置复位为默认值（配置随后由项目 metadata 覆盖，DB 为真相源） */
   reset: () => void;
 }
 
-const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
+export const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
   targetLanguage: 'zh-CN',
   frames: {
     enabled: true,
@@ -253,7 +253,11 @@ export const useStep1Store = create<Step1Store>()(
         audioSeparated: false,
         vocalsIsFallback: false,
         subStepProgresses: { frames: 0, audio: 0, whisper: 0, faces: 0 },
-        // extractionConfig 是 persist 持久化配置,不重置
+        // 🔧 修复跨项目泄漏：extractionConfig（含 ASR 识别语言/引擎）此前随 persist 全局共享、
+        //   reset 时被刻意保留，导致上一项目选的「识别语言」（如韩语）被新项目沿用，
+        //   中文剧集被强制按韩语转写。现在随 reset 复位为默认值，
+        //   随后由 useEditorHydration 用本项目 metadata.extractionConfig 覆盖（DB 为唯一真相源）。
+        extractionConfig: DEFAULT_EXTRACTION_CONFIG,
       }),
     }),
     {

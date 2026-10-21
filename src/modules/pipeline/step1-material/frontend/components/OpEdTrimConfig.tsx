@@ -23,6 +23,7 @@ import {
   AlertCircle,
   X,
   Play,
+  Crosshair,
 } from 'lucide-react';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 import { Badge } from '@renderer/components/shared';
@@ -35,6 +36,10 @@ interface OpEdTrimConfigProps {
   durationMs?: number;
   sourcePath?: string;
   onJumpVideoMs?: (ms: number) => void;
+  /** ⤓ 播放器当前播放位置（秒）：供「取当前」按钮一键填入片头/片尾裁剪量 */
+  currentTimeSec?: number;
+  /** 🎞 素材真实帧率（ffprobe r_frame_rate，如 23.976/25/30/60）：时间码帧号据此计算，缺失回退 30fps */
+  fps?: number;
 }
 
 interface OpedState {
@@ -57,24 +62,24 @@ const SOURCE_META: Record<DetectionSource, { label: string; short: string; Icon:
   P1_FFMPEG_HEURISTIC: { label: 'P1 黑场+静音启发', short: 'P1 音视频', Icon: Sparkles, cls: 'bg-accent-green/15 text-accent-green border-accent-green/30' },
 };
 
-/** 🎞 帧率：与播放器 formatTimecode 保持一致固定 30fps（帧号 0-29） */
-const TC_FPS = 30;
+/** 🎞 默认帧率：素材真实 fps 缺失或非法时的回退值（真实 fps 由 View 层从 ffprobe 透传） */
+const DEFAULT_TC_FPS = 30;
 
 /**
  * 🕐 毫秒 → **HH:MM:SS:FF（时:分:秒:帧）4 段式 SMPTE 时间码**
- * 与播放器 [PlayerControls.tsx#L16-L23] formatTimecode 实现**完全一致**：
+ * 帧号按传入 fps 计算（与素材真实帧率一致，非整数帧率如 23.976 向下取整到当前帧）：
  *   0ms        → "00:00:00:00"
  *   85_000ms   → "00:01:25:00"  （1分25秒第0帧）
- *   65_300ms   → "00:01:05:09"  （1分5秒 0.3s×30fps=第9帧）
+ *   65_300ms   → "00:01:05:09"  （30fps: 0.3s×30=第9帧；60fps: 0.3s×60=第18帧）
  *   7385_000ms → "02:03:05:00"  （超 1 小时正常进位）
  */
-const fmtMs = (ms: number): string => {
+const fmtMsAt = (ms: number, fps: number): string => {
   if (!ms || ms <= 0) return '00:00:00:00';
   const sec = ms / 1000;
   const h = Math.floor(sec / 3600);
   const m = Math.floor((sec % 3600) / 60);
   const s = Math.floor(sec % 60);
-  const f = Math.floor((sec % 1) * TC_FPS); // 0.3s ×30fps = 9 帧
+  const f = Math.floor((sec % 1) * fps);
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}:${f.toString().padStart(2, '0')}`;
 };
 
@@ -94,7 +99,7 @@ const fmtMs = (ms: number): string => {
  *   "" / "0"      → 0
  * 解析失败返回 NaN，调用方用 !isFinite 判
  */
-const parseTimeStr = (raw: string): number => {
+const parseTimeStrAt = (raw: string, fps: number): number => {
   if (!raw) return 0;
   const s = String(raw).trim();
   if (!s) return 0;
@@ -107,7 +112,7 @@ const parseTimeStr = (raw: string): number => {
       // ✅ 标准 4 段：HH:MM:SS:FF（最后一段 = 帧号 0-29）
       const [h, m, sec, fStr] = parts;
       const f = parseInt(fStr, 10) || 0;
-      return parseInt(h, 10) * 3600 + parseInt(m, 10) * 60 + parseInt(sec, 10) + f / TC_FPS;
+      return parseInt(h, 10) * 3600 + parseInt(m, 10) * 60 + parseInt(sec, 10) + f / fps;
     }
     if (parts.length === 3) {
       // 3 段歧义判定：
@@ -119,10 +124,10 @@ const parseTimeStr = (raw: string): number => {
         return parseFloat(h) * 3600 + parseFloat(m) * 60 + parseFloat(secX);
       }
       const last = parseInt(parts[2], 10);
-      if (!isNaN(last) && last <= TC_FPS - 1) {
+      if (!isNaN(last) && last <= fps - 1) {
         // MM:SS:FF（省略小时）
         const [m, sec, fStr] = parts;
-        return parseInt(m, 10) * 60 + parseInt(sec, 10) + (parseInt(fStr, 10) || 0) / TC_FPS;
+        return parseInt(m, 10) * 60 + parseInt(sec, 10) + (parseInt(fStr, 10) || 0) / fps;
       } else {
         // HH:MM:SS（无帧）
         const [h, m, sec] = parts;
@@ -158,7 +163,12 @@ const parseTimeStr = (raw: string): number => {
 
 const fmtConf = (c: number) => `${Math.round((c || 0) * 100)}%`;
 
-export const OpEdTrimConfig: React.FC<OpEdTrimConfigProps> = ({ projectId, mediaId, mediaName: _mediaName, durationMs, sourcePath, onJumpVideoMs }) => {
+export const OpEdTrimConfig: React.FC<OpEdTrimConfigProps> = ({ projectId, mediaId, mediaName: _mediaName, durationMs, sourcePath, onJumpVideoMs, currentTimeSec, fps }) => {
+  /** 🎞 帧率：优先素材真实 fps（ffprobe r_frame_rate，如 23.976/25/30/60），缺失或非法回退 30fps */
+  const TC_FPS = fps && Number.isFinite(fps) && fps > 0 ? fps : DEFAULT_TC_FPS;
+  /** 🕐 以素材真实帧率渲染/解析的 SMPTE 工具（下方沿用同名调用） */
+  const fmtMs = (ms: number) => fmtMsAt(ms, TC_FPS);
+  const parseTimeStr = (raw: string) => parseTimeStrAt(raw, TC_FPS);
   const [state, setState] = useState<OpedState>({ trim: { trimStartMs: 0, trimEndMs: 0 }, history: [] });
   // 🎚 双滑块：轨道引用 + 拖动状态（拖动用 ref + window 级监听，不依赖 pointer capture，松手只保存一次）
   const trackRef = useRef<HTMLDivElement>(null);
@@ -378,6 +388,40 @@ export const OpEdTrimConfig: React.FC<OpEdTrimConfigProps> = ({ projectId, media
     onJumpVideoMs?.(ms);
   }, [onJumpVideoMs, durationMs, state.trim.trimEndMs]);
 
+  /**
+   * ⤓ 一键「取当前播放位置」到输入框（把播放器里拖好的时间直接搬过来，免手输）：
+   *   - 片头：裁剪量就是**内容起点时间**，直接取当前时间填入；
+   *   - 片尾：裁剪量是**尾部裁剪长度**（与 jumpEnd 同口径：ED 起点 = 总时长 − 裁剪量），
+   *     故按「总时长 − 当前时间」自动换算后在输入框呈现，用户看到的就是他停下的那一刻会成为正剧结束点。
+   */
+  const pickFromPlayer = useCallback((which: 'start' | 'end') => {
+    const curMs = Math.round((Number(currentTimeSec) || 0) * 1000);
+    if (which === 'start') {
+      setTrimStartSecInput(fmtMs(curMs));
+      return;
+    }
+    const totalMs = durationMs && durationMs > 0 ? durationMs : 0;
+    if (!totalMs) { alert('当前素材缺少时长信息，无法换算片尾裁剪量，请手动填写'); return; }
+    setTrimEndSecInput(fmtMs(Math.max(0, totalMs - curMs)));
+  }, [currentTimeSec, durationMs]);
+
+  /**
+   * 🎚 双滑块模式下的「取当前」：该分支下方输入框不可见，故直接按手动保存口径落库（等同「松手自动保存」），
+   *   落库后 reload 回填，两个滑点立刻跳到「当前播放位置」对应的边界。
+   */
+  const commitFromPlayer = useCallback((which: 'start' | 'end') => {
+    const curSec = Number(currentTimeSec) || 0;
+    const startSec = (state.trim.trimStartMs || 0) / 1000;
+    const endSec = (state.trim.trimEndMs || 0) / 1000;
+    if (which === 'start') {
+      void commitManual(curSec, endSec);
+      return;
+    }
+    const totalSec = (durationMs && durationMs > 0 ? durationMs : 0) / 1000;
+    if (!totalSec) { alert('当前素材缺少时长信息，无法换算片尾裁剪量，请手动填写'); return; }
+    void commitManual(startSec, Math.max(0, totalSec - curSec));
+  }, [currentTimeSec, durationMs, state.trim.trimStartMs, state.trim.trimEndMs, commitManual]);
+
   /** 🎯 采纳 P1 候选时间点：以 USER_MANUAL 身份写入（候选点即"手动选择"入口，替代自动兜底） */
   const adoptCandidate = useCallback(async (kind: 'op' | 'ed', sec: number) => {
     if (!projectId || !mediaId || !isFinite(sec)) return;
@@ -484,6 +528,12 @@ export const OpEdTrimConfig: React.FC<OpEdTrimConfigProps> = ({ projectId, media
             <div className="flex items-center justify-between text-[11px] text-muted-foreground/70">
               <span>松手自动保存</span>
               <div className="flex items-center gap-1.5">
+                <button type="button" onClick={() => commitFromPlayer('start')} disabled={currentTimeSec === undefined}
+                  title="取播放器当前时间作为内容起点（片头裁剪量 = 当前播放位置），点击即落库"
+                  className="shrink-0 px-2 py-0.5 rounded bg-accent/15 border border-accent/30 text-accent text-[11px] cursor-pointer hover:bg-accent/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"><Crosshair size={10} className="inline-block mr-0.5" />取当前·片头</button>
+                <button type="button" onClick={() => commitFromPlayer('end')} disabled={currentTimeSec === undefined}
+                  title="取播放器当前时间作为正剧结束点（自动换算：片尾裁剪量 = 总时长 − 当前播放位置），点击即落库"
+                  className="shrink-0 px-2 py-0.5 rounded bg-accent/15 border border-accent/30 text-accent text-[11px] cursor-pointer hover:bg-accent/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"><Crosshair size={10} className="inline-block mr-0.5" />取当前·片尾</button>
                 <button type="button" onClick={jumpStart} disabled={!onJumpVideoMs || state.trim.trimStartMs <= 0}
                   className="shrink-0 px-2 py-0.5 rounded bg-muted/60 border border-border/30 text-[11px] cursor-pointer hover:bg-muted/80 disabled:opacity-40 disabled:cursor-not-allowed"><Play size={10} className="inline-block mr-0.5" />片头</button>
                 <button type="button" onClick={jumpEnd} disabled={!onJumpVideoMs || (durationMs || 0) - (state.trim.trimEndMs || 0) <= 0}
@@ -498,6 +548,9 @@ export const OpEdTrimConfig: React.FC<OpEdTrimConfigProps> = ({ projectId, media
               <div className="flex items-center gap-1.5">
                 <input type="text" inputMode="text" value={trimStartSecInput} onChange={(e) => setTrimStartSecInput(e.target.value)}
                   className="flex-1 px-2 py-1 rounded bg-background border border-border/40 text-[13px] font-mono focus:border-accent focus:outline-none" placeholder="如 85" />
+                <button type="button" onClick={() => pickFromPlayer('start')} disabled={currentTimeSec === undefined}
+                  title="取播放器当前时间作为内容起点（片头裁剪量 = 当前播放位置）"
+                  className="shrink-0 px-2 py-1 rounded bg-accent/15 border border-accent/30 text-accent text-[11px] cursor-pointer hover:bg-accent/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"><Crosshair size={11} className="inline-block mr-0.5" />取当前</button>
                 <button type="button" onClick={jumpStart} disabled={!onJumpVideoMs || state.trim.trimStartMs <= 0}
                   className="shrink-0 px-2 py-1 rounded bg-muted/60 border border-border/30 text-[11px] cursor-pointer hover:bg-muted/80 disabled:opacity-40 disabled:cursor-not-allowed"><Play size={11} className="inline-block mr-0.5" />跳转</button>
               </div>
@@ -507,6 +560,9 @@ export const OpEdTrimConfig: React.FC<OpEdTrimConfigProps> = ({ projectId, media
               <div className="flex items-center gap-1.5">
                 <input type="text" inputMode="text" value={trimEndSecInput} onChange={(e) => setTrimEndSecInput(e.target.value)}
                   className="flex-1 px-2 py-1 rounded bg-background border border-border/40 text-[13px] font-mono focus:border-accent focus:outline-none" placeholder="如 105" />
+                <button type="button" onClick={() => pickFromPlayer('end')} disabled={currentTimeSec === undefined}
+                  title="取播放器当前时间作为正剧结束点（自动换算：片尾裁剪量 = 总时长 − 当前播放位置）"
+                  className="shrink-0 px-2 py-1 rounded bg-accent/15 border border-accent/30 text-accent text-[11px] cursor-pointer hover:bg-accent/25 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"><Crosshair size={11} className="inline-block mr-0.5" />取当前</button>
                 <button type="button" onClick={saveManualTrim}
                   className="shrink-0 px-2 py-1 rounded bg-accent-green/90 text-white text-[11px] font-medium hover:bg-accent-green shadow-sm shadow-accent-green/20 transition-colors cursor-pointer"><Check size={11} className="inline-block mr-0.5" />保存</button>
               </div>

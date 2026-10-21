@@ -87,6 +87,8 @@ export interface WhisperConfig {
   language?: string;
   /** 🔧 去硬编码：faster-whisper 模型大小（tiny/base/small/medium/large-v3），默认 large-v3 精度最高 */
   modelSize?: string;
+  /** 🔤 专名热词（仅 paraformer 引擎生效）：纠剧集专名/人名错别字，逐项注入 hotword 重打分 */
+  hotwords?: string[];
 }
 
 /** 人脸检测配置 */

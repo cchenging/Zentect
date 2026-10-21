@@ -208,8 +208,16 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
   /** 🎬 自动联动：订阅播放器当前时间，用于高亮当前播放的台词并滚动到可见区域 */
   const playerCurrentTime = usePlayerStore((s) => s.currentTime);
   const asrRowRefs = useRef<(HTMLDivElement | null)[]>([]);
-  /** 悬停暂停联动：鼠标悬停在台词列表上时停止自动滚动，避免"滚到别处又被拽回去" */
-  const [hoverPaused, setHoverPaused] = useState(false);
+  /** 悬停抑制联动：鼠标悬停在台词列表上时停止自动滚动，避免"滚到别处又被拽回去"。
+   *  用 ref 而非 state：若作为 effect 依赖，鼠标移出时会触发一次副作用，
+   *  把列表重新滚回播放头所在行（表现为"滑到最上面又被跳回最下面"）。 */
+  const hoverPausedRef = useRef(false);
+  const handleAsrListEnter = useCallback(() => { hoverPausedRef.current = true; }, []);
+  const handleAsrListLeave = useCallback(() => { hoverPausedRef.current = false; }, []);
+  /** 🎵 B1′ 疑似歌词行数（音频门控标记），用于列表提示条与「隐藏」开关 */
+  const suspectedMusicCount = useMemo(() => asrLines.filter((l) => (l as any).suspectedMusic).length, [asrLines]);
+  /** 🎵 是否隐藏疑似歌词行（仅影响列表展示，不改变数据/下游） */
+  const [hideSuspectedMusic, setHideSuspectedMusic] = useState(false);
 
   /** 计算当前播放时间对应的台词行索引：
    *   仅当时间严格落在某行 [startMs, endMs) 内才高亮该行（间隙态不吸附）；
@@ -226,12 +234,13 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
     return -1;
   }, [asrLines, playerCurrentTime]);
 
-  /** 联动滚动：仅在非悬停暂停且存在当前行时滚动到可见区域（block:'nearest' 最小化跳动） */
+  /** 联动滚动：仅当播放头移动到「新的台词行」时滚动到可见区域（block:'nearest' 最小化跳动）。
+   *  依赖只含 activeAsrIndex：鼠标进出列表不再触发滚动，杜绝"滚到顶部被拽回底部"。 */
   useEffect(() => {
-    if (hoverPaused || activeAsrIndex < 0) return;
+    if (hoverPausedRef.current || activeAsrIndex < 0) return;
     const row = asrRowRefs.current[activeAsrIndex];
     if (row) row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }, [activeAsrIndex, hoverPaused]);
+  }, [activeAsrIndex]);
 
   /** 展开的角色卡片 ID（默认展开第一个角色，让用户一进来就能看到详情示例） */
   const [expandedRole, setExpandedRole] = useState<string | null>(roles[0]?.id ?? null);
@@ -382,6 +391,8 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
             mediaName={firstVideo.name || firstVideo.fileName || `素材 ${firstVideo.id.slice(0, 8)}`}
             durationMs={firstVideo.duration ? Math.round(Number(firstVideo.duration) * 1000) : 0}
             sourcePath={firstVideo.filePath || ""}
+            fps={firstVideo.fps}
+            currentTimeSec={playerCurrentTime}
             onJumpVideoMs={(ms) => {
               try {
                 // 🔧 与 Container.seekTo 对齐：只写 currentTime 只更新进度条 state，
@@ -464,32 +475,50 @@ export const StepMaterialAnalysisView: React.FC<StepMaterialAnalysisViewProps> =
         {/* ASR 引擎 + faster-whisper 模型大小配置 */}
         <ASRConfig isRunning={whisperStatus === "running"} />
         {whisperStatus === "completed" && asrLines.length > 0 && (
-          <div className="rounded-md bg-bg-secondary border border-border/20 overflow-y-auto overflow-x-hidden max-h-[320px]"
-            onMouseEnter={() => setHoverPaused(true)}
-            onMouseLeave={() => setHoverPaused(false)}>
-            {asrLines.map((line, idx) => {
-              const isModified = line.originalText !== undefined && line.text !== line.originalText;
-              const isActive = idx === activeAsrIndex;
-              return (
-                <div key={idx} ref={(el) => { asrRowRefs.current[idx] = el; }}
-                  className={`flex items-center gap-2 px-3 py-2 border-b border-border/10 last:border-0 group ${isModified ? "bg-accent/5 border-l-2 border-l-accent-rose" : ""} ${isActive ? "bg-accent/15 border-l-2 border-l-accent" : ""}`}>
-                  <span className={`text-[13px] font-mono shrink-0 w-24 ${isActive ? "text-accent font-semibold" : "text-accent"}`}>{formatAsrTime(line)}</span>
-                  {line.editing ? (
-                    <input value={line.text} onChange={(e) => onUpdateAsrLine(idx, e.target.value)} onBlur={() => toggleEditing(idx, false)} onKeyDown={(e) => { if (e.key === "Enter") toggleEditing(idx, false); }} className="flex-1 text-[13px] bg-bg-secondary px-2 py-1 rounded border border-accent/30 outline-none" autoFocus />
-                  ) : (
-                    <span className="flex-1 text-[13px] text-foreground cursor-pointer hover:text-accent transition-colors" onClick={() => toggleEditing(idx, true)}>{line.text}</span>
-                  )}
-                  <Badge variant={isModified ? "danger" : "success"}>{isModified ? t["editor.step1.asr.modified"] : t["editor.step1.asr.confirmed"]}</Badge>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => onSetCurrentTime(line.startMs !== undefined ? line.startMs / 1000 : parseTime(line.start))} className="text-muted-foreground hover:text-accent-green transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="跳转"><Play size={12} /></button>
-                    {isModified && <button onClick={() => onUpdateAsrLine(idx, line.originalText || "")} className="text-muted-foreground hover:text-accent transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="还原"><UndoDot size={12} /></button>}
-                    <button onClick={() => toggleEditing(idx, true)} className="text-muted-foreground hover:text-accent transition-colors cursor-pointer opacity-0 group-hover:opacity-100"><Edit3 size={12} /></button>
-                    <button onClick={() => onRemoveAsrLine(idx)} className="text-muted-foreground hover:text-accent-rose transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="删除该条台词"><Trash2 size={12} /></button>
+          <>
+            {suspectedMusicCount > 0 && (
+              <div className="flex items-center gap-2 mb-2 text-[12px] text-muted-foreground">
+                <Music size={13} className="text-accent-warm shrink-0" />
+                <span>{t["editor.step1.asr.musicHint"]?.replace("{count}", String(suspectedMusicCount)) || `检测到 ${suspectedMusicCount} 条疑似歌词（音乐段落，可能非台词）`}</span>
+                <button onClick={() => setHideSuspectedMusic((v) => !v)} className="ml-auto px-2 py-0.5 rounded border border-border/40 hover:border-accent/40 hover:text-accent transition-colors cursor-pointer">
+                  {hideSuspectedMusic ? (t["editor.step1.asr.musicShow"] || "显示") : (t["editor.step1.asr.musicHide"] || "隐藏")}
+                </button>
+              </div>
+            )}
+            <div className="rounded-md bg-bg-secondary border border-border/20 overflow-y-auto overflow-x-hidden max-h-[320px]"
+              onMouseEnter={handleAsrListEnter}
+              onMouseLeave={handleAsrListLeave}>
+              {asrLines.map((line, idx) => {
+                if (hideSuspectedMusic && (line as any).suspectedMusic) return null;
+                const isModified = line.originalText !== undefined && line.text !== line.originalText;
+                const isActive = idx === activeAsrIndex;
+                const isSuspected = !!(line as any).suspectedMusic;
+                return (
+                  <div key={idx} ref={(el) => { asrRowRefs.current[idx] = el; }}
+                    className={`flex items-center gap-2 px-3 py-2 border-b border-border/10 last:border-0 group ${isModified ? "bg-accent/5 border-l-2 border-l-accent-rose" : ""} ${isActive ? "bg-accent/15 border-l-2 border-l-accent" : ""} ${isSuspected ? "bg-accent-warm/5" : ""}`}>
+                    <span className={`text-[13px] font-mono shrink-0 w-24 ${isActive ? "text-accent font-semibold" : "text-accent"}`}>{formatAsrTime(line)}</span>
+                    {line.editing ? (
+                      <input value={line.text} onChange={(e) => onUpdateAsrLine(idx, e.target.value)} onBlur={() => toggleEditing(idx, false)} onKeyDown={(e) => { if (e.key === "Enter") toggleEditing(idx, false); }} className="flex-1 text-[13px] bg-bg-secondary px-2 py-1 rounded border border-accent/30 outline-none" autoFocus />
+                    ) : (
+                      <span className="flex-1 text-[13px] text-foreground cursor-pointer hover:text-accent transition-colors" onClick={() => toggleEditing(idx, true)}>{line.text}</span>
+                    )}
+                    {isSuspected && (
+                      <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] bg-accent-warm/10 text-accent-warm/90 border border-accent-warm/20 whitespace-nowrap" title={`疑似歌曲/音乐段落（音乐占比 ${(line as any).musicShare ?? '-'}），可能非台词`}>
+                        <Music size={10} /> {t["editor.step1.asr.musicTag"] || "疑似歌词"}
+                      </span>
+                    )}
+                    <Badge variant={isModified ? "danger" : "success"}>{isModified ? t["editor.step1.asr.modified"] : t["editor.step1.asr.confirmed"]}</Badge>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => onSetCurrentTime(line.startMs !== undefined ? line.startMs / 1000 : parseTime(line.start))} className="text-muted-foreground hover:text-accent-green transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="跳转"><Play size={12} /></button>
+                      {isModified && <button onClick={() => onUpdateAsrLine(idx, line.originalText || "")} className="text-muted-foreground hover:text-accent transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="还原"><UndoDot size={12} /></button>}
+                      <button onClick={() => toggleEditing(idx, true)} className="text-muted-foreground hover:text-accent transition-colors cursor-pointer opacity-0 group-hover:opacity-100"><Edit3 size={12} /></button>
+                      <button onClick={() => onRemoveAsrLine(idx)} className="text-muted-foreground hover:text-accent-rose transition-colors cursor-pointer opacity-0 group-hover:opacity-100" title="删除该条台词"><Trash2 size={12} /></button>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </CollapsibleCard>
 
