@@ -392,6 +392,80 @@ def build_candidates_for_query(
 
 
 # ===========================================================================
+# 候选池快照（取证开关，默认关闭：零行为变化）
+#   目的：回答「选片差是池里没有，还是排序选错」——把每句的真实候选池 + 切片属性落盘，
+#   与最终 matchResults 按 shotId 关联即可离线量化「正确镜头是否进池」「选中片在池内排名」。
+#   开关：`ZENTECT_KM_POOL_DUMP` ∈ 1/on/true（缺省 off）；目录 `ZENTECT_KM_POOL_DUMP_DIR`
+#   缺省 <repo>/data/_diag_dump。写盘失败只告警不中断（观测设施不参与生产正确性）。
+# ===========================================================================
+def _read_pool_dump() -> bool:
+    """读取候选池快照开关（env `ZENTECT_KM_POOL_DUMP`，缺省 off）。
+
+    Returns:
+        bool: True 表示落盘候选池快照。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_POOL_DUMP', '0')).strip().lower() in ('1', 'on', 'true')
+
+
+def _pool_dump(ctx: CandidateContext, pool_source: Dict[str, str], req: dict) -> None:
+    """把候选池与切片属性写入 JSON 快照（仅开关 on 时调用）。
+
+    Args:
+        ctx: 已构建完成的候选池上下文。
+        pool_source: {shotId: 'candidateIds' | 'segment' | 'all'}，标明该句候选来源。
+        req: 原始 SegmentRequest（仅取 projectId 做文件名/归属）。
+    """
+    import json
+    import os
+    import time
+
+    out_dir = os.environ.get('ZENTECT_KM_POOL_DUMP_DIR') or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        'data', '_diag_dump')
+    pid = str(req.get('projectId') or req.get('project_id') or 'req')
+    ts = time.strftime('%Y%m%d-%H%M%S')
+    path = os.path.join(out_dir, f'pool-{pid}-{ts}.json')
+
+    _chunk_fields = ('shotScale', 'shotType', 'cameraMovement', 'scene', 'primarySubject',
+                     'characters', 'emotion', 'startMs', 'endMs', 'parentChunkId',
+                     'motionScore', 'description')
+    chunks = {cid: {k: c.get(k) for k in _chunk_fields} for cid, c in ctx.chunk_by_id.items()}
+    queries = []
+    for q in ctx.queries:
+        sid = str(q.get('shotId'))
+        queries.append({
+            'shotId': sid,
+            'text': q.get('text') or '',
+            'visualIntent': q.get('visualIntent') or '',
+            'isAbstractNarration': bool(q.get('isAbstractNarration')),
+            'segmentId': q.get('segmentId') or 0,
+            'preferredShot': q.get('preferredShot') or '',
+            'cameraDynamic': q.get('cameraDynamic') or '',
+            'spatialType': q.get('spatialType') or '',
+            'targetSubjects': q.get('targetSubjects') or [],
+            'keyProp': q.get('keyProp') or '',
+            'actionType': q.get('actionType') or '',
+            'poolSource': pool_source.get(sid, ''),
+            'candidateIds': list(ctx.cands_by_shotid.get(sid) or []),
+        })
+    payload = {'generatedAt': ts, 'projectId': pid, 'queries': queries, 'chunks': chunks}
+
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+    except OSError as exc:
+        print(f'[pool-dump] ⚠️ 写盘失败（不中断求解）: {exc}')
+        return
+    _sizes = [len(x['candidateIds']) for x in queries]
+    _src = {s: sum(1 for v in pool_source.values() if v == s) for s in ('candidateIds', 'segment', 'all')}
+    print(f'[pool-dump] 句={len(queries)} 切片={len(chunks)} ｜ 候选池 med={sorted(_sizes)[len(_sizes) // 2] if _sizes else 0} '
+          f'min={min(_sizes) if _sizes else 0} max={max(_sizes) if _sizes else 0} ｜ '
+          f'来源 candidateIds={_src["candidateIds"]} 段域={_src["segment"]} 全池={_src["all"]} ｜ 文件={path}')
+
+
+# ===========================================================================
 # 对外主入口
 # ===========================================================================
 def build_req_context(req: dict) -> CandidateContext:
@@ -426,6 +500,8 @@ def build_req_context(req: dict) -> CandidateContext:
     cand_override = req.get('candidateIds') or {}
 
     merged = merge_orders_into_queries(queries, orders)
+    # 候选来源计数（仅随快照开关消费，off 档只多一次字符串赋值，无行为变化）。
+    pool_source: Dict[str, str] = {}
     ctx = CandidateContext(
         queries=[],
         chunk_by_id=chunk_by_id,
@@ -441,10 +517,14 @@ def build_req_context(req: dict) -> CandidateContext:
         cid_list = cand_override.get(sid)
         if cid_list:
             cands = [str(c) for c in cid_list if str(c) in chunk_by_id]
+            pool_source[sid] = 'candidateIds'
         else:
             # 方向2 软偏袒仅作用于未显式声明候选行域的句：按剧情锚点所在自动场重排（优先排序，非排除）。
             cands = _soft_rank_auto_scene(cands, resolved, auto_segs, chunk_by_id)
+            pool_source[sid] = 'segment' if _scene_of_query(resolved) > 0 else 'all'
         ctx.queries.append(resolved)
         ctx.cands_by_shotid[sid] = cands
         ctx.shotid_to_segment[sid] = _scene_of_query(resolved)
+    if _read_pool_dump():
+        _pool_dump(ctx, pool_source, req)
     return ctx
