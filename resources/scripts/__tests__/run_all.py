@@ -36,6 +36,12 @@ def main() -> int:
         print(f'--- {name} ---')
         try:
             runpy.run_path(path, run_name='__main__')
+        except SystemExit as exc:
+            # 部分用例以 `sys.exit(main())` 收尾（如 test_attr_subject），SystemExit 不是 Exception，
+            # 不接住会直接终止总入口、把后续用例全部静默跳过。非 0 退出码如实记为失败。
+            if exc.code not in (0, None):
+                failed.append(name)
+                print(f'SystemExit({exc.code})')
         except Exception:  # noqa: BLE001 —— 收集全部失败后统一报，不首个即退出
             failed.append(name)
             traceback.print_exc()
