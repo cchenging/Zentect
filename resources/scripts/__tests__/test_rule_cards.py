@@ -1,17 +1,21 @@
 """
-test_rule_cards.py — 🧩 步骤5 新引擎 · 16 卡装配验证（⓪ 单测骨架）
+test_rule_cards.py — 🧩 步骤5 新引擎 · 13 卡装配验证（⓪ 单测骨架）
 
 锁定 `rules.build_rule_cards` 的「点亮 / 休眠」机制（守项目红线「不可造假门」：
 依赖字段未回填的卡必须真休眠，绝不以缺字段数据伪造启用硬门禁）：
 
-  1. 全量装配：available_keys=None ⇒ 16 卡全亮（4 hard + 12 soft），卡名唯一
+  1. 全量装配：available_keys=None ⇒ 13 卡全亮（4 hard + 9 soft），卡名唯一
   2. 严格收窄：available_keys=set() ⇒ 全休眠（0 卡）
   3. 子集判据：`availability ⊆ available_keys` 才点亮（差一字段即休眠）
-  4. 字段级点亮：silenceGapMs ⇒ 仅 gap_padding 亮；`beat_snap` **已退役**（层位错配：
-     BGM 强拍在输出时间轴、与切片源 PTS 不同轴，且同句所有候选的输出切点恒同 ⇒ 该卡对
-     排序零影响；已下沉到 timeline_solver 输出装配层实现，见 `_apply_beat_snap`）
+  4. 退役卡不得复活（字段齐备也不行）：
+     - `beat_snap`（补丁2，2026-09-25 退役）：层位错配，已下沉输出装配层 `_apply_beat_snap`
+     - `cross_scene_recall`（补丁10，2026-10-14 退役）：上游工单两字段从未产出 ⇒ 长期休眠
+     - `gap_padding`（补丁7，2026-10-14 退役）：`silenceGapMs` 只注入原声段、而 KM query 是
+       解说句（实测 0%(0/40)）⇒ SCORE 恒中性放行，属架构不适用
+     - `shot_loop_reset`（补丁8，2026-10-14 退役）：新引擎无「排他锁」可解除（`_win_exhausted`
+       是镜头+时间窗配额而非「每镜只用一次」），且判据与 `focus_exemption` 逐字同构（重复计分）
 
-本文件只锁机制、不改算法，也不引入新引擎以外的依赖。
+本文件锁装配机制 + 两张关键卡的判据行为，不引入新引擎以外的依赖。
 
 运行方式：
   cd resources/scripts
@@ -25,18 +29,20 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import rules
-from rules import build_rule_cards
+from rules import build_rule_cards, focus_exemption, monotonic_lock
 
 
-# 16 卡的完整花名册（增删卡即改本表 —— 本表是「16 卡」这一事实的锁）。
-# `beat_snap` 已于 2026-09-25 退役（层位错配 ⇒ 下沉输出装配层，见 timeline_solver 补丁2 段）。
+# 13 卡的完整花名册（增删卡即改本表 —— 本表是「13 卡」这一事实的锁）。
+# 退役记录：`beat_snap` 2026-09-25（下沉输出装配层）；`cross_scene_recall` 2026-10-14
+# （工单字段从未产出）；`gap_padding` 2026-10-14（气口只服务原声段）；`shot_loop_reset`
+# 2026-10-14（无排他锁可解除、且与 focus_exemption 判据同构）。四者实现均保留封存。
 ALL_CARD_NAMES = frozenset({
     # Tier1 硬门禁（4）
     'monotonic_lock', 'env_medium_lock', 'eyeline_guard', 'critical_asset_lock',
-    # Tier2 软阻尼（12）
-    'jump_cut', 'heartbeat', 'scale_rhythm', 'motion_rhythm', 'cross_scene_recall',
+    # Tier2 软阻尼（9）
+    'jump_cut', 'heartbeat', 'scale_rhythm', 'motion_rhythm',
     'costume_rhythm', 'color_continuity', 'camera_continuity', 'shot_pref_adherence',
-    'gap_padding', 'shot_loop_reset', 'focus_exemption',
+    'focus_exemption',
 })
 
 
@@ -46,22 +52,22 @@ def _names(cards):
 
 
 def test_all_cards_activated_when_keys_none():
-    """available_keys=None ⇒ 契约全字段就绪，16 卡全亮且 hard/soft 配额正确。"""
+    """available_keys=None ⇒ 契约全字段就绪，13 卡全亮且 hard/soft 配额正确。"""
     cards = build_rule_cards()
-    assert len(cards) == 16, f"应装配 16 卡，实际 {len(cards)}"
+    assert len(cards) == 13, f"应装配 13 卡，实际 {len(cards)}"
     assert _names(cards) == ALL_CARD_NAMES, f"卡名花名册不一致: {_names(cards) ^ ALL_CARD_NAMES}"
     assert len(_names(cards)) == len(cards), "卡名必须唯一（重名会污染 trace 与降级标记）"
     hard = [c for c in cards if c.tier == 'hard']
     soft = [c for c in cards if c.tier == 'soft']
-    assert (len(hard), len(soft)) == (4, 12), f"应为 4 hard / 12 soft，实际 {len(hard)}/{len(soft)}"
-    print(f"✓ test_all_cards_activated_when_keys_none: 16 卡全亮（4 hard + 12 soft）")
+    assert (len(hard), len(soft)) == (4, 9), f"应为 4 hard / 9 soft，实际 {len(hard)}/{len(soft)}"
+    print(f"✓ test_all_cards_activated_when_keys_none: 13 卡全亮（4 hard + 9 soft）")
 
 
 def test_all_dormant_when_keys_empty():
     """available_keys=set() ⇒ 严格模式下无字段就绪，全部休眠（0 卡）。"""
     cards = build_rule_cards(set())
     assert cards == [], f"空字段集应全休眠，实际点亮 {_names(cards)}"
-    print("✓ test_all_dormant_when_keys_empty: 空可用集 → 16 卡全休眠")
+    print("✓ test_all_dormant_when_keys_empty: 空可用集 → 13 卡全休眠")
 
 
 def test_subset_judgement_exact_match_only():
@@ -80,21 +86,24 @@ def test_subset_judgement_exact_match_only():
     print("✓ test_subset_judgement_exact_match_only: availability ⊆ available_keys 才点亮")
 
 
-def test_field_level_gating_silence_gap_vs_bgm_beats():
-    """字段级点亮：`silenceGapMs` 单字段即可点亮 gap_padding；`beat_snap` 已退役不在册。
+def test_retired_cards_never_revive():
+    """退役卡（beat_snap / cross_scene_recall / gap_padding / shot_loop_reset）不得复活，字段齐备也不行。
 
-    `beat_snap`（补丁2）退役依据：BGM 强拍在输出时间轴、切片 startMs 在源 PTS（不同轴），
-    且同句所有候选的输出切点恒同 ⇒ 该卡对候选排序零影响（可证明 no-op）。
-    改判为输出装配层实现（`timeline_solver._apply_beat_snap`），故不得再出现在装配表里。
+    退役依据见文件头；此处是「防止顺手加回一行」的机器化护栏。
     """
-    got = _names(build_rule_cards({'silenceGapMs'}))
-    assert 'gap_padding' in got, "silenceGapMs 就绪时 gap_padding 应点亮"
-    assert 'beat_snap' not in got, "beat_snap 已退役，不得再被装配"
-
-    # 即便两字段齐备，退役卡也不得复活（防止「顺手加回一行」的回归）。
-    got2 = _names(build_rule_cards({'silenceGapMs', 'bgmBeats'}))
-    assert 'beat_snap' not in got2 and 'gap_padding' in got2, "退役卡不得因字段齐备而复活"
-    print("✓ test_field_level_gating_silence_gap_vs_bgm_beats: 字段级点亮判据正确（beat_snap 已退役）")
+    retired = {'beat_snap', 'cross_scene_recall', 'gap_padding', 'shot_loop_reset'}
+    # 四张卡的依赖字段全给齐（含 bgmBeats / silenceGapMs / isCrossSceneRecall /
+    # recallTargetSceneId / audioDurationMs / primarySubject / characters）
+    got = _names(build_rule_cards({'bgmBeats', 'silenceGapMs', 'isCrossSceneRecall',
+                                   'recallTargetSceneId', 'audioDurationMs',
+                                   'primarySubject', 'characters'}))
+    assert not (got & retired), f"退役卡不得被装配，实际复活: {got & retired}"
+    # shot_loop_reset 退役后，{primarySubject, characters} 只点亮 focus_exemption（无重复卡）
+    assert _names(build_rule_cards({'primarySubject', 'characters'})) == {'focus_exemption'}, \
+        "shot_loop_reset 退役后 {primarySubject, characters} 应仅点亮 focus_exemption"
+    # silenceGapMs 单字段：gap_padding 退役后不再点亮任何卡
+    assert _names(build_rule_cards({'silenceGapMs'})) == set(), "gap_padding 退役后 silenceGapMs 不点亮任何卡"
+    print("✓ test_retired_cards_never_revive: 四张退役卡（beat_snap / cross_scene_recall / gap_padding / shot_loop_reset）均未复活")
 
 
 def test_card_defs_availability_is_frozenset():
@@ -118,19 +127,58 @@ def test_partition_rule_cards_single_source_of_truth():
         active_names = {c['name'] for c in active}
         assert _names(build_rule_cards(av)) == active_names, \
             f"available_keys={av} 时两份判据不一致（单一真源被绕过）"
-        assert len(active) + len(dormant) == 16, "点亮 + 休眠必须覆盖全部 16 卡"
+        assert len(active) + len(dormant) == 13, "点亮 + 休眠必须覆盖全部 13 卡"
         assert not (active_names & set(dormant)), "点亮与休眠不得重叠"
     print("✓ test_partition_rule_cards_single_source_of_truth: 点亮判据单一真源一致")
 
 
+def test_monotonic_lock_flashback_exemption():
+    """① 闪回豁免：query.isFlashback=True ⇒ 单向锁放行；缺省/False ⇒ 仍按严格口径 ∞ 否决。
+
+    守「不可造假门」：豁免只在显式 True 时生效，字段缺失不放宽。
+    """
+    cand = {'id': 'c1', 'parentChunkId': 'p1', 'startMs': 10000.0}
+    state = {'max_consumed_ms': {'p1': 20000.0}}   # 已消费最远 20s
+    assert monotonic_lock.SCORE(None, cand, {'query': {'isFlashback': True},
+                                             'state': state, 'entryMs': 0.0}) == 0.0, \
+        "闪回段应豁免单向锁（防合法闪回被 ∞ 误杀）"
+    assert monotonic_lock.SCORE(None, cand, {'query': {'isFlashback': False},
+                                             'state': state, 'entryMs': 0.0}) == float('inf'), \
+        "非闪回段入点回退必须 ∞ 一票否决"
+    assert monotonic_lock.SCORE(None, cand, {'query': {},
+                                             'state': state, 'entryMs': 0.0}) == float('inf'), \
+        "isFlashback 缺失不得放宽（守不可造假门）"
+    print("✓ test_monotonic_lock_flashback_exemption: 闪回豁免生效、缺省仍严格")
+
+
+def test_focus_exemption_conf_gate():
+    """③ 置信门：多主体句且焦点命中，但 primarySubjectConf < 0.5 ⇒ 不豁免；≥0.5 或缺失 ⇒ 豁免。
+
+    字段缺失按「未知」放行（向后兼容），只有明确低置信才拦。
+    """
+    q = {'characters': ['A', 'B']}
+    base = {'primarySubject': 'A'}
+    assert focus_exemption.SCORE(None, dict(base, primarySubjectConf=0.6), {'query': q}) == -0.10, \
+        "高置信多主体命中应豁免"
+    assert focus_exemption.SCORE(None, dict(base, primarySubjectConf=0.3), {'query': q}) == 0.0, \
+        "低置信焦点不得被误豁免"
+    assert focus_exemption.SCORE(None, base, {'query': q}) == -0.10, \
+        "conf 缺失按未知放行（向后兼容）"
+    assert focus_exemption.SCORE(None, dict(base, primarySubjectConf=0.5), {'query': q}) == -0.10, \
+        "恰为阈值 0.5 ⇒ 放行（判据为 < 阈值才拦）"
+    print("✓ test_focus_exemption_conf_gate: 置信门生效（低置信拦截、缺失放行）")
+
+
 if __name__ == "__main__":
     print("=" * 60)
-    print("🧩 步骤5 新引擎 · 16 卡装配验证（⓪ 单测骨架）")
+    print("🧩 步骤5 新引擎 · 13 卡装配验证（⓪ 单测骨架）")
     print("=" * 60)
     test_all_cards_activated_when_keys_none()
     test_all_dormant_when_keys_empty()
     test_subset_judgement_exact_match_only()
-    test_field_level_gating_silence_gap_vs_bgm_beats()
+    test_retired_cards_never_revive()
+    test_monotonic_lock_flashback_exemption()
+    test_focus_exemption_conf_gate()
     test_card_defs_availability_is_frozenset()
     test_partition_rule_cards_single_source_of_truth()
     print("=" * 60)

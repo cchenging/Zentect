@@ -2,6 +2,11 @@
 """
 rules/cross_scene_recall.py —— 补丁10 时空互文定向越狱（Tier2 软偏袒）
 
+⚠️ 已退役（2026-10-14）：已从 `rules._CARD_DEFS` 摘除注册——上游工单字段 isCrossSceneRecall/
+recallTargetSceneId 从未产出（src 全库零赋值），卡片 SCORE 恒 0.0、候选开闸条件恒不成立，
+实测长期休眠。**实现保留封存**，待场次能力（场次清单注入工单 + 回忆指代消解）成熟后重新注册
+（回退=恢复 `rules/__init__.py` 的 import 行与 _CARD_DEFS 条目）。
+
 回忆/闪回等时空互文句（工单 `isCrossSceneRecall=true`）需定向拉入目标场次切片
 作合法候选。本卡对「声明越狱且候选命中 `recallTargetSceneId`」的跨段候选施轻微
 负奖励（软偏袒，非硬门槛）；未声明越狱的句，跨段候选仍受段域门禁约束，本卡不干预。

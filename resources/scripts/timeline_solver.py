@@ -306,6 +306,12 @@ class KMMatchReq(BaseModel):
     语义 = 帧召回（P3）为该句锁定的「最像画面瞬间」——取料层据此定**首句入点**
     （后续顺延句则由窗末顺延，不再回读本字段）。缺省空 dict ⇒ 入点退化为镜头起点（保守不猜）。"""
     frameHits: dict = {}
+    """🧩 帧描述并入（方案 B，2026-10-21）：{ shotId: { chunkId: 帧级释义 } }。
+    语义 = 该镜头「被帧召回/实体补召命中的那一帧」的释义。切片级描述会漏掉镜头内的关键瞬间，
+    仅靠切片描述打分会让帧证据召回的镜头在语义项上零支撑（实测 chunk_084 切片描述「手持卡片夹」，
+    帧描述却是「墙面展示合影照片」）。消费端 match_cost 对该候选取 max(切片相似度, 帧相似度)。
+    缺省空 dict ⇒ 逐字节回退旧口径。"""
+    frameHints: dict = {}
     """🔧 R3 取消贯通（PR-1）：Node 侧在 abort 时通过 /cancel/{task_id} 置位的取消标记；
     KM 求解循环定期检查，命中后提前返回，避免 CPU 空烧。由端点从请求头 X-Task-Id 填充。"""
     taskId: str = ''
@@ -5182,13 +5188,16 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
 #   开关 `ZENTECT_BEAT_SNAP`（缺省 '0' = 关闭 = 零行为变化 = 一键回退）。
 BEAT_SNAP_TOLERANCE_MS = 250.0   # 磁吸容差（对齐 legacy：|δ|<250ms 才吸附）
 BEAT_SNAP_DEAD_ZONE_MS = 40.0    # 已对齐死区（≈1 帧@25fps）：不为此量级改动变速
-BEAT_SNAP_MAX_RATE = 0.03        # ±3% 变速带（与装配层 clamp `_spd` 的 [0.97,1.03] 同源）
-BEAT_SNAP_MIN_RATE = 1.0 / 1.03  # 变速带下沿：与上界对称取 ±3%（仍在导出端 SPEED_MIN=1/1.08 之内）。
-#   ⚠️ 2026-09-27 由 0.08/1.08 收紧至 0.03/1.03。理由（插桩实测）：`base` 只有 1.0 与 0.97、
+BEAT_SNAP_MAX_RATE = 0.03        # 快放上沿 +3%（与装配层 clamp `_spd` 的 [1.00,1.03] 同源）
+BEAT_SNAP_MIN_RATE = 1.0         # 变速带下沿 = 1.0：**只许快不许慢**（2026-10-15）。
+#   ⚠️ 2026-09-27 由上界 0.08/1.08 收紧至 0.03。理由（插桩实测）：`base` 只有 1.0 与 0.97、
 #   `base=1.03` 零命中 ⇒ clean-inout 收窄后窗长恒 = 配音时长，「富余」不存在；所有 spd>1.03 的
 #   「快放」全部出自本补丁的等量伸缩（原 ±8% 使 26/38 段被变速、最快 1.073 ⇒ 观感整片快放）。
-#   磁吸只是「画切踩强拍」的顺带收益，不该为踩拍把整段拉出可感知快/慢放；越出 ±3% 即弃吸附
-#   （`_beat_snap_plan` 返回 None ⇒ 该段恒速 1.0，切点不踩拍，属可接受让步）。
+#   ⚠️ 2026-10-15 下沿由 1/1.03 收为 1.0（**只许快不许慢**）。理由（成片实测溯源）：磁吸是
+#   「切点踩强拍」的顺带收益，等量伸缩方向由 δ 符号决定——δ>0 ⇒ rate=aud/(aud+δ)<1 ⇒ 本段被
+#   **拉长（慢放）**，是成片慢放的残余来源（0924 轮实测 4 段 spd 0.971~0.98 全出自此处）。
+#   现口径：慢放方向一律弃吸附（该段恒速 1.0、切点不踩拍，属可接受让步）；只有 δ<0（缩短本段、
+#   切点提前踩拍）且 rate ≤ 1.03 才磁吸。快放上限 ±3% 与导出端 floor 同向，绝不放大慢放。
 
 
 def _read_beat_snap() -> float:
@@ -5217,8 +5226,9 @@ def _beat_snap_plan(cursor_ms: float, aud_ms: float, beats_ms, keep_original: bo
          设了也被忽略，属死开关；故此处提前中性放行；
       3. 切点 = `cursor + aud`（输出时间轴）；最近强拍距离 |δ| > 容差 → 不可磁吸；
       4. |δ| ≤ 死区 → 视为已对齐：不改变速（避免 0.1% 级无意义拉伸）；
-      5. 所需速率 σ = aud / (aud + δ) 越出变速带 `[1/1.03, 1.03]`（±3%，与装配层 clamp 同源）
-         → 不可磁吸（宁可不吸附，也不把整段拉出可感知快/慢放）。
+      5. 所需速率 σ = aud / (aud + δ) 越出变速带 `[1.00, 1.03]`（**只许快不许慢**，2026-10-15）
+         → 不可磁吸：δ>0（切点在后 ⇒ 本段被拉长 = 慢放）一律弃吸附；只有 δ<0（缩短本段、
+         切点提前踩拍）且 σ ≤ 1.03 才磁吸；越界宁可不吸附，也不硬拉（错就错）。
 
     Args:
         cursor_ms: 本段画面起点在**输出时间轴**上的位置（前序各段时长累加）。
@@ -5229,6 +5239,7 @@ def _beat_snap_plan(cursor_ms: float, aud_ms: float, beats_ms, keep_original: bo
     Returns:
         tuple | None: `(D_ms, sigma)`；`D_ms` = 磁吸后本段占用输出时间线的时长，`sigma` = 所需
         变速系数（1.0 表示落在死区内、无需变速）；不可磁吸时返回 None。
+        ⚠️ 只许快不许慢 ⇒ 可磁吸时恒有 `D_ms ≤ aud_ms` 且 `sigma ≥ 1.0`（本段只会被压缩，不被拉长）。
     """
     aud = float(aud_ms or 0.0)
     if keep_original or aud <= 0 or not beats_ms:
@@ -5244,8 +5255,10 @@ def _beat_snap_plan(cursor_ms: float, aud_ms: float, beats_ms, keep_original: bo
     if d <= 0:
         return None
     rate = aud / d
+    #   ⚠️ 只许快不许慢（`BEAT_SNAP_MIN_RATE` = 1.0）：δ>0 ⇒ d>aud ⇒ rate<1 ⇒ 本段被拉长（慢放）
+    #   ⇒ 弃吸附、该段恒速 1.0；仅 δ<0 方向（缩短本段、切点提前踩拍）且 rate ≤ 1.03 才放行。
     if not (BEAT_SNAP_MIN_RATE <= rate <= 1.0 + BEAT_SNAP_MAX_RATE):
-        return None  # 越出导出端同源变速带：宁可不吸附，也不超限硬拉（错就错）
+        return None  # 越出变速带（含慢放侧）：宁可不吸附，也不硬拉（错就错）
     return d, rate
 
 
@@ -5254,6 +5267,9 @@ def _apply_beat_snap(item: dict, query, beats_ms, cursor_ms: float, stats=None) 
 
     off 档（env 缺省）**原对象直通、零计数**（零行为变化）；on 档仅在「可磁吸且需变速」时改写，
     并把本段输出时长返还调用方推进游标（不可磁吸 ⇒ 返回刚性时长 aud，游标口径不变）。
+
+    ⚠️ 只许快不许慢（2026-10-15）：慢放方向（δ>0）已由 `_beat_snap_plan` 提前拦下 ⇒ 可磁吸时
+    `appliedSpeedFactor` 恒 ≥ 1.0（本段只被压缩），导出端不再出现「磁吸造成的 spd<1」慢放段。
 
     Args:
         item: 已装配的结果项（default_result 骨架 + chunkData + 已算的变速哨兵）。
@@ -5330,6 +5346,9 @@ def _kmmatch_to_segment_request(req) -> dict:
         # 🎬 P4（2026-09-30）帧命中入点（P3 帧召回产物）：{ shotId: {chunkId, timeMs, frameHash} }，
         #   供取料层定首句入点；缺省空 dict ⇒ 退化为镜头起点（保守不猜，不造假）。
         'frameHits': payload.get('frameHits') or {},
+        # 🧩 帧描述并入（方案 B，2026-10-21）：{ shotId: { chunkId: 帧级释义 } }，仅实体补召镜头下发；
+        #   缺省空 dict ⇒ 打分侧逐字节回退旧口径（不吃帧描述）。
+        'frameHints': payload.get('frameHints') or {},
         # BGM 强拍网格（补丁2 输出层节拍磁吸消费）：KMMatchReq 侧为**秒级**（BgmBeatRepository
         #   统一口径，见 AIService.ts L770），契约口径统一为**毫秒**（default_request.bgmBeats），
         #   故在此摄入边界一次性 ×1000 归一；空数组=无 BGM/未检测（消费端中性放行，不造假）。
@@ -5443,6 +5462,20 @@ def _collect_key_coverage(chunks, queries, keys=None) -> dict:
 #   回吃时额外排除 reserved_ids（他段命中片），避免与相邻段抢同一画面。
 # ===========================================================================
 
+def _sim_cover_ms(chunk: Optional[dict], target_ms: float, chunk_by_id: dict) -> float:
+    """模拟交付扩链（空独占账本）后的**实际可交付窗长**（ms）——硬不变量判定用。
+
+    与交付端同函数同口径（`_chain_cover_window`）：自身够长 ⇒ 直通自身；不够 ⇒ 沿同母块源时间
+    连续后继链扩窗。空 used_ids ⇒ 不叠加前序句的独占消费（重排阶段交付账本尚未产生）。
+    """
+    w = _chain_cover_window(chunk, float(target_ms or 0.0), chunk_by_id, set())
+    src = w if w is not None else (chunk or {})
+    d = float(src.get('durationMs') or 0.0)
+    if d <= 0.0:
+        d = float(src.get('endMs') or 0.0) - float(src.get('startMs') or 0.0)
+    return max(0.0, d)
+
+
 def _chain_cover_window(chunk: Optional[dict], target_ms: float, chunk_by_id: dict,
                         used_ids: set, reserved_ids: Optional[set] = None) -> Optional[dict]:
     """沿「同母块源时间连续兄弟链」把命中切片的交付窗扩到覆盖 target_ms。
@@ -5536,19 +5569,25 @@ def _chain_cover_window(chunk: Optional[dict], target_ms: float, chunk_by_id: di
 # 🔬 跨模态重排（新引擎专用，2026-09-28）
 #   线上活路径 = `_run_new_engine`。本步骤在 beam_search.solve 之后、逐句后处理之前，
 #   把「语义榜 Top-12」交给多模态 VLM 重排（离线实验同尺子实测 0.416 vs 现状 0.12）。
-#   档位：ZENTECT_VLM_RERANK ∈ {off, dry, on}（缺省 off，零行为变化）+ ZENTECT_VLM_RERANK_MAX（0=不限）。
+#   档位：ZENTECT_VLM_RERANK ∈ {off, local, dry, on}（缺省 off，零行为变化）+ ZENTECT_VLM_RERANK_MAX（0=不限）。
+#     local（2026-10-13 加）= 本地档：盘内按语义分取最高（argmax），**零 API 成本**。
+#     on/dry = 云端 VLM 整包对比（每句整盘喂图，43 句 ≈ 690 图/次全量）；本会话未取得干净的
+#       on/off 对照，间接证据（端到端 A/B 打平、抽查见更优片在盘内却未被选中）不支持其正收益 ⇒
+#       dev 默认从 on 切到 local。回退：`set ZENTECT_VLM_RERANK=on`。
 #   盘口径：恒按「可供给时长 ≥ 本句配音时长」裁盘（供给口径 off 时该项自动不生效，无独立开关）。
 #   回退：一行 `set ZENTECT_VLM_RERANK=off`。
 #   ⚠️ 与 legacy `_apply_vlm_rerank` **零复用**：后者绑定 5 分钟块级池与 valid_chunk_indices 旧口径，
 #      且受 `req.useVlmRerank` 门控（Node 从不下发 ⇒ 休眠）。本步骤独立门控，不点亮 legacy。
 # ==========================================
-VLM_RR_TOP_K = 12               # 候选盘大小（对齐离线实验的 BGE 榜 Top-12）
-VLM_RR_MODEL = 'qwen3-vl-plus'  # 重排器模型：**必须**覆写（视觉通道默认绑 flash，实测 5/5 全判「无」——
+VLM_RR_TOP_K = 16               # 候选盘大小。2026-10-11 四臂钉死实验（n=30×3、temp=0、重复噪声≈0.005）：
+                                #   扩盘 12→16 是真实杠杆（D 现状信号16格 4:0 胜 A、C 聚合16格 8:1 胜 A，
+                                #   ≥0.8 命中 6→10/30），成本 +33% 可接受。env `ZENTECT_VLM_RR_TOP_K` 可覆盖。
+VLM_RR_MODEL = 'qwen3.7-plus'  # 重排器模型：**必须**覆写（视觉通道默认绑 flash，实测 5/5 全判「无」——
                                 #   未真打分，把 prompt 占位模板抄了回来）。离线实验 plus 0.416 / flash 0.155。
                                 #   凭据仍取视觉通道的 key/base（同属百炼 profile），仅覆写模型名。
 VLM_RR_TIMEOUT_S = 120          # 单次调用超时（12 图 base64 体积较大）
 VLM_RR_MAX_TOKENS = 1200        # 输出上限：对齐离线实验（temp/rerank-full.py 用 1200）。
-                                #   2026-09-29 实测：qwen3-vl-plus@720 **不产思维链**——usage 的
+                                #   2026-09-29 实测：qwen3.7-plus@720 **不产思维链**——usage 的
                                 #   `completion_tokens_details` 只有 text_tokens、无 reasoning_tokens，且显式
                                 #   `enable_thinking=false` 与默认的 token/耗时完全一致（1027 vs 1026、33.6 vs 34.5s）；
                                 #   单句输出仅 ~200 token，1200 余量充足。
@@ -5559,7 +5598,7 @@ VLM_RR_BUDGET_S = 600.0         # 总预算（超预算即停）。plus 实测 1
 _VLM_RR_FAIL_COUNT = 0          # **连续**失败计数：成功即清零（旧实现"永不重置"在全量下必误熔断）
 
 # 送图长边上限（成本口径）：候选封面是 **2160×1080**，而百炼图像 token ≈ ceil(w/32)×ceil(h/32)+2
-#   ⇒ 单图 ~2314 token、12 图/句 ~27.8k token（**未越 32K 档**，qwen3-vl-plus 仍按 ≤32K 档
+#   ⇒ 单图 ~2314 token、12 图/句 ~27.8k token（**未越 32K 档**，qwen3.7-plus 仍按 ≤32K 档
 #   1 元/百万输入、10 元/百万输出计）。
 #   重排只判「画面贴不贴题」，2K 分辨率无增益 ⇒ 缩到 720 长边后单图 ~278 token（约 1/8）。
 #   **仅影响送图，不动任何打分/选片口径。**
@@ -5584,16 +5623,20 @@ VLM_RR_PICK_PROMPT = """你是影视剪辑的选片员。下面是解说词与�
 
 
 def _read_vlm_rerank_mode() -> str:
-    """读跨模态重排档位（env `ZENTECT_VLM_RERANK`，缺省 off）。非法值错就错落 off。"""
+    """读跨模态重排档位（env `ZENTECT_VLM_RERANK`，缺省 off）。非法值错就错落 off。
+
+    档位：off = 不动（零行为变化）；local = 盘内按语义分取最高（零 API 成本）；
+          dry = 只记日志不改片；on = 云端 VLM 整包对比后改片。
+    """
     raw = (os.environ.get('ZENTECT_VLM_RERANK') or '').strip().lower()
-    return raw if raw in ('off', 'dry', 'on') else 'off'
+    return raw if raw in ('off', 'local', 'dry', 'on') else 'off'
 
 
 def _read_vlm_rerank_model() -> str:
-    """读重排器模型名（env `ZENTECT_VLM_RERANK_MODEL`，缺省 `qwen3-vl-plus`）。
+    """读重排器模型名（env `ZENTECT_VLM_RERANK_MODEL`，缺省 `qwen3.7-plus`）。
 
     为什么必须覆写而不用请求里带来的 `vlmApiModel`：后者是「视觉理解」通道的绑定模型
-    （当前 = qwen3-vl-flash），实测对重排任务 5/5 全判「无」且 scores 全 0（未真打分，
+    （当前 = qwen3.7-flash），实测对重排任务 5/5 全判「无」且 scores 全 0（未真打分，
     直接抄了 prompt 里的占位模板）。离线实验证明 plus 有效、flash 不合格，故此处强制 plus。
     """
     return (os.environ.get('ZENTECT_VLM_RERANK_MODEL') or '').strip() or VLM_RR_MODEL
@@ -5605,6 +5648,35 @@ def _read_vlm_rerank_max() -> int:
         return max(0, int(str(os.environ.get('ZENTECT_VLM_RERANK_MAX', '0')).strip() or '0'))
     except (TypeError, ValueError):
         return 0
+
+
+def _read_vlm_rr_top_k() -> int:
+    """读重排盘宽（env `ZENTECT_VLM_RR_TOP_K`，缺省 `VLM_RR_TOP_K`=16）。非法值落缺省。
+
+    依据（2026-10-11 四臂钉死，temp=0 稳裁判）：扩盘 12→16 独立于换信号有效
+    （D 现状信号16格 4:0 胜 A；C 聚合16格 8:1 胜 A，≥0.8 命中 6→10/30）。
+    回退：`set ZENTECT_VLM_RR_TOP_K=12`。
+    """
+    raw = str(os.environ.get('ZENTECT_VLM_RR_TOP_K', '') or '').strip()
+    if not raw:
+        return VLM_RR_TOP_K
+    try:
+        return max(2, int(raw))
+    except (TypeError, ValueError):
+        return VLM_RR_TOP_K
+
+
+def _read_vlm_rr_temp() -> float:
+    """读重排打分温度（env `ZENTECT_VLM_RR_TEMP`，缺省 0.0）。非法值落 0.0。
+
+    依据（2026-10-11 稳裁判实验）：temp=0.1 同盘重复漂移可达 0.06（跨轮 C 臂 0.660→0.600，
+    曾致"结论不稳/疑似不可复现"），temp=0 重复噪声 ≈0.003~0.01 ⇒ 0.1 的采样随机性
+    是仪器噪声源，缺省改 0。回退：`set ZENTECT_VLM_RR_TEMP=0.1`。
+    """
+    try:
+        return min(2.0, max(0.0, float(str(os.environ.get('ZENTECT_VLM_RR_TEMP', '0')).strip() or '0')))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _resolve_cover_path(p) -> str:
@@ -5627,7 +5699,7 @@ def _parse_vlm_pick(text, labels) -> Optional[int]:
 
     纯函数（无 IO），供单测直接驱动。口径**以离线实验为准**（temp/rerank-full.py L253-256）：
     取 `scores` 的 argmax 作为选择；但若模型自述 `best` 为「无」则**一票否决** —— 2026-09-29
-    实测 qwen3-vl-plus 在「盘里确实没有答案」时会写 `best:"无"`，却仍给若干张打 0.1~0.2 的
+    实测 qwen3.7-plus 在「盘里确实没有答案」时会写 `best:"无"`，却仍给若干张打 0.1~0.2 的
     噪声分；只认 argmax 会把「模型说没有」硬解成换片（= 误换片）。`best` 只用于否决，不用于选择。
 
     退化保护：`scores` 全 0 / 缺失 ⇒ None。模型抄了 prompt 里的占位模板（`"C01": 0.0 ...`）
@@ -5663,12 +5735,13 @@ def _parse_vlm_pick(text, labels) -> Optional[int]:
 
 
 def _build_vlm_slate(cand_ids, chunk_by_id, sem_row, taken_ids, current_cid,
-                     taken_covers=None, top_k: int = VLM_RR_TOP_K) -> list:
+                     taken_covers=None, top_k: Optional[int] = None, cont_cid: str = '') -> list:
     """纯函数：构本句重排候选盘，返回 [(chunkId, coverPath, sem)]（按语义分降序、已截断）。
 
     口径（对齐离线实验的 BGE 榜）：
-      ① 域 = 本句白名单 `cand_ids`（**不越池**：实测放开全池反而更差，是噪声进盘不是候选少）；
-      ② 序 = 拼接口径语义分降序（**不切白名单原序**，它已被 preselect 按源时间重排）；
+      ① 域 = 传入的候选 id 列表（拼接盘=本句白名单，**不越池**；聚合盘=四信号 Top12 并集，池级，
+         见 `_agg_slate_scores`——「不越池」旧结论是单信号时代实测，被 C 臂推翻）；
+      ② 序 = `sem_row` 降序（拼接盘=拼接口径语义分；聚合盘=四信号名次聚合分）；
       ③ 排他 = 剔除已被其他句占用的切片（本句当前片除外）⇒ 替换后不产生重复用片；
       ④ 封面 = coverPath → parentCoverPath 兜底，两者皆空则剔除（无图不可判）；
       ⑤ 去重 = 同一张封面只留语义最高的那个候选（同父镜头的兄弟段共用父封面，
@@ -5677,16 +5750,24 @@ def _build_vlm_slate(cand_ids, chunk_by_id, sem_row, taken_ids, current_cid,
                堵不住这种情况：兄弟段（…_seg1/…_seg2）是不同的 cid、却共用父封面，
                两句会各选一个兄弟段 ⇒ 最终画面重复（实测 seg_26_sub_1 选 …_seg1、
                seg_26_sub_3 选 …_seg2，封面同为 seg_1308_cover.jpg）。
+      ⑦ 续接锚点豁免（方案A+，`cont_cid`）＝ 上一句**最终**片作为本句续接候选，豁免 ③⑥
+               （同父 ⇒ 同封面，其封面必已被上一句占用 ⇒ 不豁免则被 ⑥ 整路封死，重排永远
+               无法「新建续接」，重排只能改写、不能保守）。
+
+    Args:
+        cont_cid: 续接锚点切片 id（空串 = 无锚点，零行为变化）。
     """
     taken_covers = taken_covers if taken_covers is not None else set()
+    top_k = _read_vlm_rr_top_k() if top_k is None else max(2, int(top_k))
     pool = []
     seen_cover = set()
+    _exempt = {cid for cid in (current_cid, cont_cid) if cid}
     ranked = sorted(
         ((str(cid), float(sem_row.get(str(cid), -1e9))) for cid in (cand_ids or [])),
         key=lambda x: -x[1],
     )
     for cid, sem in ranked:
-        if cid != current_cid and cid in taken_ids:
+        if cid not in _exempt and cid in taken_ids:
             continue
         chunk = chunk_by_id.get(cid)
         if not chunk:
@@ -5694,13 +5775,262 @@ def _build_vlm_slate(cand_ids, chunk_by_id, sem_row, taken_ids, current_cid,
         cover = _resolve_cover_path(chunk.get('coverPath') or chunk.get('parentCoverPath'))
         if not cover or not os.path.exists(cover) or cover in seen_cover:
             continue
-        if cid != current_cid and cover in taken_covers:
-            continue                        # ⑥ 跨句封面排他（当前片仍留盘作"保持"参照）
+        if cid not in _exempt and cover in taken_covers:
+            continue                        # ⑥ 跨句封面排他（当前片/续接锚点仍留盘）
         seen_cover.add(cover)
         pool.append((cid, cover, sem))
         if len(pool) >= top_k:
             break
     return pool
+
+
+# ==========================================
+# 聚合排序盘（改动2，2026-10-11）：盘的「序」从单拼接分改为四信号名次聚合。
+#   依据：四臂钉死实验（n=30×3、temp=0、重复噪声≈0.005，output/exp-naildown-4arm-t0.0-r2-*.json）
+#   C 臂（四信号并集 + 16 格盘）8:1 胜现状盘、≥0.8 命中 6→10/30、Δfit +0.038（超噪声一个量级）；
+#   单换信号（B）+0.022、单扩盘（D）+0.017，叠加（C）+0.038 ⇒ 两杠杆独立且互补。
+#   机制（对齐实验 temp/exp-naildown-3arm.py L260-277）：
+#     ① 四路信号 = 帧召回(rtext) / 拼接(concat) / 纯文案(text) / CLIP 图文，各自对**全池**排序；
+#     ② 每路取 Top12（VLM_RR_AGG_UNION_K）求并集——覆盖度实验：句最优平均仅被 1.33 个信号命中，
+#        信号间几乎不冗余，任何单一信号必漏；
+#     ③ 并集内每候选取各路 rank01 名次均值降序，截前 `VLM_RR_TOP_K` 进盘。
+#   与旧盘口径的两处**有意变更**（均被 C 臂实测支持，env 可整体回退）：
+#     a. 域从「白名单内」放开为「四信号 Top12 并集（池级）」——旧「不越池」是单信号时代实测，被推翻；
+#     b. 序从「单拼接分」改为「多路名次均值」。
+#   近似说明：实验帧信号 = frame_index 帧级嵌入（SQLite，引擎侧不可达）；此处以
+#   rtext(text+vi+vi+rf) ↔ 切片描述 BGE 余弦代之（白名单本身即帧召回 Top24，Top12 边界内强相关）。
+#   回退：`set ZENTECT_VLM_RR_AGG=off` ⇒ 盘逐字节退回「白名单内拼接分排序」旧行为。
+# ==========================================
+VLM_RR_AGG_UNION_K = 12   # 每路信号进并集的名额（对齐实验 [:12]）
+
+
+def _read_vlm_rr_agg() -> bool:
+    """读聚合排序盘开关（env `ZENTECT_VLM_RR_AGG`，缺省 on）。
+
+    off ⇒ 盘序退回「白名单内拼接语义分降序」（改动2 前行为）；on ⇒ 四信号名次聚合（缺省）。
+    """
+    raw = str(os.environ.get('ZENTECT_VLM_RR_AGG', '') or '').strip().lower()
+    return raw not in ('0', 'off', 'false', 'no')
+
+
+def _read_vlm_rr_agg_clip() -> bool:
+    """读聚合盘的 CLIP 信号开关（env `ZENTECT_VLM_RR_AGG_CLIP`，缺省 on）。
+
+    CLIP 是 C 臂四信号之一；模型加载失败时该路信号**显式降级**（stderr 声明后按 3 路聚合，
+    非静默兜底——降级是声明的行为，缺信号路径不造假数据）。无卡环境省加载：
+    `set ZENTECT_VLM_RR_AGG_CLIP=off`。
+    """
+    raw = str(os.environ.get('ZENTECT_VLM_RR_AGG_CLIP', '') or '').strip().lower()
+    return raw not in ('0', 'off', 'false', 'no')
+
+
+# 顺延并入聚合盘（方案A，2026-10-15）：重排对 CONTINUE_PREV 句加「同父偏置」。
+#   问题：聚合盘四信号 = 帧召回 / 拼接 / 纯文案 / CLIP 封面，全是「文案↔画面/帧」相似度，
+#   不含 beam 调度信号 ⇒ 重排逐句落到「全池纯语义 argmax」，把 beam 层 CONTINUE_PREF 算出的
+#   顺延落点整片抹平（实测重排换片 36~37/40、相邻换镜率 100%）。
+#   机制（两段，同一开关）：
+#     A  偏置——CONTINUE_PREV 句对**与上一句最终落点同父**的候选 agg 分加偏置，盘内序前置；
+#     A+ 锚点豁免——把「上一句最终片」本身强制入域、加偏置置顶，并在 `_build_vlm_slate`
+#        豁免 ③⑥「跨句排他」（同父 ⇒ 同封面，其封面必已被上一句占用 ⇒ 不豁免则被 ⑥ 整路
+#        封死，重排永远无法「新建续接」）。实测仅靠 A 只能「保住」beam 已续上的落点，
+#        因上一句 35/40 被重排改写 ⇒ 改不动成片（B 臂 最终相邻同父 1/39）。
+#   护栏：连续强制续接 ≤ `VLM_RR_CONT_RUN_MAX` 句（对齐 §8.3 顺延安全上限），超出退回纯
+#        语义 argmax 强切，防单镜垄断全片。
+#   仅聚合盘（`ZENTECT_VLM_RR_AGG=on`）生效；拼接盘无 agg 行，天然不适用。
+#   开关：`ZENTECT_VLM_RR_CONT`（缺省 0 = off，零行为变化）；建议量级 ≥1.0（agg∈[0,1]，覆盖全量程）。
+VLM_RR_CONT_DEFAULT = 0.0
+
+
+def _read_vlm_rr_cont() -> float:
+    """读顺延并入聚合盘的偏置权重（env `ZENTECT_VLM_RR_CONT`，缺省 0 = off）。
+
+    0 ⇒ 零行为变化（盘序逐字节退回纯四信号聚合）；正值 ⇒ CONTINUE_PREV 句对同父候选
+    的 agg 分加该值。非法/负值按 0 落（off 档，不造假增益）。
+    """
+    raw = str(os.environ.get('ZENTECT_VLM_RR_CONT', '') or '').strip()
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return VLM_RR_CONT_DEFAULT
+    return max(0.0, v)
+
+
+def _chunk_parent_key(chunk) -> str:
+    """切片所属镜头键（P4 键域 = 镜头 id）：`parentChunkId` 优先、退回自身 id。
+
+    与 beam_search `_shot_key` 同口径（此处独立小函数，避免 timeline_solver 顶层 import
+    beam_search 造成循环依赖）。
+    """
+    if not chunk:
+        return ''
+    return str(chunk.get('parentChunkId') or chunk.get('id') or '')
+
+
+# 顺延连续护栏（对齐 beam_search §8.3 `CONTINUE_MAX_SENTENCES`）：重排强制续接时，
+#   连续「锚定上一句最终片」的句数上限。超出即不再强制（退回纯语义 argmax 强切），
+#   防单镜垄断全片（PPT 化）。此处独立常量，避免顶层 import beam_search 造成循环依赖。
+VLM_RR_CONT_RUN_MAX = 3
+
+
+def _final_chunk_of(ctx, prev_query, solved) -> dict:
+    """上一句的**最终**落点切片（重排就地改写 chunkData ⇒ 读到的即重排后最终片）。
+
+    Args:
+        ctx: build_req_context 产出（chunk_by_id 兜底查片）。
+        prev_query: 叙事上一句（None = 本句是首句）。
+        solved: 当前解集（重排已就地改写）。
+
+    Returns:
+        dict: 上一句最终落点切片；无上一句/落点缺失时返回空 dict（调用方按缺省处理）。
+    """
+    if prev_query is None:
+        return {}
+    pr = solved.get(str(prev_query['shotId']))
+    if not pr:
+        return {}
+    return pr.get('chunkData') or ctx.chunk_by_id.get(
+        str(pr.get('chunkId') or pr.get('chosenChunkId') or '')) or {}
+
+
+def _rr_rank01(scores) -> dict:
+    """一维分数 → {列下标: rank01}（最高 1.0、最低 0.0；对齐实验 `_rank01`）。
+
+    Args:
+        scores: 1-D 分数序列（某句在某信号下对全池的得分）。
+
+    Returns:
+        dict: {原始下标: [0,1] 名次分}（名次越前越接近 1）。
+    """
+    import numpy as np
+    sc = np.asarray(scores, dtype=np.float32)
+    order = np.argsort(-sc)
+    r = np.empty(len(order), dtype=np.float32)
+    r[order] = np.arange(len(order))
+    denom = max(1.0, float(len(order) - 1))
+    return {int(i): float(1.0 - r[i] / denom) for i in range(len(order))}
+
+
+def _agg_slate_scores(queries, chunk_by_id) -> dict:
+    """构建每句「四信号名次聚合」排序分 {shotId: {chunkId: agg}}（只读，不改任何生产代价计算）。
+
+    数据流：切片描述 BGE 编码一次（全池）+ 每句三路文本（拼接/纯文案/rtext）各编码一次；
+    CLIP 封面编码一次（仅有封面的切片）+ 每句 qcat 一次（模型经 `AIModels.get_chinese_clip`
+    类级缓存）。每句：四路全池 rank01 → 各取 Top `VLM_RR_AGG_UNION_K` 并集 → 并集内均值。
+
+    Args:
+        queries: 归一化脚本句（build_req_context 产出，含 text/visualIntent/refFrameDesc）。
+        chunk_by_id: 切片资产索引 {chunkId: chunk}。
+
+    Returns:
+        dict: {shotId: {chunkId: 聚合分}}；无可用池/无句时返回 {}（调用方退回拼接盘）。
+
+    Raises:
+        编码失败原样上抛（错就错，与 match_cost 同口径）；仅 CLIP 单路显式降级（见开关 docstring）。
+    """
+    import sys
+    import numpy as np
+    from match_cost import (
+        build_query_text, build_text_query_text, _build_chunk_semantic_text, _read_desc_aug,
+    )
+    pool_ids = [str(cid) for cid, c in chunk_by_id.items()
+                if str(c.get('description') or '').strip()]
+    if not pool_ids or not queries:
+        return {}
+    desc_aug = _read_desc_aug()
+    D = np.asarray(AIModels.encode_texts(
+        [_build_chunk_semantic_text(chunk_by_id[cid], desc_aug) for cid in pool_ids]),
+        dtype=np.float32)
+    q_concat = [build_query_text(q) for q in queries]
+    q_text = [build_text_query_text(q) for q in queries]
+    q_frame = []
+    for q in queries:
+        # 对齐实验 rtext 口径：q(=text vi) + vi（刻意双拼，与帧召回一致）+ 参考画面描述。
+        parts = (build_query_text(q), str(q.get('visualIntent') or '').strip(),
+                 str(q.get('refFrameDesc') or '').strip())
+        q_frame.append(' '.join(s for s in parts if s))
+    S_concat = np.asarray(AIModels.encode_texts(q_concat), dtype=np.float32) @ D.T
+    S_text = np.asarray(AIModels.encode_texts(q_text), dtype=np.float32) @ D.T
+    S_frame = np.asarray(AIModels.encode_texts(q_frame), dtype=np.float32) @ D.T
+    # CLIP 图文信号（可选）：只对「封面可解析且存在」的切片打分，无封面者不参与该路名次。
+    S_clip, clip_ids = None, []
+    if _read_vlm_rr_agg_clip():
+        covers = []
+        for cid in pool_ids:
+            c = chunk_by_id[cid]
+            p = _resolve_cover_path(c.get('coverPath') or c.get('parentCoverPath'))
+            if p and os.path.exists(p):
+                covers.append((cid, p))
+        if covers:
+            try:
+                import torch
+                import torch.nn.functional as F
+                from PIL import Image
+                cmodel, cproc = AIModels.get_chinese_clip()
+                dev = AIModels._ensure_device()
+
+                def _emb(o, kind):
+                    # 兼容不同 transformers 版本（对齐 temp/demo-clip-retrieval.py _emb）。
+                    if isinstance(o, torch.Tensor):
+                        return o
+                    for k in ('{}_embeds'.format(kind), 'pooler_output'):
+                        v = getattr(o, k, None)
+                        if isinstance(v, torch.Tensor):
+                            return v
+                    raise TypeError('无法取 CLIP 特征: {}'.format(type(o)))
+
+                feats = []
+                for i in range(0, len(covers), 32):
+                    imgs = []
+                    for _cid, p in covers[i:i + 32]:
+                        try:
+                            with Image.open(p) as im:
+                                imgs.append(im.convert('RGB'))
+                        except Exception:  # noqa: BLE001 —— 单图坏不拖垮整路，占位黑图
+                            imgs.append(Image.new('RGB', (224, 224)))
+                    inp = cproc(images=imgs, return_tensors='pt', padding=True).to(dev)
+                    with torch.no_grad():
+                        t = F.normalize(_emb(cmodel.get_image_features(**inp), 'image'), p=2, dim=-1)
+                    feats.append(t.cpu().numpy().astype(np.float32))
+                CI = np.vstack(feats)
+                inp = cproc(text=q_concat, return_tensors='pt', padding=True, truncation=True).to(dev)
+                with torch.no_grad():
+                    CT = F.normalize(_emb(cmodel.get_text_features(**inp), 'text'), p=2, dim=-1)
+                S_clip = CT.cpu().numpy().astype(np.float32) @ CI.T
+                clip_ids = [cid for cid, _p in covers]
+            except Exception as e:  # noqa: BLE001 —— CLIP 单路显式降级（stderr 声明，非静默）
+                print('[vlm-rr] 聚合盘 CLIP 信号不可用（{}: {}）⇒ 3 信号聚合'.format(
+                    type(e).__name__, e), file=sys.stderr)
+                S_clip, clip_ids = None, []
+    col = {cid: i for i, cid in enumerate(pool_ids)}
+    clip_col = {cid: i for i, cid in enumerate(clip_ids)}
+    K = VLM_RR_AGG_UNION_K
+    out: dict = {}
+    for qi, q in enumerate(queries):
+        sid = str(q['shotId'])
+        r_concat = _rr_rank01(S_concat[qi])
+        r_text = _rr_rank01(S_text[qi])
+        r_frame = _rr_rank01(S_frame[qi])
+        r_clip = _rr_rank01(S_clip[qi]) if S_clip is not None else None
+        union: list = []
+        tops = [
+            [pool_ids[j] for j in np.argsort(-S_frame[qi])[:K]],
+            [pool_ids[j] for j in np.argsort(-S_concat[qi])[:K]],
+            [pool_ids[j] for j in np.argsort(-S_text[qi])[:K]],
+        ]
+        if r_clip is not None:
+            tops.append([clip_ids[j] for j in np.argsort(-S_clip[qi])[:K]])
+        for lst in tops:
+            for cid in lst:
+                if cid not in union:
+                    union.append(cid)
+        agg: dict = {}
+        for cid in union:
+            vs = [r_frame[col[cid]], r_concat[col[cid]], r_text[col[cid]]]
+            if r_clip is not None and cid in clip_col:
+                vs.append(r_clip[clip_col[cid]])
+            agg[cid] = float(np.mean(vs))
+        out[sid] = agg
+    return out
 
 
 def _encode_cover_b64(path, max_side=VLM_RR_IMG_MAX_SIDE) -> str:
@@ -5762,7 +6092,7 @@ def _call_vlm_pick(text, visual_intent, covers, api_key, api_base, model) -> Opt
         resp = requests.post(
             api_base.rstrip('/') + '/chat/completions',
             json={'model': model, 'messages': [{'role': 'user', 'content': content}],
-                  'temperature': 0.1, 'max_tokens': VLM_RR_MAX_TOKENS},
+                  'temperature': _read_vlm_rr_temp(), 'max_tokens': VLM_RR_MAX_TOKENS},
             headers={'Authorization': 'Bearer ' + api_key, 'Content-Type': 'application/json'},
             timeout=VLM_RR_TIMEOUT_S)
         resp.raise_for_status()
@@ -5788,7 +6118,8 @@ def _call_vlm_pick(text, visual_intent, covers, api_key, api_base, model) -> Opt
     return idx
 
 
-def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> dict:
+def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req,
+                                 agg_scores: Optional[dict] = None) -> dict:
     """对 beam_search 的逐句解做跨模态重排（新引擎专用，只改选片、不碰任何后处理）。
 
     插入位置：`solved = _beam_solve(...)` 之后、逐句后处理循环之前 ⇒ 下游扩窗/净画/动量/
@@ -5798,6 +6129,8 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
         solved: {shotId: 解项}，原地改写 `chunkData`/`chunkId`。
         ctx: build_req_context 产出（读 cands_by_shotid / chunk_by_id / queries）。
         sem_scores: {shotId: {chunkId: 拼接口径语义分}}（build_match_cost 的 sem_out）。
+        agg_scores: 可选 {shotId: {chunkId: 聚合分}}（`_agg_slate_scores` 产出）。非空时本句盘
+            改用「四信号并集为域、聚合分为序」（改动2）；None/缺句退回白名单+拼接分旧盘。
         req: KMMatchReq（只读凭据 vlmApiKey / vlmApiBase；**模型名不复用** vlmApiModel，见下）。
 
     Returns:
@@ -5807,17 +6140,23 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
     mode = _read_vlm_rerank_mode()
     if mode == 'off':
         return solved
+    local = (mode == 'local')       # 本地档：盘内按分取最高，不调云端 ⇒ 不需要凭据
     api_key = getattr(req, 'vlmApiKey', '') or ''
     api_base = getattr(req, 'vlmApiBase', '') or ''
-    # 模型名走独立 env（缺省 qwen3-vl-plus），**不取** req.vlmApiModel —— 那是视觉通道绑定
+    # 模型名走独立 env（缺省 qwen3.7-plus），**不取** req.vlmApiModel —— 那是视觉通道绑定
     # 的 flash，实测对本任务 5/5 全判「无」（未真打分）。凭据仍复用同 profile 的 key/base。
     model = _read_vlm_rerank_model()
-    if not (api_key and api_base):
+    if not local and not (api_key and api_base):
         _append_engine_trace('[vlm-rr] 档位={} 但 VLM 凭据（apiKey/apiBase）不全 ⇒ 跳过（保持原匹配）'.format(mode))
         return solved
 
     max_n = _read_vlm_rerank_max()
+    cont_bonus = _read_vlm_rr_cont()
     t0 = time.time()
+    if cont_bonus > 0.0:
+        _append_engine_trace(
+            '[vlm-rr] 顺延并入聚合分=on（CONTINUE_PREV 句同父候选 agg +{:.2f}；'
+            '回退 set ZENTECT_VLM_RR_CONT=0）'.format(cont_bonus))
     # 占用集合：全局已选片（排他口径；替换后同步维护 ⇒ 零重复用片）
     taken = {str((r.get('chunkData') or {}).get('id') or '') for r in solved.values()}
     taken.discard('')
@@ -5835,9 +6174,12 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
         cov = _cover_of(cid)
         if cov:
             cover_cnt[cov] = cover_cnt.get(cov, 0) + 1
-    stats = {'n': 0, 'slate_lt2': 0, 'picks_none': 0, 'changed': 0, 'budget_stop': 0, 'imgs': 0}
+    stats = {'n': 0, 'slate_lt2': 0, 'picks_none': 0, 'changed': 0, 'budget_stop': 0, 'imgs': 0,
+             'cont_bias': 0, 'supply_swap': 0, 'supply_none': 0}
     _VLM_RR_USAGE.update(calls=0, **{'in': 0, 'out': 0})   # 本轮 token 用量清零（仅对账）
-    for q in ctx.queries:
+    _cont_anchored = False   # 上一句是否被「续接锚定」（护栏计数用）
+    _cont_run = 0            # 连续被锚定的句数（≤ VLM_RR_CONT_RUN_MAX）
+    for _qi, q in enumerate(ctx.queries):
         sid = str(q['shotId'])
         r = solved.get(sid)
         if r is None:
@@ -5846,8 +6188,41 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
             break
         stats['n'] += 1
         cur_cid = str((r.get('chunkData') or {}).get('id') or '')
-        slate = _build_vlm_slate(ctx.cands_by_shotid.get(sid) or [], ctx.chunk_by_id,
-                                 sem_scores.get(sid) or {}, taken, cur_cid, set(cover_cnt))
+        agg_row = (agg_scores or {}).get(sid)
+        # 顺延护栏（对齐 §8.3）：连续锚定句数达上限 ⇒ 本句不再强制续接（退回纯语义 argmax 强切）。
+        _cont_run = (_cont_run + 1) if _cont_anchored else 0
+        _cont_cid = ''       # 本句续接锚点（上一句**最终**片 id）；空串 = 无锚点（零行为变化）
+        # 方案A / A+ 顺延并入聚合分（同一开关）：
+        #   A  偏置——与上一句最终落点同父的候选 agg +cont_bonus（盘内序前置）；
+        #   A+ 锚点豁免——上一句最终片本身强制入域、加偏置置顶，并在 `_build_vlm_slate`
+        #      豁免 ③⑥跨句排他（否则「同父=同封面」被 ⑥ 封死，重排永远无法新建续接）。
+        #   仅重建本句行副本（不污染共享 agg_scores）；off 档跳过 ⇒ 盘序逐字节不变。
+        if agg_row and cont_bonus > 0.0 and str(q.get('shotMode') or '') == 'CONTINUE_PREV' \
+                and _cont_run < VLM_RR_CONT_RUN_MAX:
+            _pc = _final_chunk_of(ctx, ctx.queries[_qi - 1] if _qi > 0 else None, solved)
+            _prev_parent = _chunk_parent_key(_pc)
+            _prev_cid = str(_pc.get('id') or '')
+            agg_row = dict(agg_row)
+            if _prev_parent:
+                for _cid in list(agg_row.keys()):
+                    if _chunk_parent_key(ctx.chunk_by_id.get(_cid)) == _prev_parent:
+                        agg_row[_cid] = float(agg_row[_cid]) + cont_bonus
+            if _prev_cid:
+                agg_row[_prev_cid] = float(agg_row.get(_prev_cid, 0.0)) + cont_bonus
+                _cont_cid = _prev_cid
+                stats['cont_bias'] += 1
+        _cont_anchored = bool(_cont_cid)
+        if agg_row:
+            # 聚合盘（改动2）：域=四信号并集（池级）、序=聚合分。当前片强制入域作「保持」参照
+            #   （与旧盘口径一致：模型仍可 best='无' 一票否决回退原片）；续接锚点亦已并入agg_row。
+            domain = list(agg_row.keys())
+            if cur_cid and cur_cid not in domain:
+                domain.append(cur_cid)
+            slate = _build_vlm_slate(domain, ctx.chunk_by_id, agg_row, taken, cur_cid, set(cover_cnt),
+                                     cont_cid=_cont_cid)
+        else:
+            slate = _build_vlm_slate(ctx.cands_by_shotid.get(sid) or [], ctx.chunk_by_id,
+                                     sem_scores.get(sid) or {}, taken, cur_cid, set(cover_cnt))
         if len(slate) < 2:
             stats['slate_lt2'] += 1
             _append_engine_trace('[vlm-rr] {} 盘<2（{} 张）⇒ 跳过'.format(sid, len(slate)))
@@ -5855,15 +6230,42 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
         if time.time() - t0 > VLM_RR_BUDGET_S:
             stats['budget_stop'] = 1
             break
-        stats['imgs'] += len(slate)
-        _fail_before = _VLM_RR_FAIL_COUNT
-        pick = _call_vlm_pick(str(q.get('text') or ''), str(q.get('visualIntent') or ''),
-                              [c[1] for c in slate], api_key, api_base, model)
-        if pick is None:
-            if _VLM_RR_FAIL_COUNT == _fail_before:
-                stats['picks_none'] += 1
-            _append_engine_trace('[vlm-rr] {} 盘={} ⇒ 未选出（保持 {}）'.format(sid, len(slate), cur_cid))
-            continue
+        if local:
+            # 本地档：盘已按语义分降序（`_build_vlm_slate`）⇒ 取 0 号即「盘内按分取最高」。
+            #   不喂图、不调 API ⇒ 成本为 0（`stats['imgs']` 不计），也不受 `VLM_RR_BUDGET_S` 约束。
+            pick = 0
+        else:
+            stats['imgs'] += len(slate)
+            _fail_before = _VLM_RR_FAIL_COUNT
+            pick = _call_vlm_pick(str(q.get('text') or ''), str(q.get('visualIntent') or ''),
+                                  [c[1] for c in slate], api_key, api_base, model)
+            if pick is None:
+                if _VLM_RR_FAIL_COUNT == _fail_before:
+                    stats['picks_none'] += 1
+                _append_engine_trace('[vlm-rr] {} 盘={} ⇒ 未选出（保持 {}）'.format(sid, len(slate), cur_cid))
+                continue
+        # 🛑 慢放修复·硬不变量（第2步「宁换片不截音」）：交付窗长必须 ≥ 本句配音时长。
+        #   判据 = 模拟交付扩链后的实际窗长（空独占账本）。盘已按 agg 分降序 ⇒ 取「盘内最高分的
+        #   可覆盖候选」；全盘供不起 ⇒ 保持语义 argmax（如实欠覆盖，不再叠加拉伸慢放）。
+        #   原声段豁免：其声画同源、窗长由 ASR 台词窗口决定，不参与本判据。
+        _aud_rr = float(q.get('audioDurationMs') or 0.0)
+        if _aud_rr > 0.5 and not bool(_q_field(q, 'keepOriginalAudio', False)) \
+                and not bool(r.get('keepOriginalAudio')):
+            _cov_pick = _sim_cover_ms(ctx.chunk_by_id.get(slate[pick][0]), _aud_rr, ctx.chunk_by_id)
+            if _cov_pick < _aud_rr - 0.5:
+                _swap = -1
+                for _pi, _cand in enumerate(slate):
+                    if _sim_cover_ms(ctx.chunk_by_id.get(_cand[0]), _aud_rr, ctx.chunk_by_id) >= _aud_rr - 0.5:
+                        _swap = _pi
+                        break
+                if _swap >= 0:
+                    stats['supply_swap'] += 1
+                    _append_engine_trace(
+                        '[vlm-rr] {} 供给换片 {}→{}（原落点可覆盖 {:.0f}ms < 配音 {:.0f}ms）'.format(
+                            sid, slate[pick][0], slate[_swap][0], _cov_pick, _aud_rr))
+                    pick = _swap
+                else:
+                    stats['supply_none'] += 1
         new_cid = slate[pick][0]
         if new_cid == cur_cid:
             _append_engine_trace('[vlm-rr] {} 盘={} ⇒ 保持 {}'.format(sid, len(slate), cur_cid))
@@ -5885,11 +6287,30 @@ def _apply_vlm_rerank_new_engine(solved: dict, ctx, sem_scores: dict, req) -> di
         r['vlmReranked'] = True
         stats['changed'] += 1
 
+    # 最终口径读连续率（方案A 读数）：**必须**从重排后的最终 chunkData 重算 —— beam 期的
+    #   `_cont_ok` 是重排前分类，重排已改写落点，用它会失真。相邻句「同父」对数/总相邻对数。
+    _prev_pk = ''
+    _same, _pairs = 0, 0
+    for _q in ctx.queries:
+        _rr = solved.get(str(_q['shotId']))
+        _ch = (_rr or {}).get('chunkData') or ctx.chunk_by_id.get(
+            str((_rr or {}).get('chunkId') or ''))
+        _pk = _chunk_parent_key(_ch)
+        if _pk:
+            if _prev_pk:
+                _pairs += 1
+                if _pk == _prev_pk:
+                    _same += 1
+            _prev_pk = _pk
+    _append_engine_trace('[vlm-rr] 最终相邻同父 {}/{}（换镜 {}）'.format(_same, _pairs, _pairs - _same))
+
     _append_engine_trace(
-        '[vlm-rr] 档位={} model={} MAX={} ｜ 处理={} 句 ｜ 换片={} ｜ 未选出={} ｜ 盘<2={} ｜ '
+        '[vlm-rr] 档位={} model={} MAX={} 盘源={} 顺延偏置={:.2f} ｜ 处理={} 句 ｜ 换片={} ｜ '
+        '供给换片={} ｜ 供不起={} ｜ 未选出={} ｜ 盘<2={} ｜ '
         '喂图={} 张 ｜ 超预算停={} ｜ 熔断计数={} ｜ token入/出={}/{}（{} 次调用）｜ 耗时={:.1f}s'.format(
-            mode, model, max_n or '不限',
-            stats['n'], stats['changed'], stats['picks_none'],
+            mode, model, max_n or '不限', '聚合' if agg_scores else '拼接', cont_bonus,
+            stats['n'], stats['changed'], stats['supply_swap'], stats['supply_none'],
+            stats['picks_none'],
             stats['slate_lt2'], stats['imgs'], stats['budget_stop'],
             _VLM_RR_FAIL_COUNT, _VLM_RR_USAGE['in'], _VLM_RR_USAGE['out'], _VLM_RR_USAGE['calls'],
             time.time() - t0))
@@ -5917,7 +6338,7 @@ def _run_new_engine(req) -> dict:
     _vlm_rr_mode = _read_vlm_rerank_mode()
     _vlm_sem = {} if _vlm_rr_mode != 'off' else None
     cost = build_match_cost(ctx.queries, ctx.chunk_by_id, ctx.cands_by_shotid, None,
-                            sem_out=_vlm_sem)
+                            sem_out=_vlm_sem, frame_hints=ctx.frame_hints)
     tts = {str(q['shotId']): float(q.get('audioDurationMs') or 0.0) for q in ctx.queries}
     # 🎬 补丁20（ISSUE-7）光学净画出入点：本次求解的收窄段数计数（off 档恒 0 且不打印汇总）。
     _clean_stats = {'hit': 0, 'asr': 0}
@@ -5959,7 +6380,13 @@ def _run_new_engine(req) -> dict:
     # 🔬 跨模态重排（档位 ZENTECT_VLM_RERANK，缺省 off ⇒ 本行为空操作）。
     #   插在逐句后处理之前：只改「本句选中了哪片」，下游扩窗/净画/动量/变速/封面回填自动按新片重算。
     if _vlm_rr_mode != 'off':
-        solved = _apply_vlm_rerank_new_engine(solved, ctx, _vlm_sem or {}, req)
+        # 改动2（2026-10-11）：聚合排序盘在 _apply **之外**预算（CLIP 加载/编码 ~1min，
+        #   不挤占重排的 VLM_RR_BUDGET_S）。失败原样上抛（错就错，与 match_cost 同口径）；
+        #   仅 CLIP 单路不可用时在 _agg_slate_scores 内显式降级为 3 信号（stderr 声明）。
+        _agg_scores = _agg_slate_scores(ctx.queries, ctx.chunk_by_id) if _read_vlm_rr_agg() else None
+        if _agg_scores:
+            _append_engine_trace('[vlm-rr] 聚合盘=on（四信号名次聚合；回退 set ZENTECT_VLM_RR_AGG=off）')
+        solved = _apply_vlm_rerank_new_engine(solved, ctx, _vlm_sem or {}, req, _agg_scores)
 
     results = []
     # 输出时间轴游标（补丁2 磁吸用）：off 档恒等于刚性音频时长累加（零行为变化）。
@@ -6035,7 +6462,9 @@ def _run_new_engine(req) -> dict:
             item['appliedSpeedFactor'] = round(_spd, 3)
             item['isExactSpeed'] = item.get('isExactSpeed') is True or round(_spd, 3) == 1.0
         # 🎵 补丁2（ISSUE-10 层位纠正）视听节拍器对齐：输出游标 + 本句刚性音频时长求切点，
-        #   最近强拍在 ±250ms 容差内则按 ±8% 等量伸缩吸附（改写 appliedSpeedFactor）；
+        #   最近强拍在 ±250ms 容差内则按等量伸缩吸附（改写 appliedSpeedFactor）；
+        #   **只许快不许慢**（2026-10-15）：仅 δ<0 方向（缩短本段、切点提前踩拍）且 ≤3% 才吸附，
+        #   δ>0（拉长本段 = 慢放）一律弃吸附 ⇒ solver 侧不再产出「磁吸造成的 spd<1」慢放段；
         #   off 档原值直通、游标恒刚性累加（零行为变化）。
         _cursor_ms += _apply_beat_snap(item, q, _beats_ms, _cursor_ms, _beat_stats)
         validate_result(item)
@@ -6086,7 +6515,8 @@ def _run_new_engine(req) -> dict:
     if _read_beat_snap() > 0.0:
         _append_engine_trace(
             f"[beat-snap] 强拍磁吸 段数={_beat_stats['hit']}"
-            f"（其中变速段={_beat_stats['speed']}｜最大等量伸缩={_beat_stats['max_delta_ms']:.0f}ms）"
+            f"（其中变速段={_beat_stats['speed']}｜最大等量伸缩={_beat_stats['max_delta_ms']:.0f}ms"
+            f"｜口径=只快不慢 min_rate={BEAT_SNAP_MIN_RATE:.3f}）"
             f"｜开关权重={_read_beat_snap():g}｜容差={BEAT_SNAP_TOLERANCE_MS:.0f}ms"
             f"｜死区={BEAT_SNAP_DEAD_ZONE_MS:.0f}ms｜强拍数={len(_beats_ms)}")
 
@@ -6098,7 +6528,10 @@ def _run_new_engine(req) -> dict:
     for _qm in ctx.queries:
         _qsid = str(_qm.get('shotId'))
         if _qsid not in _hit_sids:
-            _q_is_orig = bool(_qm.get('keepOriginalAudio')) or str(_qm.get('audioMode', '')) == 'original'
+            # 🎬 原声段判断只信 keepOriginalAudio：工单的 audioMode 从不落地 daemon query
+            #   （default_query 无占位 + Node 不回填 + merge_orders 不合入 ⇒ _qm.get('audioMode') 恒空）。
+            #   此处原「or audioMode=='original'」是永久死分支，语义已由 keepOriginalAudio 承接，删之。
+            _q_is_orig = bool(_qm.get('keepOriginalAudio'))
             _q_txt = str(_qm.get('text') or '')[:18].replace(chr(10), ' ')
             _miss_parts.append(f"{_qsid}|orig={_q_is_orig}|{_q_txt}")
     _append_engine_trace(

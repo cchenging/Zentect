@@ -11,11 +11,13 @@ test_beat_snap.py — 🎵 步骤5 输出装配 · 补丁2 视听节拍器对齐
   2. `_beat_snap_plan` 退化输入：无强拍网格 / 音频时长 ≤ 0 / 原声段 ⇒ 不可磁吸（None）
   3. 容差：最近强拍距离 |δ| > 250ms ⇒ 不可磁吸
   4. 死区：|δ| ≤ 40ms ⇒ 视为已对齐，返回 (aud, 1.0) 不改变速（避免 0.1% 级无意义拉伸）
-  5. 变速带：所需速率 σ=aud/(aud+δ) 越出 `[1/1.03, 1.03]`（±3%，2026-09-27 由 ±8% 收紧）
-     ⇒ 宁可不吸附也不把整段拉出可感知快/慢放（None）
+  5. 变速带：所需速率 σ=aud/(aud+δ) 越出 `[1.00, 1.03]`（**只许快不许慢**，2026-10-15 由
+     `[1/1.03, 1.03]` 收为下限 1.0）⇒ 弃吸附（None）；δ>0（拉长本段 = 慢放）一律弃吸附，
+     只有 δ<0（缩短本段、切点提前踩拍）且 σ ≤ 1.03 才磁吸
   6. `_apply_beat_snap` off 档：原对象直通、不改写、零计数（零行为变化）
-  7. `_apply_beat_snap` on 档：可磁吸且需变速 ⇒ 写 appliedSpeedFactor + isExactSpeed=False +
-     返回 D 推进游标 + 计数；死区 ⇒ 仅计数不改写；不可磁吸 ⇒ 返回刚性时长
+  7. `_apply_beat_snap` on 档：可磁吸且需变速（**只快不慢**，D ≤ aud）⇒ 写 appliedSpeedFactor
+     （恒 ≥ 1.0）+ isExactSpeed=False + 返回 D 推进游标 + 计数；死区 ⇒ 仅计数不改写；
+     慢放方向 / 不可磁吸 ⇒ 返回刚性时长、零计数
 
 运行方式：cd resources/scripts ; ..\\ai-env\\python.exe __tests__\\test_beat_snap.py
 （或 ..\\ai-env\\python.exe __tests__\\run_all.py 全量跑）
@@ -88,9 +90,14 @@ def test_beat_snap_plan_tolerance_and_dead_zone():
     # 切点 = 0 + 4000；强拍 4600 ⇒ |δ|=600 > 250 ⇒ 不吸附
     assert _beat_snap_plan(0.0, 4000.0, [4600.0]) is None
 
-    # 强拍 4050 ⇒ |δ|=50：在死区外、±3% 内（rate=4000/4050=0.988）⇒ 可磁吸
-    d, rate = _beat_snap_plan(0.0, 4000.0, [4050.0])
-    assert abs(d - 4050.0) < 1e-9 and abs(rate - 4000.0 / 4050.0) < 1e-9
+    # 强拍 3950 ⇒ |δ|=50（**快放方向**：缩短本段、切点提前踩拍）⇒ rate=4000/3950≈1.013 ⇒ 可磁吸
+    d, rate = _beat_snap_plan(0.0, 4000.0, [3950.0])
+    assert abs(d - 3950.0) < 1e-9 and abs(rate - 4000.0 / 3950.0) < 1e-9
+    assert d <= 4000.0 and rate >= 1.0, "只许快不许慢：D ≤ aud、σ ≥ 1.0"
+
+    # 强拍 4050 ⇒ |δ|=50（**慢放方向**：拉长本段）⇒ rate=0.988 < 1.0 ⇒ 弃吸附（2026-10-15）
+    assert _beat_snap_plan(0.0, 4000.0, [4050.0]) is None, \
+        "只许快不许慢：慢放方向（δ>0、rate<1）必须弃吸附，该段恒速 1.0"
 
     # 强拍 4020 ⇒ |δ|=20 ≤ 死区 ⇒ 视为已对齐，不改变速
     assert _beat_snap_plan(0.0, 4000.0, [4020.0]) == (4000.0, 1.0)
@@ -102,16 +109,29 @@ def test_beat_snap_plan_tolerance_and_dead_zone():
 
 
 def test_beat_snap_plan_speed_law_clamp():
-    """±3% 变速带（2026-09-27 由 ±8% 收紧）：越界 ⇒ 宁可不吸附，也不把整段拉出可感知快/慢放。"""
+    """变速带 `[1.00, 1.03]`（**只许快不许慢**，2026-10-15；快放上沿 2026-09-27 由 ±8% 收为 ±3%）。
+
+    越界 ⇒ 宁可不吸附，也不把整段拉出可感知快/慢放；慢放侧（rate<1）已由下限 1.0 全数拦下。
+    """
     # aud=4000, δ=-1000 ⇒ d=3000 ⇒ rate=1.333 超上限 ⇒ None
     assert _beat_snap_plan(0.0, 4000.0, [3000.0]) is None
-    # aud=4000, δ=+1000 ⇒ d=5000 ⇒ rate=0.800 超下限 ⇒ None
+    # aud=4000, δ=+1000 ⇒ d=5000 ⇒ rate=0.800（慢放且越界）⇒ None
     assert _beat_snap_plan(0.0, 4000.0, [5000.0]) is None
     # 本次收紧要拦的实测档：aud=2634、δ=-151（约 -5.7%）⇒ rate=1.061 > 1.03 ⇒ None
     assert _beat_snap_plan(0.0, 2634.0, [2634.0 - 151.0]) is None, \
         "1.061 级快放（>1.03）必须弃吸附（该档原先被 ±8% 放行）"
-    #   对称档：δ=+151 ⇒ rate≈0.9458 < 1/1.03 ⇒ None
+    #   对称档：δ=+151 ⇒ rate≈0.9458 ⇒ 慢放方向 ⇒ None（只快不慢）
     assert _beat_snap_plan(0.0, 2634.0, [2634.0 + 151.0]) is None
+
+    # 🔴 本方案核心新判据：慢放方向**落在旧带内**也必须弃吸附。
+    #   aud=2634、δ=+60 ⇒ d=2694 ⇒ rate=0.9778（旧口径 ≥1/1.03≈0.9709 ⇒ 会吸附成慢放，
+    #   即实测成片里 0.971~0.98 那类段）；新口径 rate<1 ⇒ None，该段恒速 1.0。
+    assert _beat_snap_plan(0.0, 2634.0, [2634.0 + 60.0]) is None, \
+        "旧带内慢放（0.978 级）必须弃吸附：这是成片慢放的残余来源"
+    #   同一 δ 量级的快放方向则应放行：δ=-60 ⇒ rate=2634/2574≈1.0233 ≤ 1.03（|δ|>死区）⇒ 可磁吸
+    d, rate = _beat_snap_plan(0.0, 2634.0, [2634.0 - 60.0])
+    assert abs(d - 2574.0) < 1e-9 and abs(rate - 2634.0 / 2574.0) < 1e-9
+    assert rate >= 1.0, "可磁吸时 σ 恒 ≥ 1.0（只快不慢）"
 
     # 上沿闭区间：d=aud/1.03 ⇒ rate 恰 1.03，|δ|=aud*(1-1/1.03)≈58.25ms > 死区 ⇒ 可磁吸
     aud = 2000.0
@@ -120,16 +140,17 @@ def test_beat_snap_plan_speed_law_clamp():
     #   再深 1ms ⇒ rate>1.03 ⇒ None
     assert _beat_snap_plan(0.0, aud, [aud / 1.03 - 1.0]) is None
 
-    # 下沿闭区间：d=aud*1.03 ⇒ rate 恰 1/1.03，|δ|=0.03*aud=60ms > 死区 ⇒ 可磁吸
-    d, rate = _beat_snap_plan(0.0, aud, [aud * 1.03])
-    assert abs(rate - 1.0 / 1.03) < 1e-9, f"下沿应恰为 1/1.03，实际 {rate}"
+    # 🔴 下沿现为 1.0：d=aud*1.03 ⇒ rate 恰 1/1.03≈0.971（< 1.0）⇒ 慢放方向 ⇒ None
+    #   （旧口径该档恰为下沿闭区间、会被放行 ⇒ 这是本次口径收窄的直接对照）
+    assert _beat_snap_plan(0.0, aud, [aud * 1.03]) is None, \
+        "下沿已收为 1.0：δ>0（拉长本段）一律弃吸附"
     assert _beat_snap_plan(0.0, aud, [aud * 1.03 + 1.0]) is None
 
-    # 常量自证：±3%；下沿仍远在导出端 SPEED_MIN（1/1.08≈0.9259）之内，不会与导出端实算打架
+    # 常量自证：快放上沿 ±3%；下沿 = 1.0（只快不慢），恒 ≥ 导出端 SPEED_MIN（1/1.08≈0.9259）
     assert BEAT_SNAP_MAX_RATE == 0.03
-    assert abs(BEAT_SNAP_MIN_RATE - 1.0 / 1.03) < 1e-12
+    assert abs(BEAT_SNAP_MIN_RATE - 1.0) < 1e-12, f"下沿必须为 1.0，实际 {BEAT_SNAP_MIN_RATE}"
     assert BEAT_SNAP_MIN_RATE > 1.0 / 1.08
-    print("✓ test_beat_snap_plan_speed_law_clamp: 变速带 [1/1.03, 1.03] 生效（超限不吸附）")
+    print("✓ test_beat_snap_plan_speed_law_clamp: 变速带 [1.00, 1.03] 生效（慢放方向全弃吸附）")
 
 
 def test_apply_beat_snap_off_is_noop():
@@ -151,14 +172,24 @@ def test_apply_beat_snap_off_is_noop():
 def test_apply_beat_snap_on_writes_and_counts():
     """on 档：可磁吸 ⇒ 写变速 + isExactSpeed=False + 返回 D；死区/不可磁吸 ⇒ 仅计数或原值。"""
     def _run():
-        # 需变速：aud=4000、强拍 4050（|δ|=50）⇒ σ=0.988、D=4050
+        # 需变速（**快放方向**）：aud=4000、强拍 3950（|δ|=50）⇒ σ=4000/3950≈1.013、D=3950
         it = _item()
         stats = {'hit': 0, 'speed': 0, 'max_delta_ms': 0.0}
-        d = _apply_beat_snap(it, {'shotId': 's1'}, [4050.0], 0.0, stats)
-        assert abs(d - 4050.0) < 1e-9, f"应返回磁吸后时长，实际 {d}"
-        assert it['appliedSpeedFactor'] == round(4000.0 / 4050.0, 3), f"变速系数有误：{it}"
+        d = _apply_beat_snap(it, {'shotId': 's1'}, [3950.0], 0.0, stats)
+        assert abs(d - 3950.0) < 1e-9, f"应返回磁吸后时长，实际 {d}"
+        assert it['appliedSpeedFactor'] == round(4000.0 / 3950.0, 3), f"变速系数有误：{it}"
+        assert it['appliedSpeedFactor'] >= 1.0, "只许快不许慢：写入的变速系数恒 ≥ 1.0"
         assert it['isExactSpeed'] is False, "变速段必须显式置 False（否则导出端强制 1.0x）"
         assert stats == {'hit': 1, 'speed': 1, 'max_delta_ms': 50.0}, f"计数有误：{stats}"
+
+        # 🔴 慢放方向（δ>0）：aud=4000、强拍 4050 ⇒ σ=0.988<1.0 ⇒ 弃吸附、原速直通、零计数
+        it_slow = _item()
+        stats_slow = {'hit': 0, 'speed': 0, 'max_delta_ms': 0.0}
+        d_slow = _apply_beat_snap(it_slow, {'shotId': 's1b'}, [4050.0], 0.0, stats_slow)
+        assert d_slow == 4000.0, f"慢放方向必须返回刚性时长（游标不推进），实际 {d_slow}"
+        assert it_slow['appliedSpeedFactor'] == 1.0 and it_slow['isExactSpeed'] is True, \
+            "慢放方向不得改写为 spd<1（只快不慢）"
+        assert stats_slow == {'hit': 0, 'speed': 0, 'max_delta_ms': 0.0}, "慢放方向不得计数"
 
         # 死区（已对齐）：仅计 hit、不改写变速
         it2 = _item()
@@ -176,11 +207,11 @@ def test_apply_beat_snap_on_writes_and_counts():
         # 原声段：死开关，中性放行
         it4 = _item(keepOriginalAudio=True)
         stats4 = {'hit': 0, 'speed': 0, 'max_delta_ms': 0.0}
-        assert _apply_beat_snap(it4, {'shotId': 's4', 'keepOriginalAudio': True}, [4050.0], 0.0, stats4) == 4000.0
+        assert _apply_beat_snap(it4, {'shotId': 's4', 'keepOriginalAudio': True}, [3950.0], 0.0, stats4) == 4000.0
         assert stats4['hit'] == 0 and it4['appliedSpeedFactor'] == 1.0
 
         # stats 缺省（None）：不得抛错
-        assert _apply_beat_snap(_item(), {'shotId': 's5'}, [4050.0], 0.0) == 4050.0
+        assert _apply_beat_snap(_item(), {'shotId': 's5'}, [3950.0], 0.0) == 3950.0
 
     _with_env('1', _run)
     print("✓ test_apply_beat_snap_on_writes_and_counts: on 档磁吸/计数正确")

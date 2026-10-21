@@ -26,17 +26,14 @@ from rules import (
     color_continuity,
     costume_rhythm,
     critical_asset_lock,
-    cross_scene_recall,
     env_medium_lock,
     eyeline_guard,
     focus_exemption,
-    gap_padding,
     heartbeat,
     jump_cut,
     monotonic_lock,
     motion_rhythm,
     scale_rhythm,
-    shot_loop_reset,
     shot_pref_adherence,
 )
 
@@ -47,11 +44,26 @@ from rules import (
 # 退役记录（2026-09-25）：`beat_snap`（补丁2）**已退役**——BGM 强拍在输出时间轴、切片
 # startMs 在源 PTS（不同轴），且新引擎同句所有候选的输出切点恒同（画面时长=刚性音频时长）
 # ⇒ 该卡在候选打分层对排序零影响；已下沉为输出装配层实现（timeline_solver._apply_beat_snap）。
+# 退役记录（2026-10-14）：`cross_scene_recall`（补丁10 时空互文定向越狱）**已退役**——依赖工单两字段
+# `isCrossSceneRecall/recallTargetSceneId`，而 B 域工单 schema 从未产出（src 全库零赋值；步骤3 仅产语义
+# 近似的 `isFlashback`，且只用于豁免时间锚定、无目标场次）⇒ 字段恒默认、候选开闸条件恒不成立、卡片
+# SCORE 恒 0.0，实测长期休眠（daemon 点亮 14/16 中唯一的「无输入」卡）。实现文件 `rules/cross_scene_recall.py`
+# **保留封存**，待场次能力（场次清单注入工单 + 回忆指代消解）成熟后再注册（回退=恢复本 import 行与 _CARD_DEFS 条目）。
+# 退役记录（2026-10-14）：`gap_padding`（补丁7 气口弹性腔）**已退役**——判据字段 `silenceGapMs` 只在
+# 「原声段命中 ASR 行」时注入，而 daemon 的 KM query 是解说句（实测 silenceGapMs=0%(0/40)）⇒ 卡片
+# SCORE 恒中性放行 0.0，实测长期休眠（属架构不适用，非数据迟到）。实现文件 `rules/gap_padding.py`
+# **保留封存**，待原声段进 KM / 气口注入解说段后重新注册（回退同上）。
+# 退役记录（2026-10-14）：`shot_loop_reset`（补丁8 正反打视听环线）**已退役**——其机理（「素材枯竭时
+# 解除排他锁合法重入」）在新引擎**无载体**：`beam_search._win_exhausted` 是「镜头+时间窗配额」而非
+# 「每镜只用一次」的排他锁，同一镜头本就可按剩余时长多次重入 ⇒ 「解除排他锁」前提不存在；且实现已塌缩为
+# 「`primarySubject ∈ query.characters` → −0.05」，与 `focus_exemption` 判据逐字同构 ⇒ 同一候选在多主体句
+# 上重复计分（−0.05 −0.10 = −0.15）。实现文件 `rules/shot_loop_reset.py` **保留封存**，待引擎引入
+# 「镜头排他 / 素材枯竭」机制（如弃段/拼接组架构）后再注册（回退=恢复本 import 行与 _CARD_DEFS 条目）。
 _CARD_DEFS = [
     # ---- Tier1 硬门禁（违反即 ∞，一票否决，§13.4）----
     {'name': 'monotonic_lock', 'tier': 'hard',
      'score': monotonic_lock.SCORE,
-     'desc': '补丁11 同源物理单向锁', 'availability': frozenset({'parentChunkId', 'startMs'})},
+     'desc': '补丁11 同源物理单向锁(闪回豁免)', 'availability': frozenset({'parentChunkId', 'startMs'})},
     {'name': 'env_medium_lock', 'tier': 'hard',
      'score': env_medium_lock.SCORE,
      'desc': '补丁16 空镜环境介质强硬锁', 'availability': frozenset({'location'})},
@@ -74,9 +86,6 @@ _CARD_DEFS = [
     {'name': 'motion_rhythm', 'tier': 'soft',
      'score': motion_rhythm.SCORE,
      'desc': '动静 W_motion', 'availability': frozenset({'motionScore'})},
-    {'name': 'cross_scene_recall', 'tier': 'soft',
-     'score': cross_scene_recall.SCORE,
-     'desc': '补丁10 时空互文定向越狱', 'availability': frozenset({'isCrossSceneRecall', 'recallTargetSceneId'})},
     {'name': 'costume_rhythm', 'tier': 'soft',
      'score': costume_rhythm.SCORE,
      'desc': '服装律动 W_costume', 'availability': frozenset({'costume'})},
@@ -89,15 +98,9 @@ _CARD_DEFS = [
     {'name': 'shot_pref_adherence', 'tier': 'soft',
      'score': shot_pref_adherence.SCORE,
      'desc': '首选景别贴合', 'availability': frozenset({'preferredShot', 'shotScale'})},
-    {'name': 'gap_padding', 'tier': 'soft',
-     'score': gap_padding.SCORE,
-     'desc': '补丁7 气口弹性腔(休眠待回填)', 'availability': frozenset({'silenceGapMs'})},
-    {'name': 'shot_loop_reset', 'tier': 'soft',
-     'score': shot_loop_reset.SCORE,
-     'desc': '补丁8 正反打视听环线(休眠待回填)', 'availability': frozenset({'primarySubject', 'characters'})},
     {'name': 'focus_exemption', 'tier': 'soft',
      'score': focus_exemption.SCORE,
-     'desc': '补丁3 反打/过肩焦点豁免(休眠待回填)', 'availability': frozenset({'primarySubject', 'characters'})},
+     'desc': '补丁3 反打/过肩焦点豁免(多主体前置已落地)', 'availability': frozenset({'primarySubject', 'characters'})},
 ]
 
 

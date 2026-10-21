@@ -403,6 +403,13 @@ def solve(
     # 前向审望（补丁1）开关与诊断计数：缺省 0 = 关闭（零行为变化档，置 0 即一键回退）。
     # 整趟只读一次 env，避免逐候选重复读；off 档不构造前瞻池、不累加计数（零开销）。
     fl_weight = _read_forward_lookout()
+    # 顺延权重生效诊断（A/B 复测，2026-10-15，临时）：一次打印「生效权重 + 本 run CONTINUE_PREV 句数」，
+    # 用于区分「env 未生效」与「该项目无 CONTINUE_PREV 可顺延」两类 A/B 零变化成因。验证后可整块删除。
+    _fl_diag('[continue-pref] 生效权重=%.2f ｜ CONTINUE_PREV=%d/%d' % (
+        _read_continue_pref(),
+        sum(1 for _q in ctx.queries if str(_q.get('shotMode') or '') == 'CONTINUE_PREV'),
+        len(ctx.queries),
+    ))
     fl_stats: Dict[str, int] = {'hits': 0, 'cost': 0.0, 'step': 0, 'pool_empty': 0,
                                 'probe': 0, 'guard': 0, 'miss_pool': 0, 'wide': 0,
                                 'scarce': 0, 'sole': 0}
@@ -508,7 +515,7 @@ def solve(
                         if str(query.get('shotMode') or '') == 'CONTINUE_PREV' and prev_chunk:
                             if prev_chunk.get('parentChunkId') and \
                                     prev_chunk.get('parentChunkId') == cand.get('parentChunkId'):
-                                total -= CONTINUE_PREF
+                                total -= _read_continue_pref()
                     child = build_path(path, cand, sid, scene, entry, _need)
                     # D 域状态推进（补丁11 单向锁 / 补丁13 心跳疲劳），写在子路径副本上。
                     _advance_state(child, prev_chunk, cand, entry)
@@ -808,6 +815,23 @@ def _read_time_prox() -> float:
     except (TypeError, ValueError):
         w = 0.0  # 非法值：不豁免也不造假，按关闭处理（交由主流程暴露）
     return max(0.0, w)
+
+
+def _read_continue_pref() -> float:
+    """读取 CONTINUE_PREV 同父软偏好权重（env `ZENTECT_CONTINUE_PREF`，缺省 0.3）。
+
+    A/B 复测用：调高 ⇒ 更强倾向顺延上一镜（压过更大的语义差）；0 ⇒ 关闭顺延偏好。
+    非法值错就错地落回缺省（不豁免不造假）。
+
+    Returns:
+        float: [0, +∞) 的顺延偏好权重。
+    """
+    import os
+    raw = os.environ.get('ZENTECT_CONTINUE_PREF', '')
+    try:
+        return max(0.0, float(raw)) if raw != '' else CONTINUE_PREF
+    except (TypeError, ValueError):
+        return CONTINUE_PREF
 
 
 def _src_time_prox(prev_chunk: Optional[dict], cand: dict) -> float:

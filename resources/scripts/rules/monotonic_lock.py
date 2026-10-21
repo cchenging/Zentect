@@ -21,14 +21,23 @@ def SCORE(prev_shot, cand, ctx) -> float:
     （由束搜索按 `游标 ?? 命中帧强锚 ?? 镜头起点` 算出，与取料层开窗口径同源）。
     若沿用 `cand.startMs`（镜头起点恒定）会把同镜换窗续用误判成时间倒流。
 
+    **闪回豁免（2026-10-14 接通）**：`query.isFlashback`（步骤3 LLM 显式标注的闪回/回忆/倒叙段）
+    为真时本卡直接放行——闪回段叙事时间与画面时间不同步，其取料窗口允许在源时间回退，
+    本卡是唯一会以 ∞ 误杀合法闪回素材的 Tier1 硬门禁，故须对其豁免。
+    缺省 / False ⇒ 不豁免、仍按严格口径判（不因字段缺失放宽，守「不可造假门」）。
+
     Args:
         prev_shot: 前一镜切片（本卡不依赖，保留接口签名）。
         cand: 候选镜头。
         ctx: 上下文 {state, query, is_scene_first, entryMs}。
 
     Returns:
-        float: 0.0 通过；float('inf') 一票否决。
+        float: 0.0 通过（含闪回豁免）；float('inf') 一票否决。
     """
+    query = ctx.get('query') or {}
+    if query.get('isFlashback'):
+        # 闪回/回忆段：允许源时间回退，豁免单向锁（步骤3 已显式标注，非猜测）。
+        return 0.0
     pid = str(cand.get('parentChunkId') or cand.get('id') or '')
     if not pid:
         return 0.0

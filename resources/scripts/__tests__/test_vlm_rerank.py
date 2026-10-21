@@ -69,9 +69,10 @@ def test_mode_and_max():
     try:
         assert ts._read_vlm_rerank_mode() == 'off', '缺省必须是 off（零行为变化）'
         assert ts._read_vlm_rerank_max() == 0, '缺省 MAX=0 表示不限'
-        assert ts._read_vlm_rerank_model() == 'qwen3-vl-plus', '缺省模型必须是 plus（视觉通道 flash 实测不合格）'
+        assert ts._read_vlm_rerank_model() == 'qwen3.7-plus', '缺省模型必须是 plus 档（视觉通道绑的是 flash 档，实测不合格）'
 
         for raw, want in (('on', 'on'), (' DRY ', 'dry'), ('off', 'off'),
+                          ('local', 'local'), (' LOCAL ', 'local'), ('localish', 'off'),
                           ('bogus', 'off'), ('', 'off'), ('ON', 'on')):
             os.environ['ZENTECT_VLM_RERANK'] = raw
             assert ts._read_vlm_rerank_mode() == want, '档位解析错: {!r}'.format(raw)
@@ -80,8 +81,8 @@ def test_mode_and_max():
             os.environ['ZENTECT_VLM_RERANK_MAX'] = raw
             assert ts._read_vlm_rerank_max() == want, 'MAX 解析错: {!r}'.format(raw)
 
-        os.environ['ZENTECT_VLM_RERANK_MODEL'] = ' qwen3-vl-flash '
-        assert ts._read_vlm_rerank_model() == 'qwen3-vl-flash', '模型名应可 env 覆写（供 A/B）'
+        os.environ['ZENTECT_VLM_RERANK_MODEL'] = ' qwen3.7-flash '
+        assert ts._read_vlm_rerank_model() == 'qwen3.7-flash', '模型名应可 env 覆写（供 A/B）'
     finally:
         r()
     print('  ✅ 档位/上限/模型解析')
@@ -250,7 +251,21 @@ def test_apply_end_to_end():
                             ZENTECT_VLM_RERANK='on')
     assert out['s1']['chunkData']['id'] == 'p0'
     assert any('凭据' in t for t in traces), traces
-    print('  ✅ _apply_vlm_rerank_new_engine（off/dry/on/无凭据 + 零重复用片）')
+
+    # ⑤ local（2026-10-13 加）：盘内按语义分取最高 —— 零 API、无需凭据、结果应与 ③ 的盘首项一致
+    calls = {'n': 0}
+
+    def _count(*a, **k):
+        calls['n'] += 1
+        raise RuntimeError('boom')
+    out, traces, _ = _apply('local', monkeypatch_post=_count, creds=False,
+                            ZENTECT_VLM_RERANK='local')
+    assert calls['n'] == 0, 'local 档不得发起 API 调用（实际 {} 次）'.format(calls['n'])
+    assert out['s1']['chunkData']['id'] == 'p2', out['s1']['chunkData']['id']
+    assert out['s2']['chunkData']['id'] == 'p3', out['s2']['chunkData']['id']
+    assert out['s1'].get('vlmReranked') is True
+    assert len({out['s1']['chunkData']['id'], out['s2']['chunkData']['id']}) == 2, '排他被破坏'
+    print('  ✅ _apply_vlm_rerank_new_engine（off/local/dry/on/无凭据 + 零重复用片）')
 
 
 def test_no_cross_sentence_cover_dup():
