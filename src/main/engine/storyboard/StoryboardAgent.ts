@@ -169,6 +169,10 @@ export interface StoryboardOpenOptions {
   batchSize?: number;
   /** 带错误信息最大重开次数（缺省 2，P2/P5） */
   maxRetryOnInvalid?: number;
+  /** 🎬 当前素材切片（步骤5 已聚合的 slice 列表）：
+   *  用于校验 segments.json 是否与本次素材时段相符；不符则按切片重建场次，
+   *  避免用上一版/别的视频的场记单开单（段号与 topChars 全错位）。 */
+  chunks?: any[];
 }
 
 /** 单批开单结果（内部）。 */
@@ -216,7 +220,22 @@ export class StoryboardAgent {
       ? Math.max(0, Math.floor(opts.maxRetryOnInvalid) || 0)
       : MAX_RETRY_ON_INVALID;
 
-    const segments = StoryboardAgent.loadSegments(projectId);
+    let segments = StoryboardAgent.loadSegments(projectId);
+    // 🔧 上游数据守卫（2026-10-22）：segments.json 是离线场记产物，可能来自旧版本/更长的视频
+    //   （实测 temp/scene-log 的 49 段覆盖到 4045s，而当前素材只有 224~2702s ⇒ 17 段无任何切片）。
+    //   用错场记单会让 S2 的 segmentId/topChars 全部错位（段34 声明在素材外），故按当前切片校验，
+    //   不符则就地重建并落项目目录，后续场次与切片时间轴一致。
+    const materialChunks = Array.isArray(opts?.chunks) ? (opts as StoryboardOpenOptions).chunks! : [];
+    if (segments.length > 0 && materialChunks.length > 0
+      && StoryboardAgent.segmentsLookStale(segments, materialChunks)) {
+      const rebuilt = StoryboardAgent.buildSegmentsFromChunks(materialChunks);
+      if (rebuilt.length > 0) {
+        AppLogger.warn(LOG_TAGS.AI_AGENT,
+          `[开单] ⚠️ 场记单与当前素材不符（旧 ${segments.length} 段，越出素材时段）⇒ 按当前切片重建 ${rebuilt.length} 段`);
+        StoryboardAgent.persistSegments(projectId, rebuilt);
+        segments = rebuilt;
+      }
+    }
     if (segments.length === 0) {
       // 规格 §5.1：缺文件不阻塞整个步骤5，返回空由上层回退既有链路
       AppLogger.warn(LOG_TAGS.AI_AGENT,
@@ -431,6 +450,133 @@ export class StoryboardAgent {
     }
     AppLogger.info(LOG_TAGS.AI_AGENT, '[开单] 未找到场记单（segments.json），本次跳过 α 真工单');
     return [];
+  }
+
+  /**
+   * 函数级中文注释：判断场记单是否与当前素材时段不符（上游数据守卫）。
+   *
+   * 口径：素材时段 = 切片 startMs/endMs 的并集范围；场记单段窗口落在素材范围内的比例 < 0.8，
+   * 或存在段起点晚于素材末尾（>5s 容差），即判不符。无切片时不做判断（返回 false，维持旧行为）。
+   *
+   * @param segments 已加载的场记单段落
+   * @param chunks 当前素材切片（含 startMs/endMs）
+   * @returns 是否与当前素材不符
+   */
+  static segmentsLookStale(segments: SegmentSummary[], chunks: any[]): boolean {
+    const spans: Array<[number, number]> = (chunks || [])
+      .map((c) => [Number(c?.startMs) || 0, Number(c?.endMs) || 0] as [number, number])
+      .filter(([s, e]) => e > s);
+    if (spans.length === 0 || segments.length === 0) return false;
+    const lo = Math.min(...spans.map(([s]) => s));
+    const hi = Math.max(...spans.map(([, e]) => e));
+    const overlap = segments.filter((s) => s.endMs > lo && s.startMs < hi).length;
+    const beyond = segments.filter((s) => s.startMs > hi + 5000).length;
+    return overlap / segments.length < 0.8 || beyond > 0;
+  }
+
+  /**
+   * 函数级中文注释：按当前切片重建场次（场记单失效时的唯一真源替代）。
+   *
+   * 规则（纯归约，无模型）：按 startMs 排序后，相邻切片在 **场景标签变化 / 间隔 >60s /
+   * 段长 >8min** 处断开；段内 topChars 取 characters 频次（剔除 EMPTY/MULTIPLE 哨兵），
+   * shotDist 取景别计数，repDesc 取段内最长描述。段号重新从 1 连续编号。
+   * 短于 8s 的碎段丢弃（不参与开单，避免制造无意义段号）。
+   *
+   * @param chunks 当前素材切片
+   * @returns 重建的场次摘要（按时间升序，segmentId 1..N）
+   */
+  static buildSegmentsFromChunks(chunks: any[]): SegmentSummary[] {
+    const GAP_MS = 60 * 1000;
+    const MAX_MS = 8 * 60 * 1000;
+    const MIN_MS = 8 * 1000;
+    const items = (chunks || [])
+      .map((c) => ({
+        id: String(c?.id || ''),
+        startMs: Number(c?.startMs) || 0,
+        endMs: Number(c?.endMs) || 0,
+        loc: String(c?.scene || c?.location || '').trim(),
+        chars: Array.isArray(c?.characters) ? c.characters.map(String) : [],
+        shot: String(c?.shotScale || c?.shotType || '').trim(),
+        desc: String(c?.description || '').trim(),
+        primary: String(c?.primarySubject || '').trim(),
+      }))
+      .filter((c) => c.id && c.endMs > c.startMs)
+      .sort((a, b) => a.startMs - b.startMs);
+    if (items.length === 0) return [];
+
+    const groups: typeof items[] = [];
+    let cur: typeof items = [];
+    for (const it of items) {
+      const prev = cur[cur.length - 1];
+      const locBreak = Boolean(prev && it.loc && prev.loc && it.loc !== prev.loc);
+      const gapBreak = Boolean(prev && it.startMs - prev.endMs > GAP_MS);
+      const lenBreak = cur.length > 0 && it.endMs - cur[0].startMs > MAX_MS;
+      if (prev && (locBreak || gapBreak || lenBreak)) {
+        groups.push(cur);
+        cur = [];
+      }
+      cur.push(it);
+    }
+    if (cur.length > 0) groups.push(cur);
+
+    const out: SegmentSummary[] = [];
+    for (const g of groups) {
+      const startMs = g[0].startMs;
+      const endMs = g[g.length - 1].endMs;
+      if (endMs - startMs < MIN_MS) continue;
+      const charCount = new Map<string, number>();
+      const locCount = new Map<string, number>();
+      const shotDist: Record<string, number> = {};
+      for (const c of g) {
+        const names = c.chars.length > 0 ? c.chars : [c.primary];
+        for (const n of names) {
+          const name = String(n || '').trim();
+          if (!name || name === 'EMPTY' || name === 'MULTIPLE') continue;
+          charCount.set(name, (charCount.get(name) || 0) + 1);
+        }
+        const loc = c.loc || '不明';
+        locCount.set(loc, (locCount.get(loc) || 0) + 1);
+        if (c.shot) shotDist[c.shot] = (shotDist[c.shot] || 0) + 1;
+      }
+      const locSorted = [...locCount.entries()].sort((a, b) => b[1] - a[1]);
+      const topChars = [...charCount.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([n]) => n);
+      const rep = g.slice().sort((a, b) => b.desc.length - a.desc.length)[0];
+      out.push({
+        segmentId: out.length + 1,
+        startMs,
+        endMs,
+        parentIds: g.map((c) => c.id),
+        parentCount: g.length,
+        chunkCount: g.length,
+        locClass: locSorted[0]?.[0] || '',
+        locPurity: g.length > 0 ? (locSorted[0]?.[1] || 0) / g.length : 0,
+        locRaw: locSorted as Array<[string, number]>,
+        topChars,
+        shotDist,
+        repDesc: rep?.desc || '',
+      });
+    }
+    return out;
+  }
+
+  /**
+   * 函数级中文注释：把重建的场次落盘到项目目录 `segments.json`（覆盖旧离线场记单）。
+   * 仅在「校验判定不符 + 重建成功」后调用；写盘失败只 warn，不影响本次开单（内存里已生效）。
+   */
+  static persistSegments(projectId: string | undefined, segments: SegmentSummary[]): void {
+    if (!projectId || !projectId.trim()) return;
+    try {
+      const dir = PathManager.getProjectDir(projectId.trim());
+      const file = path.join(dir, 'segments.json');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(segments, null, 2), 'utf-8');
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[开单] 重建场记单已落盘：${file}（${segments.length} 段）`);
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT, `[开单] 重建场记单落盘失败（本次仍使用内存版本）：${e?.message || e}`);
+    }
   }
 
   /**
