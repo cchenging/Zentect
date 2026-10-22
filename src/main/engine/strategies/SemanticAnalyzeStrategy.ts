@@ -832,7 +832,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     const frameDescsRaw: { timeMs: number; description: string; frameHash?: string; emotion?: string; shotType?: string; cameraMovement?: string; scene?: string; characters?: string[];
       shotStyle?: string; dramaticConflict?: string; spatialRelation?: string; visualAtmosphere?: string;
       primarySubject?: string; secondarySubjects?: string[]; interaction?: string;
-      keyProps?: string; costume?: string; weatherEnv?: string }[] = collectFrameDescriptions(task).map((f: any) => {
+      keyProps?: string; costume?: string; weatherEnv?: string; materialType?: string }[] = collectFrameDescriptions(task).map((f: any) => {
       /** 🎥 运镜描述回捞（2026-09-16 第2步修复）：帧级没有 downstream 时，从描述前缀【景别/运镜】回捞。
        *  实测根因：切片级 cameraMovement 恒为 0（metadata.videoChunks 连键都不存在），而 shotType/scene
        *  各有"描述回捞"故幸免——因为下游帧对象可能**不带 downstream**（结构断层），
@@ -903,6 +903,10 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         keyProps: f?.downstream?.keyProps || f.keyProps,
         costume: f?.downstream?.costume || f.costume,
         weatherEnv: f?.downstream?.weatherEnv || f.weatherEnv,
+        /** 🎬 P4（2026-10-22）：VLM 空镜能力标注（real/empty/effect）——帧级透传，切片侧取众数。
+         *  daemon `derive_chunk_material` 对显式 empty/effect 只保真不重算，故厂商/模型判定的空镜
+         *  不会被「宽景+无主体」的派生规则推翻。 */
+        materialType: f?.downstream?.materialType || f.materialType,
       };
     });
     /** 🎬 帧时间坐标统一为【源坐标】（2026-09-05 模式 A）：候选切片坐标恒为源，帧描述须同参照才能聚合。
@@ -950,6 +954,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         keyProps: new Map(),           // 关键道具（道具锚定维度）
         costume: new Map(),            // 服装造型（同场换装判据）
         weatherEnv: new Map(),         // 环境介质/时段（天气影调判据）
+        // 🎬 P4（2026-10-22）：VLM 素材类型（real/empty/effect）——众数落 chunk.materialType，
+        //   供 daemon 空镜优先分支消费；显式 empty 优先于「宽景+无主体」派生。
+        materialType: new Map(),
       };
       const extraArrUnion = new Map<string, number>(); // secondarySubjects 并集（值 → 出现帧数）
 
@@ -1461,6 +1468,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         batchSize: Number(process.env.ZENTECT_STORYBOARD_BATCH) > 0
           ? Number(process.env.ZENTECT_STORYBOARD_BATCH)
           : undefined,
+        /** 当前素材切片：供 S2 校验场记单时段是否与本次素材一致（不符则按切片重建场次，
+         *  避免沿用上一版/更长视频的 segments.json 造成段号与 topChars 全错位）。 */
+        chunks,
       });
       if (orders && orders.length > 0) {
         const ordersByUnit = new Map<string, ShotSpec>();
@@ -1800,8 +1810,9 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     // 🎬 抽象句扩池（方案 A，2026-10-22）：抽象旁白不含具体画面语义，帧召回按文案措辞只会捞到
     //   人物近景——实测 3 句抽象句的 24 个召回候选里只有 1 个宽景，daemon 侧「空镜优先 / 宽景回退」
     //   两级过滤最终都只剩这 1 个 ⇒ 三句连押同一片、窗口从同一入点重叠（观感卡带）。
-    //   这里把「召回锚点 ±45s 内的空镜/宽景镜头」并入白名单，让 daemon 在真正的空镜池里挑。
-    //   锚点=召回 Top1 镜头起点；无召回时退到剧情锚点 sourceRefTimeMs；两者皆无则跳过（不造错场景池）。
+    //   这里把「段域锚点 ±45s 内的空镜/宽景镜头」并入白名单，让 daemon 在真正的空镜池里挑。
+    //   锚点=同段非抽象兄弟句 Top1 的中位数（文档 D3「段域池」等价实现：抽象句自身召回不可靠，
+    //   实测 sub_2 的 Top1 飘到 1028s 的错场景）；无兄弟句时退自身 Top1，再退 sourceRefTimeMs。
     const abstractRecallWideRaw = String(process.env.ZENTECT_KM_ABSTRACT_RECALL_WIDE ?? '1').trim().toLowerCase();
     const abstractRecallWide = abstractRecallWideRaw !== '0' && abstractRecallWideRaw !== 'off';
     const abstractExt = SemanticAnalyzeStrategy.extendAbstractCandidates({
@@ -2157,7 +2168,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
    * 最终都只剩同一片，三句连押、窗口从同一入点重叠。扩池后池内出现 ≥2 个空镜，daemon 的
    * capable 分支才会真正生效，束搜索才有第二个选择。
    *
-   * 边界（守「错就错」）：锚点取不到（无召回且无 sourceRefTimeMs）⇒ 跳过该句，绝不跨场景乱补。
+   * 边界（守「错就错」）：锚点全取不到（同段无非抽象兄弟句、无召回、无 sourceRefTimeMs）⇒ 跳过该句，绝不跨场景乱补。
    *
    * @returns 统计 { sentences 扩池句数, added 补入候选数, skipped 无锚点/无宽景跳过句数 }
    */
@@ -2175,13 +2186,32 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     const WIDE_RE = /空镜|远景|大全景|全景/;
     const isWide = (c: any): boolean => WIDE_RE.test(String(c?.shotScale || c?.shotType || '').trim());
     const windowMs = Math.max(1, Number(opts.windowSec) || 45) * 1000;
+    // 段域锚点（文档 D3「段域池」的等价实现）：同一脚本段（matchUnitId 前缀）的**非抽象兄弟句**
+    // 召回 Top1 时间的中位数。抽象句自身召回不稳定（实测 sub_2 的 Top1 飘到 1028s 的错场景），
+    // 而兄弟句语义具体、召回可靠，用它们把窗口钉在真正演这场戏的位置。
+    const prefixOf = (q: any): string =>
+      String(q?.matchUnitId || q?.shotId || '').replace(/_sub_\d+$/, '');
+    const groupTimes = new Map<string, number[]>();
+    for (const q of opts.kmQueries || []) {
+      if (q?.isAbstractNarration === true) continue;
+      const ids = opts.candidateIds[String(q.shotId)] || [];
+      const c = ids.length > 0 ? opts.shotById.get(String(ids[0])) : null;
+      const t = Number(c?.startMs ?? 0);
+      if (!(t > 0)) continue;
+      const k = prefixOf(q);
+      if (!groupTimes.has(k)) groupTimes.set(k, []);
+      groupTimes.get(k)!.push(t);
+    }
     for (const q of opts.kmQueries || []) {
       if (q?.isAbstractNarration !== true) continue;
       const sid = String(q.shotId);
       const kept = opts.candidateIds[sid] || [];
-      // 锚点：召回 Top1 镜头起点（同场景内最近的画面证据）；无召回则退剧情锚点 sourceRefTimeMs。
-      const anchorChunk = kept.length > 0 ? opts.shotById.get(String(kept[0])) : null;
-      const anchorMs = Number(anchorChunk?.startMs ?? q?.sourceRefTimeMs ?? 0);
+      // 锚点优先级：同段非抽象兄弟句 Top1 中位数 > 自身召回 Top1 起点 > 剧情锚点 sourceRefTimeMs。
+      const siblings = groupTimes.get(prefixOf(q)) || [];
+      const ownChunk = kept.length > 0 ? opts.shotById.get(String(kept[0])) : null;
+      const anchorMs = siblings.length > 0
+        ? siblings.slice().sort((a, b) => a - b)[Math.floor((siblings.length - 1) / 2)]
+        : Number(ownChunk?.startMs ?? q?.sourceRefTimeMs ?? 0);
       if (!(anchorMs > 0)) { stat.skipped += 1; continue; }
       const wideIds = (opts.chunks || [])
         .filter((c: any) => {

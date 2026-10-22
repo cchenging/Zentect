@@ -113,6 +113,8 @@ export interface FrameDetail {
     costume?: string;
     /** 🎬 §20 第4步（2026-09-16）：环境介质/天气/时段（晴/雨/雪/夜/黄昏…）——影调与内外景判据数据源 */
     weatherEnv?: string;
+    /** 🎬 P4（2026-10-22）：素材类型（real/empty/effect）——空镜/B-Roll 的唯一 VLM 生产者 */
+    materialType?: string;
     characters?: string[];
     asrText?: string;
   };
@@ -601,6 +603,9 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       keyProps: normStr(jsonItem?.keyProps),
       costume: normStr(jsonItem?.costume),
       weatherEnv: normStr(jsonItem?.weatherEnv),
+      // 🎬 P4（2026-10-22）：素材类型（real/empty/effect）——切片侧取众数落 chunk.materialType，
+      //  daemon 据此把真空镜放进 isAbstractCapable 池（显式 empty 优先于「宽景+无主体」派生）。
+      materialType: normStr(jsonItem?.materialType),
       characters: normArr<string>(jsonItem?.characters),
       asrText: normStr(frameAsrText),
     };
@@ -1446,9 +1451,11 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
                       // 🎬 §20 第4步（v5）：服装造型 / 环境介质——同场换装与天气影调判据的数据源
                       costume: { type: 'string', description: '画面主要人物的上装造型：颜色+款式（如"白衬衫""黑色风衣""病号服"）；多人写最突出的一个；空镜或无人物写"无人物"' },
                       weatherEnv: { type: 'string', description: '环境介质与时段：晴/阴/雨/雪/雾/夜/黄昏/室内（如"雨夜街头""室内白天"）；无法判断写"室内"或"不明"' },
+                      // 🎬 P4（2026-10-22）：素材类型——空镜/B-Roll 的唯一 VLM 生产者，供抽象旁白句取片
+                      materialType: { type: 'string', description: '素材类型（P4 空镜判定）：empty=空镜/纯环境/静物等无叙事主体的可用转场画面（删掉它剧情不受损）；effect=特效/字幕/黑场/闪白等非实拍素材；real=正常实拍叙事画面。有人物在做剧情动作一律写 real', enum: ['real', 'empty', 'effect'] },
                       keywords: { type: 'array', items: { type: 'string' }, description: '画面关键词（仅动作/情绪/道具/人物，禁止环境词）' },
                     },
-                    required: ['scene', 'subject', 'primarySubject', 'eyelineDirection', 'secondarySubjects', 'interaction', 'shotStyle', 'narrativeAction', 'emotionalState', 'shotType', 'cameraMovement', 'dramaticConflict', 'visualAtmosphere', 'spatialRelation', 'keyProps', 'costume', 'weatherEnv'],
+                    required: ['scene', 'subject', 'primarySubject', 'eyelineDirection', 'secondarySubjects', 'interaction', 'shotStyle', 'narrativeAction', 'emotionalState', 'shotType', 'cameraMovement', 'dramaticConflict', 'visualAtmosphere', 'spatialRelation', 'keyProps', 'costume', 'weatherEnv', 'materialType'],
                   },
               },
             },

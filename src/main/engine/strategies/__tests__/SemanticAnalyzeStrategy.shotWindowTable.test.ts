@@ -466,6 +466,24 @@ describe('extendAbstractCandidates：抽象句并入空镜/宽景候选（方案
     expect(stat).toEqual({ sentences: 1, added: 1, skipped: 0 });
   });
 
+  it('抽象句锚点取同段非抽象兄弟句 Top1 中位数（自身召回飘到错场景也不跟）', () => {
+    const wrong = { id: 'c9', shotScale: '全景', description: '完全无关的场景', startMs: 100000 };
+    const byId = new Map([...chunks, wrong].map((c) => [c.id, c]));
+    const candidateIds: Record<string, string[]> = { s1: ['c9'], s2: ['c1'] };
+    const stat = S.extendAbstractCandidates({
+      kmQueries: [
+        { shotId: 's1', matchUnitId: 'seg_1_sub_1', isAbstractNarration: true },
+        { shotId: 's2', matchUnitId: 'seg_1_sub_2' },          // 兄弟句：Top1=c1@1000
+      ],
+      chunks: [...chunks, wrong], candidateIds, shotById: byId,
+      hasChunkDesc: (cid: string) => Boolean(String(byId.get(cid)?.description || '').trim()),
+      windowSec: 45, enabled: true,
+    });
+    // 锚点 = 1000（兄弟句），而不是自身的 100000 ⇒ 并入 c3/c5
+    expect(candidateIds.s1).toEqual(['c9', 'c3', 'c5']);
+    expect(stat).toEqual({ sentences: 1, added: 2, skipped: 0 });
+  });
+
   it('锚点缺失（无召回且无 sourceRefTimeMs）⇒ 跳过，绝不跨场景乱补', () => {
     const candidateIds: Record<string, string[]> = {};
     const stat = S.extendAbstractCandidates({
