@@ -22,10 +22,12 @@ from typing import Dict, List, Optional
 
 from montage_contract import (
     ContractError,
+    PREFERRED_SHOT_BAND,
     PRIMARY_SUBJECT_SENTINELS,
     default_chunk,
     default_query,
     normalize_chunk_aliases,
+    preferred_shot_from_label,
     require_field,
 )
 
@@ -436,6 +438,67 @@ def _drop_empty_desc(cands: List[str], chunk_by_id: Dict[str, dict],
     return kept
 
 
+# ---------------------------------------------------------------------------
+# 抽象句宽景硬过滤（B1，2026-10-22）
+#   背景：方案 B 已让 S2 对抽象/评论句声明 LONG_SHOT，但 daemon 里景别只是 ±0.04 软阻尼 ⇒
+#   实测扩池 60/48 后宽景**已在池中**（seg_2 全景 6、seg_4 全景 8、seg_21 全景 2），
+#   5 句仍只有 1 句落宽景（语义分差远大于 0.04）⇒ 软阻尼指望不上。
+#   口径：仅当 query.isAbstractNarration **且池内存在宽景候选**时，把非宽景候选结构性剔除
+#   （不是数值罚：罚会被后续任何归一化稀释）；池内无宽景则原样保留，不制造空池。
+#   宽景 = 契约远景带（中全景/全景/远景/大全景）+ 空镜（空镜非景别档位，但对抽象句是最优解）。
+#   开关 `ZENTECT_KM_ABSTRACT_WIDE`，缺省 on（= 方案 B 的落地语义）；置 0 一键回退。
+# ---------------------------------------------------------------------------
+def _read_abstract_wide() -> bool:
+    """读取「抽象句宽景硬过滤」开关（env `ZENTECT_KM_ABSTRACT_WIDE`，缺省 on）。
+
+    Returns:
+        bool: True 表示对抽象句收紧到宽景候选。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_ABSTRACT_WIDE', '1')).strip().lower() not in ('0', 'off', 'false')
+
+
+def _is_wide_scale(chunk: dict) -> bool:
+    """判断切片是否属宽景（远景带或空镜）。
+
+    Args:
+        chunk: 切片实体（shotScale / shotType 中文标签）。
+
+    Returns:
+        bool: True = 宽景（可承载抽象/评论句）。
+    """
+    label = str(chunk.get('shotScale') or chunk.get('shotType') or '').strip()
+    if label == '空镜':
+        return True
+    return PREFERRED_SHOT_BAND.get(preferred_shot_from_label(label)) == 2
+
+
+def _abstract_wide_filter(cands: List[str], chunk_by_id: Dict[str, dict],
+                          sid: str, stat: dict) -> List[str]:
+    """抽象句收紧到宽景候选（有宽景才收紧，无则原样保留）。
+
+    Args:
+        cands: 本句候选 id 列表。
+        chunk_by_id: 切片索引。
+        sid: 句 id（诊断用）。
+        stat: 统计容器 {'tightened': 0, 'dropped': 0, 'no_wide': 0, 'sentences': []}。
+
+    Returns:
+        List[str]: 过滤后的候选（可能等于入参）。
+    """
+    if not cands:
+        return cands
+    wide = [cid for cid in cands if _is_wide_scale(chunk_by_id.get(cid) or {})]
+    if not wide:
+        stat['no_wide'] += 1
+        return cands
+    if len(wide) < len(cands):
+        stat['dropped'] += len(cands) - len(wide)
+        stat['sentences'].append(sid)
+    stat['tightened'] += 1
+    return wide
+
+
 # ===========================================================================
 # 候选池快照（取证开关，默认关闭：零行为变化）
 #   目的：回答「选片差是池里没有，还是排序选错」——把每句的真实候选池 + 切片属性落盘，
@@ -550,6 +613,9 @@ def build_req_context(req: dict) -> CandidateContext:
     # 空描述剔除统计（缺省 on；见 `_read_drop_empty_desc`）。
     drop_empty = _read_drop_empty_desc()
     drop_stat = {'dropped': 0, 'sentences': [], 'all_empty': 0}
+    # 抽象句宽景硬过滤统计（缺省 on；见 `_read_abstract_wide`）。
+    abstract_wide = _read_abstract_wide()
+    wide_stat = {'tightened': 0, 'dropped': 0, 'no_wide': 0, 'sentences': []}
     ctx = CandidateContext(
         queries=[],
         chunk_by_id=chunk_by_id,
@@ -573,8 +639,13 @@ def build_req_context(req: dict) -> CandidateContext:
         ctx.queries.append(resolved)
         if drop_empty:
             cands = _drop_empty_desc(cands, chunk_by_id, sid, drop_stat)
+        if abstract_wide and bool(resolved.get('isAbstractNarration')):
+            cands = _abstract_wide_filter(cands, chunk_by_id, sid, wide_stat)
         ctx.cands_by_shotid[sid] = cands
         ctx.shotid_to_segment[sid] = _scene_of_query(resolved)
+    if abstract_wide and wide_stat['tightened']:
+        print(f'[abstract-wide] 宽景收紧句={wide_stat["tightened"]} ｜ 剔除非宽景候选={wide_stat["dropped"]} '
+              f'｜ 池内无宽景(原样保留)={wide_stat["no_wide"]} ｜ 示例={wide_stat["sentences"][:5]}')
     if drop_empty and drop_stat['dropped']:
         print(f'[empty-desc] 剔除空描述候选={drop_stat["dropped"]} ｜ 受影响句={len(drop_stat["sentences"])} '
               f'｜ 整池皆空描述(原样保留)={drop_stat["all_empty"]} ｜ 示例={drop_stat["sentences"][:5]}')
