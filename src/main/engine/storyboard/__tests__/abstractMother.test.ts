@@ -107,4 +107,14 @@ describe('抽象旁白 · 工单回填与校验', () => {
     expect(evaluateFittingConcern(spec('s1', { isAbstractNarration: true }), segment()).suspicious).toBe(false);
     expect(evaluateFittingConcern(spec('s2'), segment()).suspicious).toBe(true);
   });
+
+  it('误标告警：抽象句的画面意图写成近景即判存疑', () => {
+    const suspects = StoryboardAgent.abstractMislabelSuspects([
+      mother('s1', { isAbstractNarration: true, visualIntent: '男女主角合影特写，画面渐暗' }),
+      mother('s2', { isAbstractNarration: true, visualIntent: '雨夜街道车流，空无一人' }),
+      mother('s3', { visualIntent: '女子面部特写，眼神凌厉' }),
+    ] as never);
+    expect(suspects).toHaveLength(1);
+    expect(suspects[0].startsWith('s1:')).toBe(true);
+  });
 });

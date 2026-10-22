@@ -330,6 +330,36 @@ export class StoryboardAgent {
     AppLogger.info(LOG_TAGS.AI_AGENT,
       `[开单] 🎬 抽象旁白句=${abstractIds.size}｜声明宽景别=${wideCount}/${abstractIds.size}` +
       (missed.length > 0 ? `｜未落宽景别=${missed.join('、')}` : ''));
+    // 🔎 误标告警（方案档 §7 风险项）：抽象句的画面意图里若写着特写/近景/中景，说明上游 S3 把
+    //   「有具体主体的剧情句」当成了抽象句（实测 seg_2 的 visualIntent="男女主角合影特写"）。
+    //   只告警不改写：抽象句一旦误标会失去语义匹配资格，必须暴露给人看，不能静默放过。
+    const suspects = StoryboardAgent.abstractMislabelSuspects(mothers);
+    if (suspects.length > 0) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT,
+        `[开单] ⚠️ 抽象误标存疑=${suspects.length}/${abstractIds.size}（画面意图写了特写/近景/中景，与抽象声明矛盾）｜` +
+        suspects.join('、'));
+    }
+  }
+
+  /**
+   * 函数级中文注释：识别「标了抽象旁白、但画面意图写的是人物近景」的矛盾句（误标告警用，纯函数）。
+   *
+   * 判别口径：抽象旁白的画面意图应当是无主体的环境/意境描述；出现 特写 / 近景 / 中景 三个景别词
+   * 即视为与抽象声明自相矛盾。只识别不改写（误标会让该句失去语义匹配资格，须人工确认）。
+   *
+   * @param mothers 母句序列（isAbstractNarration 与 visualIntent 的唯一来源）
+   * @returns 矛盾句清单，格式 `${matchUnitId}:${visualIntent 前 18 字}`
+   */
+  static abstractMislabelSuspects(mothers: MotherClauseInput[]): string[] {
+    const nearScale = /特写|近景|中景/;
+    const out: string[] = [];
+    for (const m of mothers || []) {
+      if (m?.isAbstractNarration !== true) continue;
+      const vi = String((m as any).visualIntent || '').trim();
+      if (!vi || !nearScale.test(vi)) continue;
+      out.push(`${String(m.matchUnitId || '').trim()}:${vi.slice(0, 18)}`);
+    }
+    return out;
   }
 
   /**
@@ -783,8 +813,8 @@ export class StoryboardAgent {
 - 原声句（keepOriginalAudio=true）：audioMode 必须= original（锁说话人、不参与变速）。
 
 【抽象旁白专项】（母句后标注「抽象旁白」的句子必须走这条）
-抽象旁白 = 时间流逝/纯抒情（岁月、转眼、荏苒、誓言、往事…），**没有具体叙事主体与动作**。
-- preferredShot 取 EXTREME_LONG 或 LONG_SHOT（该段确无全景类素材时，退而取该段实际有记录的最宽景别）；
+抽象旁白 = 解说词**不描述任何具体人物/动作/事件**，而是评论、感叹、隐喻、格言或时间流逝抒情（删掉这句，剧情信息不受影响 ⇒ 抽象）。
+- preferredShot 只允许两个英文枚举值：LONG_SHOT 或 EXTREME_LONG；**严禁**写「空镜」「远景」「全景」等中文或任何枚举外的值（越界整单判废重开）；
 - 禁止给抽象旁白开 EXTREME_CLOSE / CLOSE_SHOT / MEDIUM_CLOSE —— 那是人物情绪的语法，套上去会逼剪辑师去抓人脸特写；
 - targetSubjects 可以为空数组（纯空镜/环境画面），不要为了凑主体硬锁人物；
 - cameraDynamic 优先 STATIC / PAN / TILT（缓移），actionType / keyProp 一般留空；
