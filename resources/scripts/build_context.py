@@ -391,6 +391,51 @@ def build_candidates_for_query(
     return cands
 
 
+def _read_drop_empty_desc() -> bool:
+    """读取「空描述切片剔除」开关（env `ZENTECT_KM_DROP_EMPTY_DESC`，缺省 on）。
+
+    依据（2026-10-22 实测）：705 切片里有 58 个 `description` 为空（8.2%），多为片头集数字幕/
+    黑场/字卡。这些切片没有任何视觉语义可判，BGE 只能编码空串 ⇒ 语义分是噪声，却仍能中标
+    （实测 chunk_322 空描述被 seg_8 / seg_21_sub_2 选中，即用户看到的「报第多少集」画面）。
+    Node 侧 `stripUninformativeMatchSegments` 只清洗 **1134 段**，段退场后真正参选的 **705 切片**
+    没有经过该清洗 ⇒ 缺口在此。
+
+    Returns:
+        bool: True 表示从候选池剔除空描述切片。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_DROP_EMPTY_DESC', '1')).strip().lower() not in ('0', 'off', 'false')
+
+
+def _drop_empty_desc(cands: List[str], chunk_by_id: Dict[str, dict],
+                     sid: str, drop_stat: dict) -> List[str]:
+    """剔掉描述为空的候选（结构性事实：无视觉语义不可判），并计数。
+
+    Q1 不变量：**仅当剔除后仍有候选才剔除**；整池皆空描述 ⇒ 原样保留（不制造空中池），
+    只计入 `all_empty` 暴露缺料。
+
+    Args:
+        cands: 本句候选 id 列表。
+        chunk_by_id: 切片索引。
+        sid: 句 id（诊断用）。
+        drop_stat: 只读统计容器 {'dropped': 0, 'sentences': [], 'all_empty': 0}。
+
+    Returns:
+        List[str]: 过滤后的候选（可能等于入参）。
+    """
+    if not cands:
+        return cands
+    kept = [cid for cid in cands
+            if str((chunk_by_id.get(cid) or {}).get('description') or '').strip()]
+    if not kept:
+        drop_stat['all_empty'] += 1
+        return cands
+    if len(kept) < len(cands):
+        drop_stat['dropped'] += len(cands) - len(kept)
+        drop_stat['sentences'].append(sid)
+    return kept
+
+
 # ===========================================================================
 # 候选池快照（取证开关，默认关闭：零行为变化）
 #   目的：回答「选片差是池里没有，还是排序选错」——把每句的真实候选池 + 切片属性落盘，
@@ -502,6 +547,9 @@ def build_req_context(req: dict) -> CandidateContext:
     merged = merge_orders_into_queries(queries, orders)
     # 候选来源计数（仅随快照开关消费，off 档只多一次字符串赋值，无行为变化）。
     pool_source: Dict[str, str] = {}
+    # 空描述剔除统计（缺省 on；见 `_read_drop_empty_desc`）。
+    drop_empty = _read_drop_empty_desc()
+    drop_stat = {'dropped': 0, 'sentences': [], 'all_empty': 0}
     ctx = CandidateContext(
         queries=[],
         chunk_by_id=chunk_by_id,
@@ -523,8 +571,15 @@ def build_req_context(req: dict) -> CandidateContext:
             cands = _soft_rank_auto_scene(cands, resolved, auto_segs, chunk_by_id)
             pool_source[sid] = 'segment' if _scene_of_query(resolved) > 0 else 'all'
         ctx.queries.append(resolved)
+        if drop_empty:
+            cands = _drop_empty_desc(cands, chunk_by_id, sid, drop_stat)
         ctx.cands_by_shotid[sid] = cands
         ctx.shotid_to_segment[sid] = _scene_of_query(resolved)
+    if drop_empty and drop_stat['dropped']:
+        print(f'[empty-desc] 剔除空描述候选={drop_stat["dropped"]} ｜ 受影响句={len(drop_stat["sentences"])} '
+              f'｜ 整池皆空描述(原样保留)={drop_stat["all_empty"]} ｜ 示例={drop_stat["sentences"][:5]}')
+    elif drop_empty and drop_stat['all_empty']:
+        print(f'[empty-desc] 无剔除 ｜ 整池皆空描述(原样保留)={drop_stat["all_empty"]}')
     if _read_pool_dump():
         _pool_dump(ctx, pool_source, req)
     return ctx
