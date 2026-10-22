@@ -438,3 +438,53 @@ describe('retimeFragmentWindow（改窗三件套 / 身份三件套同源 / 变�
     expect(result.chunkData.filePath).toBe('a.mp4');        // 不可变
   });
 });
+
+describe('extendAbstractCandidates：抽象句并入空镜/宽景候选（方案 A）', () => {
+  const chunks = [
+    { id: 'c1', shotScale: '近景', description: '妻子面部', startMs: 1000 },
+    { id: 'c2', shotScale: '中景', description: '两人对话', startMs: 1200 },
+    { id: 'c3', shotScale: '全景', description: '庭院静谧', startMs: 1300 },
+    { id: 'c4', shotScale: '远景', description: '城市夜景', startMs: 90000 },  // 超出 ±45s
+    { id: 'c5', shotScale: '全景', description: '宴会空镜', startMs: 2000 },
+    { id: 'c6', shotScale: '全景', description: '', startMs: 2100 },           // 空描述不进池
+  ];
+  const shotById = new Map(chunks.map((c) => [c.id, c]));
+
+  it('抽象句：锚点 ±45s 内的宽景并入召回白名单，非抽象句不动', () => {
+    const candidateIds: Record<string, string[]> = { s1: ['c1', 'c2', 'c3'], s2: ['c1'] };
+    const stat = S.extendAbstractCandidates({
+      kmQueries: [
+        { shotId: 's1', isAbstractNarration: true },
+        { shotId: 's2' },                                   // 非抽象 ⇒ 不扩
+      ],
+      chunks, candidateIds, shotById,
+      hasChunkDesc: (cid: string) => String(shotById.get(cid)?.description || '').trim().length > 0,
+      windowSec: 45, enabled: true,
+    });
+    expect(candidateIds.s1).toEqual(['c1', 'c2', 'c3', 'c5']);  // 去重 + 只收窗口内宽景
+    expect(candidateIds.s2).toEqual(['c1']);                     // 非抽象句保持原样
+    expect(stat).toEqual({ sentences: 1, added: 1, skipped: 0 });
+  });
+
+  it('锚点缺失（无召回且无 sourceRefTimeMs）⇒ 跳过，绝不跨场景乱补', () => {
+    const candidateIds: Record<string, string[]> = {};
+    const stat = S.extendAbstractCandidates({
+      kmQueries: [{ shotId: 's1', isAbstractNarration: true }],
+      chunks, candidateIds, shotById,
+      hasChunkDesc: () => true, windowSec: 45, enabled: true,
+    });
+    expect(candidateIds.s1).toBeUndefined();
+    expect(stat).toEqual({ sentences: 0, added: 0, skipped: 1 });
+  });
+
+  it('开关 off ⇒ 零行为变化', () => {
+    const candidateIds: Record<string, string[]> = { s1: ['c1'] };
+    const stat = S.extendAbstractCandidates({
+      kmQueries: [{ shotId: 's1', isAbstractNarration: true }],
+      chunks, candidateIds, shotById,
+      hasChunkDesc: () => true, windowSec: 45, enabled: false,
+    });
+    expect(candidateIds.s1).toEqual(['c1']);
+    expect(stat).toEqual({ sentences: 0, added: 0, skipped: 0 });
+  });
+});

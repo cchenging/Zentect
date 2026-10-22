@@ -22,12 +22,12 @@ from typing import Dict, List, Optional
 
 from montage_contract import (
     ContractError,
-    PREFERRED_SHOT_BAND,
     PRIMARY_SUBJECT_SENTINELS,
     default_chunk,
     default_query,
+    derive_chunk_material,
+    is_wide_scale_label,
     normalize_chunk_aliases,
-    preferred_shot_from_label,
     require_field,
 )
 
@@ -85,6 +85,10 @@ def build_chunk_index(chunks: List[dict]) -> Dict[str, dict]:
         #   生产者链写 shotType/scene/cameraMovement/colorHistogram，契约写 shotScale/
         #   location/camera/colorHist，不补则 4 张卡的 availability 闸门永不开（实测全 0%）。
         normalize_chunk_aliases(chunk)
+        # P4 方案 C：把「宽景 + 无主体」派生成空镜能力（materialType / isAbstractCapable），
+        #   供抽象句只从空镜/B-Roll 池选。零模型、零新增摄入字段，开关缺省 on。
+        if _read_empty_derive():
+            derive_chunk_material(chunk)
         index[cid] = chunk
     _flag_critical_hero_assets(list(index.values()))
     return index
@@ -439,14 +443,18 @@ def _drop_empty_desc(cands: List[str], chunk_by_id: Dict[str, dict],
 
 
 # ---------------------------------------------------------------------------
-# 抽象句宽景硬过滤（B1，2026-10-22）
+# 抽象句宽景硬过滤（B1，2026-10-22）+ 空镜优先（P4 / 方案 C，2026-10-22）
 #   背景：方案 B 已让 S2 对抽象/评论句声明 LONG_SHOT，但 daemon 里景别只是 ±0.04 软阻尼 ⇒
 #   实测扩池 60/48 后宽景**已在池中**（seg_2 全景 6、seg_4 全景 8、seg_21 全景 2），
 #   5 句仍只有 1 句落宽景（语义分差远大于 0.04）⇒ 软阻尼指望不上。
-#   口径：仅当 query.isAbstractNarration **且池内存在宽景候选**时，把非宽景候选结构性剔除
-#   （不是数值罚：罚会被后续任何归一化稀释）；池内无宽景则原样保留，不制造空池。
-#   宽景 = 契约远景带（中全景/全景/远景/大全景）+ 空镜（空镜非景别档位，但对抽象句是最优解）。
-#   开关 `ZENTECT_KM_ABSTRACT_WIDE`，缺省 on（= 方案 B 的落地语义）；置 0 一键回退。
+#   口径（两级，先紧后松）：
+#     ① 空镜优先：池内存在 **≥2** 个 `isAbstractCapable` 候选 ⇒ 只留它们（方案 C 的目标态）；
+#        仅 1 个空镜候选时**不独占**——实测 3 条相邻抽象句的池里各只有 1 个空镜，
+#        收紧后整段三句全押同一片（chunk_533 三个窗口 [2130929,2132098/2132316/2132729] 连续重叠，
+#        同一画面重复播放三次）。此时回退宽景，让束搜索在「空镜 + 其他宽景」里分散选片。
+#     ② 回退宽景：池内无空镜候选（或仅 1 个）⇒ 按 B1 收紧到宽景带；宽景也没有 ⇒ 原样保留，不制造空池。
+#   结构性剔除而非数值罚：罚会被后续任何归一化稀释。
+#   开关：`ZENTECT_KM_ABSTRACT_WIDE`（B1，缺省 on）、`ZENTECT_KM_EMPTY_DERIVE`（P4，缺省 on）。
 # ---------------------------------------------------------------------------
 def _read_abstract_wide() -> bool:
     """读取「抽象句宽景硬过滤」开关（env `ZENTECT_KM_ABSTRACT_WIDE`，缺省 on）。
@@ -458,6 +466,16 @@ def _read_abstract_wide() -> bool:
     return str(os.environ.get('ZENTECT_KM_ABSTRACT_WIDE', '1')).strip().lower() not in ('0', 'off', 'false')
 
 
+def _read_empty_derive() -> bool:
+    """读取「空镜/B-Roll 派生标注」开关（env `ZENTECT_KM_EMPTY_DERIVE`，缺省 on）。
+
+    Returns:
+        bool: True 表示在切片摄入时派生 materialType / isAbstractCapable。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_EMPTY_DERIVE', '1')).strip().lower() not in ('0', 'off', 'false')
+
+
 def _is_wide_scale(chunk: dict) -> bool:
     """判断切片是否属宽景（远景带或空镜）。
 
@@ -467,27 +485,47 @@ def _is_wide_scale(chunk: dict) -> bool:
     Returns:
         bool: True = 宽景（可承载抽象/评论句）。
     """
-    label = str(chunk.get('shotScale') or chunk.get('shotType') or '').strip()
-    if label == '空镜':
-        return True
-    return PREFERRED_SHOT_BAND.get(preferred_shot_from_label(label)) == 2
+    return is_wide_scale_label(chunk.get('shotScale') or chunk.get('shotType') or '')
+
+
+def _is_abstract_capable(chunk: dict) -> bool:
+    """判断切片是否可作空镜/B-Roll（P4 派生标注 `isAbstractCapable`）。
+
+    Args:
+        chunk: 切片实体（已过摄入期派生）。
+
+    Returns:
+        bool: True = 可承载抽象句的空镜候选。
+    """
+    return chunk.get('isAbstractCapable') is True
 
 
 def _abstract_wide_filter(cands: List[str], chunk_by_id: Dict[str, dict],
                           sid: str, stat: dict) -> List[str]:
-    """抽象句收紧到宽景候选（有宽景才收紧，无则原样保留）。
+    """抽象句收紧：优先空镜（isAbstractCapable），无空镜回退宽景，两者皆无则原样保留。
 
     Args:
         cands: 本句候选 id 列表。
         chunk_by_id: 切片索引。
         sid: 句 id（诊断用）。
-        stat: 统计容器 {'tightened': 0, 'dropped': 0, 'no_wide': 0, 'sentences': []}。
+        stat: 统计容器 {'capable': 0, 'capable_dropped': 0, 'tightened': 0,
+                       'dropped': 0, 'no_wide': 0, 'capable_sentences': [], 'sentences': []}。
 
     Returns:
         List[str]: 过滤后的候选（可能等于入参）。
     """
     if not cands:
         return cands
+    capable = [cid for cid in cands if _is_abstract_capable(chunk_by_id.get(cid) or {})]
+    if len(capable) >= 2:
+        if len(capable) < len(cands):
+            stat['capable_dropped'] += len(cands) - len(capable)
+            stat['capable_sentences'].append(sid)
+        stat['capable'] += 1
+        return capable
+    if capable:
+        # 仅 1 个空镜：不独占（会整段重复同一画面），回退宽景（空镜本身在宽景超集里）。
+        stat['capable_single'] += 1
     wide = [cid for cid in cands if _is_wide_scale(chunk_by_id.get(cid) or {})]
     if not wide:
         stat['no_wide'] += 1
@@ -537,7 +575,7 @@ def _pool_dump(ctx: CandidateContext, pool_source: Dict[str, str], req: dict) ->
 
     _chunk_fields = ('shotScale', 'shotType', 'cameraMovement', 'scene', 'primarySubject',
                      'characters', 'emotion', 'startMs', 'endMs', 'parentChunkId',
-                     'motionScore', 'description')
+                     'motionScore', 'description', 'materialType', 'isAbstractCapable')
     chunks = {cid: {k: c.get(k) for k in _chunk_fields} for cid, c in ctx.chunk_by_id.items()}
     queries = []
     for q in ctx.queries:
@@ -615,7 +653,8 @@ def build_req_context(req: dict) -> CandidateContext:
     drop_stat = {'dropped': 0, 'sentences': [], 'all_empty': 0}
     # 抽象句宽景硬过滤统计（缺省 on；见 `_read_abstract_wide`）。
     abstract_wide = _read_abstract_wide()
-    wide_stat = {'tightened': 0, 'dropped': 0, 'no_wide': 0, 'sentences': []}
+    wide_stat = {'capable': 0, 'capable_single': 0, 'capable_dropped': 0, 'capable_sentences': [],
+                 'tightened': 0, 'dropped': 0, 'no_wide': 0, 'sentences': []}
     ctx = CandidateContext(
         queries=[],
         chunk_by_id=chunk_by_id,
@@ -643,8 +682,12 @@ def build_req_context(req: dict) -> CandidateContext:
             cands = _abstract_wide_filter(cands, chunk_by_id, sid, wide_stat)
         ctx.cands_by_shotid[sid] = cands
         ctx.shotid_to_segment[sid] = _scene_of_query(resolved)
+    if abstract_wide and (wide_stat['capable'] or wide_stat['tightened'] or wide_stat['capable_single']):
+        print(f'[abstract-empty] 空镜优先句={wide_stat["capable"]} ｜ 剔除非空镜候选={wide_stat["capable_dropped"]} '
+              f'｜ 仅1个空镜回退宽景={wide_stat["capable_single"]} ｜ 无空镜且无宽景(原样保留)={wide_stat["no_wide"]} '
+              f'｜ 示例={wide_stat["capable_sentences"][:5]}')
     if abstract_wide and wide_stat['tightened']:
-        print(f'[abstract-wide] 宽景收紧句={wide_stat["tightened"]} ｜ 剔除非宽景候选={wide_stat["dropped"]} '
+        print(f'[abstract-wide] 回退宽景收紧句={wide_stat["tightened"]} ｜ 剔除非宽景候选={wide_stat["dropped"]} '
               f'｜ 池内无宽景(原样保留)={wide_stat["no_wide"]} ｜ 示例={wide_stat["sentences"][:5]}')
     if drop_empty and drop_stat['dropped']:
         print(f'[empty-desc] 剔除空描述候选={drop_stat["dropped"]} ｜ 受影响句={len(drop_stat["sentences"])} '

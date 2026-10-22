@@ -749,6 +749,64 @@ def normalize_chunk_aliases(chunk: dict) -> dict:
     return chunk
 
 
+# ---------------------------------------------------------------------------
+# 空镜/B-Roll 派生标注（P4 / 方案 C 的唯一生产者，零模型）
+#   背景：`materialType` / `isAbstractCapable` 此前只在 default_chunk 里声明，全仓无生产者，
+#   抽象句（评论/格言/时间流逝）即便被 B1 收紧到宽景，仍只能在「有人物的大全景」里选，
+#   拿不到真正的空镜。本函数把「宽景 + 无主体」这一**已有事实**归约为空镜能力，不新增模型调用、
+#   不改摄入字段，只在别名补空（shotScale 已就位）之后做一次纯判定。
+#   口径：空镜标签 ⇒ 空镜；远景带且 characters 为空且 primarySubject 为空/哨兵 ⇒ 空镜（B-Roll）；
+#   其余 ⇒ 实拍。显式生产者声明（materialType='empty'/'effect' 或 isAbstractCapable=True）优先，
+#   本函数只「升」不「降」，绝不把上游真实声明覆盖回 real。
+# ---------------------------------------------------------------------------
+def is_wide_scale_label(label: str) -> bool:
+    """景别标签是否属远景带（含空镜）。
+
+    Args:
+        label: 切片景别中文标签（shotScale / shotType）。
+
+    Returns:
+        bool: True = 远景带（中全景/全景/远景/大全景）或空镜；未识别返回 False。
+    """
+    _v = str(label or '').strip()
+    if _v == '空镜':
+        return True
+    return PREFERRED_SHOT_BAND.get(preferred_shot_from_label(_v)) == 2
+
+
+def derive_chunk_material(chunk: dict) -> dict:
+    """派生切片的素材类型与空镜可承载能力（就地改写并返回同一 dict）。
+
+    Args:
+        chunk: 已过 `normalize_chunk_aliases` 的切片（shotScale/location 等契约键已补空）。
+
+    Returns:
+        dict: 同一 dict，`materialType` ∈ {real, empty}、`isAbstractCapable` 已就位。
+
+    Notes:
+        - `characters` 为空 且 `primarySubject` 为空/哨兵（MULTIPLE/EMPTY）才算「无主体」；
+          任一非空即视为有人物实拍，不冒领空镜（守「不可造假门」）。
+        - 显式 `effect` 不参与派生（特效素材的空镜能力由上游单独声明）。
+    """
+    declared = str(chunk.get('materialType') or '').strip().lower()
+    if declared in ('empty', 'effect') or chunk.get('isAbstractCapable') is True:
+        # 上游已显式声明：只保真，不重算（empty/effect 都不得被本函数降级为 real）。
+        chunk['materialType'] = declared or 'empty'
+        chunk['isAbstractCapable'] = bool(chunk.get('isAbstractCapable')) or declared == 'empty'
+        return chunk
+
+    label = str(chunk.get('shotScale') or chunk.get('shotType') or '').strip()
+    chars = chunk.get('characters')
+    has_chars = bool(chars) if isinstance(chars, list) else bool(str(chars or '').strip())
+    primary = str(chunk.get('primarySubject') or '').strip()
+    no_subject = (not has_chars) and primary in ('',) + tuple(PRIMARY_SUBJECT_SENTINELS)
+
+    empty = is_wide_scale_label(label) and (label == '空镜' or no_subject)
+    chunk['materialType'] = 'empty' if empty else 'real'
+    chunk['isAbstractCapable'] = empty
+    return chunk
+
+
 def default_segment() -> dict:
     """构造一个宏观场次（scene）字段骨架（S1 场记单资产）。
 

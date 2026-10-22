@@ -1797,6 +1797,27 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       AppLogger.info(LOG_TAGS.AI_AGENT,
         `[镜头匹配] 🧹 空描述切片剔除 ${droppedEmptyDesc} 个候选（集数字幕/黑场/字卡）`);
     }
+    // 🎬 抽象句扩池（方案 A，2026-10-22）：抽象旁白不含具体画面语义，帧召回按文案措辞只会捞到
+    //   人物近景——实测 3 句抽象句的 24 个召回候选里只有 1 个宽景，daemon 侧「空镜优先 / 宽景回退」
+    //   两级过滤最终都只剩这 1 个 ⇒ 三句连押同一片、窗口从同一入点重叠（观感卡带）。
+    //   这里把「召回锚点 ±45s 内的空镜/宽景镜头」并入白名单，让 daemon 在真正的空镜池里挑。
+    //   锚点=召回 Top1 镜头起点；无召回时退到剧情锚点 sourceRefTimeMs；两者皆无则跳过（不造错场景池）。
+    const abstractRecallWideRaw = String(process.env.ZENTECT_KM_ABSTRACT_RECALL_WIDE ?? '1').trim().toLowerCase();
+    const abstractRecallWide = abstractRecallWideRaw !== '0' && abstractRecallWideRaw !== 'off';
+    const abstractExt = SemanticAnalyzeStrategy.extendAbstractCandidates({
+      kmQueries,
+      chunks,
+      candidateIds: candidateIdsForKm,
+      shotById,
+      hasChunkDesc: (cid: string) => !dropEmptyDesc || hasChunkDesc(cid),
+      windowSec: 45,
+      enabled: abstractRecallWide,
+    });
+    if (abstractRecallWide && abstractExt.sentences > 0) {
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[镜头匹配] 🎬 抽象句扩池：句 ${abstractExt.sentences}｜补入空镜/宽景候选 ${abstractExt.added} 个`
+        + `（锚点±45s，池内无宽景跳过 ${abstractExt.skipped} 句）`);
+    }
     AppLogger.info(LOG_TAGS.AI_AGENT,
       `[镜头匹配] 🎬 P3 帧召回上卷：句 ${kmQueries.length}｜有候选句 ${recallCoveredUnits}｜`
       + `候选镜头合计 ${recallCandidateShots}（均 ${recallCoveredUnits ? (recallCandidateShots / recallCoveredUnits).toFixed(1) : '0'} 个/句）｜`
@@ -2125,6 +2146,59 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       }
     }
     return segs;
+  }
+
+  /**
+   * 🎬 抽象句候选扩池（方案 A，2026-10-22）：把「锚点 ±windowSec 内的空镜/宽景镜头」并入
+   * 帧召回白名单，专供抽象旁白句。
+   *
+   * 为什么需要：抽象旁白无具体人物/动作语义，帧召回按文案措辞只能召回人物近景/中景
+   * （实测 3 句抽象句各 24 个候选、其中仅 1 个宽景）⇒ daemon 的「空镜优先 / 宽景回退」两级过滤
+   * 最终都只剩同一片，三句连押、窗口从同一入点重叠。扩池后池内出现 ≥2 个空镜，daemon 的
+   * capable 分支才会真正生效，束搜索才有第二个选择。
+   *
+   * 边界（守「错就错」）：锚点取不到（无召回且无 sourceRefTimeMs）⇒ 跳过该句，绝不跨场景乱补。
+   *
+   * @returns 统计 { sentences 扩池句数, added 补入候选数, skipped 无锚点/无宽景跳过句数 }
+   */
+  static extendAbstractCandidates(opts: {
+    kmQueries: any[];
+    chunks: any[];
+    candidateIds: Record<string, string[]>;
+    shotById: Map<string, any>;
+    hasChunkDesc: (cid: string) => boolean;
+    windowSec: number;
+    enabled: boolean;
+  }): { sentences: number; added: number; skipped: number } {
+    const stat = { sentences: 0, added: 0, skipped: 0 };
+    if (!opts.enabled) return stat;
+    const WIDE_RE = /空镜|远景|大全景|全景/;
+    const isWide = (c: any): boolean => WIDE_RE.test(String(c?.shotScale || c?.shotType || '').trim());
+    const windowMs = Math.max(1, Number(opts.windowSec) || 45) * 1000;
+    for (const q of opts.kmQueries || []) {
+      if (q?.isAbstractNarration !== true) continue;
+      const sid = String(q.shotId);
+      const kept = opts.candidateIds[sid] || [];
+      // 锚点：召回 Top1 镜头起点（同场景内最近的画面证据）；无召回则退剧情锚点 sourceRefTimeMs。
+      const anchorChunk = kept.length > 0 ? opts.shotById.get(String(kept[0])) : null;
+      const anchorMs = Number(anchorChunk?.startMs ?? q?.sourceRefTimeMs ?? 0);
+      if (!(anchorMs > 0)) { stat.skipped += 1; continue; }
+      const wideIds = (opts.chunks || [])
+        .filter((c: any) => {
+          if (!isWide(c)) return false;
+          if (!opts.hasChunkDesc(String(c.id))) return false;
+          const t = Number(c.startMs ?? 0);
+          return t >= anchorMs - windowMs && t <= anchorMs + windowMs;
+        })
+        .map((c: any) => String(c.id));
+      if (wideIds.length === 0) { stat.skipped += 1; continue; }
+      const merged = Array.from(new Set([...kept, ...wideIds]));
+      if (merged.length === kept.length) continue;
+      opts.candidateIds[sid] = merged;
+      stat.sentences += 1;
+      stat.added += merged.length - kept.length;
+    }
+    return stat;
   }
 
   /**
