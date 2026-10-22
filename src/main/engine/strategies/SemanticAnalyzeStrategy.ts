@@ -1761,20 +1761,37 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  切片描述会选到说话镜头。方案 D 让帧描述升为**唯一主力**（取代切片描述），切片描述仅作
      *  「无帧证据候选」的兜底；daemon 侧由 ZENTECT_KM_FRAME_PRIMARY 控制 取代 / 只升不降。 */
     const frameHintsForKm: Record<string, Record<string, string>> = {};
+    // 🧹 空描述切片剔除（2026-10-22）：与 daemon `ZENTECT_KM_DROP_EMPTY_DESC` 同口径同开关。
+    //   根因：705 切片中 58 个 description 为空（片头集数字幕/黑场/字卡）。daemon 供给层已剔除，
+    //   但 **P4 镜头内连续切窗（Node `buildShotWindowTable`）仍在用未过滤的白名单**，会把空描述
+    //   镜头重新分给句子（实测 seg_8 仍选中 chunk_322）⇒ 两侧必须同口径。
+    //   整句候选全为空描述时**不设白名单**（回退全域可选），避免只剩不可判候选。
+    const dropEmptyDesc = String(process.env.ZENTECT_KM_DROP_EMPTY_DESC ?? '1').trim().toLowerCase()
+      !== '0' && String(process.env.ZENTECT_KM_DROP_EMPTY_DESC ?? '1').trim().toLowerCase() !== 'off';
+    const hasChunkDesc = (cid: string): boolean =>
+      String(shotById.get(String(cid))?.description || '').trim().length > 0;
+    let droppedEmptyDesc = 0;
     let recallCoveredUnits = 0;
     let recallCandidateShots = 0;
     for (const [sid, hits] of recallHits) {
       if (hits.length === 0) continue;
+      const kept = dropEmptyDesc ? hits.filter((h: ShotRecallHit) => hasChunkDesc(h.chunkId)) : hits;
+      droppedEmptyDesc += hits.length - kept.length;
+      if (kept.length === 0) continue;   // 全为空描述 ⇒ 不设白名单（全域可选），不制造空池
       recallCoveredUnits += 1;
-      recallCandidateShots += hits.length;
-      candidateIdsForKm[sid] = hits.map((h: ShotRecallHit) => h.chunkId);
-      frameHitsForKm[sid] = { chunkId: hits[0].chunkId, timeMs: hits[0].bestTimeMs, frameHash: hits[0].bestFrameHash };
-      for (const h of hits) {
+      recallCandidateShots += kept.length;
+      candidateIdsForKm[sid] = kept.map((h: ShotRecallHit) => h.chunkId);
+      frameHitsForKm[sid] = { chunkId: kept[0].chunkId, timeMs: kept[0].bestTimeMs, frameHash: kept[0].bestFrameHash };
+      for (const h of kept) {
         const desc = String(h.bestFrameDesc || '').trim();
         if (desc) {
           (frameHintsForKm[sid] ||= {})[h.chunkId] = desc;
         }
       }
+    }
+    if (droppedEmptyDesc > 0) {
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[镜头匹配] 🧹 空描述切片剔除 ${droppedEmptyDesc} 个候选（集数字幕/黑场/字卡）`);
     }
     AppLogger.info(LOG_TAGS.AI_AGENT,
       `[镜头匹配] 🎬 P3 帧召回上卷：句 ${kmQueries.length}｜有候选句 ${recallCoveredUnits}｜`
