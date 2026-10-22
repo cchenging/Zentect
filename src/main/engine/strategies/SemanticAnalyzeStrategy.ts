@@ -1492,6 +1492,10 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           //    ⚠️ 同样保持契约英文枚举（CAMERA_DYNAMIC / 角色名），勿转中文：daemon 侧统一归一。
           (q as any).cameraDynamic = spec.cameraDynamic || '';
           (q as any).targetSubjects = spec.targetSubjects || [];
+          // 🎬 抽象旁白标记（中期方案 B + B1 宽景硬过滤的输入端）：工单上的 true 是 S2 权威派工结果，
+          //   S3 侧该字段在本片全为 false（从未产出），若不在此透传，daemon `_abstract_wide_filter`
+          //   读到恒 false ⇒ 宽景收紧空转（实测 2026-10-22 10:29 一轮 tightened=0）。
+          if (spec.isAbstractNarration === true) (q as any).isAbstractNarration = true;
           attached++;
         }
         AppLogger.info(LOG_TAGS.AI_AGENT,
