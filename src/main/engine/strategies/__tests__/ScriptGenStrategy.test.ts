@@ -509,6 +509,59 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
     expect(retryPrompt).toContain('剧情符合度');
     expect(retryPrompt).toContain('臆造了片段流中不存在的动机');
   });
+
+  it('审校输出「不扣」条目时不得压分：分数由扣分项条数机械计算', async () => {
+    mockChat.mockReset();
+    const goodOutline = JSON.stringify({
+      logline: '复仇之路', arc: ['开场'], characterMotives: {},
+      keyTurns: [{ chunkId: 'chunk_001', turn: '第一次反抗' }], hasClearEnding: true,
+    });
+    mockChat
+      .mockResolvedValueOnce({ success: true, text: goodOutline })
+      // 实测故障形态：逐条写「暂不扣 / 视为成立」，模型仍自评 0.85
+      .mockResolvedValueOnce({
+        success: true, text: JSON.stringify({
+          fidelity: 0.85,
+          deductions: [
+            { point: '角色_2 命名为刘白', evidence: 'chunk_220 支持，属音译边界，暂不扣' },
+            { point: '章节15 东极岛', evidence: 'chunk_675 支持，不扣' },
+            { point: '角色_1 动机', evidence: 'chunk_506 支持，视为成立' },
+          ],
+        }),
+      })
+      .mockResolvedValue({ success: true, text: JSON.stringify([{ shotId: 's_01', text: '剧情解说。', duration: 3.0 }]) });
+
+    const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    expect(result.shots.length).toBeGreaterThan(0);
+    // 无扣分项 ⇒ 直接通过，不触发重生成（call0=大纲，call1=审校，call2=阶段B）
+    expect(mockChat).toHaveBeenCalledTimes(3);
+  });
+
+  it('审校返回真实扣分项时按条数计分并回灌重生成', async () => {
+    mockChat.mockReset();
+    const goodOutline = JSON.stringify({
+      logline: '复仇之路', arc: ['开场'], characterMotives: {},
+      keyTurns: [{ chunkId: 'chunk_001', turn: '第一次反抗' }], hasClearEnding: true,
+    });
+    const threeDeductions = JSON.stringify({
+      deductions: Array.from({ length: 3 }, (_, i) => ({
+        point: `无源编造点${i + 1}`, evidence: '片段流与台词中均无依据',
+      })),
+    });
+    mockChat
+      .mockResolvedValueOnce({ success: true, text: goodOutline })
+      .mockResolvedValueOnce({ success: true, text: threeDeductions })
+      .mockResolvedValueOnce({ success: true, text: goodOutline })
+      .mockResolvedValueOnce({ success: true, text: JSON.stringify({ deductions: [] }) })
+      .mockResolvedValue({ success: true, text: JSON.stringify([{ shotId: 's_01', text: '剧情解说。', duration: 3.0 }]) });
+
+    const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    expect(result.shots.length).toBeGreaterThan(0);
+    expect(mockChat).toHaveBeenCalledTimes(5);
+    const retryPrompt = mockChat.mock.calls[2][0][1].content as string;
+    expect(retryPrompt).toContain('剧情符合度 85.0%');
+    expect(retryPrompt).toContain('无源编造点1');
+  });
 });
 
 // ========== 🎯 原声无缝衔接规约注入（Step3-D BRIDGE 条件挂载） ==========

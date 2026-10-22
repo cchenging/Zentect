@@ -1462,9 +1462,15 @@ ${JSON.stringify(candidate, null, 2)}
 
 严格输出 JSON（不要 Markdown 包裹，不要解释）：
 {
-  "fidelity": 0.00,
-  "violations": ["具体违规点1（须指明对应哪个 chunkId / 台词）", "违规点2"]
-}`;
+  "deductions": [
+    { "point": "违规结论（须指明对应哪个 chunkId / 台词）", "evidence": "片段流/台词中缺失或相悖的依据" }
+  ]
+}
+判分规则（机械执行，禁止自由裁量）：
+- 分数由系统按「1.00 - 0.05 × 扣分项条数」计算，你**不需要也不允许**输出 fidelity 数值；
+- 扣分项为 0 条 ⇒ 分数为 1.00；禁止在 deductions 为空时用任何隐含理由压分；
+- 只有上方「计入扣分」四条可写入 deductions。凡属于「不计扣分 · 合理推断」「明确排除 · 不得据此扣分」的核查项，
+  一律**不得**写进 deductions——包括你写「不扣」「暂不扣」「视为成立」的任何条目。`;
       const resp = await adapter.chat(
         [
           { role: 'system', content: judgeSystem },
@@ -1477,10 +1483,33 @@ ${JSON.stringify(candidate, null, 2)}
       if (!resp.success) throw new Error(`剧情符合度审校请求失败: ${resp.error || '未知错误'}`);
       if (!resp.text) throw new Error('剧情符合度审校响应为空（可能为推理模型分离输出或后端忙时空返回）');
       const parsedJudge = NetworkPipeline.strictParseJson(resp.text);
-      const fidelity = Number(parsedJudge?.fidelity);
-      if (!Number.isFinite(fidelity)) throw new Error('剧情符合度审校结果缺少 fidelity 数值');
-      const violations = Array.isArray(parsedJudge?.violations)
-        ? parsedJudge.violations.map((v: any) => String(v ?? '').trim()).filter(Boolean)
+      // 🔧 判分权回收（2026-10-22 实测修复）：审校模型会出现「列了 20 条核查项、逐条都写不扣，
+      //   却仍返回 fidelity=0.85」的自相矛盾输出（实测 3 次重试全部精确停在 85.0%，重试彻底空转）。
+      //   根因是让模型同时负责「找证据」和「算分」两个动作，算分被自由裁量污染。
+      //   现在改为：模型只输出扣分项列表，分数由代码按 1 - 0.05 × 条数 机械计算；
+      //   并对条目文本做「不扣/不计」兜底过滤（模型仍可能把核查项塞进来）。
+      const rawDeductions = Array.isArray((parsedJudge as any)?.deductions)
+        ? (parsedJudge as any).deductions
+        : null;
+      if (rawDeductions) {
+        const kept = rawDeductions
+          .map((d: any) => ({
+            point: String(d?.point ?? (typeof d === 'string' ? d : '')).trim(),
+            evidence: String(d?.evidence ?? '').trim(),
+          }))
+          .filter((d: any) => d.point || d.evidence)
+          .filter((d: any) => !/不扣|不予扣分|不计扣|不构成扣分|视为成立/.test(`${d.point}${d.evidence}`));
+        const penalty = Math.min(1, kept.length * 0.05);
+        return {
+          fidelity: Math.max(0, Math.min(1, 1 - penalty)),
+          violations: kept.map((d: any) => (d.evidence ? `${d.point}（依据：${d.evidence}）` : d.point)),
+        };
+      }
+      // 兼容旧 schema（部分模型仍返回 fidelity/violations）：无 deductions 时沿用自评分。
+      const fidelity = Number((parsedJudge as any)?.fidelity);
+      if (!Number.isFinite(fidelity)) throw new Error('剧情符合度审校结果缺少 deductions/fidelity');
+      const violations = Array.isArray((parsedJudge as any)?.violations)
+        ? (parsedJudge as any).violations.map((v: any) => String(v ?? '').trim()).filter(Boolean)
         : [];
       return { fidelity: Math.max(0, Math.min(1, fidelity)), violations };
     };
@@ -2511,11 +2540,12 @@ ${args.allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking
 ## Output Format
 ### 必填字段声明（缺任何一项视为无效输出）
 - shotId / text / duration / emotion / visualIntent 五个字段**必须全部出现且非空**
+- \`isAbstractNarration\` 为可选布尔字段，但**必须显式输出**（常规叙事写 \`false\`，抽象句写 \`true\`），禁止省略
 ${args.allowOriginalMark ? '- keepOriginalAudio 为可选布尔字段，默认 false 时可省略' : ''}
 
 请严格按照以下 JSON 数组格式返回结果，切勿包含任何 Markdown 格式化标记或额外解释：
 [
-  { "shotId": "s_01", "text": "解说词内容", "duration": 3.5, "emotion": "紧张悬疑", "visualIntent": "男子面部特写，眼神凌厉，室内昏暗，紧张氛围"${args.allowOriginalMark ? ', "keepOriginalAudio": false' : ''} }
+  { "shotId": "s_01", "text": "解说词内容", "duration": 3.5, "emotion": "紧张悬疑", "visualIntent": "男子面部特写，眼神凌厉，室内昏暗，紧张氛围", "isAbstractNarration": false${args.allowOriginalMark ? ', "keepOriginalAudio": false' : ''} }
 ]`;
   }
 }
