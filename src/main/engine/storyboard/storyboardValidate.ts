@@ -277,7 +277,8 @@ export function evaluateFittingConcern(
 	if (!segment) return { suspicious: false }; // 段不存在已在可满足性标注，这里不重复标存疑
 	const subjects = (spec.targetSubjects ?? []).map((s) => String(s).trim()).filter(Boolean);
 	const topChars = normalizeTopChars(segment.topChars);
-	if (subjects.length === 0 && topChars.length > 0) {
+	// 抽象旁白句（时间流逝/纯抒情）本就该配空镜，无主体是「按空镜开对了」而非失焦 ⇒ 不计存疑（中期方案 B）
+	if (subjects.length === 0 && topChars.length > 0 && spec.isAbstractNarration !== true) {
 		return { suspicious: true, reason: '无主体仅靠scene，画面主体可能失焦' };
 	}
 	// 高信息位景别（特写/近景/中近景）但段素材无该类 → 存疑（真实素材缺口）

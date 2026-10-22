@@ -115,7 +115,7 @@ export function syncStoryboardModeFile(): StoryboardMode {
 }
 
 /** Prompt 版本：随推理链/约束更新 +1，缓存 key 随之失效（防止旧 prompt 压中的工单被长期复用）。 */
-const PROMPT_VERSION = 'a1-v1';
+const PROMPT_VERSION = 'a1-v2';
 
 /** 单批母句数的缺省值（超长文案 LLM 易截断 JSON，分批收敛；场记单每批都给全量）。 */
 const DEFAULT_BATCH_SIZE = 20;
@@ -142,6 +142,9 @@ export interface MotherClauseInput {
   keepOriginalAudio?: boolean;
   /** 完整句承载的 TTS/原声时长（毫秒，仅供分镜参考） */
   audioDurationMs?: number;
+  /** 🎬 抽象旁白标记（S3 产出 `isAbstractNarration`，步骤5 query 折叠后透传）：
+   *  true ⇒ 开单按「宽景别 + 无主体空镜」开，不得套人物近景（中期方案 B 正路）。 */
+  isAbstractNarration?: boolean;
 }
 
 /** 场记单段落摘要（loadSegments 读 `segments.json`，字段对齐 S1 段对象；缺字段给空不崩溃）。 */
@@ -252,7 +255,9 @@ export class StoryboardAgent {
       AppLogger.info(LOG_TAGS.AI_AGENT,
         `[开单] 缓存命中：${cached.length} 张工单（母句 ${mothers.length} 句，prompt ${PROMPT_VERSION}）`);
       // 🎬 展示透传：缓存工单同样补回母句 text/visualIntent（老缓存文件可能缺，统一回填）
-      return StoryboardAgent.attachMotherFields(cached, mothers);
+      const reused = StoryboardAgent.attachMotherFields(cached, mothers);
+      StoryboardAgent.logAbstractDiagnostics(reused, mothers);
+      return reused;
     }
     if (cached && cached.length !== mothers.length) {
       AppLogger.warn(LOG_TAGS.AI_AGENT,
@@ -296,7 +301,35 @@ export class StoryboardAgent {
 
     if (orders.length > 0) StoryboardAgent.saveCache(projectId, cacheKey, orders);
     StoryboardAgent.logDiagnostics(orders.length, mothers.length, totalRetries, discarded, results.length);
+    StoryboardAgent.logAbstractDiagnostics(orders, mothers);
     return orders;
+  }
+
+  /**
+   * 函数级中文注释：抽象旁白开单落点诊断（中期方案 B，D7 验收「分镜师能否对抽象句稳定产宽景别」）。
+   * 只统计不干预：抽象句的 preferredShot 落在 EXTREME_LONG/LONG_SHOT 才计为达标，
+   * 其余（尤其特写/近景）逐条列名，供判断是 LLM 未遵守还是该段素材确实没有全景。
+   *
+   * @param orders  回填后的工单
+   * @param mothers 母句序列（抽象标记唯一来源）
+   */
+  private static logAbstractDiagnostics(orders: ShotSpec[], mothers: MotherClauseInput[]): void {
+    const abstractIds = new Set(
+      mothers.filter((m) => m.isAbstractNarration === true).map((m) => String(m.matchUnitId || '').trim()),
+    );
+    if (abstractIds.size === 0) return;
+    const wide = new Set(['EXTREME_LONG', 'LONG_SHOT']);
+    let wideCount = 0;
+    const missed: string[] = [];
+    for (const o of orders) {
+      const unit = String(o?.matchUnitId || '').trim();
+      if (!abstractIds.has(unit)) continue;
+      if (wide.has(String(o.preferredShot))) wideCount++;
+      else missed.push(`${unit}:${o.preferredShot}`);
+    }
+    AppLogger.info(LOG_TAGS.AI_AGENT,
+      `[开单] 🎬 抽象旁白句=${abstractIds.size}｜声明宽景别=${wideCount}/${abstractIds.size}` +
+      (missed.length > 0 ? `｜未落宽景别=${missed.join('、')}` : ''));
   }
 
   /**
@@ -380,6 +413,18 @@ export class StoryboardAgent {
   static buildMotherClauses(allQueries: any[]): MotherClauseInput[] {
     const seen = new Set<string>();
     const mothers: MotherClauseInput[] = [];
+    // 🧪 人工抽象句注入（仅验证用）：`ZENTECT_KM_ABSTRACT_IDS=seg_2,seg_4_sub_1`（逗号分隔 matchUnitId）。
+    //   S3 尚未产出 isAbstractNarration 时，用它把指定句按抽象旁白开单，验证方案 B 链路；缺省空 ⇒ 零影响。
+    const forcedAbstract = new Set<string>(
+      String(process.env.ZENTECT_KM_ABSTRACT_IDS || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+    if (forcedAbstract.size > 0) {
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[开单] 🧪 人工注入抽象句 ${forcedAbstract.size} 个（ZENTECT_KM_ABSTRACT_IDS=${Array.from(forcedAbstract).join(',')}）`);
+    }
     for (const q of Array.isArray(allQueries) ? allQueries : []) {
       const key = String((q as any)?.matchUnitId || q?.shotId || '').trim();
       if (!key || seen.has(key)) continue; // 去重：sentence 档同一完整句只出现一次，绝不重复开单
@@ -398,6 +443,8 @@ export class StoryboardAgent {
         emotion: String(q?.emotion || '').trim() || undefined,
         keepOriginalAudio: q?.keepOriginalAudio === true,
         audioDurationMs: Number((q as any)?.audioDurationMs) || undefined,
+        // 🎬 抽象旁白（中期方案 B）：唯一定义在 S3，此处只透传，不重算、不猜测
+        isAbstractNarration: (q as any)?.isAbstractNarration === true || forcedAbstract.has(key),
       });
     }
     return mothers;
@@ -644,6 +691,9 @@ export class StoryboardAgent {
       if (!next.visualIntent && typeof m.visualIntent === 'string' && m.visualIntent.trim()) {
         next.visualIntent = m.visualIntent.trim();
       }
+      // 🎬 抽象旁白标记回填（中期方案 B）：供校验侧区分「抽象句交白卷」与「剧情句漏主体」，
+      //   并让下游（诊断/前端卡片）能看出这张工单是按空镜开的。非法值一律不写。
+      if (m.isAbstractNarration === true) next.isAbstractNarration = true;
       return next;
     });
   }
@@ -732,6 +782,15 @@ export class StoryboardAgent {
 - 评论/过渡/抒情/原声句：若**不需要开新镜**则 mode=CONTINUE_PREV（沿用上一镜所在段），并尽量把 audioMode 置 narration；
 - 原声句（keepOriginalAudio=true）：audioMode 必须= original（锁说话人、不参与变速）。
 
+【抽象旁白专项】（母句后标注「抽象旁白」的句子必须走这条）
+抽象旁白 = 时间流逝/纯抒情（岁月、转眼、荏苒、誓言、往事…），**没有具体叙事主体与动作**。
+- preferredShot 取 EXTREME_LONG 或 LONG_SHOT（该段确无全景类素材时，退而取该段实际有记录的最宽景别）；
+- 禁止给抽象旁白开 EXTREME_CLOSE / CLOSE_SHOT / MEDIUM_CLOSE —— 那是人物情绪的语法，套上去会逼剪辑师去抓人脸特写；
+- targetSubjects 可以为空数组（纯空镜/环境画面），不要为了凑主体硬锁人物；
+- cameraDynamic 优先 STATIC / PAN / TILT（缓移），actionType / keyProp 一般留空；
+- mode 优先 NEW_SHOT（从人物近景里切出去）；仅当上一镜本身就是宽景别环境镜时才 CONTINUE_PREV；
+- atmosphereNote 写清这幅画面要什么意境（如「空山无人，只有风」「雨夜街道车流延时」），供剪辑师理解。
+
 【可选值硬约束】（P3，越界即整单判废重开）
 - spatialType ∈ ${SHOT_SPEC_ENUMS.spatialType.join('/')}
 - preferredShot ∈ ${SHOT_SPEC_ENUMS.preferredShot.join('/')}
@@ -755,7 +814,7 @@ export class StoryboardAgent {
     const segmentsText = StoryboardAgent.renderSegments(segments);
     const mothersText = batchMothers
       .map((m, i) =>
-        `[${i + 1}] matchUnitId=${m.matchUnitId}${m.keepOriginalAudio ? '（原声）' : ''} durationMs=${m.audioDurationMs ?? '-'}\n` +
+        `[${i + 1}] matchUnitId=${m.matchUnitId}${m.keepOriginalAudio ? '（原声）' : ''}${m.isAbstractNarration ? '（抽象旁白）' : ''} durationMs=${m.audioDurationMs ?? '-'}\n` +
         `      正文：${m.text}${m.visualIntent ? `\n      画面意图：${m.visualIntent}` : ''}${m.emotion ? `\n      情绪：${m.emotion}` : ''}`,
       )
       .join('\n');
@@ -817,7 +876,7 @@ export class StoryboardAgent {
    */
   static cacheKey(mothers: MotherClauseInput[], segments: SegmentSummary[]): string {
     const motherFp = mothers
-      .map((m) => `${m.matchUnitId}\u0001${m.text}\u0001${m.keepOriginalAudio ? 1 : 0}`)
+      .map((m) => `${m.matchUnitId}\u0001${m.text}\u0001${m.keepOriginalAudio ? 1 : 0}\u0001${m.isAbstractNarration ? 1 : 0}`)
       .join('\u0002');
     const segFp = segments
       .map((s) => `${s.segmentId}\u0001${s.locClass}\u0001${s.locPurity}\u0001${s.topChars.join(',')}`)

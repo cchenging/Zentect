@@ -122,6 +122,9 @@ export interface ShotSpec {
   text?: string;
   /** 🎬 展示透传（非开单依据，不开给 LLM）：本工单对应完整句的画面意图描述 */
   visualIntent?: string;
+  /** 🎬 抽象旁白标记（S3 产出，Node 侧回填；不在 LLM 输出 JSON 契约里）：
+   *  true 表示该句为时间流逝类抽象抒情 ⇒ 分镜应声明宽景别/无主体空镜，不得套人物近景。 */
+  isAbstractNarration?: boolean;
 }
 
 /** 校验时合法枚举的集合（供结构校验 ① 与 JSON schema 共用） */
