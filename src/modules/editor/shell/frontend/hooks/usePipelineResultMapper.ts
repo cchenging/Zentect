@@ -166,7 +166,10 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
              *  此处若漏透传，则生成时有、落库/重开即丢，步骤5 折叠 query 的分组依据断裂。 */
             matchUnitId: typeof p.matchUnitId === 'string' && p.matchUnitId.trim() ? p.matchUnitId : undefined,
             keepOriginalAudio: p.keepOriginalAudio === true,
-            /** 🎙️ 原声保留段音频源透传：ScriptGenStrategy 生成的 ASR 精确时间窗（源坐标），
+            /** � 抽象旁白标记透传（中期方案 B）：S3 产出 → 落库 → S2 开单 / 步骤5 宽景硬过滤的唯一入口。
+             *  此处漏透传 ⇒ 生成时它有、落库后即丢（实测：S2 诊断 1 句、落盘工单 0 句、步骤5 快照全 false）。 */
+            isAbstractNarration: p.isAbstractNarration === true,
+            /** �🎙️ 原声保留段音频源透传：ScriptGenStrategy 生成的 ASR 精确时间窗（源坐标），
              *  步骤4 原声试听据此截取原片对应台词音频；缺失时 Normalizer 按 chunk 时间轴 fallback */
             audioSource: p.audioSource,
             editing: false
