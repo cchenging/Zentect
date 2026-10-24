@@ -9,7 +9,7 @@
 // 与成片出口共享同一镜头装配源，实现 S8 范围过滤一致性。
 
 import * as path from 'path';
-import type { CompileShot } from '../types';
+import type { CompileShot, SubtitleCue } from '../types';
 import type { JianyingExportInput, JianyingExportOutput, SubtitleStyle } from '../types';
 import { DEFAULT_SUBTITLE_STYLE } from '../types';
 import { assembleDraftContent } from './core/assemblers/DraftContentAssembler';
@@ -21,6 +21,11 @@ import {
   type ExportBinDeps,
   type VideoProbeResult,
 } from './core/utils/FfprobeProber';
+import {
+  probeAudioPausesSync,
+  resolveFfmpegPath,
+  type PauseInterval,
+} from './core/utils/AudioPauseProber';
 
 // ──────────────────────────────────────────────
 // 二进制依赖注入（FrameExtractionDeps 风格）
@@ -28,7 +33,7 @@ import {
 // 测试环境：mock 返回固定 stub 探针结果（不走外部进程），见 Service.test.ts
 // ──────────────────────────────────────────────
 
-/** 剪映导出侧的二进制依赖：默认空实现（ffprobe 不可用时 fail-fast） */
+// 剪映导出侧的二进制依赖：默认空实现（ffprobe 不可用时 fail-fast）
 let binDeps: ExportBinDeps = {
   getFfprobePath: () => {
     if (process.env.FFPROBE_PATH) return process.env.FFPROBE_PATH;
@@ -38,6 +43,12 @@ let binDeps: ExportBinDeps = {
     const root = process.cwd();
     return path.join(root, 'resources', 'bin', 'win',
       process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe');
+  },
+  /** ffmpeg 与 ffprobe 同目录发布（静音探针用；缺失时字幕切点回退纯比例） */
+  getFfmpegPath: () => {
+    if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+    return path.join(process.cwd(), 'resources', 'bin', 'win',
+      process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
   },
 };
 
@@ -86,6 +97,36 @@ function collectVideoPaths(shots: CompileShot[], fallbackMediaPath: string): str
 }
 
 /**
+ * 🎙️ 段落正文取值：解说段读 text；原声段 text 恒为空（台词在 audioSource.transcript），
+ * 导出侧必须回填 transcript，否则字幕/兜底文本会整段丢失。
+ */
+function readParagraphText(p: any): string {
+  const t = typeof p?.text === 'string' ? p.text : '';
+  if (t) return t;
+  const transcript = p?.audioSource?.transcript;
+  return typeof transcript === 'string' ? transcript : '';
+}
+
+/**
+ * 🎙️ 原声段逐行字幕：从步骤3 段落（或 ExportShot）的 audioSource.asrSubLines 取出 ASR 台词行，
+ * 校验时间轴后转成 SubtitleCue（源坐标 ms）。缺字段/全非法 → undefined（导出退回单条整段字幕）。
+ */
+function readSubtitleCues(src: any): SubtitleCue[] | undefined {
+  const raw = src?.audioSource?.asrSubLines;
+  if (!Array.isArray(raw)) return undefined;
+  const cues: SubtitleCue[] = [];
+  for (const l of raw) {
+    if (!l || typeof l !== 'object') continue;
+    const text = String(l.text ?? '').trim();
+    const startMs = Number(l.startMs);
+    const endMs = Number(l.endMs);
+    if (!text || !Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) continue;
+    cues.push({ text, startMs, endMs });
+  }
+  return cues.length > 0 ? cues : undefined;
+}
+
+/**
  * 探针入口：按 shots 批量收集视频路径 → probe（ffprobe 缺省 / 缺文件 / 坏视频 全 fail-fast）
  *
  * 返回 Map<absPath, VideoProbeResult>；任何一个文件探针失败都直接抛错，不兜底 0x0。
@@ -96,6 +137,35 @@ export function probeCompileShotVideos(
   deps: ExportBinDeps = binDeps,
 ): Map<string, VideoProbeResult> {
   return probeVideoBatchSync(deps, collectVideoPaths(shots, fallbackMediaPath));
+}
+
+/**
+ * 字幕切点静音吸附：为「多短语」解说段探测其配音的真实静音（换气）区间。
+ *
+ * 只处理需要拆条的字幕段：原声段走 ASR 逐行数据（自带精确时间），无配音或文案无标点
+ * （拆不成多条）的段直接跳过，避免无谓的 ffmpeg 调用。
+ * ffmpeg 不可用 / 文件缺失 → 返回空表，导出回退纯字数比例切点（渐进增强，不阻断导出）。
+ *
+ * @returns Map<镜头 id, 静音区间（毫秒，相对配音文件起点）>
+ */
+export function collectPauseHints(
+  shots: CompileShot[],
+  deps: ExportBinDeps = binDeps,
+): Map<string, PauseInterval[]> {
+  const hints = new Map<string, PauseInterval[]>();
+  if (!resolveFfmpegPath(deps)) return hints;
+  for (const shot of shots) {
+    if (shot.keepOriginalAudio === true || !shot.audioPath) continue;
+    const text = shot.aiText || shot.originalText || shot.text || '';
+    if (!/[。！？!?；;，,、]/.test(text)) continue;
+    const file = String(shot.audioPath)
+      .replace('magic://local/', '')
+      .replace('file://', '')
+      .replace(/\\/g, '/');
+    const pauses = probeAudioPausesSync(deps, file);
+    if (pauses.length > 0) hints.set(shot.id, pauses);
+  }
+  return hints;
 }
 
 // ──────────────────────────────────────────────
@@ -121,13 +191,15 @@ export class JianyingExportService {
       const m = matchById.get(p.id);
       const t = ttsById.get(p.id);
       const durationSec = (t?.duration && !t._failed ? t.duration : 0) || p.duration || 3;
+      /** 🎙️ 原声段正文回填：段落 text 为空时取 audioSource.transcript（原声台词） */
+      const paraText = readParagraphText(p);
       return {
         id: p.id,
         mediaId: m?.mediaId || '',
         imagePath: m?.thumbnail || '',
-        text: p.text || '',
-        originalText: p.text || '',
-        aiText: p.text || m?.text || '',
+        text: paraText,
+        originalText: paraText,
+        aiText: p.text || m?.text || paraText,
         start: m?.chunkData ? Math.round(m.chunkData.startMs) / 1000 : 0,
         end: m?.chunkData ? Math.round(m.chunkData.endMs) / 1000 : durationSec,
         duration: durationSec,
@@ -139,7 +211,9 @@ export class JianyingExportService {
         isExactSpeed: m?.isExactSpeed === true,
         videoTimelineStartMs: m?.videoTimelineStartMs,
         videoTimelineEndMs: m?.videoTimelineEndMs,
-        keepOriginalAudio: p.keepOriginalAudio === true || m?.keepOriginalAudio === true,
+        keepOriginalAudio: p.keepOriginalAudio === true || (p as any).type === 'original_audio' || m?.keepOriginalAudio === true,
+        /** 🎙️ 原声段逐行字幕（源坐标）：导出层按行拆条，字幕随人声出现/消失 */
+        subtitleCues: readSubtitleCues(p),
         // 未匹配且有配音：与统一装配器保持同语义（无媒体/无切片/有 TTS → 末帧定格导出）
         unmatched: (!!t && !!t.audioUrl && !t._failed && !m?.mediaId && !m?.chunkData) === true,
       } as CompileShot;
@@ -203,6 +277,7 @@ export class JianyingExportService {
           videoTimelineStartMs: Math.round(s.start * 1000),
           videoTimelineEndMs: Math.round(s.end * 1000),
           keepOriginalAudio: s.keepOriginalAudio === true,
+          subtitleCues: readSubtitleCues(s),
           unmatched: s.unmatched === true,
           // 🎬 阶段 A：透传装配器已算好的合并组关系（project.shots 已 enrich）
           parentChunkId: s.parentChunkId,
@@ -224,15 +299,16 @@ export class JianyingExportService {
           id,
           mediaId: '',
           imagePath: '',
-          text: p.text || '',
-          originalText: p.text || '',
-          aiText: p.text || '',
+          text: readParagraphText(p),
+          originalText: readParagraphText(p),
+          aiText: readParagraphText(p),
           start: 0,
           end: durationSec,
           duration: durationSec,
           audioDuration: durationSec,
           chunkData: null,
-          keepOriginalAudio: p.keepOriginalAudio === true,
+          keepOriginalAudio: p.keepOriginalAudio === true || (p as any).type === 'original_audio',
+          subtitleCues: readSubtitleCues(p),
         } as CompileShot;
       }
       const durationSec = shot.duration || Math.max(0, shot.end - shot.start) || (p.duration ?? 3);
@@ -240,9 +316,9 @@ export class JianyingExportService {
         id,
         mediaId: shot.mediaId || '',
         imagePath: '',
-        text: p.text || shot.text || '',
-        originalText: p.text || shot.text || '',
-        aiText: shot.aiText || p.text || shot.text || '',
+        text: readParagraphText(p) || shot.text || '',
+        originalText: readParagraphText(p) || shot.text || '',
+        aiText: shot.aiText || readParagraphText(p) || shot.text || '',
         start: shot.start,
         end: shot.end,
         duration: durationSec,
@@ -252,7 +328,8 @@ export class JianyingExportService {
         appliedSpeedFactor: shot.appliedSpeedFactor,
         videoTimelineStartMs: Math.round(shot.start * 1000),
         videoTimelineEndMs: Math.round(shot.end * 1000),
-        keepOriginalAudio: shot.keepOriginalAudio === true || p.keepOriginalAudio === true,
+        keepOriginalAudio: shot.keepOriginalAudio === true || p.keepOriginalAudio === true || (p as any).type === 'original_audio',
+        subtitleCues: readSubtitleCues(p) || readSubtitleCues(shot),
         unmatched: shot.unmatched === true,
         // 🎬 阶段 A：透传装配器已算好的合并组关系（project.shots 已 enrich）
         parentChunkId: shot.parentChunkId,
@@ -278,8 +355,11 @@ export class JianyingExportService {
     subtitleStyle: SubtitleStyle = DEFAULT_SUBTITLE_STYLE,
     depsOverride?: ExportBinDeps,
   ): object {
-    const probeMap = probeCompileShotVideos(shots, mediaPath, depsOverride ?? binDeps);
-    return assembleDraftContent(shots, mediaPath, probeMap, bgmPath, subtitleStyle);
+    const deps = depsOverride ?? binDeps;
+    const probeMap = probeCompileShotVideos(shots, mediaPath, deps);
+    // 🎙️ 字幕切点吸附：用配音真实静音（换气）点校正按字数比例的切点
+    const pauseHints = collectPauseHints(shots, deps);
+    return assembleDraftContent(shots, mediaPath, probeMap, bgmPath, subtitleStyle, pauseHints);
   }
 
   /**
@@ -306,7 +386,9 @@ export class JianyingExportService {
       input.mediaPath || input.outputDir || '',
       deps,
     );
-    return exportJianying(input, jianyingRoot, compileShots, probeMap, subtitleStyle);
+    // 🎙️ 字幕切点吸附：用配音真实静音（换气）点校正按字数比例的切点
+    const pauseHints = collectPauseHints(compileShots, deps);
+    return exportJianying(input, jianyingRoot, compileShots, probeMap, subtitleStyle, pauseHints);
   }
 
   /**
@@ -334,6 +416,8 @@ export class JianyingExportService {
       baseInput.mediaPath || baseInput.outputDir || '',
       deps,
     );
-    return exportJianying(baseInput, jianyingRoot, compileShots, probeMap, subtitleStyle);
+    // 🎙️ 字幕切点吸附：用配音真实静音（换气）点校正按字数比例的切点
+    const pauseHints = collectPauseHints(compileShots, deps);
+    return exportJianying(baseInput, jianyingRoot, compileShots, probeMap, subtitleStyle, pauseHints);
   }
 }

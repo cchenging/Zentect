@@ -187,6 +187,10 @@ export interface OriginalAudioParagraph extends BaseScriptParagraph {
     speaker: string;
     /** 原声台词文本（替代旧原声段的 text 字段语义） */
     transcript: string;
+    /** 原声窗内逐行 ASR 台词（各自携带起止时间，源坐标 ms）：导出层据此按行拆字幕条，
+     *  让字幕随人声出现/消失，而不是一条字幕撑满整个原声窗。
+     *  缺失（老工程）= 导出退回单条字幕（transcript 整段显示）。 */
+    asrSubLines?: Array<{ text: string; startMs: number; endMs: number }>;
     /** 导出时是否自动压低 BGM（-12dB ducking，突出台词） */
     duckingBgm: boolean;
   };
@@ -272,6 +276,12 @@ export interface PipelineParams {
    * 优先级：targetDurationSec >0 最高，targetNarrationDurationSec 次之（存量兼容），最后视频总长推导。
    */
   targetDurationSec?: number;
+  /**
+   * 🗣️ 解说语速（字/秒）：步骤3 语速选择随项目 metadata.speechRate 持久化，
+   * 主进程载入项目参数时一并注入（此前仅前端持有，引擎永远退回默认 4.5，用户选择失效）。
+   * undefined = 用 4.5 默认。
+   */
+  speechRate?: number;
 }
 
 /** TTS 合成结果 */

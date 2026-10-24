@@ -94,7 +94,7 @@ describe('字幕去标点（行业规范）', () => {
   it('集成：带标点的解说文案进入剪映 content 后无任何标点', () => {
     const probeMap = new Map<string, VideoProbeResult>([[SOURCE_PATH, sourceProbe]]);
     const { texts } = assembleMaterials(
-      [makeShot({ keepOriginalAudio: false, aiText: '这，是一段。带标点的文案！' })],
+      [makeShot({ keepOriginalAudio: false, aiText: '这是一段带标点的文案。' })],
       SOURCE_PATH,
       probeMap,
       {},
@@ -179,6 +179,252 @@ describe('轨道层集成（TracksAssembler 透传音量）', () => {
     const videoSegments = tracks[0].segments as any[];
     expect(videoSegments).toHaveLength(1);
     expect(videoSegments[0].volume).toBe(1.5);
+  });
+});
+
+// 🎙️ 原声段逐行字幕（2026-10-23）：直接消费 ASR 每行的 startMs/endMs，
+// 按行生成多条字幕条，字幕随人声出现/消失，不再一条文本撑满整窗。
+describe('原声段逐行字幕（ASR 时间点驱动）', () => {
+  const probeMap = new Map<string, VideoProbeResult>([[SOURCE_PATH, sourceProbe]]);
+  const cueShot = () =>
+    makeShot({
+      keepOriginalAudio: true,
+      originalText: '秀恩爱死得快',
+      duration: 4,
+      audioDuration: 4,
+      videoTimelineStartMs: 10_000,
+      videoTimelineEndMs: 14_000,
+      subtitleCues: [
+        { text: '秀恩爱', startMs: 10_000, endMs: 11_200 },
+        { text: '死得快', startMs: 11_500, endMs: 13_000 },
+      ],
+    });
+
+  it('有逐行台词：按行生成多条字幕，偏移相对原声窗起点', () => {
+    const { texts, shotRefs } = assembleMaterials([cueShot()], SOURCE_PATH, probeMap, {});
+    expect(texts).toHaveLength(2);
+    expect(shotRefs[0].textId).toBeUndefined();
+    expect(shotRefs[0].textCues).toEqual([
+      { textId: (texts[0] as any).id, offsetUs: 0, durationUs: 1_200_000 },
+      { textId: (texts[1] as any).id, offsetUs: 1_500_000, durationUs: 1_500_000 },
+    ]);
+    expect(JSON.parse((texts[0] as any).content).text).toBe('秀恩爱');
+    expect(JSON.parse((texts[1] as any).content).text).toBe('死得快');
+  });
+
+  it('轨道层：字幕 segment 的起止 = ASR 行时间点（相对段首偏移）', () => {
+    const { shotRefs } = assembleMaterials([cueShot()], SOURCE_PATH, probeMap, {});
+    const { tracks } = assembleTracks(shotRefs as ShotMaterialRef[]);
+    const textSegments = tracks[3].segments as any[];
+    expect(textSegments).toHaveLength(2);
+    expect(textSegments[0].target_timerange).toEqual({ start: 0, duration: 1_200_000 });
+    expect(textSegments[1].target_timerange).toEqual({ start: 1_500_000, duration: 1_500_000 });
+  });
+
+  it('逐行台词全部越界/过短 → 回退单条整段字幕', () => {
+    const { texts, shotRefs } = assembleMaterials(
+      [
+        makeShot({
+          keepOriginalAudio: true,
+          originalText: '我爷爷不行了',
+          duration: 4,
+          audioDuration: 4,
+          videoTimelineStartMs: 10_000,
+          videoTimelineEndMs: 14_000,
+          subtitleCues: [
+            { text: '窗外', startMs: 20_000, endMs: 21_000 },
+            { text: '嗯', startMs: 10_000, endMs: 10_050 },
+          ],
+        }),
+      ],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    expect(shotRefs[0].textCues).toBeUndefined();
+    expect(shotRefs[0].textId).toBeTruthy();
+    expect(texts).toHaveLength(1);
+    expect(JSON.parse((texts[0] as any).content).text).toBe('我爷爷不行了');
+  });
+
+  it('解说段不受影响：即使误带 subtitleCues 也不按行拆', () => {
+    const { shotRefs } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: false, subtitleCues: [{ text: '误带', startMs: 1000, endMs: 2000 }] })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    expect(shotRefs[0].textCues).toBeUndefined();
+    expect(shotRefs[0].textId).toBeTruthy();
+  });
+});
+
+// 🎙️ 长句按「换气级」短语拆条（2026-10-23）：整段一条字幕会从开口显示到音频结束，
+// 这里验证解说段按标点切片、按字数分摊该段音频时长，实现「读到哪句显示哪句」。
+describe('解说长句按换气级短语拆字幕', () => {
+  const probeMap = new Map<string, VideoProbeResult>([[SOURCE_PATH, sourceProbe]]);
+  const LONG = '翁月浅笑直言了解这类群体，姐姐便很少去公司，偶尔露面就被夸能干';
+
+  it('三个逗号短语 → 三条字幕，偏移/时长按字数比例分摊且首尾贴合', () => {
+    const { texts, shotRefs } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: false, aiText: LONG, duration: 5.4, audioDuration: 5.4 })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    expect(texts).toHaveLength(3);
+    expect(shotRefs[0].textId).toBeUndefined();
+    const cues = shotRefs[0].textCues!;
+    expect(cues).toHaveLength(3);
+    // 清洗后字数 12 / 8 / 9，总时长 5.4s
+    expect(cues[0].offsetUs).toBe(0);
+    expect(cues[0].durationUs).toBe(2_234_483);
+    expect(cues[1].offsetUs).toBe(2_234_483);
+    expect(cues[1].durationUs).toBe(1_489_655);
+    expect(cues[1].offsetUs + cues[1].durationUs).toBe(3_724_138);
+    // 末片吸收余量，总时长严格等于段时长
+    expect(cues[2].offsetUs + cues[2].durationUs).toBe(5_400_000);
+    expect(JSON.parse((texts[0] as any).content).text).toBe('翁月浅笑直言了解这类群体');
+    expect(JSON.parse((texts[1] as any).content).text).toBe('姐姐便很少去公司');
+    expect(JSON.parse((texts[2] as any).content).text).toBe('偶尔露面就被夸能干');
+  });
+
+  it('轨道层：三条字幕依次显示、互不重叠、不超出段时长', () => {
+    const { shotRefs } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: false, aiText: LONG, duration: 5.4, audioDuration: 5.4 })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    const { tracks } = assembleTracks(shotRefs as ShotMaterialRef[]);
+    const textSegments = tracks[3].segments as any[];
+    expect(textSegments).toHaveLength(3);
+    expect(textSegments[0].target_timerange).toEqual({ start: 0, duration: 2_234_483 });
+    expect(textSegments[1].target_timerange).toEqual({ start: 2_234_483, duration: 1_489_655 });
+    expect(textSegments[2].target_timerange).toEqual({ start: 3_724_138, duration: 1_675_862 });
+  });
+
+  it('单短语文案 → 维持单条整段字幕（不回归）', () => {
+    const { texts, shotRefs } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: false, aiText: '他推开门走了进去。', duration: 3 })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    expect(texts).toHaveLength(1);
+    expect(shotRefs[0].textCues).toBeUndefined();
+    expect(shotRefs[0].textId).toBeTruthy();
+    expect(JSON.parse((texts[0] as any).content).text).toBe('他推开门走了进去');
+  });
+
+  it('无标点超长（>2 倍行宽）→ 按行宽硬切成多条', () => {
+    const within = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥';
+    expect(within.length).toBe(32);
+    const { shotRefs } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: false, aiText: within, duration: 4 })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    // 32 字 = 2×16 行宽，仍可两行容纳 → 维持单条折行
+    expect(shotRefs[0].textCues).toBeUndefined();
+    const longer = within + '天地玄黄';
+    const { shotRefs: refs2 } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: false, aiText: longer, duration: 6 })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    expect(refs2[0].textCues?.length).toBe(2);
+  });
+});
+
+// 🎙️ 字幕切点吸附（2026-10-23，方案 2）：比例切点 → 配音真实静音（换气）中点。
+describe('解说字幕切点按真实静音吸附', () => {
+  const probeMap = new Map<string, VideoProbeResult>([[SOURCE_PATH, sourceProbe]]);
+  const LONG = '翁月浅笑直言了解这类群体，姐姐便很少去公司，偶尔露面就被夸能干';
+  const shot = (over: Partial<CompileShot> = {}) =>
+    makeShot({ keepOriginalAudio: false, aiText: LONG, duration: 5.4, audioDuration: 5.4, ...over });
+
+  it('静音中点给出时：比例切点 2234/3724ms → 吸附到 2222/3854ms', () => {
+    const pauseHints = new Map<string, any[]>([
+      ['seg_normal', [
+        { startMs: 2070, endMs: 2374 },  // 换气 1：中点 2222
+        { startMs: 3712, endMs: 3996 },  // 换气 2：中点 3854
+      ]],
+    ]);
+    const { shotRefs } = assembleMaterials(
+      [shot({ id: 'seg_normal' })],
+      SOURCE_PATH,
+      probeMap,
+      { pauseHints },
+    );
+    const cues = shotRefs[0].textCues!;
+    expect(cues).toHaveLength(3);
+    expect(cues[0].durationUs).toBe(2_222_000);
+    expect(cues[1].offsetUs).toBe(2_222_000);
+    expect(cues[1].durationUs).toBe(1_632_000);
+    expect(cues[2].offsetUs).toBe(3_854_000);
+    // 吸附只移动切点，首尾仍严格贴合段时长
+    expect(cues[2].offsetUs + cues[2].durationUs).toBe(5_400_000);
+  });
+
+  it('静音距切点超过 700ms → 保持原比例切点（不硬拖）', () => {
+    const pauseHints = new Map<string, any[]>([
+      ['seg_normal', [{ startMs: 50, endMs: 500 }]],
+    ]);
+    const { shotRefs } = assembleMaterials(
+      [shot({ id: 'seg_normal' })],
+      SOURCE_PATH,
+      probeMap,
+      { pauseHints },
+    );
+    const cues = shotRefs[0].textCues!;
+    expect(cues[0].durationUs).toBe(2_234_483);
+    expect(cues[1].offsetUs).toBe(2_234_483);
+  });
+
+  it('只有一处静音 → 仅吸附最近的那个切点，其余保持比例', () => {
+    const pauseHints = new Map<string, any[]>([
+      ['seg_normal', [{ startMs: 4000, endMs: 4400 }]], // 中点 4200，只近第 2 个切点
+    ]);
+    const { shotRefs } = assembleMaterials(
+      [shot({ id: 'seg_normal' })],
+      SOURCE_PATH,
+      probeMap,
+      { pauseHints },
+    );
+    const cues = shotRefs[0].textCues!;
+    expect(cues[0].durationUs).toBe(2_234_483);       // 第 1 个切点未动
+    expect(cues[1].offsetUs + cues[1].durationUs).toBe(4_200_000); // 第 2 个切点吸附
+  });
+
+  it('无 pauseHints（ffmpeg 不可用/文件缺失）→ 回退纯比例切点，不抛错', () => {
+    const { shotRefs } = assembleMaterials(
+      [shot({ id: 'seg_normal' })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    expect(shotRefs[0].textCues![0].durationUs).toBe(2_234_483);
+    expect(shotRefs[0].textCues![1].offsetUs).toBe(2_234_483);
+  });
+
+  it('吸附后轨道层仍连续无重叠', () => {
+    const pauseHints = new Map<string, any[]>([
+      ['seg_normal', [{ startMs: 2070, endMs: 2374 }, { startMs: 3712, endMs: 3996 }]],
+    ]);
+    const { shotRefs } = assembleMaterials(
+      [shot({ id: 'seg_normal' })],
+      SOURCE_PATH,
+      probeMap,
+      { pauseHints },
+    );
+    const { tracks } = assembleTracks(shotRefs as ShotMaterialRef[]);
+    const segs = tracks[3].segments as any[];
+    expect(segs).toHaveLength(3);
+    expect(segs[1].target_timerange.start).toBe(segs[0].target_timerange.start + segs[0].target_timerange.duration);
+    expect(segs[2].target_timerange.start).toBe(segs[1].target_timerange.start + segs[1].target_timerange.duration);
   });
 });
 

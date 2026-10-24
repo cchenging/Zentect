@@ -154,6 +154,19 @@ export function normalizeScriptParagraph(raw: unknown): ScriptParagraph {
           : typeof src.text === 'string'
             ? src.text
             : '',
+      /** 🎙️ 逐行 ASR 台词透传（含各自起止时间）：导出层按行拆字幕条的依据，水合时不得丢 */
+      ...(Array.isArray(rawAudioSource?.asrSubLines)
+        ? {
+            asrSubLines: (rawAudioSource!.asrSubLines as unknown[])
+              .filter((l): l is Record<string, unknown> => typeof l === 'object' && l !== null)
+              .map((l) => ({
+                text: String(l.text ?? ''),
+                startMs: Number(l.startMs),
+                endMs: Number(l.endMs),
+              }))
+              .filter((l) => l.text && Number.isFinite(l.startMs) && Number.isFinite(l.endMs) && l.endMs > l.startMs),
+          }
+        : {}),
       duckingBgm: rawAudioSource?.duckingBgm !== false,
     },
   };

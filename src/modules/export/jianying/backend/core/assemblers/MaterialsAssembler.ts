@@ -18,6 +18,17 @@ import {
   SUBTITLE_LINE_WIDTH_LIMIT_PORTRAIT,
 } from '../../../../../../shared/utils/subtitleLayout';
 import type { VideoProbeResult } from '../utils/FfprobeProber';
+import type { PauseInterval } from '../utils/AudioPauseProber';
+
+/** 原声段逐行字幕条引用：offsetUs = 相对本镜头目标起点的显示偏移 */
+export interface SubtitleCueRef {
+  /** 字幕素材 id */
+  textId: string;
+  /** 相对镜头目标起点的偏移（微秒） */
+  offsetUs: number;
+  /** 显示时长（微秒） */
+  durationUs: number;
+}
 
 /** 单个镜头的素材装配结果（供 TracksAssembler 消费，解耦素材与轨道） */
 export interface ShotMaterialRef {
@@ -29,6 +40,11 @@ export interface ShotMaterialRef {
   audioId?: string;
   /** 字幕素材 id（无字幕时不设） */
   textId?: string;
+  /**
+   * 🎙️ 原声段逐行字幕：存在时轨道层按条生成多段字幕（每行只在自己的 ASR 起止时间内显示）；
+   * 缺省 = 退回单条字幕（textId 覆盖整段）。
+   */
+  textCues?: SubtitleCueRef[];
   /** 目标时长（微秒） */
   durationUs: number;
   /** 源切片起始（微秒） */
@@ -543,6 +559,182 @@ function buildTextMaterial(
 }
 
 /**
+ * 切点吸附上限（毫秒）：比例切点距最近静音中点超过该距离，视为与真实换气无关，保持原切点。
+ * 实测最长偏差约 580ms，取 700ms 可覆盖「逗号处实际没停顿」的句子。
+ */
+const SNAP_MAX_DISTANCE_MS = 700;
+/** 吸附后每条字幕的最短显示时长（毫秒），防止切点被拖到相邻切点旁造成一闪而过 */
+const SNAP_MIN_CUE_MS = 250;
+
+/**
+ * 字幕切点吸附：把按字数比例算出的切点移到「真实静音（换气）中点」。
+ *
+ * 规则：
+ *  - 每个切点找最近的、未被占用的静音中点；超过 SNAP_MAX_DISTANCE_MS 则不动；
+ *  - 吸附后必须与前后切点保持 SNAP_MIN_CUE_MS 以上间隔，且不越过下一切点的原始位置（防级联漂移）；
+ *  - 任何一个切点非法（<= 前一切点）则整体回退原始比例切点，保证不产出重叠字幕。
+ *
+ * @param cues   比例切点（offset 相对镜头起点，微秒，首尾贴合整段）
+ * @param pauses 配音静音区间（毫秒）；空/缺省 → 原样返回
+ */
+function snapCueCuts(
+  cues: Array<{ content: string; offsetUs: number; durationUs: number }>,
+  pauses: PauseInterval[] | undefined,
+): Array<{ content: string; offsetUs: number; durationUs: number }> {
+  if (!pauses || pauses.length === 0 || cues.length < 2) return cues;
+  const last = cues[cues.length - 1];
+  const totalMs = (last.offsetUs + last.durationUs) / 1000;
+  if (!(totalMs > 0)) return cues;
+
+  // 静音中点作为换气位置；首尾不参与（切点本身已贴在 0 / 段尾）
+  const mids = pauses
+    .filter((p) => Number.isFinite(p.startMs) && Number.isFinite(p.endMs) && p.endMs > p.startMs)
+    .map((p) => Math.round((p.startMs + Math.min(p.endMs, totalMs)) / 2))
+    .filter((m) => m > SNAP_MIN_CUE_MS && m < totalMs - SNAP_MIN_CUE_MS);
+  if (mids.length === 0) return cues;
+
+  const used = new Set<number>();
+  /** 新切点（微秒）：未吸附的切点保留原始微秒精度，避免毫秒取整带来的额外偏差 */
+  const cutsUs: number[] = [];
+  let prevUs = 0;
+  for (let i = 1; i < cues.length; i++) {
+    const origUs = cues[i].offsetUs;
+    const origMs = Math.round(origUs / 1000);
+    const nextOrigMs = i + 1 < cues.length ? Math.round(cues[i + 1].offsetUs / 1000) : totalMs;
+    let cutUs = origUs;
+    let snapped = false;
+
+    let bestIdx = -1;
+    let bestDist = Infinity;
+    for (let j = 0; j < mids.length; j++) {
+      if (used.has(j)) continue;
+      const d = Math.abs(mids[j] - origMs);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = j;
+      }
+    }
+    if (bestIdx >= 0 && bestDist <= SNAP_MAX_DISTANCE_MS) {
+      const candidate = mids[bestIdx];
+      const lower = prevUs + SNAP_MIN_CUE_MS * 1000;
+      const upper = nextOrigMs * 1000 - SNAP_MIN_CUE_MS * 1000;
+      if (candidate * 1000 >= lower && candidate * 1000 <= upper) {
+        cutUs = candidate * 1000;
+        snapped = true;
+        used.add(bestIdx);
+      }
+    }
+
+    if (snapped && cutUs < prevUs + SNAP_MIN_CUE_MS * 1000) {
+      cutUs = prevUs + SNAP_MIN_CUE_MS * 1000;
+    }
+    if (cutUs <= prevUs || cutUs >= totalMs * 1000 - SNAP_MIN_CUE_MS * 1000) {
+      return cues; // 异常：回退原始配比
+    }
+    cutsUs.push(cutUs);
+    prevUs = cutUs;
+  }
+
+  const totalUs = Math.round(totalMs * 1000);
+  const rebuilt = cues.map((cue, i) => {
+    const startUs = i === 0 ? 0 : cutsUs[i - 1];
+    const endUs = i === cues.length - 1 ? totalUs : cutsUs[i];
+    return {
+      content: cue.content,
+      offsetUs: startUs,
+      durationUs: endUs - startUs,
+    };
+  });
+  return rebuilt.every((c) => c.durationUs > 0) ? rebuilt : cues;
+}
+
+/**
+ * 函数级中文注释：把一段解说按「换气级」标点切成多条字幕（2026-10-23，修「一长条显示到音频结束」）。
+ *
+ * 背景：解说段原先整段只生成一条字幕素材，剪映里从开口一直显示到音频结束；而断句器只作用于
+ * LLM 原始分镜，章节重生成/编辑器等路径可能留下 >24 字长段落（实测 seg_28 32 字含两个逗号），
+ * 播放时就是一大坨文字。这里在导出层按标点切短语、按显示字数比例分摊该段音频时长，
+ * 实现「读到哪句显示哪句，换气后切下一句」。
+ *
+ * 切分口径：
+ *  - 优先在句号级（。！？；）与逗号级（，、）后切分，标点本身在清洗阶段去掉；
+ *  - 单片仍超过 2 倍行宽（≈两行显示量）时按行宽硬切，避免再出现超长条；
+ *  - 清洗后为空的片（纯符号）直接丢弃。
+ * 时长分配：
+ *  - 按清洗后字数比例分摊整段音频时长，前缀和铺排、末片吸收余量，片间不重叠且首尾贴合；
+ *  - 估算不足 120ms 的碎片并入前一片，避免一闪而过。
+ *
+ * @param rawText     原始字幕文案（含标点）
+ * @param durationUs  本镜头目标时长（微秒）
+ * @param lineLimit   字幕行宽（等效显示宽度）
+ * @param pauses      配音静音区间（毫秒）：给出时把比例切点吸附到真实换气点
+ * @returns 逐片内容 + 相对镜头起点的偏移/时长；不足 2 片时返回空数组（调用方回退单条整段字幕）
+ */
+function buildClauseCuePlans(
+  rawText: string,
+  durationUs: number,
+  lineLimit: number,
+  pauses?: PauseInterval[],
+): Array<{ content: string; offsetUs: number; durationUs: number }> {
+  if (!rawText || durationUs <= 0) return [];
+  const rawPhrases = String(rawText)
+    .split(/(?<=[。！？!?；;，,、])/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // 清洗后按显示字数判断是否仍超长；超长（>2 行宽）再按行宽硬切
+  const maxChars = Math.max(8, lineLimit * 2);
+  const cleaned: string[] = [];
+  for (const phrase of rawPhrases) {
+    const clean = sanitizeSubtitleText(phrase);
+    if (!clean) continue;
+    if (clean.length > maxChars) {
+      for (let i = 0; i < clean.length; i += maxChars) {
+        cleaned.push(clean.slice(i, i + maxChars));
+      }
+    } else {
+      cleaned.push(clean);
+    }
+  }
+  if (cleaned.length < 2) return [];
+
+  const weighted = cleaned.map((content) => ({ content, weight: Math.max(1, content.length) }));
+  const totalWeight = weighted.reduce((sum, p) => sum + p.weight, 0);
+  // 估算过短的片并入前片（避免一闪而过）；首片过短则保留（没有前片可并）
+  const merged: Array<{ content: string; weight: number }> = [];
+  for (const piece of weighted) {
+    const estUs = Math.round((durationUs * piece.weight) / totalWeight);
+    const prev = merged[merged.length - 1];
+    if (prev && estUs < 120_000) {
+      prev.content += piece.content;
+      prev.weight += piece.weight;
+    } else {
+      merged.push({ ...piece });
+    }
+  }
+  if (merged.length < 2) return [];
+
+  const mergedWeight = merged.reduce((sum, p) => sum + p.weight, 0);
+  const cues: Array<{ content: string; offsetUs: number; durationUs: number }> = [];
+  let cursor = 0;
+  merged.forEach((piece, i) => {
+    const isLast = i === merged.length - 1;
+    const durUs = isLast
+      ? durationUs - cursor
+      : Math.round((durationUs * piece.weight) / mergedWeight);
+    if (durUs <= 0) return;
+    cues.push({
+      content: wrapSubtitleText(piece.content, lineLimit),
+      offsetUs: cursor,
+      durationUs: durUs,
+    });
+    cursor += durUs;
+  });
+  const snapped = snapCueCuts(cues, pauses);
+  return snapped.length >= 2 ? snapped : [];
+}
+
+/**
  * 构建画布占位素材（materials.canvases 容器，手册 §4.2 标记"非空"，一条即可）。
  * @param canvasId 画布素材 id
  * @param durationUs 总时长（微秒）
@@ -670,6 +862,11 @@ export function assembleMaterials(
     subtitleStyle?: SubtitleStyle;
     /** 画布尺寸（宽×高）：跟随源视频分辨率，缺省 1920×1080 */
     canvasSize?: { width: number; height: number };
+    /**
+     * 配音静音区间（按镜头 id）：用于把解说字幕切点吸附到真实换气点。
+     * 缺省 = 纯字数比例切点（历史行为）。
+     */
+    pauseHints?: Map<string, PauseInterval[]>;
   } = {},
 ): MaterialsResult {
   const subtitleStyle = options.subtitleStyle ?? DEFAULT_SUBTITLE_STYLE;
@@ -837,18 +1034,62 @@ export function assembleMaterials(
     // E. AI 字幕（80+ 字段）
     // 原声段（keepOriginalAudio）：字幕只显示原声台词（originalText=段落文本，分析阶段已剥"原声："前缀），
     //   不显示 AI 解说词；解说段维持 AI 文案优先（aiText）。
+    // 🎙️ 原声段逐行字幕（2026-10-23）：段落携带 asrSubLines 时，按 ASR 每行各自的起止时间生成多条字幕条，
+    //   字幕随人声出现/消失，不再一条文本撑满整窗；无逐行数据则退回单条整段字幕。
     // 统一按行业规范清洗标点（sanitizeSubtitleText），素材 name 与 content 同步干净；
     // 再按字幕自身行宽独立折行（wrapSubtitleText）——字幕是渲染单位，与 TTS 承载/匹配单位
     // （断句器 ≤24 字碎片）解耦：24 字碎片折成两行，不整条挤一行挤出安全框。
-    const rawSubtitleText = shot.keepOriginalAudio === true
-      ? (shot.originalText || shot.text || '')
-      : (shot.aiText || shot.originalText || '');
-    const cleanSubtitleText = rawSubtitleText ? sanitizeSubtitleText(rawSubtitleText) : '';
-    const contentText = cleanSubtitleText ? wrapSubtitleText(cleanSubtitleText, subtitleLineLimit) : '';
-    if (contentText) {
-      const tMatId = genHexId();
-      texts.push(buildTextMaterial(tMatId, contentText, subtitleStyle, durationUs));
-      ref.textId = tMatId;
+    const winStartMs = typeof shot.videoTimelineStartMs === 'number' ? shot.videoTimelineStartMs : null;
+    if (
+      shot.keepOriginalAudio === true
+      && winStartMs !== null
+      && Array.isArray(shot.subtitleCues)
+      && shot.subtitleCues.length > 0
+    ) {
+      const cueRefs: SubtitleCueRef[] = [];
+      for (const cue of shot.subtitleCues) {
+        const cleanCue = sanitizeSubtitleText(String(cue.text || ''));
+        const cueContent = cleanCue ? wrapSubtitleText(cleanCue, subtitleLineLimit) : '';
+        if (!cueContent) continue;
+        /** 源坐标 → 镜头目标时间轴偏移（原声段恒 1.0×，无需按 speed 换算） */
+        const offsetUs = Math.max(0, Math.min(Math.round((cue.startMs - winStartMs) * 1000), durationUs));
+        const cueDurUs = Math.min(Math.round((cue.endMs - cue.startMs) * 1000), durationUs - offsetUs);
+        if (cueDurUs < 100_000) continue; // 短于 0.1s 的字幕条人眼不可读，丢弃
+        const cueMatId = genHexId();
+        texts.push(buildTextMaterial(cueMatId, cueContent, subtitleStyle, cueDurUs));
+        cueRefs.push({ textId: cueMatId, offsetUs, durationUs: cueDurUs });
+      }
+      if (cueRefs.length > 0) ref.textCues = cueRefs;
+    }
+    if (!ref.textCues) {
+      const rawSubtitleText = shot.keepOriginalAudio === true
+        ? (shot.originalText || shot.text || '')
+        : (shot.aiText || shot.originalText || '');
+      // 🎙️ 长句按「换气级」短语拆多条字幕（2026-10-23）：整段一条会从开口显示到音频结束，
+      //   观众看到的是通篇连写的一大段；这里按标点切片 + 按字数分摊该段时长，读到哪句显示哪句。
+      const clauseCues = buildClauseCuePlans(
+        rawSubtitleText,
+        durationUs,
+        subtitleLineLimit,
+        options.pauseHints?.get(shot.id),
+      );
+      if (clauseCues.length > 0) {
+        const cueRefs: SubtitleCueRef[] = [];
+        for (const cue of clauseCues) {
+          const cueMatId = genHexId();
+          texts.push(buildTextMaterial(cueMatId, cue.content, subtitleStyle, cue.durationUs));
+          cueRefs.push({ textId: cueMatId, offsetUs: cue.offsetUs, durationUs: cue.durationUs });
+        }
+        ref.textCues = cueRefs;
+      } else {
+        const cleanSubtitleText = rawSubtitleText ? sanitizeSubtitleText(rawSubtitleText) : '';
+        const contentText = cleanSubtitleText ? wrapSubtitleText(cleanSubtitleText, subtitleLineLimit) : '';
+        if (contentText) {
+          const tMatId = genHexId();
+          texts.push(buildTextMaterial(tMatId, contentText, subtitleStyle, durationUs));
+          ref.textId = tMatId;
+        }
+      }
     }
 
     shotRefs.push(ref);

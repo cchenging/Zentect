@@ -22,6 +22,45 @@ import {
 // SSOT：三档原声策略 ⇔ 密度折减系数 DR 唯一映射表，直接引用契约层单源（与前端档位切换同表）
 import { DENSITY_RATIO_BY_AUDIO_STRATEGY } from '../../../shared/types/entities/editor';
 
+/** 原声段落占比上限开关：全片 `keepOriginalAudio=true` 段落数 / 总段落数 的上限（0~1）。 */
+export const ORIGINAL_RATIO_MAX_ENV = 'ZENTECT_ORIGINAL_RATIO_MAX';
+/** 缺省上限：25%。实测历史异常（原声 53%）主要来自 prompt 主动鼓励「过渡镜头一律留原声」。 */
+export const DEFAULT_ORIGINAL_RATIO_MAX = 0.25;
+
+/**
+ * 函数级中文注释：读原声占比上限 `ZENTECT_ORIGINAL_RATIO_MAX`（0~1 小数）。
+ * 未设/非法/越界一律回退缺省 25%；显式 1 表示不限制（纯解说档本就不会标原声）。
+ *
+ * @returns 原声段落占比上限（0~1）
+ */
+export function resolveOriginalRatioMax(): number {
+  try {
+    const proc = (globalThis as unknown as { process?: { env?: Record<string, string | undefined> } }).process;
+    const raw = String(proc?.env ? proc.env[ORIGINAL_RATIO_MAX_ENV] : '').trim();
+    if (!raw) return DEFAULT_ORIGINAL_RATIO_MAX;
+    const val = Number(raw);
+    if (!Number.isFinite(val) || val < 0 || val > 1) return DEFAULT_ORIGINAL_RATIO_MAX;
+    return val;
+  } catch {
+    return DEFAULT_ORIGINAL_RATIO_MAX;
+  }
+}
+
+/**
+ * 函数级中文注释：统计原声段落占比（诊断/告警口径）。
+ * 分母为全部产出段落（原声段 + 解说段），分子为 `keepOriginalAudio=true` 的段落数。
+ *
+ * @param shots 产出分镜/段落数组
+ * @returns 总段数、原声段数、原声占比（total=0 时占比记 0）
+ */
+export function summarizeOriginalAudio(
+  shots: Array<{ keepOriginalAudio?: boolean }>,
+): { total: number; original: number; ratio: number } {
+  const total = Array.isArray(shots) ? shots.length : 0;
+  const original = total > 0 ? shots.filter((s) => s?.keepOriginalAudio === true).length : 0;
+  return { total, original, ratio: total > 0 ? original / total : 0 };
+}
+
 export interface ScriptGenInput {
   modelName?: string;
   customPrompt?: string;
@@ -449,7 +488,7 @@ const ACT_DEFS: Array<{ start: number; end: number; label: string; directive: st
   { start: 0.10, end: 0.40, label: '第二幕·困境升级', directive: '主角入局，小试牛刀却遭规则反噬，筹码不断加注；张力逐段抬升，切忌一次性宣泄。' },
   { start: 0.40, end: 0.70, label: '第三幕·绝望反转', directive: '信任崩塌、跌入谷底、付出惨痛代价，是本片情绪最低点；如遇强冲突原声对白，此处是释放高光的最佳区间。' },
   { start: 0.70, end: 0.90, label: '第四幕·巅峰破局', directive: '极速快切、视听张力拉满，完成复仇/揭秘/终极对决，是全片视听高潮。' },
-  { start: 0.90, end: 1.00, label: '第五幕·余韵隐喻', directive: '留白与哲理收尾，点破人性代价或社会寓意，制造余韵与评论区讨论欲。' },
+  { start: 0.90, end: 1.00, label: '第五幕·余韵隐喻', directive: '收束落点：必须回扣开篇抛出的问题，给出明确判断/代价/人性指向（可以是余味，但不能是悬空氛围句）；严禁在此引入新人物、新悬念或"突然断流"。' },
 ];
 
 /** 函数级中文注释：按归一化章节进度把章节归入五幕之一（p < end 即落入该幕，半边开区间 [start, end)）。
@@ -513,6 +552,81 @@ export function dedupeAdjacentParagraphs<T extends { text?: string }>(
     keptIndexes.push(i);
   }
   return { paragraphs: keptParagraphs, keptIndexes };
+}
+
+/**
+ * 函数级中文注释：原声段「同窗同文」去重键（2026-10-23）。
+ *
+ * @param p 待判定段落
+ * @returns 仅原声段且源时间窗合法时返回 `起点|终点|归一化台词`，其余返回 null（不参与去重）
+ */
+function originalDuplicateKey(p: {
+  keepOriginalAudio?: boolean;
+  type?: string;
+  audioSource?: { sourceStartMs?: unknown; sourceEndMs?: unknown; transcript?: unknown } | null;
+}): string | null {
+  const isOriginal = p?.keepOriginalAudio === true || p?.type === 'original_audio';
+  if (!isOriginal) return null;
+  const s = Number(p?.audioSource?.sourceStartMs);
+  const e = Number(p?.audioSource?.sourceEndMs);
+  if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) return null;
+  const text = String(p?.audioSource?.transcript ?? '').replace(/\s+/g, '');
+  return `${Math.round(s)}|${Math.round(e)}|${text}`;
+}
+
+/**
+ * 函数级中文注释：原声段落「同窗同文」去重（2026-10-23，修「原声重复太多」）。
+ *
+ * 背景：两阶段滑窗按章独立生成，章间重叠/滑窗回扫会把同一段 ASR 台词原样产出多份
+ * （实测 seg_5/6/7 同窗同文三连、同一句台词同窗出现 10 次）。段落级相邻去重发生在
+ * 「逐字抄录」之前，当时各份 LLM 文本并不相同，查不出来；抄录后文本归一，重复才暴露
+ * ⇒ 必须在逐字抄录之后再查一次「源时间窗 + 归一化台词」。
+ *
+ * 判定口径：只对原声段、且「源时间窗完全相同 + 归一化台词完全相同」才判重复，只保留首次出现。
+ * 不按"同台词不同窗"去重——同一句台词在影片不同时间点复现属正常剧情，误删会破坏叙事。
+ *
+ * @param paragraphs 段落数组（原声段需带 audioSource）
+ * @returns paragraphs：去重后的段；removedIds：被删除段的 id（供日志核对）
+ */
+export function dedupeDuplicateOriginalSegments<T extends {
+  id?: string;
+  keepOriginalAudio?: boolean;
+  type?: string;
+  audioSource?: { sourceStartMs?: unknown; sourceEndMs?: unknown; transcript?: unknown } | null;
+}>(paragraphs: T[]): { paragraphs: T[]; removedIds: string[] } {
+  if (!Array.isArray(paragraphs)) return { paragraphs: [], removedIds: [] };
+  const seen = new Set<string>();
+  const kept: T[] = [];
+  const removedIds: string[] = [];
+  for (const p of paragraphs) {
+    const key = originalDuplicateKey(p);
+    if (key) {
+      if (seen.has(key)) {
+        removedIds.push(String(p?.id ?? '?'));
+        continue;
+      }
+      seen.add(key);
+    }
+    kept.push(p);
+  }
+  return { paragraphs: kept, removedIds };
+}
+
+/**
+ * 函数级中文注释：原声段占用的成片秒数（原声 speed 锁 1.0，源窗不可压缩，1s 原声 = 1s 成片）。
+ *
+ * @param p 段落或分镜（优先读 audioSource 源时间窗，缺省回退 duration 秒）
+ * @returns 占用秒数；两者都非法时返回 0
+ */
+export function originalWindowSec(p: {
+  audioSource?: { sourceStartMs?: unknown; sourceEndMs?: unknown } | null;
+  duration?: unknown;
+}): number {
+  const s = Number(p?.audioSource?.sourceStartMs);
+  const e = Number(p?.audioSource?.sourceEndMs);
+  if (Number.isFinite(s) && Number.isFinite(e) && e > s) return (e - s) / 1000;
+  const d = Number(p?.duration);
+  return Number.isFinite(d) && d > 0 ? d : 0;
 }
 
 /** 阶段A 剧情大纲「接地校验」结果：ok=false 时 violations 为人类可读违规明细（供反馈重生成） */
@@ -661,6 +775,50 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     return out;
   }
 
+  /**
+   * 原声段「逐行字幕」取词（2026-10-23）：把 ASR 在该原声时间窗内的台词行按时间顺序取出，
+   * 每行保留自己的 startMs/endMs（源坐标、已裁剪到窗内），供导出层按行生成字幕条——
+   * 字幕随人声出现/消失，而不是一条文本撑满整个原声窗。
+   *
+   * 口径：只说抄，不改写、不概括、不补旁白——原声段保留的是原片人声，字幕必须与听到的台词逐字一致。
+   * ASR 本身可能断字（如"他什么不见电话"），但那是原声给出的唯一文本事实，宁可保留原样也不让 LLM 二次创作。
+   *
+   * @returns 中文台词行；窗口内无 ASR / 台词非中文 → 返回空数组（外语无法逐字抄录，
+   *          由 prompt 约束 LLM 产出忠实中文译句，导出退回单条字幕）。
+   */
+  private static _asrSubLines(
+    lines: any[],
+    startMs?: number,
+    endMs?: number,
+  ): Array<{ text: string; startMs: number; endMs: number }> {
+    const linesArr = Array.isArray(lines) ? lines : [];
+    const s0 = Number(startMs);
+    const e0 = Number(endMs);
+    if (linesArr.length === 0 || !Number.isFinite(s0) || !Number.isFinite(e0) || e0 <= s0) return [];
+    const picked: Array<{ text: string; startMs: number; endMs: number }> = [];
+    for (const line of linesArr) {
+      const { startMs: ms, endMs: me } = ScriptGenStrategy._asrLineToMs(line, 0);
+      if (!Number.isFinite(ms)) continue;
+      const effEnd = Number.isFinite(me) && me > ms ? me : ms + 2000;
+      /** 与窗口有交集即取：原声窗由 findAsrWindowByTime 收敛，边界允许半句重叠 */
+      if (effEnd <= s0 || ms >= e0) continue;
+      const rawText = String(line?.text ?? line?.originalText ?? '').replace(/\s+/g, '');
+      if (!rawText) continue;
+      /** 单行中文判定：非中文行（外语/纯符号）不抄，避免字幕中外文混排 */
+      const han = (rawText.match(/[\u4e00-\u9fa5]/g) || []).length;
+      const letters = (rawText.match(/[\p{L}\p{N}]/gu) || []).length;
+      if (han < 1 || letters === 0 || han / letters < 0.5) continue;
+      /** 裁剪到窗内，保证字幕条不越出原声段 */
+      const cs = Math.max(ms, s0);
+      const ce = Math.min(effEnd, e0);
+      if (ce - cs < 100) continue;
+      if (picked.length > 0 && picked[picked.length - 1].text === rawText) continue;
+      picked.push({ text: rawText, startMs: cs, endMs: ce });
+    }
+    picked.sort((a, b) => a.startMs - b.startMs);
+    return picked;
+  }
+
   /** 函数级中文注释：文本变化判定——归一化后 Jaccard token 相似度 < 0.5 且双方非空且不同 → 视为剧情信号变化。
    * 防缺失字段给假强度：任一为空直接判不变（不给边界加分）。 */
   private static _textShifted(a: unknown, b: unknown): boolean {
@@ -798,8 +956,9 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
     // 进度段重排（L1 Strategy 层按耗时权重）：阶段1（准备+剧情理解）仅占 0~15，阶段2（正文生成）20~85
     onProgress(5, '正在收集上游视觉与听觉感知数据...');
 
-    // 读取用户选择的语速（字/秒），默认 4.5
-    const speechRate = input.speechRate || 4.5;
+    // 读取用户选择的语速（字/秒）：节点入参 → 项目级参数（PipelineEngine 从 metadata.speechRate 载入）→ 默认 4.5
+    // 🔧 修复前引擎只传硬编码默认参数，步骤3 的语速/原声档/目标篇幅等选择全部失效。
+    const speechRate = input.speechRate || context.pipelineParams?.speechRate || 4.5;
 
     // 融合方案参数：枚举按钮组 + 连续值协同（替代旧版 R/S/T/P 滑块）
     const DEFAULT_PARAMS: import('../../../shared/types/entities/editor').PipelineParams = {
@@ -1654,6 +1813,8 @@ ${outlineSourceJson}
       hookIntensity,
       /** 解说占比 < 100% 即留了原声空间，才允许 LLM 标记原声段落 */
       allowOriginalMark: narrationRatio < 1,
+      /** 原声段落占比上限（prompt 约束口径；0~1），防止「过渡镜头一律留原声」把整片做成原声 */
+      originalRatioMax: resolveOriginalRatioMax(),
       speechRate,
       densityFillRate,
       discountFactor,
@@ -1668,11 +1829,12 @@ ${outlineSourceJson}
       narrativePerspective: params.narrativePerspective,
       /** 两阶段每章注入的本章配额字数；null 表示单阶段全局模式 */
       chapterQuotaWords: null as number | null,
-      /** 🎬 结尾收束：仅单阶段 + 剧情理解判定"有明确结局"时注入（两阶段由第五幕 actDirective 承担收尾，不重复；
-       * 开放式/留白/悬念结尾不注入，避免强行升华变尬） */
-      endingDirective: !isTwoPhase && plotOutline?.hasClearEnding === true
+      /** 🎬 结尾收束（2026-10-23 改为恒注入）：此前只在「单阶段 + 明确结局」时注入，导致开放式/悬念式
+       * 结局完全没有收尾指令——末段停在氛围句上，观众反馈"戛然而止、看不懂"。现在按结局类型给出两种口径，
+       * 两阶段同样注入（第五幕 actDirective 只定章节气质，收尾硬约束仍需逐条落到末段）。 */
+      endingDirective: plotOutline?.hasClearEnding === true
         ? '本片剧情有明确结局。最后 1~2 段解说须完成结局收束：点破结局的因果/代价/主题升华，让观众看到"故事讲完了"的完整闭环；严禁以悬念留白、开放式收尾作结。'
-        : undefined,
+        : '本片为开放式/悬念式结局。最后 1~2 段解说仍须完成叙事收束：回扣开场抛出的问题，给出本片的明确判断、代价或人性落点（例如"这个名字，成了她婚姻里一根拔不出的刺"），让观众知道"这一段讲完了"；允许余味留白，但严禁引入新人物/新悬念，严禁用纯氛围句戛然而止。',
     };
     const systemPrompt = this.buildSystemPrompt(promptBaseArgs);
 
@@ -2224,8 +2386,10 @@ ${roleMapLines.join('\n')}
       );
     }
 
+    /** 🎙️ 原声段「逐字抄录」计数（诊断用）：copied=用 ASR 原文覆盖 LLM 文本的段数 */
+    const verbatimStat = { copied: 0 };
+
     const parsedShots: GeneratedShot[] = dedupClauses.paragraphs.map((p) => {
-      const scanResult = lexiconFilter.scan(p.text || '');
       /** 🎙️ 原声保留段：生成阶段即锁定原声台词在源片中的时间窗（源坐标），
        *  步骤4 原声试听/导出硬绑定直接可读。音频源以【画面时间窗】为主锁定（见下），文本反查仅作辅助。 */
       const isOriginalAudio = (p as any).keepOriginalAudio === true;
@@ -2237,6 +2401,17 @@ ${roleMapLines.join('\n')}
       const asrWin = isOriginalAudio
         ? (SemanticAnalyzeStrategy.findAsrWindowByTime(asrLines, anchorStart, anchorEnd) ?? { sourceStartMs: anchorStart, sourceEndMs: anchorEnd })
         : null;
+      /** 🎙️ 原声段字幕必须「逐字抄录」该原声窗内的 ASR 台词（2026-10-23）：
+       *  LLM 产出的原声 text 实测会串进画面描述（"女主在酒店…摇头否认"）、角色占位符（"角色0"）、
+       *  概括改写，导致导出字幕与原片人声对不上。ASR 原文是唯一可信的台词事实 ⇒ 优先覆盖。
+       *  窗口内无 ASR / 台词为外语时返回空串，保留 LLM 文本（外语无法逐字抄录，由 prompt 约束产出中文译句）。 */
+      const asrSubLines = isOriginalAudio && asrWin
+        ? ScriptGenStrategy._asrSubLines(asrLines, asrWin.sourceStartMs, asrWin.sourceEndMs)
+        : [];
+      const verbatim = asrSubLines.map((l) => l.text).join('，');
+      if (verbatim) verbatimStat.copied++;
+      const finalText = verbatim || p.text || '';
+      const scanResult = lexiconFilter.scan(finalText);
       return {
         /** ✅ 身份键统一：出生处唯一主键 seg_N 透传为最终产物的 id（前端 Normalizer 断言主键必存在）；shotId 同值并存兼容过渡 */
         id: p.id,
@@ -2279,12 +2454,289 @@ ${roleMapLines.join('\n')}
           ? {
               sourceStartMs: asrWin.sourceStartMs,
               sourceEndMs: asrWin.sourceEndMs,
-              transcript: p.text || '',
+              transcript: finalText,
+              /** 逐行台词（含起止时间，源坐标）：导出层按行拆字幕条，字幕随人声出现/消失 */
+              ...(asrSubLines.length > 0 ? { asrSubLines } : {}),
               duckingBgm: true,
             }
           : undefined,
       } as GeneratedShot;
     });
+
+    if (verbatimStat.copied > 0) {
+      const originalCount = parsedShots.filter((s) => s.keepOriginalAudio === true).length;
+      AppLogger.info(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成][原声] 字幕逐字抄录：${verbatimStat.copied}/${originalCount} 段用原声窗 ASR 原文覆盖 LLM 文本`,
+      );
+    }
+
+    // 🎙️ 逐字抄录后再去重（2026-10-23，修「原声重复太多」）：抄录前各份 LLM 文本不同，
+    //   段落级相邻去重查不出来；抄录后同一 ASR 窗的重复段文本归一，此处按「源时间窗 + 台词」清理。
+    {
+      const dedupedOriginal = dedupeDuplicateOriginalSegments(parsedShots);
+      if (dedupedOriginal.removedIds.length > 0) {
+        parsedShots.length = 0;
+        parsedShots.push(...dedupedOriginal.paragraphs);
+        AppLogger.warn(
+          LOG_TAGS.AI_AGENT,
+          `[文案生成][原声] 同窗同文去重：删除 ${dedupedOriginal.removedIds.length} 段重复原声`
+          + `（${dedupedOriginal.removedIds.join(',')}），剩余 ${parsedShots.length} 段`,
+        );
+      }
+    }
+
+    // 🎙️ P2 原声超额硬修正（2026-10-23）：prompt 软约束实测无效（占比 51.3% vs 上限 25%）。
+    //   策略：只把「超出上限的部分」一次性批量改写成解说，其余原声段一字不动。
+    //   两条上限同时生效：
+    //     ① 段数上限 = 总段数 × maxRatio（prompt 口径）；
+    //     ② 时长上限 = 目标篇幅 × maxRatio（本次修正）——原声 speed 锁 1.0、源窗不可压缩，
+    //        只看段数会严重低估：实测 41/70 段（58.6%）却吃掉 266s，成片被拉到约 6 分钟。
+    //   保留优先级：孤立的原声段（通常承载关键剧情）优先，其次时长越短越优先（同样预算能多留几段）。
+    //   改写失败 → 原样保留并告警，绝不丢弃原片信息（错就错）。
+    {
+      const maxRatio = resolveOriginalRatioMax();
+      const total = parsedShots.length;
+      const allowedByCount = Math.floor(total * maxRatio);
+      const originals = parsedShots
+        .map((shot, idx) => ({ shot, idx }))
+        .filter(({ shot }) => shot.keepOriginalAudio === true);
+      /** 原声时长上限：未设目标篇幅时不施加时间限制（保持旧行为，仅段数上限） */
+      const allowedByTimeSec = presetDurationSec !== null ? presetDurationSec * maxRatio : Infinity;
+      const isNeighborOriginal = (idx: number) =>
+        parsedShots[idx - 1]?.keepOriginalAudio === true || parsedShots[idx + 1]?.keepOriginalAudio === true;
+
+      // 贪心保留：孤立优先、短窗优先；段数或时长任一超限即停，剩余全部进改写队列
+      const keepIdx = new Set<number>();
+      let keepSec = 0;
+      /** 首末段若被标成原声，优先丢进改写队列：开篇需要点题、结尾需要收束，
+       *  边缘原声段是「一头雾水 / 戛然而止」的结构性来源（2026-10-23） */
+      const isEdge = (idx: number) => idx === 0 || idx === parsedShots.length - 1;
+      const preferred = originals.slice().sort((a, b) => {
+        const aEdge = isEdge(a.idx) ? 1 : 0;
+        const bEdge = isEdge(b.idx) ? 1 : 0;
+        if (aEdge !== bEdge) return aEdge - bEdge;
+        const aIsolated = isNeighborOriginal(a.idx) ? 0 : 1;
+        const bIsolated = isNeighborOriginal(b.idx) ? 0 : 1;
+        if (aIsolated !== bIsolated) return aIsolated - bIsolated;
+        return originalWindowSec(a.shot) - originalWindowSec(b.shot);
+      });
+      for (const { shot, idx } of preferred) {
+        if (keepIdx.size >= allowedByCount) break;
+        const sec = originalWindowSec(shot);
+        if (keepSec + sec > allowedByTimeSec) continue;
+        keepIdx.add(idx);
+        keepSec += sec;
+      }
+      /** 改写队列保持原片顺序，便于模型结合 prevText/nextText 保持口吻连贯 */
+      const candidates = originals.filter(({ idx }) => !keepIdx.has(idx));
+      const excess = candidates.length;
+
+      if (excess > 0) {
+        try {
+          const payload = candidates.map(({ shot, idx }) => ({
+            id: shot.id,
+            originalLine: shot.text,
+            visualIntent: shot.visualIntent,
+            emotion: shot.emotion,
+            prevText: parsedShots[idx - 1]?.text || '',
+            nextText: parsedShots[idx + 1]?.text || '',
+          }));
+          const quotaSystemPrompt = [
+            '你是短视频解说改稿助手。用户给出的句子原本是保留原片的原声台词，',
+            '但全片原声段落超量，需要把其中指定的若干句改写成第三人称解说词。硬性要求：',
+            '1. 只输出 JSON 数组，形如 [{"id":"seg_1","text":"改写后的解说词"}]，id 原样返回；',
+            '2. 每句 12~28 字（宁短不长：原声改名解说会增加成片时长），与 prevText/nextText 语气连贯，',
+            '   不得照抄原台词，不得出现"他说/她说/对话/只听"等转述腔，不得与上下句重复；',
+            '3. 语义必须基于 visualIntent（画面正在发生什么）与 originalLine（该段原声信息），不得编造新事实；',
+            '4. 输出条数与输入完全一致，不增不删。',
+          ].join('\n');
+          const quotaResp = await adapter.chat(
+            [
+              { role: 'system', content: quotaSystemPrompt },
+              { role: 'user', content: `待改写段落：\n${JSON.stringify(payload, null, 2)}` },
+            ],
+            modelName,
+            temperature,
+            { response_format: { type: 'json_object' } },
+          );
+          if (!quotaResp.success || !quotaResp.text) {
+            throw new Error(quotaResp.error || '原声改写响应为空');
+          }
+          const quotaParsed = NetworkPipeline.strictParseJson(quotaResp.text);
+          /** 响应形态容错：数组 / {shots|results|items|rewrites|data:[...]} / {seg_1:"解说词"} */
+          let quotaList: any[] = [];
+          const foundList = Array.isArray(quotaParsed)
+            ? quotaParsed
+            : [quotaParsed?.shots, quotaParsed?.results, quotaParsed?.items, quotaParsed?.rewrites, quotaParsed?.data]
+              .find((v) => Array.isArray(v));
+          if (Array.isArray(foundList)) {
+            quotaList = foundList;
+          } else if (quotaParsed && typeof quotaParsed === 'object') {
+            quotaList = Object.entries(quotaParsed)
+              .filter(([, v]) => typeof v === 'string')
+              .map(([id, text]) => ({ id, text }));
+          }
+          if (quotaList.length === 0) {
+            AppLogger.warn(
+              LOG_TAGS.AI_AGENT,
+              `[文案生成][原声] 改写响应解析不出条目（${quotaResp.text.length} 字符），响应头：`
+              + quotaResp.text.slice(0, 200),
+            );
+          }
+          const textOf = (r: any): string =>
+            String(r?.text ?? r?.narration ?? r?.rewritten ?? '').trim();
+
+          let rewritten = 0;
+          candidates.forEach(({ shot }, i) => {
+            const hit = quotaList.find((r: any) => String(r?.id) === String(shot.id));
+            // 位置兜底：模型漏回 id / 改写 id 时按数组顺序一一对应（"条数与输入一致"是硬要求）
+            let nextText = hit ? textOf(hit) : '';
+            if (!nextText && quotaList.length === candidates.length) {
+              nextText = textOf(quotaList[i]);
+            }
+            if (!nextText) return;
+            const scan = lexiconFilter.scan(nextText);
+            shot.text = scan.original;
+            shot.cleanText = scan.cleanText;
+            shot.audioSafeText = lexiconFilter.getAudioSafeText(scan.cleanText, scan.original);
+            shot.flagged = scan.flagged;
+            shot.replaced = scan.replaced;
+            shot.lexiconMarks = scan.matches.map((m) => ({ word: m.word, level: m.level, replaced: m.replaced }));
+            shot.keepOriginalAudio = false;
+            shot.type = 'narration';
+            shot.audioSource = undefined;
+            rewritten++;
+          });
+          AppLogger.info(
+            LOG_TAGS.AI_AGENT,
+            `[文案生成][原声] 超额硬修正：目标 ${excess} 段`
+            + `（段数上限 ${allowedByCount}｜时长上限 ${Number.isFinite(allowedByTimeSec) ? `${allowedByTimeSec.toFixed(0)}s` : '未设'}），`
+            + `实际改写 ${rewritten} 段为解说`
+            + `（保留 ${originals.length - rewritten}/${total} 段原声，占 ${keepSec.toFixed(1)}s）`,
+          );
+        } catch (e: any) {
+          AppLogger.warn(
+            LOG_TAGS.AI_AGENT,
+            `[文案生成][原声] 超额硬修正失败，保留原声不做改动：${e?.message || String(e)}`,
+          );
+        }
+      }
+    }
+
+    // 🎬 首尾打磨（2026-10-23）：开篇点题 / 结尾收束的确定性兜底——prompt 已加硬性要求，
+    //   但 LLM 仍会写出"只有代词的开篇"和"纯氛围句收尾"（用户实测反馈），这里对首 2 段 / 末 2 段
+    //   做一次定向改写；失败不阻断（保持原文 + 告警）。
+    try {
+      await this.polishHeadTail({
+        shots: parsedShots,
+        adapter,
+        modelName,
+        temperature,
+        speechRate,
+        densityFillRate,
+        discountFactor,
+        filmContext: {
+          logline: typeof plotOutline?.logline === 'string' ? plotOutline.logline : undefined,
+          arc: Array.isArray(plotOutline?.arc) ? plotOutline.arc : undefined,
+          keyTurns: Array.isArray(plotOutline?.keyTurns) ? plotOutline.keyTurns : undefined,
+          characterMotives: plotOutline?.characterMotives && typeof plotOutline.characterMotives === 'object'
+            ? plotOutline.characterMotives
+            : undefined,
+          // 🎭 角色名只用「剧情识别（characterMotives 键）+ 画面识别（primarySubject/characters）」：
+          //   步骤1 的人名经常不准、也常不是剧中角色名，暂不作为来源。
+          roleNames: (() => {
+            const names: string[] = [];
+            // 过滤占位符/内部编号（实测画面识别会产出 角色_0 / 主体_1 这类无意义名字）
+            const invalid = /^(无|未知|不清楚|背景|路人|群众|群演|旁白|画外音|观众|unknown|null|none|画面|(角色|role|人物|主体|主体人物|person)[_\-]?\d*)$/i;
+            const add = (v: unknown) => {
+              const s = typeof v === 'string' ? v.trim() : '';
+              if (s && !invalid.test(s) && !names.includes(s)) names.push(s);
+            };
+            for (const k of Object.keys(plotOutline?.characterMotives || {})) add(k);
+            const visionShots = (input.visionResult as any)?.downstreamContext?.shots;
+            if (Array.isArray(visionShots)) {
+              for (const s of visionShots) {
+                add(s?.primarySubject);
+                if (Array.isArray(s?.characters)) s.characters.forEach(add);
+                if (Array.isArray(s?.secondarySubjects)) s.secondarySubjects.forEach(add);
+              }
+            }
+            if (names.length === 0) {
+              // 末级兜底：画面锚定（已按步骤1 名归一，但仍是画面实拍识别结果）
+              for (const c of (contextChunks || [])) {
+                for (const r of (c?.anchoredCharacters || [])) add(r);
+              }
+            }
+            return names.slice(0, 12);
+          })(),
+          // 🗣️ 剧中真实人名只能从原片台词里拿（画面/剧情识别只给到 角色_N 这类占位符）
+          asrText: (asrLines as any[])
+            .map((l) => String(l?.text || '').trim())
+            .filter(Boolean)
+            .join(' '),
+        },
+      });
+    } catch (e: any) {
+      AppLogger.warn(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成][首尾打磨] 打磨失败，保留原文：${e?.message || String(e)}`,
+      );
+    }
+
+    // 🎙️ 原声占比诊断（2026-10-22 段数口径 + 2026-10-23 时长口径）：
+    //   段数口径挡住"过渡镜头一律留原声"；时长口径才是用户真正听到的"原声占比"
+    //   （原声不加速，段数少但窗口长同样会把成片撑爆）。
+    {
+      const originalStat = summarizeOriginalAudio(parsedShots);
+      const maxRatio = resolveOriginalRatioMax();
+      const originalSec = parsedShots
+        .filter((s) => s.keepOriginalAudio === true)
+        .reduce((sum, s) => sum + originalWindowSec(s), 0);
+      const narrationChars = parsedShots
+        .filter((s) => s.keepOriginalAudio !== true)
+        .reduce((sum, s) => sum + String(s.text || '').length, 0);
+      // 生成阶段尚无 TTS 实测时长，解说时长按 speechRate 折算，仅作占比诊断口径
+      const estNarrationSec = speechRate > 0 ? narrationChars / speechRate : 0;
+      const estTotalSec = originalSec + estNarrationSec;
+      const timeRatio = estTotalSec > 0 ? originalSec / estTotalSec : 0;
+      const msg = `[文案生成][原声] 段数占比 ${(originalStat.ratio * 100).toFixed(1)}%`
+        + `（${originalStat.original}/${originalStat.total}）｜时长占比 ${(timeRatio * 100).toFixed(1)}%`
+        + `（原声 ${originalSec.toFixed(1)}s / 估算成片 ${estTotalSec.toFixed(0)}s）`
+        + `｜上限 ${(maxRatio * 100).toFixed(0)}%`;
+      if (originalStat.ratio > maxRatio || timeRatio > maxRatio) {
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `${msg} ⚠️ 超上限`);
+      } else {
+        AppLogger.info(LOG_TAGS.AI_AGENT, msg);
+      }
+    }
+
+    // 🎯 首尾结构诊断（2026-10-23）：开篇点题 / 结尾收束是"看不看得懂"的两处硬伤。
+    //   生成端能做的确定性兜底只有「暴露」——开篇过短（点不出主题）或末段为原声（话音一停就黑屏、
+    //   观众感觉戛然而止）时告警，由用户决定重跑或手改；不静默改文案（会破坏叙事链与前后承接）。
+    {
+      const firstShot = parsedShots[0];
+      const lastShot = parsedShots[parsedShots.length - 1];
+      const firstText = String(firstShot?.text || '').trim();
+      const lastText = String(lastShot?.text || '').trim();
+      const clip = (s: string) => (s.length > 40 ? `${s.slice(0, 40)}…` : s);
+      AppLogger.info(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成][首尾] 开篇「${clip(firstText)}」｜收尾「${clip(lastText)}」`,
+      );
+      if (firstShot && firstShot.keepOriginalAudio !== true && firstText.length > 0 && firstText.length < 12) {
+        AppLogger.warn(
+          LOG_TAGS.AI_AGENT,
+          `[文案生成][首尾] 开篇仅 ${firstText.length} 字，难以交代「谁的故事 + 核心矛盾」，观众容易一头雾水；建议重跑步骤3或手动补写点题句`,
+        );
+      }
+      if (lastShot && lastShot.keepOriginalAudio === true) {
+        AppLogger.warn(
+          LOG_TAGS.AI_AGENT,
+          `[文案生成][首尾] 末段为原声段（原声结尾会戛然而止）；建议重跑步骤3或手动改为解说收束`,
+        );
+      }
+    }
 
     // 🎯 匹配单位诊断读数（可测口径，对齐方案 §23.12 §四）：
     //   匹配单位数 = sentence 档为"完整句数"（一个完整句一条匹配 query），legacy 档为"碎片数"（线上现状）；
@@ -2377,6 +2829,270 @@ ${roleMapLines.join('\n')}
   }
 
   /**
+   * 🎬 首尾打磨（2026-10-23）：开篇点题 + 结尾收束的确定性兜底。
+   *
+   * 背景：prompt 已加「开场点题」「结尾收束」硬性要求，但 LLM 仍可能写出只有代词的点题句、
+   * 或用纯氛围句收尾（实测："五周年这天，他放话要宠她一辈子。" / "有些名字，一旦钻进耳朵，就再也拔不出来。"）。
+   * 本方法对**首 2 段 / 末 2 段**做一次定向改写：
+   *   - 开头：补「谁的故事 + 当下处境 + 核心矛盾」，保持原有悬念强度；
+   *   - 结尾：回扣开篇问题并给出明确判断/代价落点，禁止新人物/新悬念/纯氛围句；
+   *   - 首尾若为原声段，改写后转为解说（原声结尾 = 话音一停进黑屏）。
+   *
+   * 失败不阻断：解析不到文本 / 调用失败 → 保持原文并告警（与 P2 原声改写同口径）。
+   *
+   * @returns { total, headRewritten, tailRewritten } 改写计数（用于日志）
+   */
+  private async polishHeadTail(params: {
+    shots: any[];
+    adapter: { chat: (...args: any[]) => Promise<any> };
+    modelName: string;
+    temperature: number;
+    speechRate: number;
+    densityFillRate: number;
+    discountFactor: number;
+    /** 🔑 故事事实（阶段A 大纲 + 画面/剧情识别的角色名 + ASR 台词）：没有它模型只能改写修辞，改不出"点题"与"判断" */
+    filmContext?: {
+      logline?: string;
+      arc?: string[];
+      roleNames?: string[];
+      keyTurns?: Array<{ turn?: string }>;
+      characterMotives?: Record<string, unknown>;
+      /** 原片 ASR 台词（截断）：剧中真实人名的唯一可靠来源 */
+      asrText?: string;
+    };
+  }): Promise<{ total: number; headRewritten: number; tailRewritten: number }> {
+    const { shots } = params;
+    const n = shots.length;
+    if (n === 0) return { total: 0, headRewritten: 0, tailRewritten: 0 };
+
+    // 首 2 段 / 末 2 段（不重叠）：开头只有 2 拍——1=事件信号，2=证据+悬念（实测每段≈3s，3 段要 9.6s 太长）
+    const headIdx: number[] = [];
+    const tailIdx: number[] = [];
+    for (let i = 0; i < n && headIdx.length < 2; i++) {
+      if (String(shots[i]?.text || '').trim()) headIdx.push(i);
+    }
+    for (let i = n - 1; i >= 0 && tailIdx.length < 2; i--) {
+      if (!headIdx.includes(i) && String(shots[i]?.text || '').trim()) tailIdx.push(i);
+    }
+    tailIdx.reverse();
+    if (headIdx.length === 0 && tailIdx.length === 0) {
+      return { total: 0, headRewritten: 0, tailRewritten: 0 };
+    }
+
+    const budgetOf = (idx: number) => Math.max(
+      6,
+      Math.floor(
+        (Number(shots[idx].duration) || 3)
+        * params.speechRate * params.densityFillRate * params.discountFactor,
+      ),
+    );
+    // 开头两拍要装「事件信号 + 证据&悬念」，实测常规预算被压到 9~10 字，写不下事件信息 → 给 18 字下限
+    const headBudgetOf = (idx: number) => Math.max(18, budgetOf(idx));
+    const targets = [
+      ...headIdx.map((idx) => ({ idx, position: 'head' as const })),
+      ...tailIdx.map((idx) => ({ idx, position: 'tail' as const })),
+    ];
+    const payload = targets.map(({ idx, position }) => ({
+      id: shots[idx].id,
+      position,
+      indexInFilm: idx + 1,
+      durationSec: Number(shots[idx].duration) || 3,
+      charBudget: position === 'head' ? headBudgetOf(idx) : budgetOf(idx),
+      // 🚫 开头段刻意不给 currentText（实测 4 轮：给了就只会同义改写），尾部保留供回扣
+      // 开头两拍职能：1=事件信号，2=证据＋悬念
+      headBeat: position === 'head' ? headIdx.indexOf(idx) + 1 : undefined,
+      currentText: position === 'tail' ? String(shots[idx].text || '') : undefined,
+      isOriginalAudio: shots[idx].keepOriginalAudio === true,
+      // 画面意图里常带「人物：角色_0」这类占位编号（实测会被模型照抄进文案），下发前剔除
+      visualIntent: String(shots[idx].visualIntent || '')
+        .replace(/[，,、;；]?\s*(人物|角色|主体)[:：][^；;]*/g, '')
+        .replace(/(角色|role|人物|主体)[_\-]?\d+/gi, '')
+        .trim(),
+      prevText: position === 'tail' ? String(shots[idx - 1]?.text || '') : '',
+      nextText: position === 'tail' ? String(shots[idx + 1]?.text || '') : '',
+    }));
+
+    // 🔑 故事背景：只给首尾 4 段和前后一句时，模型只能换修辞，改不出"点题"和"判断"
+    //   （实测：改写后仍是"结婚五周年，恐高的丈夫却陪她上了天" / "答案正在拼齐"）。
+    const fc = params.filmContext;
+    const synopsis = shots
+      .map((s) => String(s?.text || '').trim())
+      .filter(Boolean)
+      .join(' / ')
+      .slice(0, 800);
+    const turns = (fc?.keyTurns || [])
+      .map((t) => String(t?.turn || '').trim())
+      .filter(Boolean)
+      .slice(0, 8);
+    const motives = Object.entries(fc?.characterMotives || {})
+      .filter(([, v]) => typeof v === 'string' && String(v).trim())
+      .slice(0, 4)
+      .map(([name, v]) => `${name}：${String(v).trim()}`);
+    const storyContext = [
+      fc?.logline ? `故事主线：${fc.logline}` : '',
+      fc?.arc?.length ? `叙事弧：${fc.arc.join(' → ')}` : '',
+      fc?.roleNames?.length
+        ? `可用角色名（剧情/画面识别）：${fc.roleNames.join('、')}`
+        : '可用角色名：（未识别到；用"网红妻子/丈夫/婆婆"这类关系称谓或"他/她"即可，不必生造人名）',
+      turns.length ? `关键转折：${turns.join('；')}` : '',
+      motives.length ? `角色动机：${motives.join('｜')}` : '',
+      fc?.asrText ? `原片台词（ASR，人名以此为准）：${fc.asrText.slice(0, 900)}` : '',
+      synopsis ? `全片段落顺序：${synopsis}` : '',
+    ].filter(Boolean).join('\n');
+
+    // 打磨前快照：用于打印「旧→新」，否则无法区分"模型返回同义句"与"改写被下游覆盖"
+    const beforeText = new Map<number, string>(
+      targets.map((t) => [t.idx, String(shots[t.idx]?.text || '')]),
+    );
+    AppLogger.info(
+      LOG_TAGS.AI_AGENT,
+      `[文案生成][首尾打磨] 注入背景：主线${fc?.logline ? '✓' : '✗'}`
+      + `｜角色${fc?.roleNames?.length ?? 0}个(${fc?.roleNames?.slice(0, 4).join('、') || '无'})`
+      + `｜段落${n}段`
+      + `｜目标 ${targets.map((t) => `${shots[t.idx]?.id}(预算${budgetOf(t.idx)}字)`).join(' ')}`,
+    );
+
+    const systemPrompt = [
+      '你是短视频解说文案的「首尾打磨」编辑。用户给出同一部片子的【开头段】与【结尾段】若干条，',
+      '以及故事背景（故事主线 / 叙事弧 / 可用角色名 / 全片段落顺序）。只重写这些段，其余段落一字不动；',
+      '改写只能用给定的既有事实，不得编造剧情。',
+      '',
+      '【开头段 · 两拍结构】position="head" 的段按各自的 headBeat 承担固定职能（不提供 currentText，请从零写）：',
+      '· headBeat=1（事件信号拍，≈3 秒）：一句话让观众 3 秒内知道这集讲什么事——必须出现事件类型词或等价信号',
+      '  （出轨、背叛、外面有人、复仇、逆袭、争家产…），再叠上表面幸福，控制在 14~20 字；',
+      '  ✅ "五周年秀恩爱，她却不知道丈夫早就出轨了。"',
+      '  ✅ "结婚五周年，丈夫陪她飞天秀恩爱，可照片里的女人不是她。"',
+      '  ❌ "五周年秀恩爱，她说不后悔嫁他。"——只有情绪、没有事件，观众不知道这集讲什么；',
+      '  ❌ "丈夫为她克服恐高。"——只描述画面，同样不合格；',
+      '· headBeat=2（证据＋悬念拍，≈3 秒）：一句里同时完成两件事，用破折号或逗号连接，不得写成两件无关的事：',
+      '  ① 给出能拍出来的具体证据（"同一趟航班上还坐着另一个女人"、"照片里牵她丈夫的手戴着另一枚婚戒"）；',
+      '  ② 以悬念收尾（"她还不知道，机票是买给三个人的"）；',
+      '  严禁"照片疑云已悄然逼近""暗流涌动""危机四伏"这类抽象词——抽象词等于没给信息；',
+      '· 两拍合计目标 ≤7 秒（实测每段≈3 秒，段数≈秒数）：第 1 拍只负责"是什么事"，第 2 拍只负责"证据+钩子"，',
+      '  不得重复介绍人物，不得把证据提前写成结论；',
+      '· 称呼三种都合格：真实人名 / "网红妻子、出轨丈夫"这类关系称谓 / 代词；有人名优先，不得生造人名，',
+      '  不得输出「角色_0 / role_1」这类内部编号。',
+      '',
+      '【结尾段 · 必须收束】position="tail" 的段：',
+      '1. 必须以判断句收束：说清「谁赢了什么/输了什么、付出的代价是什么、人性指向是什么」，让观众听到"这一段讲完了"；',
+      '2. 回扣你这次在开头段抛出的事件/核心矛盾，但严禁用"答案正在拼齐/真相即将揭晓/一切还没结束"这类延后句，',
+      '   也不得引入新人物/新悬念或用纯氛围句收尾；',
+      '3. 2 段时：前一段完成收束判断，后一段做余味落点（不得反过来）；',
+      '4. isOriginalAudio=true 的段：把原台词改写成第三人称解说，不得照抄台词，不得出现"他说/她说/对话/只听"等转述腔。',
+      '',
+      '【语句规范】',
+      '- 名词不得堆叠：该加"的"就加，写"丈夫出轨的照片"、不写"丈夫出轨照片"；',
+      '- 动词与宾语搭配要自然，写"查清了真相，却输了信任"、不写"赢了真相"这类生造搭配；',
+      '- 不用生造词、不写病句，读出来必须像人说的话；',
+      '',
+      '【通用硬性】',
+      '- 每段字数不得超过该段 charBudget（宁短不长），且必须以句号/问号/叹号收尾，不得留半句；',
+      '- 不得编造剧情：判断只能基于 currentText / visualIntent / 故事背景已有事实；',
+      '- 只输出 JSON 对象，形如 {"results":[{"id":"seg_0","text":"改写后的文本"}]}；id 必须从输入原样抄回（不得改写、不得自编号），条数与顺序与输入完全一致。',
+    ].join('\n');
+
+    const resp = await params.adapter.chat(
+      [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `故事背景：\n${storyContext || '（未提供）'}\n\n待打磨段落：\n${JSON.stringify(payload, null, 2)}` },
+      ],
+      params.modelName,
+      params.temperature,
+      { response_format: { type: 'json_object' } },
+    );
+    if (!resp.success || !resp.text) {
+      throw new Error(resp.error || '首尾打磨响应为空');
+    }
+    const parsed = NetworkPipeline.strictParseJson(resp.text);
+    /** 🔧 响应形态容错（2026-10-23 实测：目标 4 段却改写 0 段）：
+     *  json_object 模式下数组可能被包进任意 key，条目也可能只带 indexInFilm/自编号。
+     *  这里统一抽出列表，并支持 id / shotId / indexInFilm 三种寻址，最后才按顺序兜底。 */
+    const list: any[] = Array.isArray(parsed)
+      ? parsed
+      : (() => {
+          if (!parsed || typeof parsed !== 'object') return [];
+          // ① 对象里第一个数组值（不锁死 key：results/shots/items/segments/data/paragraphs…）
+          const arr = Object.values(parsed).find((v) => Array.isArray(v));
+          if (Array.isArray(arr)) return arr as any[];
+          // ② id → text 的扁平映射 { "seg_0": "改写后文本" }
+          const entries = Object.entries(parsed as Record<string, unknown>)
+            .filter(([, v]) => typeof v === 'string')
+            .map(([id, text]) => ({ id, text }));
+          return entries;
+        })();
+    const textOf = (item: any): string => {
+      const v = item?.text ?? item?.rewritten ?? item?.newText ?? item?.content;
+      return typeof v === 'string' ? v.trim() : '';
+    };
+    const idOf = (item: any): string => {
+      const v = item?.id ?? item?.shotId ?? item?.segId ?? item?.segmentId;
+      return v === undefined || v === null ? '' : String(v);
+    };
+    const byId = new Map<string, string>();
+    const byIndex = new Map<number, string>();
+    /** 条目是否携带任何寻址信息：全无寻址时才允许按顺序兜底（避免"有 id 但对不上"被顺序错配掩盖） */
+    let hasAnyAddress = false;
+    for (const item of list) {
+      const text = textOf(item);
+      if (!text) continue;
+      const id = idOf(item);
+      if (id) byId.set(id, text);
+      const oneBased = Number(item?.indexInFilm ?? item?.filmIndex);
+      if (Number.isFinite(oneBased) && oneBased > 0) byIndex.set(oneBased, text);
+      if (id || (Number.isFinite(oneBased) && oneBased > 0)) hasAnyAddress = true;
+    }
+
+    let headRewritten = 0;
+    let tailRewritten = 0;
+    shots.forEach((shot: any, idx: number) => {
+      const target = targets.find((t) => t.idx === idx);
+      if (!target) return;
+      const next = byId.get(String(shot.id))
+        ?? byId.get(String(shot.shotId ?? ''))
+        ?? byIndex.get(idx + 1)
+        // ③ 最后兜底：全无寻址、且条数与输入完全一致时按顺序对应（prompt 已要求同序）
+        ?? (!hasAnyAddress && list.length === targets.length ? textOf(list[targets.indexOf(target)]) : '');
+      if (!next) return;
+      // 完结标点兜底：下游断句器/质量校验要求每段以完结标点收束
+      const text = /[。！？!?…]$/.test(next) ? next : `${next}。`;
+      if (shot.keepOriginalAudio === true) {
+        // 首尾原声段改写后必须转为解说：否则原声结尾仍会"话音一停进黑屏"
+        shot.keepOriginalAudio = false;
+        shot.type = 'narration';
+        shot.audioSource = undefined;
+      }
+      shot.text = text;
+      if (target.position === 'head') headRewritten++;
+      else tailRewritten++;
+    });
+
+    if (headRewritten + tailRewritten > 0) {
+      // 逐段打印「旧→新」：一眼能看出是"改写质量差"还是"根本没落上"
+      const changes = targets
+        .filter((t) => beforeText.get(t.idx) !== String(shots[t.idx]?.text || ''))
+        .map((t) => `${shots[t.idx]?.id}「${beforeText.get(t.idx) || ''}」→「${shots[t.idx]?.text || ''}」`)
+        .join(' ｜ ');
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成][首尾打磨] 逐段对照：${changes || '无变化'}`);
+    }
+
+    if (headRewritten + tailRewritten === 0 && list.length > 0) {
+      // 解析到内容但一条都没落上：暴露响应寻址与目标寻址，便于快速定位（绝静默）
+      AppLogger.warn(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成][首尾打磨] 响应无法匹配段落：返回 ${list.length} 条`
+        + `（示例 ${list.slice(0, 3).map((i) => idOf(i) || '无id').join('｜')}）`
+        + `｜目标 ${targets.map((t) => shots[t.idx]?.id).join('｜')}`,
+      );
+    }
+
+    AppLogger.info(
+      LOG_TAGS.AI_AGENT,
+      `[文案生成][首尾打磨] 改写 ${headRewritten} 段开头 / ${tailRewritten} 段结尾（目标 ${targets.length} 段）`,
+    );
+    return { total: headRewritten + tailRewritten, headRewritten, tailRewritten };
+  }
+
+  /**
    * 构建 Step3 文案生成的 System Prompt。
    * 单阶段：传全局参数直接产出"目标总时长/字数预算"模板；
    * 两阶段：调用方以 spread 覆盖 targetSec=null/chapterQuotaWords=本章配额，
@@ -2387,6 +3103,8 @@ ${roleMapLines.join('\n')}
     styleName: string;
     hookIntensity: number;
     allowOriginalMark: boolean;
+    /** 原声段落占比上限（0~1）：全片 keepOriginalAudio 段数 / 总段数 */
+    originalRatioMax: number;
     speechRate: number;
     densityFillRate: number;
     discountFactor: number;
@@ -2413,6 +3131,8 @@ ${roleMapLines.join('\n')}
       'first': '第一人称沉浸视角："我推开门，看见了..." — 代入主角内心，主观体验',
       'second': '第二人称吐槽视角："换作是你，看到桌上这三十万，你敢接吗？" — 与观众建立交互问答',
     };
+    // 原声段落占比上限（prompt 口径）：只约束「留原声」的上限，不鼓励原声本身
+    const originalRatioMaxPct = Math.round(Math.max(0, Math.min(1, args.originalRatioMax)) * 100);
     // 解说占比 → prompt 指令（字数预算统一由下方"字数预算"区注入）
     const narrationRatioText = args.narrationRatio >= 0.95
       ? '全量解说：解说铺满全片，忽略原声，全力重新编排旁白'
@@ -2474,16 +3194,26 @@ ${args.styleName}：${styleInstruction}
 
 ${hookInstruction}
 
+## 🎯 开场点题（Opening Framing，硬性，优先于钩子强度）
+开头 1~2 句（前 6 秒内）必须在抛出钩子的同时交代清楚三件事：**这是谁的故事 + 他/她当下什么处境 + 本片要讲的核心矛盾**，让观众第一时间知道自己在看什么。
+- 主体信息可以藏在钩子里，但不能缺失：至少给出可辨识的身份/关系/处境（如"上门女婿""五周年纪念日的妻子""刚出狱的老大"），禁止通篇只有"他/她/这个人"。
+- ❌ 反例："五周年这天，他放话要宠她一辈子。"（观众不知道他是谁、这是什么故事，一头雾水）
+- ✅ 正例："结婚五周年，被全家当宝贝宠着的女人，等来的却是一场蓄谋已久的背叛。"（身份+处境+核心矛盾齐全，钩子照样在）
+- ✅ 正例（悬念型）："这个刚出狱的男人，只用一通电话，就让当年送他进监狱的人连夜搬家。"（身份+反常+冲突）
+钩子强度只决定"悬念有多狠"，**不决定"要不要点题"**；点题是硬性底线。
+
 ${args.actDirective ? `## 🎭 本幕戏剧任务（Five-Act Directive）
 ${args.actDirective}` : ''}
 
-${args.endingDirective ? `## 🎬 结尾收束（Ending Closure）
-${args.endingDirective}` : ''}
+${args.endingDirective ? `## 🎬 结尾收束（Ending Closure，硬性）
+${args.endingDirective}${args.allowOriginalMark ? `
+- 全片**最后一段必须是解说**，严禁把末段标记为 keepOriginalAudio（原声结尾=话音一停就黑屏，观众感觉"戛然而止、没讲完"）。` : ''}
+- 末段禁止以"新的悬念/新的人物/纯氛围句"收尾；必须让观众听到"这一段讲清楚了"。` : ''}
 
 ${args.chapterQuotaWords !== null ? `## 📏 本章硬性字数配额（Hard Quota）
 本请求只负责撰写整片中的其中一个章节解说：解说词净字数必须控制在 **≤ ${args.chapterQuotaWords} 字**（keepOriginalAudio 原声段不计入）。这是全局预算分摊到你这一章的硬性配额，宁可稍少、严禁超发。
-**⚠️ 配额有限，必须择重**：本章配额仅 ${args.chapterQuotaWords} 字，只够覆盖少数关键镜头，切勿平均分配到每个镜头。请挑【关键剧情/冲突/转折】镜头写丰满，其余过渡/次要镜头${args.allowOriginalMark ? '一律标记 "keepOriginalAudio": true 留白给原声' : '尽量不写'}——否则必然超发并触发整段截断。` : args.targetSec !== null ? `## 📏 目标解说总时长（总量约束，与"解说占比"独立）
-本片目标解说总时长约 ${args.targetSec} 秒（约 ${args.targetBudgetChars} 字）。片段流中存在过渡/次要段落时：优先为关键剧情/冲突/转折段落撰写**丰满**解说（每段按字数上限写满，保留解读）；过渡/次要段落应${args.allowOriginalMark ? '标记 "keepOriginalAudio": true 留白给原声' : '精简字数'}，使全部解说总量贴近目标时长。` : ''}
+**⚠️ 配额有限，必须择重**：本章配额仅 ${args.chapterQuotaWords} 字，只够覆盖少数关键镜头，切勿平均分配到每个镜头。请挑【关键剧情/冲突/转折】镜头写丰满，其余过渡/次要镜头${args.allowOriginalMark ? `优先标记 "keepOriginalAudio": true 留白给原声（但全片原声段落占比不得超过 ${originalRatioMaxPct}%，超限时改用精简解说）` : '尽量不写'}——否则必然超发并触发整段截断。` : args.targetSec !== null ? `## 📏 目标解说总时长（总量约束，与"解说占比"独立）
+本片目标解说总时长约 ${args.targetSec} 秒（约 ${args.targetBudgetChars} 字）。片段流中存在过渡/次要段落时：优先为关键剧情/冲突/转折段落撰写**丰满**解说（每段按字数上限写满，保留解读）；过渡/次要段落应${args.allowOriginalMark ? `优先标记 "keepOriginalAudio": true 留白给原声（但全片原声段落占比不得超过 ${originalRatioMaxPct}%，超限时精简字数）` : '精简字数'}，使全部解说总量贴近目标时长。` : ''}
 
 ## ⚡ 爆款短句与卡点硬性规则 (Core Short-Sentence Rules)
 1. **叙事为主、短句为手段（去矛盾）**：每个单句（两个标点之间的文字）为叙事通顺可略超 ${maxSentenceChars} 字，但**优先保证剧情表达完整、承前启后**，绝不为了让句子变短而打断叙事（与规则2 的连贯叙事、规则6 的完结收尾一致）。真正的"短句卡点感"靠**内容密度**（动词、意象）而非机械截断长度。仅当本段时长极短（画面撑不住长句）时才拆分短句并保持收尾完结。多用动词、感叹号与短促有力的表达（如："死死盯住！"）点缀节奏。
@@ -2506,7 +3236,7 @@ ${CONSTRAINTS.NO_DRAFT_ITERATION}
 【严格字数约束】：每个解说段应写成通顺连贯的完整句子或短句群，确保剧情表达完整，不要为了凑字数而碎成几个字。
 ${args.chapterQuotaWords !== null ? `- 本章解说总配额 ${args.chapterQuotaWords} 字须摊在本章 ${args.totalDurationSec.toFixed(1)} 秒画面上 = 平均 ${(args.chapterQuotaWords / Math.max(1, args.totalDurationSec)).toFixed(2)} 字/秒（远低于满速解说）。
 - 因此**单段字数上限 = ⌊ 本段时长(秒) × ${(args.chapterQuotaWords / Math.max(1, args.totalDurationSec)).toFixed(3)} ⌋**——数值极小，只够用在关键镜头上。
-- 严禁按"每秒 3~4 字"的常规语速写满每个镜头，那会直接超发数倍；过渡/次要镜头请留白（keepOriginalAudio）给原声让路。` : `- 单段字数上限 = ⌊ 时长(秒) × ${args.speechRate} × ${(args.densityFillRate * 100).toFixed(0)}% × ${args.discountFactor} ⌋
+- 严禁按"每秒 3~4 字"的常规语速写满每个镜头，那会直接超发数倍；过渡/次要镜头请留白（keepOriginalAudio）给原声让路，但全片原声段落占比不得超过 ${originalRatioMaxPct}%（超限的过渡镜头改用精简解说）。` : `- 单段字数上限 = ⌊ 时长(秒) × ${args.speechRate} × ${(args.densityFillRate * 100).toFixed(0)}% × ${args.discountFactor} ⌋
 - 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * args.speechRate * args.densityFillRate * args.discountFactor)} 字
 - 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * args.speechRate * args.densityFillRate * args.discountFactor)} 字`}
 ${args.chapterQuotaWords !== null ? `- 本章解说词总量严格执行上方硬性配额（≤ ${args.chapterQuotaWords} 字），原声段不计入，严禁超出配额超发` : `- 视频总时长约 ${args.totalDurationSec.toFixed(1)} 秒，解说词总量绝对严禁超过 ${Math.floor(args.totalDurationSec * args.speechRate * args.densityFillRate * args.discountFactor)} 字`}
@@ -2520,27 +3250,31 @@ ${args.chapterQuotaWords !== null ? `- 本章解说词总量严格执行上方�
 ${args.allowOriginalMark ? `## 原声段落标记规则（Original-Audio Marking）
 原声策略要求保留部分原片原声。当某分镜的核心是"原片台词/标志性对白/冲突声"（观众需要亲耳听到原声），请将该分镜标记为原声段落：
 1. 该分镜输出 \`"keepOriginalAudio": true\`，\`text\` 必须从该分镜所在片段的【原声】原文中**逐字抄录原台词**（保留语气词与停顿，一字不差，视为可被原样引用的台词原文）。
-2. ⛔ **严禁**对原声 \`text\` 做改写、润色、删增或添加旁白衔接词——诸如"牌匾裂开，老爷的心也跟着裂了"这种对画面/剧情的旁白解读，是解说词而非原声台词，**绝不能**作为原声段的 \`text\`。判别标准：只有你从片段流【原声】中能逐字摘到的台词原文，才允许作为原声 \`text\`。
+   若原声为外语（韩语/日语/英语等）：\`text\` 必须是该段台词的**忠实中文翻译**——逐句对应、不增删、不概括、不加旁白衔接词，也**不得保留外文原文**。
+2. ⛔ **严禁**对原声 \`text\` 做改写、润色、删增或添加旁白衔接词——诸如"牌匾裂开，老爷的心也跟着裂了"这种对画面/剧情的旁白解读，是解说词而非原声台词，**绝不能**作为原声段的 \`text\`。判别标准：只有你从片段流【原声】中能逐字摘到的台词原文（外语为逐句直译），才允许作为原声 \`text\`。⛔ 同样严禁把画面描述（如"女主在酒店摇头否认"）当作原声台词。
 3. 只有当对应片段确实出现可逐字摘录的原台词/对白时才标记原声；纯动作、空镜、无人声的分镜**严禁**标记原声（原声段必须有真实人声台词）。
 4. 原声段落字数预算不适用，\`duration\` 填写该原声台词在原片中的实际时长（秒）。
-5. 每段解说之间最多允许 1~2 个原声段落，避免整片变成原声；原声段落前后各留一段解说引导。
+5. **原声总量上限（连续不是问题，但有两条硬线）**：连续原声段落允许——只要每一段都承载可听、连贯、信息完整的原声台词（观众需要连着听完整对话），就应连续保留，不必强行插入解说。真正的硬约束是：① 全片原声段落占比不得超过 ${originalRatioMaxPct}%（原声段数 / 总段数）；② 全片原声总时长不得超过成片目标篇幅的 ${originalRatioMaxPct}%（原声不加速，长对白会直接拉长成片）——一段 10 秒的长对白请只截取最关键的 2~3 句，不要整段标原声。超限时优先把"台词最碎/信息量最低"的原声段改用精简解说，而不是机械截断连续段。
 6. 仅当该段原声与剧情强相关（名场面/冲突高潮/关键台词）才标记，普通背景音不标记。
+7. ⛔ **全片最后 1 段严禁标记原声**：结尾必须是解说，负责把故事收住、把判断说清；用原声收尾会让观众听到"话音一停就结束"，感觉没讲完。
 ` : ''}
 ## 画面意图与情绪标注（Visual Intent & Emotion Marking）
 每个分镜除解说词外，必须输出两个辅助字段，供下游画面匹配使用：
 1. \`"emotion"\`：本段解说词的情绪基调，从以下类别中选择一个：紧张悬疑 / 悲伤沉重 / 愤怒激昂 / 欢快轻松 / 平静舒缓 / 中性。
 2. \`"visualIntent"\`（【必填】禁止空字符串/缺字段/写"无"/写"不需要"）：本段解说词"应该配什么画面"的画面意图描述，用画面语言（非文学语言）概括主体、动作、场景、景别、氛围，20~40 字。必须基于【多模态上下文片段流】中对应 chunk 的画面描述（对应位置的 visualContext.keyAction/shotType/emotion/atmosphere），不得凭空编造画面。✅ 正例：\`"男子面部特写，眼神凌厉，室内昏暗，紧张氛围"\`；❌ 反例：\`""\`、\`"无"\`、整个 JSON 对象缺 visualIntent 字段。
-3. \`"isAbstractNarration"\`（可选布尔）：仅当本段解说词**不描述任何具体人物/动作/事件**，而是在评论、感叹、隐喻、格言或时间流逝抒情时，才输出 \`"isAbstractNarration": true\`。
-   判定口径（唯一的判别动作）：把这句删掉，剧情信息是否不受影响？是 ⇒ 抽象画外评论，可标；否 ⇒ 常规叙事，【严禁】标记。
-   正例：「岁月流转，转眼五年」；「可越是甜到发腻的誓言，越经不起一张照片的考验」；「她信的是丈夫，怕的是人心」；「话放得有多满，打脸就来得有多快」。
-   反例（必须不标）：「梦梦开直播秀恩爱」「他解释说，上周陪李总谈合作喝多了」「翁月话里带刺」——有具体人物与动作/事件。
-   此类段落下游按景别节奏先验（优先空镜/远景）配画面；拿不准时一律不标（宁漏勿错，误标会让该句失去语义匹配）。
+3. \`"isAbstractNarration"\`（可选布尔）：用于区分「叙事句」与「评论句」，下游据此优先配空镜/远景。分三档判定：
+   - ✅ **A 档 纯抽象（标 true）**：不含任何人物/动作/事件，只做评论、感叹、隐喻、格言或时间流逝抒情。例：「岁月流转，转眼五年」；「她信的是丈夫，怕的是人心」；「话放得有多满，打脸就来得有多快」。
+   - ✅ **B 档 弱叙事评论（也标 true）**：句子里带轻微场景/人物指代，但**核心功能是态度、判断、预判或情绪评述**，删掉后剧情信息仍完整。例：「她以为的幸福，只差一张照片」；「这场聚会，从一开始就不对劲」；「有些谎言，藏得越久越难看」。
+   - ❌ **C 档 叙事（严禁标 true）**：句子在推进剧情，交代具体人物、动作、对话或事件结果。例：「梦梦开直播秀恩爱」；「他解释说，上周陪李总谈合作喝多了」；「翁月话里带刺」。
+   判别顺序：先判是否 C 档（这句是否在讲"发生了什么"）——是 ⇒ \`false\`；不是 ⇒ 再看是否承担评论/判断功能——是 ⇒ \`true\`。
+   **数量校准**：按上述口径，常规成片文案中 A/B 档通常占全部分镜的 10%~20%；若你输出的 true 明显低于 5%，说明口径过紧，请重新审视偏评论、偏抒情的句子。但不得为凑数把 C 档叙事句标成 true。
+   此类段落下游按景别节奏先验（优先空镜/远景）配画面；C 档错标会让该句失去语义匹配，故一律 \`false\`。
 4. \`"isFlashback"\`（可选布尔）：仅当本段解说词描述的画面是闪回/回忆/倒叙（与当前叙事时间线不同步的历史画面）时，才输出 \`"isFlashback": true\`。此类段落下游将豁免时间轴锚定约束；常规解说段【严禁】标记。
 
 ## Output Format
 ### 必填字段声明（缺任何一项视为无效输出）
 - shotId / text / duration / emotion / visualIntent 五个字段**必须全部出现且非空**
-- \`isAbstractNarration\` 为可选布尔字段，但**必须显式输出**（常规叙事写 \`false\`，抽象句写 \`true\`），禁止省略
+- \`isAbstractNarration\` 为可选布尔字段，但**必须显式输出**（常规叙事写 \`false\`，抽象句写 \`true\`），禁止省略；下方示例中的 \`false\` 仅为格式演示，实际取值必须按上述三档规则逐句判断
 ${args.allowOriginalMark ? '- keepOriginalAudio 为可选布尔字段，默认 false 时可省略' : ''}
 
 请严格按照以下 JSON 数组格式返回结果，切勿包含任何 Markdown 格式化标记或额外解释：

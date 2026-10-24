@@ -2,7 +2,7 @@
 // ScriptGenStrategy 单元测试
 // 重点验证 P0 修复：roles 人物角色名单注入到 step3 prompt
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // === Mock 依赖链 ===
 
@@ -76,7 +76,13 @@ vi.mock('../../prompts/constraints', () => ({
   },
 }));
 
-import { ScriptGenStrategy, dedupeAdjacentParagraphs, verifyOutlineGrounding } from '../ScriptGenStrategy';
+import {
+  ScriptGenStrategy,
+  dedupeAdjacentParagraphs,
+  dedupeDuplicateOriginalSegments,
+  originalWindowSec,
+  verifyOutlineGrounding,
+} from '../ScriptGenStrategy';
 import { AppLogger } from '../../../core/AppLogger';
 
 // ---------- 测试用例 ----------
@@ -152,8 +158,9 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
 
     await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
 
-    expect(mockChat).toHaveBeenCalledTimes(3);
-    // call0=阶段A（剧情理解），call1=符合度审校，call2=阶段B 主生成 → 断言 calls[2]（阶段B）的 userContent
+    // call0=阶段A，call1=符合度审校，call2=阶段B 主生成，call3=首尾打磨
+    expect(mockChat).toHaveBeenCalledTimes(4);
+    // 断言 calls[2]（阶段B）的 userContent
     const userContent = mockChat.mock.calls[2][0][1].content;
     // 应包含全局角色列表段（阶段2：ID→名称显式映射）
     expect(userContent).toContain('【全局已知角色列表】');
@@ -235,6 +242,54 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
     expect(userContent).toContain('r1 -> 王五');
     // 不应有空括号
     expect(userContent).not.toContain('（）');
+  });
+
+  it('首尾打磨的角色名取画面识别，不取步骤1 roles（步骤1 人名不准且非剧中角色名）', async () => {
+    const input = buildInput([{ id: 'r1', name: '步骤一假名' }]);
+    input.visionResult = {
+      downstreamContext: {
+        shots: [
+          { primarySubject: '梦梦', action: '走入室内' },
+          { characters: ['丈夫'], action: '拿起杯子' },
+        ],
+      },
+    } as any;
+
+    await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
+
+    // call3 = 首尾打磨
+    const polishUser = mockChat.mock.calls[3][0][1].content as string;
+    expect(polishUser).toContain('梦梦、丈夫');
+    expect(polishUser).not.toContain('步骤一假名');
+  });
+
+  it('首尾打磨过滤「角色_0」占位名，并注入 ASR 台词作为真实人名来源', async () => {
+    const input = buildInput([{ id: 'r1', name: '步骤一假名' }]);
+    input.visionResult = {
+      downstreamContext: {
+        shots: [
+          { primarySubject: '角色_0', action: '走入室内' },
+          { characters: ['角色_1', '梦梦'], action: '拿起杯子' },
+        ],
+      },
+    } as any;
+    input.audioResult = {
+      lines: [
+        { text: '情雨，你听我解释', startMs: 0 },
+        { text: '梦梦你别走', startMs: 1000 },
+      ],
+    };
+
+    await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
+
+    const polishUser = mockChat.mock.calls[3][0][1].content as string;
+    // 占位编号不得进入可用角色名（否则文案会写出"角色_0以为嫁对了人"）
+    expect(polishUser).not.toContain('角色_0');
+    expect(polishUser).not.toContain('角色_1');
+    expect(polishUser).toContain('梦梦');
+    // 真实剧中人名从原片台词来
+    expect(polishUser).toContain('原片台词（ASR，人名以此为准）');
+    expect(polishUser).toContain('情雨');
   });
 
   // ========== 基础功能回归（确保 P0 改动不破坏现有逻辑） ==========
@@ -405,9 +460,9 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
       });
   });
 
-  it('应依次调用三次 LLM：阶段A（剧情理解）→ 符合度审校 → 阶段B（主生成）', async () => {
+  it('应依次调用四次 LLM：阶段A（剧情理解）→ 符合度审校 → 阶段B（主生成）→ 首尾打磨', async () => {
     await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
-    expect(mockChat).toHaveBeenCalledTimes(3);
+    expect(mockChat).toHaveBeenCalledTimes(4);
     // 阶段A 的 userPrompt 应包含"剧情主线"提炼指令与片段流
     const outlineUser = mockChat.mock.calls[0][0][1].content as string;
     expect(outlineUser).toContain('logline');
@@ -481,8 +536,8 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
 
     const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
     expect(result.shots.length).toBeGreaterThan(0);
-    // call0=失败大纲，call1=重生成大纲（接地失败时不经审校），call2=审校，call3=阶段B
-    expect(mockChat).toHaveBeenCalledTimes(4);
+    // call0=失败大纲，call1=重生成大纲（接地失败时不经审校），call2=审校，call3=阶段B，call4=首尾打磨
+    expect(mockChat).toHaveBeenCalledTimes(5);
     const retryPrompt = mockChat.mock.calls[1][0][1].content as string;
     expect(retryPrompt).toContain('接地校验未通过');
     expect(retryPrompt).toContain('chunk_999');
@@ -503,8 +558,8 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
 
     const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
     expect(result.shots.length).toBeGreaterThan(0);
-    // call0=大纲，call1=低分审校，call2=重生成大纲，call3=达标审校，call4=阶段B
-    expect(mockChat).toHaveBeenCalledTimes(5);
+    // call0=大纲，call1=低分审校，call2=重生成大纲，call3=达标审校，call4=阶段B，call5=首尾打磨
+    expect(mockChat).toHaveBeenCalledTimes(6);
     const retryPrompt = mockChat.mock.calls[2][0][1].content as string;
     expect(retryPrompt).toContain('剧情符合度');
     expect(retryPrompt).toContain('臆造了片段流中不存在的动机');
@@ -533,8 +588,8 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
 
     const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
     expect(result.shots.length).toBeGreaterThan(0);
-    // 无扣分项 ⇒ 直接通过，不触发重生成（call0=大纲，call1=审校，call2=阶段B）
-    expect(mockChat).toHaveBeenCalledTimes(3);
+    // 无扣分项 ⇒ 直接通过，不触发重生成（call0=大纲，call1=审校，call2=阶段B，call3=首尾打磨）
+    expect(mockChat).toHaveBeenCalledTimes(4);
   });
 
   it('审校返回真实扣分项时按条数计分并回灌重生成', async () => {
@@ -557,7 +612,8 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
 
     const result = await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
     expect(result.shots.length).toBeGreaterThan(0);
-    expect(mockChat).toHaveBeenCalledTimes(5);
+    // call0=大纲，call1=扣分审校，call2=重生成大纲，call3=复审议校，call4=阶段B，call5=首尾打磨
+    expect(mockChat).toHaveBeenCalledTimes(6);
     const retryPrompt = mockChat.mock.calls[2][0][1].content as string;
     expect(retryPrompt).toContain('剧情符合度 85.0%');
     expect(retryPrompt).toContain('无源编造点1');
@@ -641,6 +697,76 @@ describe('ScriptGenStrategy - 原声无缝衔接准则条件注入', () => {
 
     expect(systemContent).not.toContain('【原声无缝衔接准则】');
     expect(systemContent).not.toContain('keepOriginalAudio');
+  });
+
+  it('systemPrompt 应恒注入【开场点题】硬性要求（与钩子强度无关）', async () => {
+    const systemContent = await getStageBSystemPrompt(buildInput(0.7));
+
+    expect(systemContent).toContain('开场点题');
+    // 反例必须出现在 prompt 里，LLM 才容易规避"只有代词、不说人是谁"的写法
+    expect(systemContent).toContain('五周年这天，他放话要宠她一辈子');
+    expect(systemContent).toContain('这是谁的故事');
+  });
+
+  it('有明确结局时：注入结局收束 + 末段必须是解说', async () => {
+    const systemContent = await getStageBSystemPrompt(buildInput(0.7));
+
+    expect(systemContent).toContain('结尾收束');
+    expect(systemContent).toContain('故事讲完了');
+    expect(systemContent).toContain('最后一段必须是解说');
+  });
+});
+
+// ========== 🎬 开放式/悬念式结局仍须收束（2026-10-23 用户反馈"结尾戛然而止"） ==========
+describe('ScriptGenStrategy - 开放式结局的收尾指令', () => {
+  let strategy: ScriptGenStrategy;
+
+  function buildInput() {
+    return {
+      scriptStyle: '悬疑解说',
+      speechRate: 4.5,
+      pipelineParams: {
+        narrativePerspective: 'third' as const,
+        narrationRatio: 0.7,
+        rhythmMode: 'mixed' as const,
+        emotionTone: 'neutral' as const,
+        hookIntensity: 0.7,
+      },
+      visionResult: { sceneDescriptions: '第1镜: 女子站在门口', chunks: [] },
+      audioResult: { lines: [{ text: '你好', startMs: 1000 }] },
+    };
+  }
+
+  it('hasClearEnding=false 时也必须注入收束口径，禁止纯氛围句戛然而止', async () => {
+    strategy = new ScriptGenStrategy();
+    vi.clearAllMocks();
+    mockChat
+      .mockResolvedValueOnce({
+        success: true,
+        text: JSON.stringify({
+          logline: '名字背后的秘密',
+          arc: ['开场', '悬念'],
+          characterMotives: {},
+          keyTurns: [],
+          hasClearEnding: false, // 开放式/悬念式结局
+        }),
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        text: JSON.stringify({ fidelity: 0.98, violations: [] }),
+      })
+      .mockResolvedValue({
+        success: true,
+        text: JSON.stringify([{ shotId: 's_01', text: '这是一段完整的解说词。', duration: 3.0 }]),
+      });
+
+    await (strategy as any).performTask(buildInput(), { bus: new Map(), projectId: 'test' } as any, '/tmp/cache', vi.fn());
+    const systemContent = mockChat.mock.calls[2][0][0].content as string;
+
+    expect(systemContent).toContain('结尾收束');
+    expect(systemContent).toContain('开放式/悬念式结局');
+    expect(systemContent).toContain('回扣开场抛出的问题');
+    expect(systemContent).toContain('严禁引入新人物/新悬念');
   });
 });
 
@@ -869,6 +995,127 @@ describe('ScriptGenStrategy - 相邻重复段落去重（dedupeAdjacentParagraph
   });
 });
 
+// ========== 🎙️ P2 原声占比上限（prompt 约束 + 诊断告警） ==========
+// 背景：历史原声占比 0% → 53%，根因是 prompt 主动鼓励「过渡/次要镜头一律标记 keepOriginalAudio」，
+// 且规则只限「每段解说之间 1~2 个」没有全局上限。本组锁定：① 上限写进 prompt；② 上限可配；
+// ③ 最终产出超限时明确告警、未超限打 info 读数。
+
+describe('ScriptGenStrategy - P2 原声占比上限', () => {
+  let strategy: ScriptGenStrategy;
+  const ENV_KEY = 'ZENTECT_ORIGINAL_RATIO_MAX';
+
+  /** 构造标准 step3 输入（narrationRatio 缺省 0.7 ⇒ allowOriginalMark=true） */
+  function buildInput(narrationRatio = 0.7) {
+    return {
+      scriptStyle: '爆款短视频',
+      speechRate: 4.5,
+      pipelineParams: {
+        narrativePerspective: 'third' as const,
+        narrationRatio,
+        rhythmMode: 'mixed' as const,
+        emotionTone: 'neutral' as const,
+        hookIntensity: 0.7,
+      },
+      visionResult: {
+        sceneDescriptions: '第1镜: 男子走入室内\n第2镜: 男子拿起杯子',
+      },
+      audioResult: {
+        lines: [{ text: '你好', startMs: 1000 }],
+      },
+    };
+  }
+
+  function buildContext() {
+    return { bus: new Map(), projectId: 'test' } as any;
+  }
+
+  /** 阶段A 大纲 → 审校通过 → 阶段B 返回指定分镜数组 */
+  function mockStageB(shots: any[]) {
+    mockChat
+      .mockResolvedValueOnce({
+        success: true,
+        text: JSON.stringify({
+          logline: '复仇之路',
+          arc: ['开场', '高潮'],
+          characterMotives: {},
+          keyTurns: [],
+          hasClearEnding: true,
+        }),
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        text: JSON.stringify({ fidelity: 0.98, violations: [] }),
+      })
+      .mockResolvedValue({ success: true, text: JSON.stringify(shots) });
+  }
+
+  beforeEach(() => {
+    strategy = new ScriptGenStrategy();
+    vi.clearAllMocks();
+    delete process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    delete process.env[ENV_KEY];
+  });
+
+  it('缺省上限 25% 应写进原声标记规则；连续原声不再设硬性段数上限（台词完整即可连续）', async () => {
+    mockStageB([{ shotId: 's_01', text: '这是一段完整的解说词。', duration: 3.0 }]);
+    await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    const systemContent = mockChat.mock.calls[2][0][0].content as string;
+    expect(systemContent).toContain('全片原声段落占比不得超过 25%');
+    // 连续原声允许（只要每段台词可听、完整），旧的「连续不得超过 2 段」硬限已移除
+    expect(systemContent).toContain('连续原声段落允许');
+    expect(systemContent).not.toContain('连续原声不得超过 2 段');
+    // 「一律标记留原声」的鼓励性表述已移除（改为有上限的「优先标记」）
+    expect(systemContent).not.toContain('一律标记 "keepOriginalAudio": true');
+  });
+
+  it('环境变量 ZENTECT_ORIGINAL_RATIO_MAX 可覆盖上限（0.4 → prompt 40%）', async () => {
+    process.env[ENV_KEY] = '0.4';
+    mockStageB([{ shotId: 's_01', text: '这是一段完整的解说词。', duration: 3.0 }]);
+    await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    const systemContent = mockChat.mock.calls[2][0][0].content as string;
+    expect(systemContent).toContain('全片原声段落占比不得超过 40%');
+    expect(systemContent).not.toContain('全片原声段落占比不得超过 25%');
+  });
+
+  it('最终产出原声占比超上限时应 warn 并给出 N/M 段读数', async () => {
+    mockStageB([
+      { shotId: 's_01', text: '第一句解说。', duration: 3.0 },
+      { shotId: 's_02', text: '「你给我站住。」', duration: 3.0, keepOriginalAudio: true },
+      { shotId: 's_03', text: '「这事没完。」', duration: 3.0, keepOriginalAudio: true },
+      { shotId: 's_04', text: '第二句解说。', duration: 3.0 },
+    ]);
+    await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    const warnMsgs = vi.mocked(AppLogger.warn).mock.calls.map((c) => String(c[1]));
+    const hit = warnMsgs.find((m) => m.includes('[文案生成][原声]'));
+    expect(hit).toBeDefined();
+    expect(hit).toContain('（2/4）');
+    expect(hit).toContain('时长占比');
+    expect(hit).toContain('超上限');
+  });
+
+  it('最终产出原声占比未超上限时应打 info 读数（不告警）', async () => {
+    mockStageB([
+      { shotId: 's_01', text: '第一句解说词写得足够长，把这一段的画面内容完整讲清楚，总量自然就上去了。', duration: 3.0 },
+      { shotId: 's_02', text: '第二句解说词同样写得很饱满，交代清楚人物关系和当下的处境变化，节奏也不拖沓。', duration: 3.0 },
+      { shotId: 's_03', text: '第三句解说词继续保持信息密度，把冲突的前因后果一次讲明白，观众不用回看也能懂。', duration: 3.0 },
+      { shotId: 's_04', text: '第四句解说词收束这一段，留下悬念把观众送往下一幕，语气自然不生硬也不敷衍。', duration: 3.0 },
+      { shotId: 's_05', text: '「你给我站住。」', duration: 3.0, keepOriginalAudio: true },
+    ]);
+    await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    const infoMsgs = vi.mocked(AppLogger.info).mock.calls.map((c) => String(c[1]));
+    const hit = infoMsgs.find((m) => m.includes('[文案生成][原声]'));
+    expect(hit).toBeDefined();
+    expect(hit).toContain('段数占比');
+    expect(hit).toMatch(/（1\/\d+）/);
+    expect(hit).not.toContain('超上限');
+    const warnMsgs = vi.mocked(AppLogger.warn).mock.calls.map((c) => String(c[1]));
+    expect(warnMsgs.some((m) => m.includes('[文案生成][原声]'))).toBe(false);
+  });
+});
+
 // ========== 🧭 阶段A 接地校验（verifyOutlineGrounding）纯函数回归测试 ==========
 // 覆盖「剧情必须可回溯到真实 chunk / 角色」的硬约束：任何无源编造（越界 chunkId、
 // 角色列表外人名、缺失结局判定、章节结构不齐）都必须被判违规，供上层回灌重生成。
@@ -1026,5 +1273,353 @@ describe('ScriptGenStrategy - 阶段A 接地校验（verifyOutlineGrounding）',
     expect(verifyOutlineGrounding([], ['chunk_001'], ['张三'], null).ok).toBe(false);
     expect(verifyOutlineGrounding(null, ['chunk_001'], ['张三'], null).ok).toBe(false);
     expect(verifyOutlineGrounding([], [], [], null).violations.join('\n')).toContain('不是 JSON 对象');
+  });
+});
+
+describe('ScriptGenStrategy._asrSubLines — 原声段逐行字幕取词', () => {
+  const subLines = (asrLines: any[], startMs?: number, endMs?: number) =>
+    (ScriptGenStrategy as any)._asrSubLines(asrLines, startMs, endMs);
+  const asr = [
+    { text: '秀恩爱', startMs: 3000, endMs: 4500 },
+    { text: '死得快', startMs: 4600, endMs: 6200 },
+    { text: '走办大事去', startMs: 20000, endMs: 22000 },
+  ];
+
+  it('窗口内多行中文台词 → 逐行保留各自起止时间', () => {
+    expect(subLines(asr, 2800, 6500)).toEqual([
+      { text: '秀恩爱', startMs: 3000, endMs: 4500 },
+      { text: '死得快', startMs: 4600, endMs: 6200 },
+    ]);
+  });
+
+  it('窗口只覆盖部分台词 → 只取窗口内的行，且裁剪到窗内', () => {
+    expect(subLines(asr, 5000, 7000)).toEqual([{ text: '死得快', startMs: 5000, endMs: 6200 }]);
+  });
+
+  it('窗口内无 ASR → 返回空数组（导出退回单条整段字幕）', () => {
+    expect(subLines(asr, 9000, 12000)).toEqual([]);
+    expect(subLines([], 0, 5000)).toEqual([]);
+  });
+
+  it('外语台词 → 返回空数组（无法逐字抄录，交回 LLM 中文译句）', () => {
+    expect(subLines([{ text: '안녕하세요 여러분', startMs: 0, endMs: 3000 }], 0, 3000)).toEqual([]);
+    expect(subLines([{ text: 'Hello everyone', startMs: 0, endMs: 3000 }], 0, 3000)).toEqual([]);
+  });
+
+  it('时间轴非法 → 返回空数组', () => {
+    expect(subLines(asr, Number.NaN, 5000)).toEqual([]);
+    expect(subLines(asr, 6000, 5000)).toEqual([]);
+  });
+});
+
+describe('dedupeDuplicateOriginalSegments — 原声同窗同文去重', () => {
+  const orig = (id: string, startMs: number, endMs: number, transcript: string) => ({
+    id,
+    keepOriginalAudio: true,
+    audioSource: { sourceStartMs: startMs, sourceEndMs: endMs, transcript },
+  });
+
+  it('同源窗 + 同台词（滑窗重复产出）→ 只保留首次出现', () => {
+    const r = dedupeDuplicateOriginalSegments([
+      orig('seg_5', 376238, 380118, '哪只有短短几天的相遇'),
+      orig('seg_6', 376238, 380118, '哪只有短短几天的相遇'),
+      orig('seg_7', 376238, 380118, ' 哪只有短短几天的相遇 '),
+    ]);
+    expect(r.paragraphs.map((p) => p.id)).toEqual(['seg_5']);
+    expect(r.removedIds).toEqual(['seg_6', 'seg_7']);
+  });
+
+  it('同台词但源窗不同（影片不同时间点复现）→ 不误删', () => {
+    const r = dedupeDuplicateOriginalSegments([
+      orig('seg_1', 1000, 3000, '你来了'),
+      orig('seg_2', 50000, 52000, '你来了'),
+    ]);
+    expect(r.paragraphs).toHaveLength(2);
+    expect(r.removedIds).toEqual([]);
+  });
+
+  it('解说段（无 audioSource）→ 不参与去重', () => {
+    const r = dedupeDuplicateOriginalSegments([
+      { id: 'seg_1', text: '同一句解说' },
+      { id: 'seg_2', text: '同一句解说' },
+    ]);
+    expect(r.paragraphs).toHaveLength(2);
+  });
+
+  it('源窗非法（缺失/逆序）→ 不参与去重，避免误删', () => {
+    const r = dedupeDuplicateOriginalSegments([
+      { id: 'seg_1', keepOriginalAudio: true, audioSource: { transcript: '无窗台词' } },
+      { id: 'seg_2', keepOriginalAudio: true, audioSource: { sourceStartMs: 900, sourceEndMs: 900, transcript: '无窗台词' } },
+    ]);
+    expect(r.paragraphs).toHaveLength(2);
+  });
+});
+
+describe('originalWindowSec — 原声段占用的成片秒数', () => {
+  it('优先取 audioSource 源时间窗', () => {
+    expect(originalWindowSec({
+      audioSource: { sourceStartMs: 1000, sourceEndMs: 4500 },
+      duration: 99,
+    })).toBeCloseTo(3.5);
+  });
+
+  it('缺源窗时回退 duration', () => {
+    expect(originalWindowSec({ duration: 4.2 })).toBeCloseTo(4.2);
+  });
+
+  it('源窗逆序 / 缺 duration → 返回 0（不参与时长预算）', () => {
+    expect(originalWindowSec({ audioSource: { sourceStartMs: 5000, sourceEndMs: 1000 } })).toBe(0);
+    expect(originalWindowSec({})).toBe(0);
+  });
+});
+
+// 🎬 首尾打磨（2026-10-23）：开头按两拍（首 2 段，≈6s）/ 结尾按收束（末 2 段）做定向改写
+describe('首尾打磨 polishHeadTail', () => {
+  let strategy: ScriptGenStrategy;
+
+  beforeEach(() => {
+    strategy = new ScriptGenStrategy();
+    mockChat.mockReset();
+  });
+
+  /** 6 段片子：0/1 为首（两拍），4/5 为尾，2/3 为中间段 */
+  function makeShots() {
+    return [
+      { id: 'seg_0', text: '五周年这天他放话要宠她一辈子。', duration: 3 },
+      { id: 'seg_1', text: '她笑着点头。', duration: 3 },
+      { id: 'seg_2', text: '中间段一。', duration: 3 },
+      { id: 'seg_3', text: '中间段二。', duration: 3 },
+      { id: 'seg_4', text: '她关上门走了。', duration: 3 },
+      { id: 'seg_5', text: '一切归于平静。', duration: 3 },
+    ];
+  }
+
+  function polish(shots: any[]) {
+    return (strategy as any).polishHeadTail({
+      shots,
+      adapter: { chat: mockChat },
+      modelName: 'qwen-test',
+      temperature: 0.7,
+      speechRate: 4.5,
+      densityFillRate: 1,
+      discountFactor: 1,
+    });
+  }
+
+  it('只改写首 2 段 / 末 2 段，中间段一字不动；缺完结标点自动补句号', async () => {
+    mockChat.mockResolvedValue({
+      success: true,
+      text: JSON.stringify([
+        { id: 'seg_0', text: '新娘林晚在五周年这天听见丈夫要把她宠上天' },
+        { id: 'seg_1', text: '可同一趟航班上还坐着另一个女人——她还不知道机票是买给三个人的' },
+        { id: 'seg_4', text: '她终于关上门把五年婚姻留在身后。' },
+        { id: 'seg_5', text: '那个女人赢了宠爱却输了整个人生。' },
+      ]),
+    });
+
+    const shots = makeShots();
+    const stat = await polish(shots);
+
+    expect(mockChat).toHaveBeenCalledTimes(1);
+    expect(stat).toEqual({ total: 4, headRewritten: 2, tailRewritten: 2 });
+    expect(shots[0].text).toBe('新娘林晚在五周年这天听见丈夫要把她宠上天。');
+    expect(shots[1].text).toBe('可同一趟航班上还坐着另一个女人——她还不知道机票是买给三个人的。');
+    expect(shots[2].text).toBe('中间段一。');
+    expect(shots[3].text).toBe('中间段二。');
+    expect(shots[4].text).toBe('她终于关上门把五年婚姻留在身后。');
+    expect(shots[5].text).toBe('那个女人赢了宠爱却输了整个人生。');
+  });
+
+  it('首尾为原声段时改写后转为解说（原声结尾=话音一停进黑屏）', async () => {
+    mockChat.mockResolvedValue({
+      success: true,
+      text: JSON.stringify([
+        { id: 'seg_0', text: '新娘林晚在婚礼当天被丈夫当众许下承诺。' },
+        { id: 'seg_1', text: '她以为自己终于等到了幸福。' },
+        { id: 'seg_4', text: '五年后她亲手结束了这段婚姻。' },
+        { id: 'seg_5', text: '门在身后关上的那一刻她没有回头。' },
+      ]),
+    });
+
+    const shots = makeShots() as any[];
+    shots[0].keepOriginalAudio = true;
+    shots[0].type = 'original_audio';
+    shots[0].audioSource = { transcript: '我会宠你一辈子' };
+    shots[5].keepOriginalAudio = true;
+    shots[5].type = 'original_audio';
+    shots[5].audioSource = { transcript: '砰' };
+
+    await polish(shots);
+
+    for (const idx of [0, 5]) {
+      expect(shots[idx].keepOriginalAudio).toBe(false);
+      expect(shots[idx].type).toBe('narration');
+      expect(shots[idx].audioSource).toBeUndefined();
+    }
+    // 中间段不受影响
+    expect(shots[2].keepOriginalAudio).toBeUndefined();
+  });
+
+  it('响应只覆盖部分 id 时，未返回的段保留原文', async () => {
+    mockChat.mockResolvedValue({
+      success: true,
+      text: JSON.stringify([{ id: 'seg_0', text: '林晚的五年婚姻从一场承诺开始。' }]),
+    });
+
+    const shots = makeShots();
+    const stat = await polish(shots);
+
+    expect(stat).toEqual({ total: 1, headRewritten: 1, tailRewritten: 0 });
+    expect(shots[0].text).toBe('林晚的五年婚姻从一场承诺开始。');
+    expect(shots[1].text).toBe('她笑着点头。');
+  });
+
+  it('响应被包进对象（json_object 模式）时仍能按 results 提取', async () => {
+    mockChat.mockResolvedValue({
+      success: true,
+      text: JSON.stringify({
+        results: [
+          { id: 'seg_0', text: '林晚的婚姻从一场当众承诺开始。' },
+          { id: 'seg_5', text: '她把每一张脸都记下，等着算账。' },
+        ],
+      }),
+    });
+
+    const shots = makeShots();
+    const stat = await polish(shots);
+
+    expect(stat).toEqual({ total: 2, headRewritten: 1, tailRewritten: 1 });
+    expect(shots[0].text).toBe('林晚的婚姻从一场当众承诺开始。');
+    expect(shots[5].text).toBe('她把每一张脸都记下，等着算账。');
+  });
+
+  it('条目用 shotId / indexInFilm 寻址时也能落位（模型自编号不致命）', async () => {
+    mockChat.mockResolvedValue({
+      success: true,
+      text: JSON.stringify({
+        // 未锁死 key；两条用 shotId，两条只有 indexInFilm（1-based）
+        data: [
+          { shotId: 'seg_0', text: '林晚的婚姻从一场当众承诺开始。' },
+          { indexInFilm: 2, text: '她以为这是幸福的开端。' },
+          { indexInFilm: 5, text: '她终于关上门把五年留在了身后。' },
+          { shotId: 'seg_5', text: '那个女人赢了宠爱却输了人生。' },
+        ],
+      }),
+    });
+
+    const shots = makeShots();
+    const stat = await polish(shots);
+
+    expect(stat).toEqual({ total: 4, headRewritten: 2, tailRewritten: 2 });
+    expect(shots[1].text).toBe('她以为这是幸福的开端。');
+    expect(shots[4].text).toBe('她终于关上门把五年留在了身后。');
+    // indexInFilm=5 指向 shots[4]，不得错落到 shots[5]
+    expect(shots[5].text).toBe('那个女人赢了宠爱却输了人生。');
+  });
+
+  it('响应为 id→text 扁平映射时也能解析', async () => {
+    mockChat.mockResolvedValue({
+      success: true,
+      text: JSON.stringify({
+        seg_0: '林晚的婚姻从一场当众承诺开始。',
+        seg_5: '那个女人赢了宠爱却输了人生。',
+      }),
+    });
+
+    const shots = makeShots();
+    const stat = await polish(shots);
+
+    expect(stat).toEqual({ total: 2, headRewritten: 1, tailRewritten: 1 });
+    expect(shots[0].text).toBe('林晚的婚姻从一场当众承诺开始。');
+    expect(shots[5].text).toBe('那个女人赢了宠爱却输了人生。');
+  });
+
+  it('解析到内容却一条都落不上时，打印可定位的告警（不静默）', async () => {
+    mockChat.mockResolvedValue({
+      success: true,
+      text: JSON.stringify([{ id: 's_01', text: '自编号开篇。' }, { id: 's_02', text: '自编号结尾。' }]),
+    });
+
+    const shots = makeShots();
+    const stat = await polish(shots);
+
+    // 条数 2 ≠ 目标 5 ⇒ 顺序兜底不生效，保持原文
+    expect(stat).toEqual({ total: 0, headRewritten: 0, tailRewritten: 0 });
+    const warn = vi.mocked(AppLogger.warn).mock.calls.find((args) => String(args[1]).includes('响应无法匹配段落'));
+    expect(warn).toBeDefined();
+    expect(String(warn?.[1])).toContain('s_01');
+    expect(String(warn?.[1])).toContain('seg_0');
+  });
+
+  it('userPrompt 注入故事主线 / 角色名 / 全片段落顺序（缺了它只能换修辞，改不出点题）', async () => {
+    mockChat.mockResolvedValue({
+      success: true,
+      text: JSON.stringify([{ id: 'seg_0', text: '林晚在五周年这天听见丈夫许下承诺。' }]),
+    });
+
+    const shots = makeShots();
+    await (strategy as any).polishHeadTail({
+      shots,
+      adapter: { chat: mockChat },
+      modelName: 'qwen-test',
+      temperature: 0.7,
+      speechRate: 4.5,
+      densityFillRate: 1,
+      discountFactor: 1,
+      filmContext: {
+        logline: '林晚发现丈夫的宠爱是一场交易',
+        arc: ['承诺', '背叛', '清算'],
+        roleNames: ['林晚', '陈默'],
+      },
+    });
+
+    const userContent = mockChat.mock.calls[0][0][1].content as string;
+    expect(userContent).toContain('故事主线：林晚发现丈夫的宠爱是一场交易');
+    expect(userContent).toContain('可用角色名（剧情/画面识别）：林晚、陈默');
+    expect(userContent).toContain('全片段落顺序：');
+    expect(userContent).toContain('中间段一');
+    // 结尾硬约束：延后句是实测反例，必须写进 system prompt
+    const systemContent = mockChat.mock.calls[0][0][0].content as string;
+    expect(systemContent).toContain('答案正在拼齐');
+    expect(systemContent).toContain('两拍结构');
+    expect(systemContent).toContain('headBeat=1（事件信号拍');
+    expect(systemContent).toContain('headBeat=2（证据＋悬念拍');
+    expect(systemContent).toContain('照片疑云已悄然逼近');
+    expect(systemContent).toContain('出轨、背叛、外面有人');
+    expect(systemContent).toContain('【语句规范】');
+    expect(systemContent).toContain('丈夫出轨的照片');
+  });
+
+  it('开头段 payload 不携带 currentText（避免被旧句锚定成同义句），结尾段保留', async () => {
+    mockChat.mockResolvedValue({
+      success: true,
+      text: JSON.stringify([{ id: 'seg_0', text: '林晚在五周年这天等来的不是礼物。' }]),
+    });
+
+    const shots = makeShots();
+    await polish(shots);
+
+    const userContent = mockChat.mock.calls[0][0][1].content as string;
+    const payload = JSON.parse(userContent.slice(userContent.indexOf('待打磨段落：') + '待打磨段落：'.length)) as any[];
+    const headItems = payload.filter((p) => p.position === 'head');
+    const tailItems = payload.filter((p) => p.position === 'tail');
+    expect(headItems.length).toBe(2);
+    expect(headItems.map((p) => p.headBeat)).toEqual([1, 2]);
+    // 常规预算 9 字写不下事件信号 → 开头两拍给 18 字下限
+    expect(headItems.every((p) => p.charBudget >= 18)).toBe(true);
+    expect(headItems.every((p) => p.currentText === undefined)).toBe(true);
+    expect(tailItems.every((p) => typeof p.currentText === 'string')).toBe(true);
+  });
+
+  it('调用失败时抛错（由调用方 catch 保留原文，不阻断主流程）', async () => {
+    mockChat.mockResolvedValue({ success: false, error: 'HTTP 503: 模型加载中' });
+
+    await expect(polish(makeShots())).rejects.toThrow(/HTTP 503/);
+  });
+
+  it('空镜头列表不发请求，直接返回零计数', async () => {
+    const stat = await polish([]);
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(stat).toEqual({ total: 0, headRewritten: 0, tailRewritten: 0 });
   });
 });

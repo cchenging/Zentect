@@ -12,6 +12,8 @@ import * as child_process from 'child_process';
 export interface ExportBinDeps {
   /** 返回 ffprobe.exe 的绝对路径 */
   getFfprobePath: () => string;
+  /** 返回 ffmpeg.exe 的绝对路径（可选；缺省时按 ffprobe 同目录推导，用于字幕切点静音吸附） */
+  getFfmpegPath?: () => string;
 }
 
 /** 视频元数据探针结果 */

@@ -123,6 +123,18 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
 };
 
 /**
+ * 原声段字幕条（逐行字幕）：每行对应一条 ASR 台词，各自携带出现/结束时间。
+ * 时间统一为源视频坐标（ms），导出时按「相对原声段起点」换算到目标时间线。
+ */
+export interface SubtitleCue {
+  text: string;
+  /** 源坐标起始（ms） */
+  startMs: number;
+  /** 源坐标结束（ms） */
+  endMs: number;
+}
+
+/**
  * 编译镜头（buildCompileShots 的产出，供剪映素材/轨道装配消费）。
  * 在 DB Shot 基础上补充视频切片 / 变速 / 时间线范围等导出专属字段。
  */
@@ -141,7 +153,12 @@ export interface CompileShot extends Shot {
   /** 是否保留原片原声（true=原声段，不配 TTS 配音，剪映导出时视频段音量开足） */
   keepOriginalAudio?: boolean;
   /**
-   * 🎬 阶段 A：所属物理镜头父 ID（enrichMatchRelations 解析 chunkData.parentChunkId）。
+   * �️ 原声段逐行字幕（源坐标 ms）：存在时导出层按行生成多条字幕条，
+   * 每行只在自己的 ASR 起止时间内显示；缺失 = 退回单条整段字幕。
+   */
+  subtitleCues?: SubtitleCue[];
+  /**
+   * �🎬 阶段 A：所属物理镜头父 ID（enrichMatchRelations 解析 chunkData.parentChunkId）。
    * 同一物理镜头内被细分/拆分出的连续子段共享同一 parentChunkId。
    */
   parentChunkId?: string;

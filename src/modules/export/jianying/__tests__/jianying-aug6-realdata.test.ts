@@ -227,13 +227,14 @@ describe('JianyingExportService - Aug 6 Real Data Integration Test', () => {
       expect(ttsSegments).toHaveLength(26);
     });
 
-    it('text 轨道应有 26 个 segment', () => {
+    it('text 轨道按「换气级」短语拆条：26 段文案 → 48 条字幕', () => {
       const input = loadFixture();
       const shots = JianyingExportService.buildCompileShots(input);
       const draft = JianyingExportService.compileDraft(shots, input.mediaPath!, input.bgmPath) as any;
 
       const textSegments = draft.tracks[3].segments;
-      expect(textSegments).toHaveLength(26);
+      // 2026-10-23：长句按标点拆多条字幕（读到哪句显示哪句），条数 > 段数属预期
+      expect(textSegments).toHaveLength(48);
     });
 
     it('BGM 轨道应有 1 个整片铺设的 segment', () => {
@@ -317,12 +318,13 @@ describe('JianyingExportService - Aug 6 Real Data Integration Test', () => {
       expect(draft.materials.audios).toHaveLength(27); // 1 BGM + 26 TTS
     });
 
-    it('materials.texts 应有 26 个', () => {
+    it('materials.texts 按换气级短语拆条：26 段文案 → 48 个字幕素材', () => {
       const input = loadFixture();
       const shots = JianyingExportService.buildCompileShots(input);
       const draft = JianyingExportService.compileDraft(shots, input.mediaPath!) as any;
 
-      expect(draft.materials.texts).toHaveLength(26);
+      // 2026-10-23：长句拆多条字幕，素材条数随短语数增加
+      expect(draft.materials.texts).toHaveLength(48);
     });
 
     it('所有 material id 应与 segment material_id 对应', () => {
@@ -610,7 +612,7 @@ describe('JianyingExportService - Aug 6 Real Data Integration Test', () => {
 
       expect(draft.tracks[0].segments).toHaveLength(26); // video
       expect(draft.tracks[2].segments).toHaveLength(26); // TTS
-      expect(draft.tracks[3].segments).toHaveLength(26); // text
+      expect(draft.tracks[3].segments).toHaveLength(48); // text：长句按换气级短语拆条
     });
 
     it('draft_meta_info.json 应包含正确的 draft_fold_path 和 draft_root_path', async () => {

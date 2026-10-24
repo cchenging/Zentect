@@ -10,6 +10,7 @@ import type { CompileShot, SubtitleStyle } from '../../../types';
 import { DEFAULT_SUBTITLE_STYLE } from '../../../types';
 import { genDraftUuid } from '../utils/IdUtils';
 import type { VideoProbeResult } from '../utils/FfprobeProber';
+import type { PauseInterval } from '../utils/AudioPauseProber';
 import { assembleMaterials } from './MaterialsAssembler';
 import { assembleTracks } from './TracksAssembler';
 
@@ -179,6 +180,7 @@ export function assembleDraftContent(
   probeMap: Map<string, VideoProbeResult>,
   bgmPath?: string,
   subtitleStyle: SubtitleStyle = DEFAULT_SUBTITLE_STYLE,
+  pauseHints?: Map<string, PauseInterval[]>,
 ): Record<string, unknown> {
   // ✅ 横竖屏自适应：画布尺寸跟随源视频真实分辨率（canvas_config 与画布素材都引用）
   const canvasSize = resolveCanvasSize(shots, mediaPath, probeMap);
@@ -212,6 +214,7 @@ export function assembleDraftContent(
     bgmPath,
     subtitleStyle: effectiveSubtitleStyle,
     canvasSize,
+    pauseHints,
   });
 
   // 2. 轨道装配（字幕 segment 用同一方向自适应样式，保证字号与位置都随横竖屏生效）

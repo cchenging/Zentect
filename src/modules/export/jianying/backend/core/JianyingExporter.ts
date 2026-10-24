@@ -16,6 +16,7 @@ import { buildKeyValue } from '../writers/KeyValueWriter';
 import { buildDraftVirtualStore } from '../writers/VirtualStoreWriter';
 import type { CompileShot } from '../../types';
 import type { VideoProbeResult } from './utils/FfprobeProber';
+import type { PauseInterval } from './utils/AudioPauseProber';
 
 /** BGM 素材整片铺底所需的输入片段（由 buildCompileShots 产出） */
 export interface CompileContext {
@@ -56,6 +57,7 @@ export function sanitizeProjectName(name: string): string {
  * @param compileShots 已编译镜头（由 buildCompileShots 产出）
  * @param probeMap 所有视频文件的 ffprobe 结果（Service.export 中已预跑批量探针；缺失 fail-fast）
  * @param subtitleStyle 字幕样式（缺省用默认样式）
+ * @param pauseHints 配音静音区间（按镜头 id）：字幕切点吸附用，缺省则纯比例切点
  * @returns 导出结果（文件夹路径 + 名称）
  */
 export function exportJianying(
@@ -64,6 +66,7 @@ export function exportJianying(
   compileShots: CompileShot[],
   probeMap: Map<string, VideoProbeResult>,
   subtitleStyle: SubtitleStyle = DEFAULT_SUBTITLE_STYLE,
+  pauseHints?: Map<string, PauseInterval[]>,
 ): JianyingExportOutput {
   validateInput(input, jianyingRoot);
 
@@ -80,6 +83,7 @@ export function exportJianying(
     probeMap,
     input.bgmPath,
     subtitleStyle,
+    pauseHints,
   );
 
   // 写入 draft_content.json（主数据）

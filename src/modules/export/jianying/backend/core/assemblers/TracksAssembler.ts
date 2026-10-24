@@ -149,7 +149,15 @@ export function assembleTracks(
     }
 
     // C. 字幕轨
-    if (ref.textId) {
+    // 🎙️ 原声段逐行字幕：每行按自己的 ASR 起止时间挂载（offset 相对本镜头起点），
+    //    字幕随人声出现/消失；无逐行数据时维持单条整段字幕。
+    if (ref.textCues && ref.textCues.length > 0) {
+      for (const cue of ref.textCues) {
+        textTrack.segments.push(
+          buildTextSegment(cue.textId, globalOffset + cue.offsetUs, cue.durationUs, subtitleStyle),
+        );
+      }
+    } else if (ref.textId) {
       textTrack.segments.push(
         buildTextSegment(ref.textId, globalOffset, ref.durationUs, subtitleStyle),
       );
