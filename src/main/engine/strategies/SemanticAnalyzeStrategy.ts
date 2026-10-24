@@ -8,7 +8,7 @@ import { VideoChunkRepository } from '../../database/repositories/VideoChunkRepo
 import { BgmBeatRepository } from '../../database/repositories/BgmBeatRepository';
 import { LLMFactory } from '../adapters/LLMFactory';
 import { promisePool } from '../../utils/async';
-import { VisionExtractStrategy } from './VisionExtractStrategy';
+import { VisionExtractStrategy, normalizeMaterialType } from './VisionExtractStrategy';
 import { PerceptualHasher } from '../media/PerceptualHasher';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -905,8 +905,14 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         weatherEnv: f?.downstream?.weatherEnv || f.weatherEnv,
         /** 🎬 P4（2026-10-22）：VLM 空镜能力标注（real/empty/effect）——帧级透传，切片侧取众数。
          *  daemon `derive_chunk_material` 对显式 empty/effect 只保真不重算，故厂商/模型判定的空镜
-         *  不会被「宽景+无主体」的派生规则推翻。 */
-        materialType: f?.downstream?.materialType || f.materialType,
+         *  不会被「宽景+无主体」的派生规则推翻。
+         *  🔧 2026-10-23：读取侧再归一化一次——存量项目里仍有 33 帧缺失、31 帧把「主体:空镜头」
+         *  误标 real；用客观关键字校正后无需重跑步骤2 即可让 P4 空镜池生效。 */
+        materialType: normalizeMaterialType(
+          f?.downstream?.materialType || f.materialType,
+          f?.description,
+          f?.downstream?.primarySubject || f?.primarySubject || f?.downstream?.subject || f?.subject,
+        ),
       };
     });
     /** 🎬 帧时间坐标统一为【源坐标】（2026-09-05 模式 A）：候选切片坐标恒为源，帧描述须同参照才能聚合。
@@ -919,6 +925,22 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       && frameDescsRaw[0].timeMs < trim.trimStartMs)
       ? frameDescsRaw.map((f) => ({ ...f, timeMs: Math.round((f.timeMs || 0) + trim.trimStartMs) }))
       : frameDescsRaw;
+
+    // 🎬 P4 验收读数（2026-10-22）：VLM 空镜标注是否真落库（区分「标注产出」与「派生兜底」）。
+    //   materialType 缺失 = 本轮仍命中无该字段的旧 VLM 缓存或模型未按 schema 产出；
+    //   正常应在步骤2 全量重跑（PROMPT_VERSION v9）后接近 0 缺失。
+    if (frameDescs.length > 0) {
+      const mtStat = { real: 0, empty: 0, effect: 0, missing: 0 };
+      for (const f of frameDescs) {
+        const mt = String((f as any).materialType || '').trim().toLowerCase();
+        if (mt === 'real' || mt === 'empty' || mt === 'effect') mtStat[mt as 'real' | 'empty' | 'effect']++;
+        else mtStat.missing++;
+      }
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[镜头匹配][P4] 帧级素材类型标注：real=${mtStat.real}｜empty=${mtStat.empty}`
+        + `｜effect=${mtStat.effect}｜缺失=${mtStat.missing}（共 ${frameDescs.length} 帧）`);
+    }
+
     if (frameDescs.length > 0 && chunks.length > 0) {
       /**
        * 双指针聚合帧描述到切片：sortedDescs 与 videoChunks 都按时间有序，
@@ -1455,6 +1477,17 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     /** 🎬 S3 正式 cutover：把 `ZENTECT_KM_STORYBOARD_MODE`（缺省 on）同步到 daemon 的 `temp/storyboard-mode` 标记文件。
      *  daemon `load_storyboard` 读标记文件，Node 作为正式 env 入口在此落盘，daemon 读取路径不变、零 Python 改动。 */
     syncStoryboardModeFile();
+
+    /** 🎬 S1 场记单正规化（2026-10-22）：与 α 开单开关解耦，进入 daemon 前先把段域与当前素材对齐，
+     *  并把段域真源路径同步给 daemon（`temp/storyboard-segments`）。
+     *  此前该守卫只在 `ZENTECT_STORYBOARD_OPEN=on` 的开单链路里执行，且只落项目目录 ⇒
+     *  α 关闭时 daemon 段域池仍读旧 `temp/scene-log/segments.json`，与 S2 用的是两份段域（双真源错位）。
+     *  幂等：健康场记单不改写，仅同步指针；缺失/越界则按切片确定性重建。 */
+    const ensuredSegments = StoryboardAgent.ensureSegments(projectId, chunks);
+    if (ensuredSegments.rebuilt) {
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[段域] 步骤5 前置正规化完成：${ensuredSegments.segments.length} 段（${ensuredSegments.reason}）`);
+    }
 
     /** 🎬 A1·S2 分镜师 Agent（§24.16-A，规格 §5.2）：`ZENTECT_STORYBOARD_OPEN=on` 时为每个母句开 α 真工单
      *  ShotSpec，并按 matchUnitId 把 `segmentId/spatialType/shotMode/fallbackLevel`

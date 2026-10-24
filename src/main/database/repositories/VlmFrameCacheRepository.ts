@@ -75,9 +75,13 @@ export class VlmFrameCacheRepository {
    *        而递增版本——v7 缓存已于 09-22 全量写满（665 行）⇒ 不 bump 则步骤2 会 100% 命中缓存、
    *        零 VLM 推理。⚠️ 因 prompt 未变，v8 产物应与 v7 高度一致（同 prompt 同模型，仅采样差异）；
    *        若期望「描述质量变化」，须同时改 prompt/schema 再 bump。
+   *  🔧 v9（2026-10-22，P4 空镜生产链）：新增 `materialType`（real/empty/effect）空镜标注——
+   *        prompt 正文规则 + JSON 模板 + schema 三处同改（正文/模板此前缺失会复刻 v4→v5 的「schema 要求
+   *        但模型不产出」）。⚠️ 必须 bump 版本：v8 缓存（665 行）无该字段，不 bump 则步骤2 全量命中旧
+   *        结果，VLM 空镜标注永不落库（P4 验收恒为「全部依赖派生」）。
    *  ⚠️ 必须与 VisionExtractStrategy 写入侧引用同一常量，避免查询/写入版本不一致。
    */
-  static readonly PROMPT_VERSION = 'v8';
+  static readonly PROMPT_VERSION = 'v9';
 
   /**
    * 批量查询缓存（一次 SQL 拿回多帧结果，避免 N 次 SELECT）

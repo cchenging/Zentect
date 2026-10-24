@@ -454,7 +454,11 @@ def _drop_empty_desc(cands: List[str], chunk_by_id: Dict[str, dict],
 #        同一画面重复播放三次）。此时回退宽景，让束搜索在「空镜 + 其他宽景」里分散选片。
 #     ② 回退宽景：池内无空镜候选（或仅 1 个）⇒ 按 B1 收紧到宽景带；宽景也没有 ⇒ 原样保留，不制造空池。
 #   结构性剔除而非数值罚：罚会被后续任何归一化稀释。
-#   开关：`ZENTECT_KM_ABSTRACT_WIDE`（B1，缺省 on）、`ZENTECT_KM_EMPTY_DERIVE`（P4，缺省 on）。
+#   开关：`ZENTECT_KM_ABSTRACT_WIDE`（B1，缺省 on）、`ZENTECT_KM_EMPTY_DERIVE`（P4，缺省 on）、
+#         `ZENTECT_KM_ABSTRACT_GLOBAL_POOL`（P4 扩充，缺省 on）。
+#   P4 扩充（2026-10-23）：抽象句的候选池先被 Node 侧 candidateIds / 段域窗口裁到 3~24 片，
+#   池内常只剩 1 个空镜 ⇒ 5/6 句只能回退宽景。抽象句的画面语义本就与前后剧情独立，
+#   故在抽象句上并入**全片空镜池**（isAbstractCapable），再由两级过滤收敛，真正用上空镜。
 # ---------------------------------------------------------------------------
 def _read_abstract_wide() -> bool:
     """读取「抽象句宽景硬过滤」开关（env `ZENTECT_KM_ABSTRACT_WIDE`，缺省 on）。
@@ -474,6 +478,16 @@ def _read_empty_derive() -> bool:
     """
     import os
     return str(os.environ.get('ZENTECT_KM_EMPTY_DERIVE', '1')).strip().lower() not in ('0', 'off', 'false')
+
+
+def _read_abstract_global_pool() -> bool:
+    """读取「抽象句并入全片空镜池」开关（env `ZENTECT_KM_ABSTRACT_GLOBAL_POOL`，缺省 on）。
+
+    Returns:
+        bool: True 表示抽象句在自身候选池之外，额外并入全片 `isAbstractCapable` 切片。
+    """
+    import os
+    return str(os.environ.get('ZENTECT_KM_ABSTRACT_GLOBAL_POOL', '1')).strip().lower() not in ('0', 'off', 'false')
 
 
 def _is_wide_scale(chunk: dict) -> bool:
@@ -653,8 +667,11 @@ def build_req_context(req: dict) -> CandidateContext:
     drop_stat = {'dropped': 0, 'sentences': [], 'all_empty': 0}
     # 抽象句宽景硬过滤统计（缺省 on；见 `_read_abstract_wide`）。
     abstract_wide = _read_abstract_wide()
+    # 抽象句并入全片空镜池（缺省 on；见 `_read_abstract_global_pool`）。
+    abstract_global_pool = abstract_wide and _read_abstract_global_pool()
     wide_stat = {'capable': 0, 'capable_single': 0, 'capable_dropped': 0, 'capable_sentences': [],
-                 'tightened': 0, 'dropped': 0, 'no_wide': 0, 'sentences': []}
+                 'tightened': 0, 'dropped': 0, 'no_wide': 0, 'sentences': [],
+                 'global_injected': 0, 'global_sentences': []}
     ctx = CandidateContext(
         queries=[],
         chunk_by_id=chunk_by_id,
@@ -676,16 +693,26 @@ def build_req_context(req: dict) -> CandidateContext:
             cands = _soft_rank_auto_scene(cands, resolved, auto_segs, chunk_by_id)
             pool_source[sid] = 'segment' if _scene_of_query(resolved) > 0 else 'all'
         ctx.queries.append(resolved)
+        if abstract_global_pool and bool(resolved.get('isAbstractNarration')):
+            # P4 扩充：抽象句并入全片空镜池（仅当全片空镜 ≥2，避免用单片反复押同一画面）。
+            global_empty = [cid for cid, c in chunk_by_id.items() if _is_abstract_capable(c)]
+            if len(global_empty) >= 2:
+                before = len(cands)
+                seen = set(cands)
+                cands = cands + [cid for cid in global_empty if cid not in seen]
+                if len(cands) > before:
+                    wide_stat['global_injected'] += 1
+                    wide_stat['global_sentences'].append(sid)
         if drop_empty:
             cands = _drop_empty_desc(cands, chunk_by_id, sid, drop_stat)
         if abstract_wide and bool(resolved.get('isAbstractNarration')):
             cands = _abstract_wide_filter(cands, chunk_by_id, sid, wide_stat)
         ctx.cands_by_shotid[sid] = cands
         ctx.shotid_to_segment[sid] = _scene_of_query(resolved)
-    if abstract_wide and (wide_stat['capable'] or wide_stat['tightened'] or wide_stat['capable_single']):
+    if abstract_wide and (wide_stat['capable'] or wide_stat['tightened'] or wide_stat['capable_single'] or wide_stat['global_injected']):
         print(f'[abstract-empty] 空镜优先句={wide_stat["capable"]} ｜ 剔除非空镜候选={wide_stat["capable_dropped"]} '
               f'｜ 仅1个空镜回退宽景={wide_stat["capable_single"]} ｜ 无空镜且无宽景(原样保留)={wide_stat["no_wide"]} '
-              f'｜ 示例={wide_stat["capable_sentences"][:5]}')
+              f'｜ 全片空镜池注入={wide_stat["global_injected"]} ｜ 示例={wide_stat["capable_sentences"][:5]}')
     if abstract_wide and wide_stat['tightened']:
         print(f'[abstract-wide] 回退宽景收紧句={wide_stat["tightened"]} ｜ 剔除非宽景候选={wide_stat["dropped"]} '
               f'｜ 池内无宽景(原样保留)={wide_stat["no_wide"]} ｜ 示例={wide_stat["sentences"][:5]}')

@@ -87,6 +87,8 @@ export function resolveStoryboardMode(): StoryboardMode {
 
 /** `temp/` 下档位标记文件名（与 daemon `load_storyboard` 读取路径严格一致）。 */
 const STORYBOARD_MODE_FILE = 'storyboard-mode';
+/** `temp/` 下段域指针文件名：内容 = 段域真源 segments.json 绝对路径（daemon 据此装载，不再读旧 temp 文件）。 */
+const STORYBOARD_SEGMENTS_POINTER = 'storyboard-segments';
 
 /**
  * 函数级中文注释：把 `resolveStoryboardMode()` 的档位幂等落盘到 `temp/storyboard-mode`。
@@ -175,6 +177,18 @@ export interface StoryboardOpenOptions {
   chunks?: any[];
 }
 
+/** 🎬 S1 场记单正规化结果（ensureSegments 返回）。 */
+export interface SegmentsEnsureResult {
+  /** 正规化后的段域（可直接给 S2 开单与日志诊断） */
+  segments: SegmentSummary[];
+  /** 是否因缺失/失效而按当前切片重建 */
+  rebuilt: boolean;
+  /** 触发原因：none=健康放行；missing=无场记单；stale=与素材时段不符 */
+  reason: 'none' | 'missing' | 'stale';
+  /** 段域真源文件路径（无可用段域时为空串） */
+  sourcePath: string;
+}
+
 /** 单批开单结果（内部）。 */
 interface BatchOpenResult {
   orders: ShotSpec[];
@@ -220,22 +234,11 @@ export class StoryboardAgent {
       ? Math.max(0, Math.floor(opts.maxRetryOnInvalid) || 0)
       : MAX_RETRY_ON_INVALID;
 
-    let segments = StoryboardAgent.loadSegments(projectId);
-    // 🔧 上游数据守卫（2026-10-22）：segments.json 是离线场记产物，可能来自旧版本/更长的视频
-    //   （实测 temp/scene-log 的 49 段覆盖到 4045s，而当前素材只有 224~2702s ⇒ 17 段无任何切片）。
-    //   用错场记单会让 S2 的 segmentId/topChars 全部错位（段34 声明在素材外），故按当前切片校验，
-    //   不符则就地重建并落项目目录，后续场次与切片时间轴一致。
+    // 🔧 S1 场记单正规化（2026-10-22）：开单不再就地做「失效→重建」，统一走 ensureSegments——
+    //   与步骤5 进入 daemon 前的正规化同一条路径（单一实现），并把段域真源路径同步给 daemon。
     const materialChunks = Array.isArray(opts?.chunks) ? (opts as StoryboardOpenOptions).chunks! : [];
-    if (segments.length > 0 && materialChunks.length > 0
-      && StoryboardAgent.segmentsLookStale(segments, materialChunks)) {
-      const rebuilt = StoryboardAgent.buildSegmentsFromChunks(materialChunks);
-      if (rebuilt.length > 0) {
-        AppLogger.warn(LOG_TAGS.AI_AGENT,
-          `[开单] ⚠️ 场记单与当前素材不符（旧 ${segments.length} 段，越出素材时段）⇒ 按当前切片重建 ${rebuilt.length} 段`);
-        StoryboardAgent.persistSegments(projectId, rebuilt);
-        segments = rebuilt;
-      }
-    }
+    const ensured = StoryboardAgent.ensureSegments(projectId, materialChunks);
+    let segments = ensured.segments;
     if (segments.length === 0) {
       // 规格 §5.1：缺文件不阻塞整个步骤5，返回空由上层回退既有链路
       AppLogger.warn(LOG_TAGS.AI_AGENT,
@@ -410,16 +413,34 @@ export class StoryboardAgent {
    * @returns 场记单段落摘要数组（顺序按 segments.json 原序）
    */
   static loadSegments(projectId?: string): SegmentSummary[] {
+    return StoryboardAgent.loadSegmentsWithPath(projectId).segments;
+  }
+
+  /**
+   * 函数级中文注释：loadSegments 的内部实现，额外返回实际命中的文件路径（供段域指针同步）。
+   *
+   * @param projectId 项目 id
+   * @param projectDirOverride 测试/外部注入的项目目录（缺省经 PathManager 解析）
+   * @returns segments 与命中的 file（未命中时 file=''）
+   */
+  private static loadSegmentsWithPath(
+    projectId?: string,
+    projectDirOverride?: string,
+  ): { segments: SegmentSummary[]; file: string } {
     const candidates: string[] = [];
-    if (projectId && projectId.trim()) {
+    if (projectDirOverride) {
+      candidates.push(path.join(projectDirOverride, 'segments.json'));
+    } else if (projectId && projectId.trim()) {
       try {
         candidates.push(path.join(PathManager.getProjectDir(projectId.trim()), 'segments.json'));
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.AI_AGENT, `[开单] 解析项目目录失败，跳过项目级场记单：${e?.message || e}`);
       }
     }
-    // dev-only 兜底（temp/ 目录不随发版发布）
-    candidates.push(path.join(process.cwd(), 'temp', 'scene-log', 'segments.json'));
+    // dev-only 兜底（temp/ 目录不随发版发布）；注入 projectDir 时（测试/外部显式指定）不掺入全局 temp，避免读到无关项目
+    if (!projectDirOverride) {
+      candidates.push(path.join(process.cwd(), 'temp', 'scene-log', 'segments.json'));
+    }
 
     for (const file of candidates) {
       try {
@@ -443,13 +464,13 @@ export class StoryboardAgent {
             repDesc: String(s.repDesc || '').trim(),
           }));
         AppLogger.info(LOG_TAGS.AI_AGENT, `[开单] 场记单已加载：${file}（${segs.length} 段）`);
-        return segs;
+        return { segments: segs, file };
       } catch (e: any) {
         AppLogger.warn(LOG_TAGS.AI_AGENT, `[开单] 场记单解析失败（${file}）：${e?.message || e}`);
       }
     }
     AppLogger.info(LOG_TAGS.AI_AGENT, '[开单] 未找到场记单（segments.json），本次跳过 α 真工单');
-    return [];
+    return { segments: [], file: '' };
   }
 
   /**
@@ -566,16 +587,112 @@ export class StoryboardAgent {
    * 函数级中文注释：把重建的场次落盘到项目目录 `segments.json`（覆盖旧离线场记单）。
    * 仅在「校验判定不符 + 重建成功」后调用；写盘失败只 warn，不影响本次开单（内存里已生效）。
    */
-  static persistSegments(projectId: string | undefined, segments: SegmentSummary[]): void {
-    if (!projectId || !projectId.trim()) return;
+  static persistSegments(
+    projectId: string | undefined,
+    segments: SegmentSummary[],
+    projectDirOverride?: string,
+  ): string {
+    let dir = projectDirOverride || '';
+    if (!dir) {
+      if (!projectId || !projectId.trim()) return '';
+      try {
+        dir = PathManager.getProjectDir(projectId.trim());
+      } catch (e: any) {
+        AppLogger.warn(LOG_TAGS.AI_AGENT, `[开单] 重建场记单落盘失败（项目目录不可用）：${e?.message || e}`);
+        return '';
+      }
+    }
     try {
-      const dir = PathManager.getProjectDir(projectId.trim());
       const file = path.join(dir, 'segments.json');
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(file, JSON.stringify(segments, null, 2), 'utf-8');
       AppLogger.info(LOG_TAGS.AI_AGENT, `[开单] 重建场记单已落盘：${file}（${segments.length} 段）`);
+      return file;
     } catch (e: any) {
       AppLogger.warn(LOG_TAGS.AI_AGENT, `[开单] 重建场记单落盘失败（本次仍使用内存版本）：${e?.message || e}`);
+      return '';
+    }
+  }
+
+  /**
+   * 函数级中文注释：S1 场记单正规化（2026-10-22）——段域与当前素材对齐的唯一入口。
+   *
+   * 背景：`segments.json` 是离线场记产物，可能来自旧版本/更长的视频；此前的「校验→重建」
+   * 只在 α 开单（`ZENTECT_STORYBOARD_OPEN=on`）里执行，且只写项目目录，daemon 仍读旧
+   * `temp/scene-log/segments.json` ⇒ 同一轮里 S2 与段域池可能吃两份不同段域（双真源错位）。
+   *
+   * 本方法把正规化提升为步骤5 进入 daemon 前的独立一步，与开单开关解耦：
+   *   ① 健康且与素材相符 ⇒ 不改写原文（尊重 S1 产出）；
+   *   ② 缺失/不符 ⇒ 按当前切片确定性重建，并落项目目录（覆盖旧离线场记单）；
+   *   ③ 每次都把段域真源路径写进 `temp/storyboard-segments`，让 daemon `load_storyboard`
+   *      与 Node 吃同一份段域（无可用段域时清空指针，回退 daemon 缺省路径）。
+   *
+   * @param projectId 项目 id（为空时仅做内存正规化，不落盘）
+   * @param chunks 当前素材切片（含 startMs/endMs/scene/characters 等）
+   * @param opts 测试/外部注入目录（缺省走 PathManager + process.cwd()/temp）
+   * @returns 正规化结果（segments/rebuilt/reason/sourcePath）
+   */
+  static ensureSegments(
+    projectId: string | undefined,
+    chunks: any[],
+    opts?: { projectDir?: string; tempDir?: string },
+  ): SegmentsEnsureResult {
+    const materialChunks = Array.isArray(chunks) ? chunks : [];
+    const loaded = StoryboardAgent.loadSegmentsWithPath(projectId, opts?.projectDir);
+    let segments = loaded.segments;
+    let sourcePath = loaded.file;
+    let rebuilt = false;
+    let reason: 'none' | 'missing' | 'stale' = 'none';
+
+    if (materialChunks.length > 0) {
+      if (segments.length === 0) {
+        reason = 'missing';
+      } else if (StoryboardAgent.segmentsLookStale(segments, materialChunks)) {
+        reason = 'stale';
+      }
+      if (reason !== 'none') {
+        const fresh = StoryboardAgent.buildSegmentsFromChunks(materialChunks);
+        if (fresh.length > 0) {
+          const persisted = StoryboardAgent.persistSegments(projectId, fresh, opts?.projectDir);
+          AppLogger.warn(LOG_TAGS.AI_AGENT,
+            `[段域] ⚠️ 场记单${reason === 'missing' ? '缺失' : '与当前素材不符'}`
+            + `（旧 ${segments.length} 段）⇒ 按当前切片正规化重建 ${fresh.length} 段`
+            + `${persisted ? `，已落盘 ${persisted}` : '（未落盘，仅本次内存生效）'}`);
+          segments = fresh;
+          sourcePath = persisted || sourcePath;
+          rebuilt = true;
+        }
+      }
+    }
+
+    StoryboardAgent.syncDaemonSegmentsPointer(sourcePath, opts?.tempDir);
+    return { segments, rebuilt, reason, sourcePath };
+  }
+
+  /**
+   * 函数级中文注释：把段域真源路径同步到 `temp/storyboard-segments`（daemon `load_storyboard` 的唯一读入口）。
+   * 内容幂等：与既有值一致则不写盘；无可用段域时删除指针，让 daemon 回退缺省 `temp/scene-log/segments.json`。
+   *
+   * @param file 段域真源绝对路径（'' = 无可用段域）
+   * @param tempDirOverride 测试/外部注入的 temp 目录（缺省 process.cwd()/temp）
+   */
+  private static syncDaemonSegmentsPointer(file: string, tempDirOverride?: string): void {
+    try {
+      const dir = tempDirOverride || path.join(process.cwd(), 'temp');
+      const pointer = path.join(dir, STORYBOARD_SEGMENTS_POINTER);
+      if (!file) {
+        if (fs.existsSync(pointer)) fs.unlinkSync(pointer);
+        return;
+      }
+      const existing = fs.existsSync(pointer)
+        ? fs.readFileSync(pointer, 'utf-8').trim().replace(/^\uFEFF/, '')
+        : '';
+      if (existing === file) return;
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(pointer, file, 'utf-8');
+      AppLogger.info(LOG_TAGS.AI_AGENT, `[段域] daemon 段域指针已同步 → ${pointer} = ${file}`);
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT, `[段域] daemon 段域指针同步失败（daemon 沿用既有路径）：${e?.message || e}`);
     }
   }
 

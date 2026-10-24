@@ -108,8 +108,12 @@ export const IPCBridge: React.FC = () => {
                 // extractedData 层（含抽帧路径）
                 audioSeparated: f.audioSeparated !== undefined ? !!f.audioSeparated : true,
                 asrLines: f.asrLines || undefined,
-                framePaths: f.framePaths || undefined,
-                frameCount: (f.framePaths && Array.isArray(f.framePaths)) ? f.framePaths.length : (f.frameCount || undefined),
+                // 🛑 空数组不得覆盖：管线异常/降级时后端可能回传 framePaths: []，
+                // 旧逻辑 `f.framePaths || undefined` 会把 [] 当真值写入 → 关键帧被清空
+                framePaths: (Array.isArray(f.framePaths) && f.framePaths.length > 0) ? f.framePaths : undefined,
+                frameCount: (Array.isArray(f.framePaths) && f.framePaths.length > 0)
+                  ? f.framePaths.length
+                  : (f.frameCount || undefined),
                 videoPath: f.videoPath || undefined,
                 vocalPath: f.vocalPath || undefined,
                 backgroundPath: f.backgroundPath || undefined,

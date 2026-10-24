@@ -22,6 +22,8 @@ import { EngineStateGuard } from '../core/EngineStateGuard';
 import { ExceptionHub } from '../core/ExceptionHub';
 import { AIDaemon } from '../core/AIDaemon';
 import { ProgressAccumulator } from './ProgressAccumulator';
+import { SQLiteConnection } from '../../modules/infra/database/SQLiteConnection';
+import type { PipelineParams } from '../../shared/types/entities/editor';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -61,9 +63,13 @@ export class PipelineEngine {
     AppLogger.warn(LOG_TAGS.SCHEDULER, '🛑 收到全局熔断指令，算力锁已全部清空');
   }
 
-  /** V1.1: 返回新版 8 维解说控制参数默认值，注入到 ExecutionContext */
-  private loadPipelineParams(): import('../../shared/types/entities/editor').PipelineParams {
-    return {
+  /** V1.1: 读取项目级 8 维解说控制参数 + 语速
+   *  🔧 修复：此前无条件返回硬编码默认值 → 步骤3 画布上用户选择的解说占比/原声策略/
+   *     节奏/情绪/钩子/目标篇幅/语速全部失效（这些值已随项目 metadata 持久化，但引擎从不读取）。
+   *     现按 projectId 读 metadata.pipelineParams + metadata.speechRate，非法值回退默认。
+   */
+  private loadPipelineParams(projectId?: string): PipelineParams {
+    const defaults: PipelineParams = {
       narrativePerspective: 'third',
       narrationRatio: 0.7,
       rhythmMode: 'mixed',
@@ -72,6 +78,48 @@ export class PipelineEngine {
       targetNarrationDurationSec: 0,
       targetDurationSec: 0,
     };
+    if (!projectId) return defaults;
+
+    try {
+      const row = SQLiteConnection.getInstance().getDB()
+        .prepare('SELECT metadata FROM projects WHERE id = ?')
+        .get(projectId) as any;
+      if (!row?.metadata) return defaults;
+
+      const meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata;
+      const raw: Record<string, any> = meta?.pipelineParams || {};
+      const clamp01 = (v: any, fb: number): number =>
+        typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : fb;
+      const nonNeg = (v: any, fb: number): number =>
+        typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : fb;
+      const pick = <T extends string>(v: any, allowed: readonly T[], fb: T): T =>
+        allowed.includes(v) ? v : fb;
+
+      const params: PipelineParams = {
+        narrativePerspective: pick(raw.narrativePerspective, ['third', 'first', 'second'] as const, defaults.narrativePerspective),
+        narrationRatio: clamp01(raw.narrationRatio, defaults.narrationRatio),
+        rhythmMode: pick(raw.rhythmMode, ['short_fast', 'mixed', 'slow_soothing'] as const, defaults.rhythmMode),
+        emotionTone: pick(raw.emotionTone, ['neutral', 'emotional', 'suspense', 'epic', 'comedy'] as const, defaults.emotionTone),
+        hookIntensity: clamp01(raw.hookIntensity, defaults.hookIntensity),
+        targetNarrationDurationSec: nonNeg(raw.targetNarrationDurationSec, 0),
+        targetDurationSec: nonNeg(raw.targetDurationSec, 0),
+      };
+      if (raw.audioStrategy) {
+        const valid = ['smart_keep', 'pure_narration', 'original_focus'] as const;
+        if (valid.includes(raw.audioStrategy)) params.audioStrategy = raw.audioStrategy;
+      }
+      if (raw.vibePreset) params.vibePreset = raw.vibePreset;
+      const speechRate = Number(meta?.speechRate);
+      if (Number.isFinite(speechRate) && speechRate > 0) params.speechRate = speechRate;
+
+      AppLogger.info(LOG_TAGS.SCHEDULER,
+        `[V1.1] 载入项目解说参数: 视角=${params.narrativePerspective}｜原声档=${params.audioStrategy || 'n/a'}`
+        + `｜解说占比=${params.narrationRatio}｜语速=${params.speechRate || 'n/a'}｜目标篇幅=${params.targetDurationSec}s`);
+      return params;
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.SCHEDULER, `[V1.1] 读取项目解说参数失败，回退默认值: ${e.message}`);
+      return defaults;
+    }
   }
 
   /** V1.1: 从 WorkflowService 加载 DAG 并执行 — 支持拓扑排序与并行调度 */
@@ -108,7 +156,7 @@ export class PipelineEngine {
     const context: ExecutionContext = {
       projectId,
       bus: new Map<string, any>(),
-      pipelineParams: this.loadPipelineParams(),
+      pipelineParams: this.loadPipelineParams(projectId),
       signal: this.abortController.signal,
     };
 
@@ -236,7 +284,7 @@ export class PipelineEngine {
     const context: ExecutionContext = {
       projectId: payload.projectId,
       bus: new Map<string, any>(),
-      pipelineParams: this.loadPipelineParams(),
+      pipelineParams: this.loadPipelineParams(payload.projectId),
       signal: this.abortController.signal,
     };
 

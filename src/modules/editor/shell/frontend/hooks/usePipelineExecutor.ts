@@ -240,14 +240,20 @@ export const usePipelineExecutor = () => {
       if (renderTimerRef.current) clearTimeout(renderTimerRef.current);
 
       const actualExtractedImages = results?.frames || results?.framePaths || [];
+      /** 🛑 修复「步骤2 失败后关键帧被清空，重试误报『请先完成步骤1』」：
+       *  节点异常/降级时 results 里没有 frames，旧逻辑照旧写 framePaths: []，
+       *  等于把步骤1 已抽好的关键帧从 store 抹掉。无新帧时保留现有帧列表。 */
+      const hasFreshFrames = Array.isArray(actualExtractedImages) && actualExtractedImages.length > 0;
 
       const finalPayload = {
         videoPath: storeState.extractedData.videoPath,
         vocalPath: results?.vocalPath || storeState.extractedData.vocalPath,
         backgroundPath: results?.backgroundPath || storeState.extractedData.backgroundPath,
         asrLines: asrBufferRef.current.length > 0 ? asrBufferRef.current : (results?.asrLines || []),
-        framePaths: actualExtractedImages,
-        frameCount: results?.frameCount || actualExtractedImages.length || storeState.extractedData.frameCount
+        framePaths: hasFreshFrames ? actualExtractedImages : (storeState.extractedData.framePaths || []),
+        frameCount: hasFreshFrames
+          ? (results?.frameCount || actualExtractedImages.length)
+          : (storeState.extractedData.frameCount || 0)
       };
 
       storeState.setExtractedData?.(finalPayload);

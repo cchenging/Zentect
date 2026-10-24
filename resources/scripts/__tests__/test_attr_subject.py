@@ -80,6 +80,50 @@ def test_existing_substring_contract_no_regression() -> None:
     assert miss == mc.ATTR_MISS_PENALTY, f'同坐标系真差异应落空，实际 {miss}'
 
 
+def test_inserted_modifier_same_person_hits() -> None:
+    """⑥ 长称谓插入定语（「戴白帽穿黑衣的女子」↔「戴白帽的女子」）⇒ 判同人命中。
+
+    根因：二元组差异使子串失效，实测主体维落空 68% 中大量是这种「同一人被写成不同长度」。
+    """
+    st = _stats()
+    cost = mc._subject_adherence(
+        ['戴白帽穿黑衣的女子'],
+        {'characters': ['戴白帽的女子']}, st)
+    assert cost == mc.ATTR_MATCH_REWARD, f'应判同人命中，实际 {cost}'
+    assert st['match'] == 1, st
+
+
+def test_hair_length_conflict_stays_miss() -> None:
+    """⑦ 长发 vs 短发属互斥属性 ⇒ 不得被相似度软化成命中。"""
+    st = _stats()
+    cost = mc._subject_adherence(['长发女子'], {'characters': ['短发女子']}, st)
+    assert cost == mc.ATTR_MISS_PENALTY, f'互斥属性应落空，实际 {cost}'
+    assert st['miss'] == 1, st
+
+
+def test_same_cloth_different_color_stays_miss() -> None:
+    """⑧ 同物异色（白帽 vs 黑帽）⇒ 落空，防相似度伪命中。"""
+    st = _stats()
+    cost = mc._subject_adherence(['戴白帽的女子'], {'characters': ['戴黑帽的女子']}, st)
+    assert cost == mc.ATTR_MISS_PENALTY, f'同物异色应落空，实际 {cost}'
+    assert st['miss'] == 1, st
+
+
+def test_unrelated_appellations_still_miss() -> None:
+    """⑨ 完全无关的两个视觉称谓（黑衣男子 vs 白帽女子）⇒ 仍落空。"""
+    st = _stats()
+    cost = mc._subject_adherence(['穿黑西装的男子'], {'characters': ['戴白帽的女子']}, st)
+    assert cost == mc.ATTR_MISS_PENALTY, f'无关称谓应落空，实际 {cost}'
+    assert st['miss'] == 1, st
+
+
+def test_long_curly_vs_long_hair_hits() -> None:
+    """⑩ 「长卷发女子」↔「长发女子」：长度一致、卷直单侧已知 ⇒ 不冲突，判同人。"""
+    st = _stats()
+    cost = mc._subject_adherence(['长卷发女子'], {'characters': ['长发女子']}, st)
+    assert cost == mc.ATTR_MATCH_REWARD, f'应判同人（长+卷 ⊂ 长），实际 {cost}'
+
+
 def _run_all() -> int:
     """逐函数执行；任何断言失败向上抛（run_all.py 收集）。"""
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]

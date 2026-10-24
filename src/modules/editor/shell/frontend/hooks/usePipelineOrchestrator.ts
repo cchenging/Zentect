@@ -109,11 +109,28 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
       // 🔧 修复：step2 不再走 AI_VISION_SINGLE（人脸检测端点），统一走 STEP_SEQUENCES → VisionExtractStrategy
       // 仅保留 step2 前置校验：必须有 step1 抽出的关键帧 + 媒体文件路径
       if (step === 2) {
-        const existingFrames = projectState.extractedData?.framePaths || [];
+        // 🛑 修复「步骤2 失败后重试被误报『请先完成步骤1』」：
+        //   步骤2 失败时上游可能把 extractedData.framePaths 清空（帧回写为空结果的 bug），
+        //   导致这里拦死整条管线。先从媒体素材自带的 frames 自愈，真正无帧才阻断。
+        let existingFrames = projectState.extractedData?.framePaths || [];
+        if (existingFrames.length === 0) {
+          const fromMedia = (projectState.mediaItems || [])
+            .flatMap((m: any) => (Array.isArray(m?.frames) ? m.frames : []))
+            .map((f: any) => (typeof f === 'string' ? f : (f?.path ?? f?.filePath ?? f?.url ?? f?.thumbnail ?? '')))
+            .filter((p: any) => typeof p === 'string' && p.trim().length > 0);
+          if (fromMedia.length > 0) {
+            useProjectStore.getState().setExtractedData({
+              framePaths: fromMedia,
+              frameCount: fromMedia.length,
+            });
+            existingFrames = fromMedia;
+            AppNotifier.info(`已从素材缓存恢复 ${fromMedia.length} 张关键帧，继续执行画面描述`);
+          }
+        }
         if (existingFrames.length === 0) {
           ps.setStepStatus(step, 'idle');
           ps.setPipelineRunning(false);
-          AppNotifier.warning('请先完成步骤1「素材分析」提取关键帧，再执行画面描述');
+          AppNotifier.warning('关键帧列表为空，请先在步骤1「素材分析」完成抽帧，再执行画面描述');
           return;
         }
         if (!activeMedia?.filePath) {

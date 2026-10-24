@@ -182,20 +182,43 @@ export interface VisionExtractOutput {
 }
 
 /**
- * VLM 并发批次路数（🚀 提速：效率优先，6 路并发）
- * 背景：此前为防"假 429"把并发压到 1，但真正根因是 API Key/路径，并非真限流。
- * 现在放开到 6 路（多数付费/自建中转 QPS≥10，6 路在速度和稳定性间取平衡；
- * 真遇到限流由全局节流器+批次退避自动兜底，不会打爆服务）。
+ * 读取正整数环境变量（非法/未设回退缺省）。
+ * @param name 变量名
+ * @param fallback 缺省值
+ * @param max 上限（防误配把并发/退避拉到不可控）
  */
-const CONCURRENT_VLM = 6;
-/** 🔧 fail fast：连续失败达到此阈值时终止整批任务，避免无效 API 调用 */
-const FAIL_FAST_THRESHOLD = 5;
+function readPositiveIntEnv(name: string, fallback: number, max: number): number {
+  try {
+    const raw = String(process.env[name] ?? '').trim();
+    if (!raw) return fallback;
+    const val = Number(raw);
+    if (!Number.isFinite(val) || val < 1) return fallback;
+    return Math.min(max, Math.floor(val));
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * VLM 并发批次路数（🚀 2026-10-23 提速：默认 6 → 32（上限），环境变量 `ZENTECT_VLM_CONCURRENCY` 可调）
+ * 背景：VLM 是远端 API（非本地算力），批次间完全独立，并发只影响总耗时、不影响单帧描述质量。
+ * 约束：阿里云百炼除预算外还有 TPM/RPM 配额，并发过高可能撞 TPM（429）——
+ *      撞限流时已自动指数退避 2s→4s→8s 并把批次重新入队，不会丢帧、不会重复计费。
+ * 若日志频繁 429 且总时长反而变长，把 `ZENTECT_VLM_CONCURRENCY` 降到 16~24 即可，无需改代码。
+ */
+const CONCURRENT_VLM = readPositiveIntEnv('ZENTECT_VLM_CONCURRENCY', 32, 32);
+/** 🔧 fail fast：连续失败达到此阈值时终止整批任务（高并发下偶发 429 属正常，阈值放宽到 10） */
+const FAIL_FAST_THRESHOLD = readPositiveIntEnv('ZENTECT_VLM_FAIL_FAST', 10, 50);
 /** 单次 VLM 调用最大图片数（按 qwen3.7-plus 2048 / flash-plus 系列 256 取保守值 256） */
 const MAX_BATCH_IMAGES = 256;
-/** 批次启动错峰延迟（毫秒）：保留极小错峰，避免并发批次在同一毫秒瞬时打满 QPS（500ms→100ms 提速） */
-const BATCH_STAGGER_MS = 100;
-/** 当 VLM 批次遇到 429/限流时，在 fail-fast 计数前强制全局退避（毫秒），防止其它并发批次继续撞限流 */
+/** 批次启动错峰延迟（毫秒）：并发越高错峰越大，避免瞬时把 TPM 窗口打满（100→200ms） */
+const BATCH_STAGGER_MS = readPositiveIntEnv('ZENTECT_VLM_STAGGER_MS', 200, 5000);
+/** 当 VLM 批次遇到 429/限流时，全局退避基数（毫秒），按重试次数指数增长（2s→4s→8s…，封顶 30s） */
 const RATE_LIMIT_GLOBAL_BACKOFF_MS = 2000;
+/** 限流批次最多重试次数（重入队；超限才计入失败），避免高并发下偶发 429 直接丢帧 */
+const MAX_RATE_LIMIT_RETRIES = 3;
+/** 限流指数退避封顶（毫秒） */
+const RATE_LIMIT_BACKOFF_MAX_MS = 30000;
 /**
  * P3 全局摘要 VLM 请求与第 1 个批次 VLM 请求之间的冷却等待（毫秒）
  * 目的：全局摘要消耗大量 TPM，紧接着发批次请求易触发 TPM/RPM 双限流。
@@ -225,6 +248,17 @@ function isRateLimitError(err: any): boolean {
   const fatalPseudo429 = /invalid token|unauthorized|forbidden|401|403|api.?key.*invalid|鉴权|认证失败|auth.?fail|权限不足|没有权限|insufficient balance|arrearage|余额不足|欠费|额度不足|账户.*(过期|失效)|model.*not.?found|模型不存在|模型未开通|无效的模型|unsupported model|上下文.*过长|prompt.?too.?long/i;
   if (fatalPseudo429.test(low)) return false;
   return /429|过于频繁|限流|rate.?limit|too many requests|quota|qps|rps/i.test(low);
+}
+
+/**
+ * 判断错误是否属于"账号预算/额度耗尽"（不可重试型）
+ * 阿里云百炼 BudgetLimitExceeded 的消息里同样带 429，若走限流退避会白等 N 轮；
+ * 必须前置识别 → 立即终止整批，避免把已付费额度耗在无效重试上。
+ * @param err catch 到的错误对象
+ */
+function isBudgetExhaustedError(err: any): boolean {
+  const msg = String(err?.message || err || '');
+  return /budgetlimit|budget.*(exhaust|exceed|limit)|exhausted.*budget|预算.*(耗尽|不足)|额度.*(耗尽|用尽)/i.test(msg);
 }
 
 /**
@@ -390,6 +424,38 @@ export function buildStoryLineFromFrames(frameJsonItems: (any | null)[]): string
   }
   if (events.length === 0) return '';
   return `全片视觉剧情脉络（按时间顺序）：\n${events.join('\n')}`;
+}
+
+/**
+ * P4 空镜判定归一化（2026-10-23）：VLM materialType 校正 + 描述派生兜底
+ *
+ * 背景（实测 760 帧）：v9 全量重跑后仍有 33 帧缺失 materialType，且 31 帧把描述里写着
+ * 「主体:空镜头」的画面标成 real ⇒ 只靠 prompt 无法保证模型稳定产出/判对。
+ * 规则（客观视觉关键字，不看剧情语义）：
+ *   ① 显式 empty/effect 原样保留（模型给了明确结论就尊重）；
+ *   ② 描述/主体出现强空镜词且不含任何人物词 → empty（覆盖模型误标的 real）；
+ *   ③ 描述含黑场/字幕/闪白/纯色/特效 → effect；
+ *   ④ 缺失或非法且无上述信号 → real（实拍兜底，绝不产生 undefined）。
+ * ⚠️ 「无人机」不算无人（负向前瞻排除），避免空镜误判。
+ */
+export function normalizeMaterialType(
+  value: unknown,
+  description?: unknown,
+  primarySubject?: unknown,
+): 'real' | 'empty' | 'effect' {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (raw === 'empty' || raw === 'effect') return raw;
+
+  const text = `${String(description ?? '')} ${String(primarySubject ?? '')}`;
+  const EFFECT_RE = /(黑场|纯黑画面|纯白画面|闪白|闪黑|字幕|片头|片尾|转场特效|纯色画面|雪花屏)/;
+  const EMPTY_RE = /(空镜头?|空镜|无人物|没有人物|画面中无|空无一人|无人(?!机)|仅环境|纯环境|环境空镜|静物特写)/;
+  const PERSON_RE = /(人物|男人|女人|男子|女子|少年|老人|孩子|人群|人影|剪影|背影|主角|角色|行人)/;
+  /** 否定式人物措辞先剥离，否则「无人物」里的「人物」会把空镜反判成 real。 */
+  const personText = text.replace(/(无|没有|不含|不见)\s*(任何)?\s*(人物|人影)/g, ' ');
+
+  if (EFFECT_RE.test(text)) return 'effect';
+  if (EMPTY_RE.test(text) && !PERSON_RE.test(personText)) return 'empty';
+  return 'real';
 }
 
 export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, VisionExtractOutput> {
@@ -605,7 +671,12 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       weatherEnv: normStr(jsonItem?.weatherEnv),
       // 🎬 P4（2026-10-22）：素材类型（real/empty/effect）——切片侧取众数落 chunk.materialType，
       //  daemon 据此把真空镜放进 isAbstractCapable 池（显式 empty 优先于「宽景+无主体」派生）。
-      materialType: normStr(jsonItem?.materialType),
+      //  🔧 2026-10-23：入库前归一化——模型常漏字段或把「主体:空镜头」误标 real，此处用客观关键字校正。
+      materialType: normalizeMaterialType(
+        normStr(jsonItem?.materialType),
+        jsonItem?.scene ?? jsonItem?.description,
+        jsonItem?.primarySubject ?? jsonItem?.subject,
+      ),
       characters: normArr<string>(jsonItem?.characters),
       asrText: normStr(frameAsrText),
     };
@@ -1170,6 +1241,8 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
     /** fail fast 触发后的终止信号 */
     let aborted = false;
     let abortError = '';
+    /** 限流批次重试计数（batchIdx → 已重试次数）：重入队不算失败，避免高并发下偶发 429 直接丢帧 */
+    const batchRetryCount = new Map<number, number>();
     const framePathsOriginal = input.framePaths || physicalFrames;
 
     /** 秒 → MM:SS.mm 格式 */
@@ -1388,8 +1461,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
           text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【网格图分析任务】\n这是一张 ${gridDesc}，每个子图按编号对应：\n${frameAsrHint}${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 只写该帧画面中**肉眼可见的人物**：优先用客观外观描述（如"穿蓝色条纹衬衫的男子""短发女子"）；仅在能确定身份时（如与提供的人物名单一致）才使用其姓名\n- 🔴 characters 严禁（违反即错误）：① 严禁写道具/布景/家具/车辆/植物/食物/建筑等**非人物**（如"绿植""窗外路灯""三人围坐沙发""飞机""沙发"）；② 严禁凭脸猜测演员名或角色名（禁止"XX饰演的YY"这类推断，也不许硬套明星名）；无法确定身份就用①中的外观描述\n- 🔴 characters 无人物时输出**空数组 []**（禁止写"无主体人物""无人物"等占位串）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容
 - 🎬 keyProps 写画面中关键道具**类别枚举**：必须从 [无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具] 中选一类（如"武器""文书证件"），无关键道具写"无道具"；严禁写具体道具名，具体道具（如"手枪""旧信封""裂开的牌匾"）写进 scene 或 narrativeAction\n- 👀 eyelineDirection 写主体视线朝向类别枚举：必须从 [LEFT|RIGHT|FRONT|NONE] 中选，仅视线方向清晰可判时写 LEFT/RIGHT/FRONT，视线不可判/空镜/无主体写 NONE（补丁14 跳轴守卫依赖）
 - 👗 costume 写主要人物的上装造型（颜色+款式，如"白衬衫""黑色风衣""病号服"）；多人写最突出的一个；空镜/无人物写"无人物"
-- 🌦 weatherEnv 写环境介质与时段（如"雨夜街头""室内白天"；可选 晴/阴/雨/雪/雾/夜/黄昏），无法判断写"室内"或"不明"
-- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","eyelineDirection":"LEFT|RIGHT|FRONT|NONE","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么（15字以内）","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keyProps":"道具类别枚举:无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具","costume":"人物上装造型（无人物写无人物）","weatherEnv":"环境介质/时段","characters":["该帧可见人物的客观外观描述，如穿蓝色条纹衬衫的男子；无人物写 []"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
+- 🌦 weatherEnv 写环境介质与时段（如"雨夜街头""室内白天"；可选 晴/阴/雨/雪/雾/夜/黄昏），无法判断写"室内"或"不明"\n- 🎬 materialType 必须从 [real|empty|effect] 中选：real=正常实拍叙事画面；empty=无叙事主体的空镜/纯环境/静物（删掉它剧情不受损）；effect=特效/字幕/黑场/闪白等非实拍素材；有人物在做剧情动作一律写 real\n- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","eyelineDirection":"LEFT|RIGHT|FRONT|NONE","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么（15字以内）","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keyProps":"道具类别枚举:无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具","costume":"人物上装造型（无人物写无人物）","weatherEnv":"环境介质/时段","materialType":"real|empty|effect","characters":["该帧可见人物的客观外观描述，如穿蓝色条纹衬衫的男子；无人物写 []"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与网格编号一一对应`,
         });
         userContent.push({
           type: 'image_url',
@@ -1399,7 +1471,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
         /** 1x1 模式或拼图降级：多图独立发送 */
         userContent.push({
           type: 'text',
-          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameAsrHint}${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 只写该帧画面中**肉眼可见的人物**：优先用客观外观描述（如"穿蓝色条纹衬衫的男子""短发女子"）；仅在能确定身份时（如与提供的人物名单一致）才使用其姓名\n- 🔴 characters 严禁（违反即错误）：① 严禁写道具/布景/家具/车辆/植物/食物/建筑等**非人物**（如"绿植""窗外路灯""三人围坐沙发""飞机""沙发"）；② 严禁凭脸猜测演员名或角色名（禁止"XX饰演的YY"这类推断，也不许硬套明星名）；无法确定身份就用①中的外观描述\n- 🔴 characters 无人物时输出**空数组 []**（禁止写"无主体人物""无人物"等占位串）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容\n- 🎬 keyProps 写画面中与剧情相关或主体交互的关键道具/物品（如"裂开的牌匾""手枪""旧信封"），无关键道具写"无道具"\n- 👗 costume 写主要人物的上装造型（颜色+款式，如"白衬衫""黑色风衣"）；多人写最突出的一个；空镜/无人物写"无人物"\n- 🌦 weatherEnv 写环境介质与时段（如"雨夜街头""室内白天"），无法判断写"室内"或"不明"\n- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","eyelineDirection":"LEFT|RIGHT|FRONT|NONE","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么（15字以内）","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keyProps":"道具类别枚举:无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具","costume":"人物上装造型（无人物写无人物）","weatherEnv":"环境介质/时段","characters":["该帧可见人物的客观外观描述，如穿蓝色条纹衬衫的男子；无人物写 []"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
+          text: `${systemPrompt}${globalContextPrompt}${rolesContextPrompt}${frameRolesAnchoringPrompt}\n\n【批量帧分析任务】\n共 ${batchFrames.length} 张帧图片，按顺序如下：\n${frameAsrHint}${frameListText}\n\n【剪辑师准则（Strict Rules）】\n- scene 必须用 2-6 字概括关键场景（如"深夜办公室""车内"）——场景是画面匹配第一抓手，必须写！只禁止无关杂物细节（家具材质/墙壁花纹/衣服款式）\n- narrativeAction 只写戏剧动作（拔枪/按住水杯/猛地抬头）或静态具体状态（人物静坐桌边），禁止环境描写\n- 🔴 占位反例：禁止"无动作"——有人写姿态状态（"男子静坐，双手交叠"），无人写"空镜：空荡走廊，灯光忽明忽暗"\n- emotionalState 写微表情（眼神变化/咬牙/冷笑/脸色阴沉），静态镜头写"面无表情，眼神空洞"等具体状态\n- shotType 必须从 [特写|近景|中景|全景] 中选择\n- 🎥 cameraMovement 必须判断运镜方式：从 [固定|推|拉|摇|移] 中选择，静态镜头写"固定"，禁止"无运镜"\n- 👥 多人物规则（核心）：画面有多个可辨识人物时，必须确定唯一 primarySubject（谁主），secondarySubjects 列陪体（谁次），interaction 写"谁对谁做了什么"（如"张三举枪质问李四"），shotStyle 从 [单人|双人对峙|过肩镜头|群戏|主角+背景人群] 中选\n- 🔴 多人物严禁：禁止分别罗列每个人的穿着外观（"左边黑衣男子，右边戴眼镜女子"是失败描述），必须写人物间的剧情交互；背景路人/群众一律忽略，不写入 secondarySubjects\n- 👥 多人物第 3 条硬约束（interaction 字数）：interaction 交互描述控制在 **15 字以内**（短句禁止啰嗦修饰）——例："张三按李四肩膀"好于"张三走上前轻轻地用右手按住了李四的左肩膀"\n- characters 只写该帧画面中**肉眼可见的人物**：优先用客观外观描述（如"穿蓝色条纹衬衫的男子""短发女子"）；仅在能确定身份时（如与提供的人物名单一致）才使用其姓名\n- 🔴 characters 严禁（违反即错误）：① 严禁写道具/布景/家具/车辆/植物/食物/建筑等**非人物**（如"绿植""窗外路灯""三人围坐沙发""飞机""沙发"）；② 严禁凭脸猜测演员名或角色名（禁止"XX饰演的YY"这类推断，也不许硬套明星名）；无法确定身份就用①中的外观描述\n- 🔴 characters 无人物时输出**空数组 []**（禁止写"无主体人物""无人物"等占位串）\n- subject 写画面核心主体（优先使用已知角色真实姓名，如"张三"；无人用泛称"男子/女子"；空镜写"空镜头"）\n- ⚡ dramaticConflict 写该镜头的剧情看点/张力（如"面临危险""发现秘密""情绪濒临崩溃"；平静镜头写"平静，无冲突"），用于解说钩子提炼\n- visualAtmosphere 仅 2-4 字概括氛围（如"昏暗压抑"），禁止"无氛围"\n- spatialRelation 写人物空间位置/构图（如"主体居中""人物居右"），禁止"无构图"\n- 🔴 严禁输出"无动作/无构图/无氛围/无表情/无/None"等占位词！每个字段必须写肉眼可见的具体内容\n- 🎬 keyProps 写画面中与剧情相关或主体交互的关键道具/物品（如"裂开的牌匾""手枪""旧信封"），无关键道具写"无道具"\n- 👗 costume 写主要人物的上装造型（颜色+款式，如"白衬衫""黑色风衣"）；多人写最突出的一个；空镜/无人物写"无人物"\n- 🌦 weatherEnv 写环境介质与时段（如"雨夜街头""室内白天"），无法判断写"室内"或"不明"\n- 🎬 materialType 必须从 [real|empty|effect] 中选：real=正常实拍叙事画面；empty=无叙事主体的空镜/纯环境/静物（删掉它剧情不受损）；effect=特效/字幕/黑场/闪白等非实拍素材；有人物在做剧情动作一律写 real\n- keywords 仅保留动作/情绪/道具/人物关键词，剔除环境词\n\n【防幻觉约束】\n- 台词仅供参考，若台词提到的事物在图片中未出现，严禁写入描述\n- 仅描述图片中肉眼可见的内容${rolesUsageHint}\n\n请返回 JSON，格式：{"frames":[{"scene":"关键场景2-6字","subject":"画面核心主体","narrativeAction":"主体核心动作/状态","emotionalState":"微表情情绪","shotType":"特写|近景|中景|全景","cameraMovement":"固定|推|拉|摇|移","primarySubject":"主焦点人物","eyelineDirection":"LEFT|RIGHT|FRONT|NONE","secondarySubjects":["陪体1"],"interaction":"谁对谁做了什么（15字以内）","shotStyle":"单人|双人对峙|过肩镜头|群戏|主角+背景人群","dramaticConflict":"剧情看点/张力","visualAtmosphere":"2-4字氛围","spatialRelation":"构图空间","keyProps":"道具类别枚举:无道具|武器|文书证件|通信工具|容器载体|工具器械|财物珍宝|其他关键道具","costume":"人物上装造型（无人物写无人物）","weatherEnv":"环境介质/时段","materialType":"real|empty|effect","characters":["该帧可见人物的客观外观描述，如穿蓝色条纹衬衫的男子；无人物写 []"],"keywords":["动作或情绪关键词"]}]}\n- frames 数组长度必须等于 ${batchFrames.length}\n- 顺序与图片顺序一一对应`,
         });
         for (const f of batchFrames) {
           userContent.push({
@@ -1565,7 +1637,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
             cacheRecords.push({
               frameHash: contentHash,
               modelName: model,
-              // 🔧 与 VlmFrameCacheRepository.PROMPT_VERSION 引用同一常量（当前 v8），
+              // 🔧 与 VlmFrameCacheRepository.PROMPT_VERSION 引用同一常量（当前 v9），
               // 避免此前"查询用v2/写入用v3"不一致导致重跑命中旧短场景缓存
               promptVersion: VlmFrameCacheRepository.PROMPT_VERSION,
               resultJson: JSON.stringify(parsedItem),
@@ -1583,19 +1655,43 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       } catch (err: any) {
         AppLogger.error(LOG_TAGS.AI_AGENT, `[画面描述] 批次 ${batchIdx + 1} 异常: ${err.message}`);
 
-        // 🔧 修复 429 连锁撞限流：如果本批次是"限流类错误"，先全局退避一段时间，
-        // 让其它并发批次/后续批次不至于紧跟着撞在同一个限流窗口上，导致连续计数 fail-fast
+        // � 预算耗尽是**非重试型**错误：重试/退避都不会成功，直接终止并给出可执行提示。
+        //   （阿里云百炼 BudgetLimitExceeded 的文案里带 429，若按限流处理会白退避 N 轮）
+        if (isBudgetExhaustedError(err) && !aborted) {
+          aborted = true;
+          abortError = '百炼账号预算已耗尽（BudgetLimitExceeded）。已完成批次均已写入 v9 缓存，'
+            + '充值/提高额度后重跑步骤2 只会补跑剩余帧，不会重复计费。';
+          AppLogger.error(LOG_TAGS.AI_AGENT, `[画面描述] ${abortError}`);
+          return;
+        }
+
+        // 🔁 真限流（TPM/RPM）：指数退避后把本批**重新入队**，不计入 fail-fast；
+        //    高并发下偶发 429 属正常，重试 3 次仍失败才记一次失败。
         const rateLimited = isRateLimitError(err);
         if (rateLimited && !aborted) {
+          // 🔧 重试计数按「批内首帧下标」做键：重入队后 batchIdx 会被重算，用它当键会无限重试
+          const retryKey = batchFrames[0]?.idx ?? batchIdx;
+          const tries = batchRetryCount.get(retryKey) || 0;
+          if (tries < MAX_RATE_LIMIT_RETRIES) {
+            batchRetryCount.set(retryKey, tries + 1);
+            const backoff = Math.min(
+              RATE_LIMIT_BACKOFF_MAX_MS,
+              RATE_LIMIT_GLOBAL_BACKOFF_MS * Math.pow(2, tries),
+            );
+            AppLogger.warn(LOG_TAGS.AI_AGENT,
+              `[画面描述] 批次 ${batchIdx + 1} 触发限流，退避 ${backoff}ms 后重试（${tries + 1}/${MAX_RATE_LIMIT_RETRIES}）`);
+            await sleep(backoff);
+            batchQueue.push({ frames: batchFrames, layout });
+            return;
+          }
           AppLogger.warn(LOG_TAGS.AI_AGENT,
-            `[画面描述] 批次 ${batchIdx + 1} 触发限流类错误，全局退避 ${RATE_LIMIT_GLOBAL_BACKOFF_MS}ms 再处理计数`);
-          await sleep(RATE_LIMIT_GLOBAL_BACKOFF_MS);
+            `[画面描述] 批次 ${batchIdx + 1} 限流重试 ${MAX_RATE_LIMIT_RETRIES} 次仍失败，计入失败`);
         }
 
         consecutiveFailures++;
         if (consecutiveFailures >= FAIL_FAST_THRESHOLD && !aborted) {
           aborted = true;
-          abortError = err.message;
+          abortError = `连续 ${consecutiveFailures} 批 VLM 调用失败，已终止。最后错误：${err.message}`;
           AppLogger.error(LOG_TAGS.AI_AGENT,
             `[画面描述] 连续 ${consecutiveFailures} 批失败，终止剩余任务。最后错误: ${err.message}`);
         }
@@ -1716,7 +1812,7 @@ export class VisionExtractStrategy extends BaseNodeStrategy<VisionExtractInput, 
       await Promise.allSettled(running);
     }
     if (aborted) {
-      throw new Error(`画面描述失败：连续 ${FAIL_FAST_THRESHOLD} 批 VLM 调用失败，已终止。请检查 VLM 配置（接口地址/模型名/API Key）。最后错误：${abortError}`);
+      throw new Error(`画面描述中止：${abortError}`);
     }
 
     /** 释放 LRU 缓存 */

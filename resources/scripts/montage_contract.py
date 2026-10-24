@@ -378,6 +378,80 @@ def _cand_visible_multi(chunk: dict) -> bool:
     return _looks_multi(str(chunk.get('primarySubject') or ''))
 
 
+# --- 视觉称谓「特征词重合」判同人（2026-10-22）---
+# 根因：长称谓常插入定语（工单「戴白帽穿黑衣的女子」↔ 切片「戴白帽的女子」），
+# 子串判定必然落空 ⇒ 主体维落空 68%。改为二元组 Dice 相似度 ≥ 阈值判同人；
+# 同时用「属性冲突」（长发/短发、同物异色如白帽 vs 黑帽）否决伪命中。
+_APPELLATION_DICE_MIN = 0.55
+_COLOR_TOKENS = frozenset('白黑红蓝灰黄绿紫粉棕银金米')
+_CLOTH_NOUNS = frozenset('帽衣裙裤鞋袜包巾镜')  # 帽/衣/裙/裤/鞋/袜/包/围巾(巾)/眼镜(镜)
+
+
+def _hair_dims(text: str) -> Dict[str, str]:
+    """把发型描述拆成 **长度 / 卷直** 两个独立维度（「长卷发」= 长 + 卷，二者可共存）。
+
+    旧实现把「长发」「卷发」当互斥取值，导致「长卷发女子」↔「长发女子」被判冲突落空
+    （实测该类 14 组/轮，是剩余落空的主要假阴性来源）。
+    """
+    dims: Dict[str, str] = {}
+    if '发' in text or '马尾' in text or '辫' in text:
+        if '长' in text or '及腰' in text:
+            dims['长'] = '长'
+        if '短' in text:
+            dims['长'] = '短'
+        if '卷' in text:
+            dims['卷'] = '卷'
+        if '直' in text or '马尾' in text:
+            dims['卷'] = '直'
+    return dims
+
+
+def _bigrams(text: str) -> set:
+    """字符串二元组集合（长度 <2 时退化为单字集，供 Dice 相似度使用）。"""
+    if len(text) < 2:
+        return {text} if text else set()
+    return {text[i:i + 2] for i in range(len(text) - 1)}
+
+
+def _cloth_colors(text: str) -> Dict[str, set]:
+    """抽取「颜色+衣物名词」对，如「戴白帽」→ {'帽': {'白'}}，用于同物异色冲突判定。"""
+    out: Dict[str, set] = {}
+    for i, ch in enumerate(text):
+        if ch in _COLOR_TOKENS and i + 1 < len(text) and text[i + 1] in _CLOTH_NOUNS:
+            out.setdefault(text[i + 1], set()).add(ch)
+    return out
+
+
+def _appellation_conflict(a: str, b: str) -> bool:
+    """两侧称谓是否**互斥**（同一属性维给出不同取值）⇒ 必非同人。
+
+    覆盖两类高频伪命中：① 发长/发型不同（长发女子 vs 短发女子）；
+    ② 同一衣物颜色不同（戴白帽的女子 vs 戴黑帽的女子）。
+    """
+    _ha, _hb = _hair_dims(a), _hair_dims(b)
+    if any(k in _ha and k in _hb and _ha[k] != _hb[k] for k in _ha):
+        return True
+    _ca, _cb = _cloth_colors(a), _cloth_colors(b)
+    for noun, colors in _ca.items():
+        if noun in _cb and not (colors & _cb[noun]):
+            return True
+    return False
+
+
+def _appellation_similar(a: str, b: str) -> bool:
+    """视觉称谓是否指同一个人：Dice 二元组相似度 ≥ 阈值且无属性冲突。"""
+    if _appellation_conflict(a, b):
+        return False
+    _ga, _gb = _bigrams(a), _bigrams(b)
+    if not _ga or not _gb:
+        return False
+    _inter = len(_ga & _gb)
+    if _inter == 0:
+        return False
+    _dice = 2.0 * _inter / (len(_ga) + len(_gb))
+    return _dice >= _APPELLATION_DICE_MIN
+
+
 def _subject_adherence(declared_subjects, chunk: dict, stats: Optional[dict] = None,
                        query_roles=None, chunk_roles=None) -> float:
     """主体贴合：两侧必须落在**同一坐标系**才判别，否则置中性（绝不输出伪惩罚）。
@@ -435,6 +509,11 @@ def _subject_adherence(declared_subjects, chunk: dict, stats: Optional[dict] = N
         for _a in _d_vis:
             for _b in _c_vis:
                 if _a in _b or _b in _a:
+                    if stats is not None:
+                        stats['match'] = stats.get('match', 0) + 1
+                    return ATTR_MATCH_REWARD
+                # 长称谓插入定语导致子串失效（「戴白帽穿黑衣的女子」↔「戴白帽的女子」）⇒ 特征词重合判同人
+                if _appellation_similar(_a, _b):
                     if stats is not None:
                         stats['match'] = stats.get('match', 0) + 1
                     return ATTR_MATCH_REWARD

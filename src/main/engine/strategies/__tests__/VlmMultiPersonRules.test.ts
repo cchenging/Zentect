@@ -16,6 +16,15 @@
 import { describe, it, expect } from 'vitest';
 import { PromptBuilder } from '../../prompts/PromptBuilder';
 import { VisionExtractStrategy } from '../VisionExtractStrategy';
+import { VlmFrameCacheRepository } from '../../../database/repositories/VlmFrameCacheRepository';
+
+// 🎬 P4 空镜生产链：materialType 同时改了 prompt 正文规则 + JSON 模板 + schema（三处同改）。
+// 若缓存版本不递增，步骤2 会 100% 命中 v8 旧结果（无 materialType），VLM 空镜标注永不落库。
+describe('P4: VLM materialType 标注缓存版本', () => {
+  it('三处同改后 PROMPT_VERSION 必须递增到 v9', () => {
+    expect(VlmFrameCacheRepository.PROMPT_VERSION).toBe('v9');
+  });
+});
 
 describe('GAP3-A: PromptBuilder.buildVisionPrompt 多人物强规则 3 子点存在性', () => {
   const systemPrompt = PromptBuilder.buildVisionPrompt();
