@@ -227,6 +227,112 @@ describe('buildShotWindowTable（P4 镜头内连续切窗取料）', () => {
     );
     expect(t2.get('u4_a')).toMatchObject({ startMs: 0, endMs: 3000 });  // 默认窗长 3000
   });
+
+  it('F1. 同镜被非相邻碎片复用 ⇒ 回放拦下，顺延次优候选镜头（不同 srcParent）', () => {
+    const a = mkChunk('scene_a_seg0', 'scene_a', 0, 5000);
+    const b = mkChunk('scene_b_seg0', 'scene_b', 10000, 20000);
+    const c = mkChunk('scene_c_seg0', 'scene_c', 30000, 40000);
+    const queries = [
+      { shotId: 'u1_a', matchUnitId: 'u1', audioDurationMs: 1000 },
+      /** 中间这句落在别处 ⇒ 下标差 2，u3 再用 a 即「非相邻复用」 */
+      { shotId: 'u2_a', matchUnitId: 'u2', audioDurationMs: 1000 },
+      { shotId: 'u3_a', matchUnitId: 'u3', audioDurationMs: 1000 },
+    ];
+    const matchById = new Map<string, any>([
+      ['u1', { chunkData: a }],
+      ['u2', { chunkData: b }],
+      ['u3', { chunkId: 'scene_a_seg0', chunkData: a }],
+    ]);
+    const chunkById = new Map<string, any>([
+      ['scene_a_seg0', a], ['scene_b_seg0', b], ['scene_c_seg0', c],
+    ]);
+    const table = S.buildShotWindowTable(queries, matchById, chunkById, { u3: ['scene_c_seg0'] }, null);
+    expect(table.get('u1_a')).toMatchObject({ startMs: 0, endMs: 1000 });
+    expect(table.get('u2_a')).toMatchObject({ startMs: 10000, endMs: 11000 });
+    // a 已在 frag 0 交付过 ⇒ frag 2 复用被拦；候选链顺延到 c
+    expect(table.get('u3_a')).toMatchObject({
+      startMs: 30000, endMs: 31000, srcChunkId: 'scene_c_seg0', srcParent: 'scene_c',
+    });
+    const diag = lastShotWindowDiag();
+    expect(diag).toContain('回放拦下 1');
+    expect(diag).toContain('顺延次优镜头 1');
+  });
+
+  it('F2. 相邻碎片复用同镜 ⇒ 合法连续长镜头，不拦（跨句）/ 同句三片照旧首尾相接', () => {
+    const a = mkChunk('scene_a_seg0', 'scene_a', 0, 9000);
+    const queries = [
+      { shotId: 'u1_a', matchUnitId: 'u1', audioDurationMs: 1000 },
+      { shotId: 'u2_a', matchUnitId: 'u2', audioDurationMs: 1000 },   // 下标差 1 ⇒ 相邻
+      { shotId: 'u3_a', matchUnitId: 'u3', audioDurationMs: 1000 },   // 对 u2 仍差 1
+    ];
+    const matchById = new Map<string, any>([
+      ['u1', { chunkData: a }], ['u2', { chunkData: a }], ['u3', { chunkData: a }],
+    ]);
+    const chunkById = new Map<string, any>([['scene_a_seg0', a]]);
+    const table = S.buildShotWindowTable(queries, matchById, chunkById, null, null);
+    const wins = pick(table, ['u1_a', 'u2_a', 'u3_a']);
+    expect(wins.map((w) => w.startMs)).toEqual([0, 1000, 2000]);
+    expect(wins.map((w) => w.endMs)).toEqual([1000, 2000, 3000]);
+    expectContiguous(wins);
+    const diag = lastShotWindowDiag();
+    expect(diag).toContain('回放拦下 0');
+    expect(diag).toContain('出窗碎片 3/3');
+  });
+
+  it('F3. 相邻 chunk 源窗真重叠 ⇒ 拦下（真重叠判据不看 chunk id）', () => {
+    const a = mkChunk('chunk_a', 'scene_a', 0, 5000);
+    /** b 与 a 源区间真重叠 1000ms（相邻 chunk 的实际情形），但 chunk id 不同 */
+    const b = mkChunk('chunk_b', 'scene_b', 4000, 9000);
+    const c = mkChunk('chunk_c', 'scene_c', 20000, 30000);
+    const queries = [
+      { shotId: 'u1_a', matchUnitId: 'u1', audioDurationMs: 1000 },
+      { shotId: 'u2_a', matchUnitId: 'u2', audioDurationMs: 1000 },
+    ];
+    const matchById = new Map<string, any>([
+      ['u1', { chunkData: a }],
+      ['u2', { chunkData: b }],
+    ]);
+    const chunkById = new Map<string, any>([['chunk_a', a], ['chunk_b', b], ['chunk_c', c]]);
+    const table = S.buildShotWindowTable(queries, matchById, chunkById, { u2: ['chunk_c'] }, null);
+    expect(table.get('u1_a')).toMatchObject({ startMs: 0, endMs: 1000 });
+    // b 从 4000 起开窗 [4000,5000] 与 a 的 [0,1000] 其实不重叠 ⇒ 正常取用（本用例前半段校准）
+    expect(table.get('u2_a')).toMatchObject({ startMs: 4000, endMs: 5000, srcChunkId: 'chunk_b' });
+
+    /** 真重叠：同样是 a，但 b 的候选窗落在 [500,1500]（与已交付 [0,1000] 重叠 500ms） */
+    const b2 = mkChunk('chunk_b2', 'scene_b', 500, 9000);
+    const chunkById2 = new Map<string, any>([['chunk_a', a], ['chunk_b2', b2], ['chunk_c', c]]);
+    const matchById2 = new Map<string, any>([
+      ['u1', { chunkData: a }],
+      ['u2', { chunkData: b2 }],
+    ]);
+    const table2 = S.buildShotWindowTable(queries, matchById2, chunkById2, { u2: ['chunk_c'] }, null);
+    expect(table2.get('u2_a')).toMatchObject({ startMs: 20000, endMs: 21000, srcChunkId: 'chunk_c' });
+    const diag = lastShotWindowDiag();
+    expect(diag).toContain('回放拦下 1');
+    expect(diag).toContain('顺延次优镜头 1');
+  });
+
+  it('F4. 候选全被回放拦下 ⇒ 第二轮放行（宁可回放也不留空窗，不走整镜头兜底）', () => {
+    const a = mkChunk('scene_a_seg0', 'scene_a', 0, 5000);
+    const b = mkChunk('scene_b_seg0', 'scene_b', 10000, 20000);
+    const queries = [
+      { shotId: 'u1_a', matchUnitId: 'u1', audioDurationMs: 1000 },
+      { shotId: 'u2_a', matchUnitId: 'u2', audioDurationMs: 1000 },
+      { shotId: 'u3_a', matchUnitId: 'u3', audioDurationMs: 1000 },
+    ];
+    const matchById = new Map<string, any>([
+      ['u1', { chunkData: a }],
+      ['u2', { chunkData: b }],
+      ['u3', { chunkData: a }],           // 唯一候选 = a（无召回白名单可顺延）
+    ]);
+    const chunkById = new Map<string, any>([['scene_a_seg0', a], ['scene_b_seg0', b]]);
+    const table = S.buildShotWindowTable(queries, matchById, chunkById, null, null);
+    expect(table.get('u3_a')).toMatchObject({ startMs: 1000, endMs: 2000, srcChunkId: 'scene_a_seg0' });
+    const diag = lastShotWindowDiag();
+    expect(diag).toContain('回放拦下 1');       // 第一轮被拦
+    expect(diag).toContain('整镜头兜底 0');     // 第二轮放行成功，非兜底
+    expect(diag).toContain('出窗碎片 3/3');
+  });
 });
 
 describe('retimeFragmentWindow（改窗三件套 / 身份三件套同源 / 变速重算 / 不可变）', () => {

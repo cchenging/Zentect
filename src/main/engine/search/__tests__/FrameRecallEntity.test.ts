@@ -48,6 +48,17 @@ describe('pickEntityWords：实体词抽取 + 判别力红线', () => {
     expect(pickEntityWords('照片', new Map([['照片', 4]]), 20)).toEqual([]);
     expect(pickEntityWords('照片', new Map([['照片', 3]]), 20)).toEqual(['照片']);
   });
+
+  it('⑥ 别名桥接：文案用词 ≠ 帧描述用词时按别名展开（烧烤架→肉串 / 门禁→门锁）', () => {
+    // 文案「烧烤架刚点着」：直接命中「烤架」，别名再桥出「肉串/烤串/炭火」，帧里只有「肉串」
+    expect(pickEntityWords('烧烤架刚点着，翁月笑着坐下', new Map([['肉串', 1], ['烤串', 0]]), total))
+      .toEqual(['肉串']);
+    // 文案「门禁」：直接命中，别名「门锁」在片子里不存在 ⇒ 不占位
+    expect(pickEntityWords('门禁那头传来一声女声', new Map([['门禁', 1], ['门锁', 0]]), total))
+      .toEqual(['门禁']);
+    // 别名目标词也超红线时同样被弃用（判别力红线对桥接词一视同仁）
+    expect(pickEntityWords('在家办烧烤', new Map([['肉串', 60]]), total)).toEqual([]);
+  });
 });
 
 describe('mergeEntityShots：池量恒定 + 无命中零行为变化', () => {

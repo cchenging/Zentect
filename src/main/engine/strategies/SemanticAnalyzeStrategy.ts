@@ -21,7 +21,7 @@ import { PathManager } from '../../utils/pathManager';
 import { JobScheduler } from '../../core/JobScheduler'; // 🔧 R12（PR-3）：任务准入合并 —— 检测步骤1 是否在跑
 import { ComputeResourceManager } from '../../core/ComputeResourceManager'; // 🔧 R12（PR-3）：激活 canStartNewTask 全局资源准入信号
 /** 🎯 匹配单位 SSOT（2026-09-18）：sentence 档把 query 折叠成"一个完整句一条"，出结果再按单位回填到全部碎片 */
-import { collapseShotsToMatchUnits, resolveScriptMatchUnitMode } from '../../../shared/utils/scriptMatchUnit';
+import { assignDerivedMatchUnitIds, collapseShotsToMatchUnits, resolveScriptMatchUnitMode } from '../../../shared/utils/scriptMatchUnit';
 /** 🎬 A1·S2 分镜师 Agent（§24.16-A）：为每个母句开 α 真工单 ShotSpec，并按 matchUnitId 回填到 query */
 import { StoryboardAgent, resolveStoryboardOpen, syncStoryboardModeFile } from '../storyboard/StoryboardAgent';
 import type { ShotSpec } from '../../../shared/contracts/shotSpec';
@@ -1273,8 +1273,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         }
         /** 🎬 P2 覆盖口径修正（2026-09-30）：种子改从**全量帧**（frameDescs，即画面样张全集）
          *  生成，不再只取「被 chunk.frameHashes 归属链引用」的帧——后者会把无归属镜头/窗空档的帧
-         *  整片漏掉。帧→镜头归属：① 优先取引用该 hash 的镜头（P0 归属链）；② 否则按帧 timeMs 落
-         *  [startMs,endMs] 的镜头；③ 再退全局时间最近镜头。索引仍按 frameHash 内容去重（同画面共享
+         *  整片漏掉。帧→镜头归属：① 引用该 hash 的镜头 **且其区间包含帧时间** 时采信（P0 归属链）；
+         *  ② 否则按帧 timeMs 落 [startMs,endMs] 的镜头；③ 再退全局时间最近镜头。索引仍按 frameHash 内容去重（同画面共享
          *  一条向量，不重复编码），故"画面样张全集"对应去重后的唯一帧数各一条向量。 */
         const hashToChunk = new Map<string, string>();
         for (const c of chunks) {
@@ -1296,12 +1296,29 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
           }
           return bestId;
         };
+        /** 🔴 归属链自洽校验（2026-10-26）：`chunk.frameHashes` 是切片池缓存写入时的归属快照，
+         *  切片池重切后可能与帧时间失配（实测归属引用与自身区间矛盾 739 条）。故归属链只在
+         *  「该镜头区间确实包含帧时间」时采信，否则按帧时间重新落区间——避免帧召回上卷出错误镜头
+         *  （例：「电子门禁」帧被算到 2145s 的镜头，交付窗自然只能看到别的画面）。 */
+        const spanById = new Map(spans.map((s) => [s.id, s]));
+        const attrConsistent = (cid: string, t: number): boolean => {
+          const s = spanById.get(cid);
+          return !!s && t >= s.start && t < s.end;
+        };
+        let attrOverridden = 0;
         const seeds: FrameIndexSeed[] = [];
         frameDescByHash.forEach((fd, h) => {
           if (!fd.description) return;
-          const cid = hashToChunk.get(h) || resolveChunkId(fd.timeMs);
+          const attr = hashToChunk.get(h);
+          let cid = '';
+          if (attr && attrConsistent(attr, fd.timeMs)) cid = attr;
+          else { cid = resolveChunkId(fd.timeMs); if (attr) attrOverridden += 1; }
           seeds.push({ frameHash: h, chunkId: cid, timeMs: fd.timeMs, description: fd.description });
         });
+        if (attrOverridden > 0) {
+          AppLogger.info(LOG_TAGS.AI_AGENT,
+            `[镜头匹配] 🎬 帧归属按时间纠正 ${attrOverridden}/${seeds.length} 帧（归属链与帧时间失配：切片池重切后 frameHashes 未同步）`);
+        }
         /** 🛑 2026-10-18 fail-fast：帧描述有 N 条但种子为 0 —— 说明帧身份（frameHash）全部丢失
          *  （且 url 兜底也读不到盘）。帧召回是 P3 候选的**唯一**来源，静默空集会让全片 0 匹配
          *  （实证：本项目 705 镜头 / 80 句 → 无窗/未匹配 80，用户界面表现为"一个画面都没匹配到"）。
@@ -3176,7 +3193,12 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     projectId?: string,
   ): { filledShots: any[]; ttsById: Map<string, any>; queryAliasTable: ReturnType<typeof loadPersonAliasTable> } {
     // 🎯 Phase 2：Step5 二次兜底 — 保证所有 query 的 visualIntent 100% 非空（老项目 canvas_data 里的 shots 也能覆盖）
-    const filledShots = SemanticAnalyzeStrategy.ensureAllVisualIntentFilled(scriptShots || []);
+    let filledShots = SemanticAnalyzeStrategy.ensureAllVisualIntentFilled(scriptShots || []);
+    /** 🎯 匹配单位（2026-10-26）：sentence 档下为 legacy 断句产物（只有 `_sub_N`、无 matchUnitId）反推
+     *  完整句单位 id —— 存量项目开 sentence 档不必重跑步骤3；legacy 档不触碰（零行为变化）。 */
+    if (resolveScriptMatchUnitMode() === 'sentence') {
+      filledShots = assignDerivedMatchUnitIds(filledShots);
+    }
     /** TTS 索引：按 id 一次 O(N) 建，单次查询 O(1)，避免 N×M .find 热点；
      *  ✅ 身份键统一：TTS 产物 id/shiedId 同源即段落主键，一律按 id 关联 */
     const ttsById = new Map<string, any>();
@@ -4030,9 +4052,41 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
     const out = new Map<string, UnitFragmentWindow>();
     /** shortfall = 不变量自检计数：窗长 < 配音时长的碎片数，正常恒 0（仅整镜头兜底的短镜头可能为 1） */
-    const stats = { windows: 0, advanced: 0, shortfall: 0, reassigned: 0, fallback: 0, uncovered: 0, supplied: 0 };
+    const stats = { windows: 0, advanced: 0, shortfall: 0, reassigned: 0, fallback: 0, uncovered: 0, supplied: 0, replayBlocked: 0 };
     /** 物理镜头 → 已消费到的源时间（跨句生效、只增不减 ⇒ 起点单调不减） */
     const cursorByShot = new Map<string, number>();
+    /**
+     * 🎬 已交付源区间（按文件，2026-10-26）—— 「重复之前的镜头」闸门。
+     *
+     * 背景：`cursorByShot` 只按 chunk id 记账且全片单调前移 ⇒ 同一物理镜头被 90s 后的另一句再次选中时，
+     * 窗口必然紧接上次窗尾（实测 scene_400 0:10 → 1:48、scene_311 1:09 → 2:09），观感就是"回放旧镜头"；
+     * 且相邻 chunk 的源时间重叠完全看不见（实测 chunk_067 与 chunk_065 真重叠 999ms）。
+     * 判据（同一 filePath 内）：
+     *  ① 新窗与任一已交付区间**真重叠** ⇒ 同一段源画面二次出现，拦下；
+     *  ② 同一物理镜头被**非相邻碎片**（文案下标差 > 1）再次取用 ⇒ 回放，拦下（相邻/同句续接属合法连续长镜头）。
+     * 拦下的候选走"顺延次优"；候选全被拦下才放行（宁可不换也不留空窗），故不会造成无窗。
+     */
+    const usedWindowsByFile = new Map<string, Array<{ startMs: number; endMs: number; fragIndex: number; chunkId: string; unitKey: string }>>();
+    /** 同一物理镜头的最近一次交付碎片下标（"非相邻复用"只看最近一次：同句连续长镜头属合法续接） */
+    const lastFragByChunk = new Map<string, number>();
+    const fileKeyOf = (chunk: any): string =>
+      String(chunk?.filePath || '') || `__chunk__${String(chunk?.id || '')}`;
+    const isReplayWindow = (chunk: any, startMs: number, endMs: number, fragIndex: number): boolean => {
+      /** ① 同文件内与任一已交付区间真重叠 ⇒ 同一段源画面二次出现（首尾相接的合法续接重叠恒为 0） */
+      for (const u of usedWindowsByFile.get(fileKeyOf(chunk)) || []) {
+        if (Math.min(endMs, u.endMs) - Math.max(startMs, u.startMs) > EPS) return true;
+      }
+      /** ② 同一物理镜头被非相邻碎片（文案下标差 > 1）再次取用 ⇒ 回放旧镜头 */
+      const last = lastFragByChunk.get(String(chunk?.id || ''));
+      return last !== undefined && fragIndex - last > 1;
+    };
+    const commitWindow = (chunk: any, startMs: number, endMs: number, fragIndex: number, unitKey: string): void => {
+      const key = fileKeyOf(chunk);
+      const arr = usedWindowsByFile.get(key) || [];
+      arr.push({ startMs, endMs, fragIndex, chunkId: String(chunk?.id || ''), unitKey });
+      usedWindowsByFile.set(key, arr);
+      lastFragByChunk.set(String(chunk?.id || ''), fragIndex);
+    };
 
     /**
      * 🔗 乙案③（2026-10-19）交付端「可供给链」——与 daemon 打分期 `build_supply_ms` 同口径：
@@ -4085,8 +4139,15 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       ...(chunk?.description ? { srcDesc: String(chunk.description) } : {}),
     });
 
-    /** 在指定镜头内开窗：入点 = 消费游标 ?? 命中帧 ?? 镜头起点；返回 null 表示该镜头余量不足 */
-    const allocate = (chunk: any, neededMs: number, hitMs: number, isCross: boolean): UnitFragmentWindow | null => {
+    /** 在指定镜头内开窗：入点 = 消费游标 ?? 命中帧 ?? 镜头起点；返回 null 表示该镜头余量不足或被回放闸门拦下 */
+    const allocate = (
+      chunk: any,
+      neededMs: number,
+      hitMs: number,
+      isCross: boolean,
+      fragIndex: number,
+      allowReplay: boolean,
+    ): UnitFragmentWindow | null => {
       const cid = String(chunk?.id || '');
       const s0 = Number(chunk?.startMs);
       const e0 = Number(chunk?.endMs);
@@ -4136,6 +4197,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       if (neededMs > EPS && avail < neededMs - EPS) return null;
       const want = neededMs > EPS ? neededMs : Math.min(avail, DEFAULT_WINDOW_MS);
       const end = Math.min(cover, entry + want);
+      /** 🎬 回放闸门（2026-10-26）：真重叠 / 同镜非相邻复用 ⇒ 本轮拒收，交由候选链顺延次优 */
+      if (!allowReplay && isReplayWindow(chunk, entry, end, fragIndex)) {
+        stats.replayBlocked += 1;
+        return null;
+      }
       cursorByShot.set(cid, Math.min(end, e0));                    // 单向锁：只增不减
       for (const c of consumed) {                                  // 链上邻片同步登记消费（只增不减）
         const v = Math.min(end, c.end);
@@ -4147,7 +4213,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       return windowOf(chunk, entry, end, isCross);
     };
 
-    for (const q of shotLevelQueries) {
+    for (let fragIndex = 0; fragIndex < shotLevelQueries.length; fragIndex += 1) {
+      const q = shotLevelQueries[fragIndex];
       /** 原声段有独立定位窗（不经本表），跳过以免污染消费游标 */
       if ((q as any)?.keepOriginalAudio === true) continue;
       const unitKey = String((q as any)?.matchUnitId || (q as any)?.shotId || '');
@@ -4179,11 +4246,15 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
       let win: UnitFragmentWindow | null = null;
       let pickedId = '';
-      for (const cid of list) {
-        const chunk = chunkById.get(cid);
-        if (!chunk) continue;
-        const got = allocate(chunk, neededMs, cid === hitId ? hitMs : NaN, cid !== anchorId);
-        if (got) { win = got; pickedId = cid; break; }
+      /** 两轮：先避开回放（真重叠 / 非相邻同镜）；全被拦下才放行，宁可回放也不留空窗 */
+      for (const allowReplay of [false, true]) {
+        for (const cid of list) {
+          const chunk = chunkById.get(cid);
+          if (!chunk) continue;
+          const got = allocate(chunk, neededMs, cid === hitId ? hitMs : NaN, cid !== anchorId, fragIndex, allowReplay);
+          if (got) { win = got; pickedId = cid; break; }
+        }
+        if (win) break;
       }
       /** 候选全耗尽：退回「命中镜头整镜头」兜底窗（不留空窗，保证卡片有画面） */
       if (!win) {
@@ -4204,13 +4275,16 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       /** 不变量自检（期望 0）：出窗长度不得 < 配音时长；仅「整镜头兜底」遇到本身比配音还短的镜头才会如实计 1 */
       if (win.endMs - win.startMs < neededMs - EPS) stats.shortfall += 1;
       if (pickedId && pickedId !== (list[0] || '')) stats.reassigned += 1;
+      /** 登记已交付源区间：供后续句避让（含兜底窗，避免下一句又接在同一段上） */
+      const committed = chunkById.get(pickedId);
+      if (committed) commitWindow(committed, win.startMs, win.endMs, fragIndex, unitKey);
       out.set(fragId, win);
     }
 
     AppLogger.info(LOG_TAGS.AI_AGENT,
       `[镜头匹配] 🎬 P4 镜头内连续切窗：出窗碎片 ${stats.windows}/${shotLevelQueries.length}｜`
       + `顺延起窗 ${stats.advanced}｜窗长不足配音 ${stats.shortfall}｜顺延次优镜头 ${stats.reassigned}｜`
-      + `连续片链补窗 ${stats.supplied}｜`
+      + `连续片链补窗 ${stats.supplied}｜回放拦下 ${stats.replayBlocked}｜`
       + `整镜头兜底 ${stats.fallback}｜无窗/未匹配 ${stats.uncovered}`);
     return out;
   }

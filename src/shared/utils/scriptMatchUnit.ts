@@ -120,6 +120,60 @@ export function collapseShotsToMatchUnits<T extends { id?: string; shotId?: stri
   return groups;
 }
 
+/**
+ * 函数级中文注释：为 legacy 断句产物补齐匹配单位 id（sentence 档专用，存量项目免重跑步骤3）。
+ *
+ * 为什么需要它：sentence 档靠碎片自带的 `matchUnitId` 折叠，但线上存量项目的断句产物是 legacy
+ * （只有 `{母句id}_sub_{n}`、没有该字段）⇒ 只认字段的话 sentence 档对存量项目完全无效。
+ * 这里按与断句器**同源**的句界反推完整句：
+ *  - 同一母段落（id 去掉 `_sub_N` 后缀）的碎片按文案顺序累积；
+ *  - 碎片文本以句末标点（{@link SCRIPT_SENTENCE_END_PUNCT}）结尾 ⇒ 一个完整句在此结束；
+ *  - 母段落只含一个完整句 ⇒ 单位 id = 母段落 id；含多个 ⇒ `{母段落id}_s{n}`（与 buildMatchUnitId 同形）。
+ *
+ * 零扰动约定：已有 `matchUnitId`、原声段、无 `_sub_` 后缀的整段一律原样返回（不改原数组）。
+ *
+ * @param shots 段落碎片数组（含 id / text）
+ * @returns 补齐 matchUnitId 的新数组（仅改动需要推导的碎片，其余保持原引用）
+ */
+export function assignDerivedMatchUnitIds<
+  T extends { id?: string; shotId?: string; matchUnitId?: string; type?: string; keepOriginalAudio?: boolean; text?: string; content?: string }
+>(shots: T[]): T[] {
+  const arr = Array.isArray(shots) ? shots : [];
+  const isOriginal = (s: T): boolean =>
+    s?.type === 'original_audio' || s?.keepOriginalAudio === true;
+  /** 母段落 id → 待推导碎片（保持文案顺序） */
+  const pendingByParent = new Map<string, Array<{ idx: number; shot: T }>>();
+  arr.forEach((s, idx) => {
+    if (!s || isOriginal(s)) return;
+    if (typeof s.matchUnitId === 'string' && s.matchUnitId.trim()) return;
+    const id = String(s.id || s.shotId || '').trim();
+    if (!/_sub_\d+$/.test(id)) return;   // 未拆分 ⇒ 自身即单位，无需补字段
+    const parent = id.replace(/_sub_\d+$/, '');
+    const list = pendingByParent.get(parent) || [];
+    list.push({ idx, shot: s });
+    pendingByParent.set(parent, list);
+  });
+  if (pendingByParent.size === 0) return arr;
+
+  const out = arr.slice();
+  for (const [parent, list] of pendingByParent) {
+    /** 每片是否以句末标点收尾（收尾即完整句结束） */
+    const endsSentence = list.map(({ shot }) => {
+      const text = String(shot.text ?? shot.content ?? '').trimEnd();
+      return text.length > 0 && SCRIPT_SENTENCE_END_PUNCT.includes(text.slice(-1));
+    });
+    const closed = endsSentence.filter(Boolean).length;
+    /** 末片未以句末标点收尾时，末尾残句也算一个完整句 */
+    const sentenceCount = closed > 0 ? closed + (endsSentence[endsSentence.length - 1] ? 0 : 1) : 1;
+    let sentIdx = 0;
+    list.forEach(({ idx, shot }, k) => {
+      out[idx] = { ...shot, matchUnitId: buildMatchUnitId(parent, sentIdx, sentenceCount) };
+      if (endsSentence[k]) sentIdx = Math.min(sentIdx + 1, sentenceCount - 1);
+    });
+  }
+  return out;
+}
+
 /** 匹配单位诊断读数（碎片率口径见下方 summarizeScriptMatchUnits） */
 export interface ScriptMatchUnitSummary {
   /** 匹配单位数：一个完整句一个（legacy 档退化为碎片数） */

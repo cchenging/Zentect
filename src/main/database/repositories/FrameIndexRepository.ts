@@ -78,26 +78,62 @@ export class FrameIndexRepository {
   }
 
   /**
-   * 查已建索引的帧 hash（限定项目/素材域）：调用方据此只编码缺失帧。
+   * 查已建索引的帧及其当前归属绑定（限定项目/素材域）：调用方据此只编码缺失帧，
+   * 并识别「切片池重切后 chunk_id/time_ms 已漂移」的旧行。
    * @param frameHashes 待检查的帧 hash 列表
    * @param projectId 项目 id
    * @param mediaId 素材 id
-   * @returns 已存在向量的 hash 集合
+   * @returns hash → {chunkId, timeMs}
    */
-  getIndexedHashes(frameHashes: string[], projectId: string, mediaId: string): Set<string> {
-    const found = new Set<string>();
+  getBindings(frameHashes: string[], projectId: string, mediaId: string): Map<string, { chunkId: string; timeMs: number }> {
+    const found = new Map<string, { chunkId: string; timeMs: number }>();
     if (frameHashes.length === 0) return found;
     try {
       const placeholders = frameHashes.map(() => '?').join(',');
       const rows = this.db.prepare(
-        `SELECT frame_hash FROM frame_index
+        `SELECT frame_hash, chunk_id, time_ms FROM frame_index
          WHERE project_id = ? AND media_id = ? AND model_name = ? AND frame_hash IN (${placeholders})`
       ).all(projectId, mediaId, FRAME_INDEX_MODEL, ...frameHashes) as any[];
-      for (const r of rows) found.add(String(r.frame_hash));
+      for (const r of rows) {
+        found.set(String(r.frame_hash), { chunkId: String(r.chunk_id), timeMs: Number(r.time_ms) || 0 });
+      }
     } catch (e: any) {
       AppLogger.warn(LOG_TAGS.AI_AGENT, `[FrameIndex] 查询已索引 hash 失败: ${e.message}`);
     }
     return found;
+  }
+
+  /**
+   * 批量重绑「帧 → 镜头归属」（只改 chunk_id/time_ms，不动向量与释义）。
+   * 背景（2026-10-26）：帧向量按 frame_hash 跨项目复用，但归属 chunk_id 是项目级、随切片池重切而整体漂移。
+   * 实测本项目 788 帧中 192 帧（24%）的 chunk_id 与当前池不一致（多数是 +1 错位）⇒ 帧召回上卷出的
+   * 候选镜头指向错误内容（例：「电子门禁」帧被算到 chunk_490 客厅沙发，交付窗只能看到沙发），
+   * 表现为「文案对不上画面」而非召回失败。故复用向量时必须同步刷新绑定。
+   * @returns 实际更新的行数
+   */
+  refreshBindings(
+    rows: Array<{ frameHash: string; chunkId: string; timeMs: number }>,
+    projectId: string,
+    mediaId: string,
+  ): number {
+    if (rows.length === 0) return 0;
+    let updated = 0;
+    try {
+      const stmt = this.db.prepare(
+        `UPDATE frame_index SET chunk_id = ?, time_ms = ?
+         WHERE frame_hash = ? AND project_id = ? AND media_id = ? AND model_name = ?`
+      );
+      const run = this.db.transaction((items: typeof rows) => {
+        for (const r of items) {
+          const res = stmt.run(r.chunkId, Number(r.timeMs) || 0, r.frameHash, projectId, mediaId, FRAME_INDEX_MODEL);
+          updated += Number(res.changes) || 0;
+        }
+      });
+      run(rows);
+    } catch (e: any) {
+      AppLogger.warn(LOG_TAGS.AI_AGENT, `[FrameIndex] 重绑帧归属失败: ${e.message}`);
+    }
+    return updated;
   }
 
   /** 批量写入（单事务 upsert；vec 以 float32 小端字节落 BLOB） */

@@ -127,7 +127,22 @@ const FRAME_ENTITY_LEXICON: readonly string[] = [
   '钱包', '现金', '钞票', '钥匙', '门卡', '行李箱', '行囊', '背包', '手提包', '礼物',
   // 餐饮 / 饰品 / 其它
   '酒杯', '酒瓶', '餐具', '咖啡', '戒指', '花束', '玫瑰', '口红', '眼镜', '手表', '药瓶', '绷带',
+  // 🔴 2026-10-26 实测补词：文案点名「门禁」「烧烤」而帧描述只写「电子门禁」「肉串」——
+  //   前者直接补词，后者靠别名桥接（见 FRAME_ENTITY_ALIASES），否则这两类镜头永远在召回池外。
+  '门禁', '门锁', '肉串', '烤串', '烤架', '炭火',
 ];
+
+/**
+ * 实体别名桥接（2026-10-26）：文案用词与帧描述用词不一致时，按「文案词 → 帧描述词」展开。
+ * 只在 query 命中别名键时生效；每个目标词仍要过 ENTITY_MAX_DF_RATIO 判别力红线（防泛化词灌池）。
+ * 例：文案「烧烤架刚点着」→ 帧描述「前景肉串静置盘中」（df=1，强判别）⇒ 该镜头补进候选池。
+ */
+const FRAME_ENTITY_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  烧烤: ['肉串', '烤串', '烤架', '炭火'],
+  烧烤架: ['烤架', '肉串', '烤串'],
+  烤肉: ['肉串', '烤串', '烤架'],
+  门禁: ['门禁', '门锁'],
+};
 
 /** 判别力红线：该词命中帧数超过全池帧数的本比例 ⇒ 视为泛化词（如「手机」），不参与补召 */
 const ENTITY_MAX_DF_RATIO = 0.05;
@@ -155,8 +170,13 @@ export function pickEntityWords(
   frameTotal: number,
 ): string[] {
   const maxDf = Math.max(3, Math.floor(frameTotal * ENTITY_MAX_DF_RATIO));
-  return FRAME_ENTITY_LEXICON.filter((w) => {
-    if (!queryText.includes(w)) return false;
+  /** 候选词 = 词表里出现在 query 的词 + 别名桥接展开的目标词（顺序稳定：词表序 → 别名目标序） */
+  const words: string[] = FRAME_ENTITY_LEXICON.filter((w) => queryText.includes(w));
+  for (const [key, targets] of Object.entries(FRAME_ENTITY_ALIASES)) {
+    if (!queryText.includes(key)) continue;
+    for (const t of targets) if (!words.includes(t)) words.push(t);
+  }
+  return words.filter((w) => {
     const df = dfByWord.get(w) || 0;
     return df > 0 && df <= maxDf;
   });
@@ -238,8 +258,23 @@ export class FrameRecallService {
       if (!uniq.has(s.frameHash)) uniq.set(s.frameHash, s);
     }
     const rows = Array.from(uniq.values());
-    const indexed = repo.getIndexedHashes(rows.map((r) => r.frameHash), projectId, mediaId);
-    const missing = rows.filter((r) => !indexed.has(r.frameHash));
+    const existing = repo.getBindings(rows.map((r) => r.frameHash), projectId, mediaId);
+    const missing = rows.filter((r) => !existing.has(r.frameHash));
+    /** 🔴 复用向量 ≠ 复用归属（2026-10-26）：切片池重切后 chunk_id/time_ms 会整体漂移，
+     *  若沿用旧绑定，帧召回上卷出的候选镜头会指向错误内容（实测 192/788 帧错绑 → 「门禁」算到沙发镜头）。
+     *  故复用行必须先按本次种子把绑定刷成当前池口径，再做召回。 */
+    const stale = rows.filter((r) => {
+      const e = existing.get(r.frameHash);
+      return !!e && (e.chunkId !== r.chunkId || Math.abs(e.timeMs - r.timeMs) > 1);
+    });
+    if (stale.length > 0) {
+      const rebound = repo.refreshBindings(
+        stale.map((r) => ({ frameHash: r.frameHash, chunkId: r.chunkId, timeMs: r.timeMs })),
+        projectId, mediaId,
+      );
+      AppLogger.info(LOG_TAGS.AI_AGENT,
+        `[FrameRecall] 帧→镜头归属重绑 ${rebound}/${stale.length} 帧（切片池重切后 chunk_id 漂移，向量复用不重编码）`);
+    }
     if (missing.length === 0) {
       AppLogger.info(LOG_TAGS.AI_AGENT, `[FrameRecall] 帧向量索引全量命中：${rows.length}/${total}（复用=${rows.length}，编码=0，模型=${FRAME_INDEX_MODEL}）`);
       return { total, reused: rows.length, encoded: 0 };
