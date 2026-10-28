@@ -126,7 +126,7 @@ describe('字幕行宽独立折行（渲染单位与 TTS/匹配单位解耦）',
     expect(lines).toEqual(['hello world foo bar baz qux quux', 'corge grault']);
   });
 
-  it('集成：24 字解说文案进入剪映 content 后为两行，range 覆盖含换行符全长', () => {
+  it('集成：24 字解说文案超出单行宽 → 拆成两条单行字幕，range 覆盖各自全长', () => {
     const aiText = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯';
     const { texts } = assembleMaterials(
       [makeShot({ keepOriginalAudio: false, aiText })],
@@ -134,15 +134,19 @@ describe('字幕行宽独立折行（渲染单位与 TTS/匹配单位解耦）',
       probeMap,
       {},
     );
-    const material = texts[0] as any;
-    const content = JSON.parse(material.content);
-    expect(content.text).toBe('一二三四五六七八九十甲乙丙丁戊己\n庚辛壬癸子丑寅卯');
-    expect(content.styles[0].range).toEqual([0, content.text.length]);
+    expect(texts).toHaveLength(2);
+    const first = JSON.parse((texts[0] as any).content);
+    const second = JSON.parse((texts[1] as any).content);
+    expect(first.text).toBe('一二三四五六七八九十甲乙丙丁戊己');
+    expect(second.text).toBe('庚辛壬癸子丑寅卯');
+    // 每条都是一行，range 覆盖自身全长
+    expect(first.text).not.toContain('\n');
+    expect(first.styles[0].range).toEqual([0, first.text.length]);
     // 素材名保持单行，不被换行符污染
-    expect(material.name).not.toContain('\n');
+    expect((texts[0] as any).name).not.toContain('\n');
   });
 
-  it('集成：竖屏画布（1080×1920）行宽收紧到 12 等效宽，24 字恰好两行', () => {
+  it('集成：竖屏画布（1080×1920）行宽收紧到 12 等效宽，24 字拆成 12+12 两条', () => {
     const aiText = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯';
     const { texts } = assembleMaterials(
       [makeShot({ keepOriginalAudio: false, aiText })],
@@ -150,8 +154,9 @@ describe('字幕行宽独立折行（渲染单位与 TTS/匹配单位解耦）',
       probeMap,
       { canvasSize: { width: 1080, height: 1920 } },
     );
-    const content = JSON.parse((texts[0] as any).content);
-    expect(content.text).toBe('一二三四五六七八九十甲乙\n丙丁戊己庚辛壬癸子丑寅卯');
+    expect(texts).toHaveLength(2);
+    expect(JSON.parse((texts[0] as any).content).text).toBe('一二三四五六七八九十甲乙');
+    expect(JSON.parse((texts[1] as any).content).text).toBe('丙丁戊己庚辛壬癸子丑寅卯');
   });
 
   it('集成：原声段短台词（≤16 等效宽）保持单行，不回归', () => {
@@ -317,7 +322,7 @@ describe('解说长句按换气级短语拆字幕', () => {
     expect(JSON.parse((texts[0] as any).content).text).toBe('他推开门走了进去');
   });
 
-  it('无标点超长（>2 倍行宽）→ 按行宽硬切成多条', () => {
+  it('无标点超长 → 按单行宽切成多条（不再一条铺满屏）', () => {
     const within = '一二三四五六七八九十甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥';
     expect(within.length).toBe(32);
     const { shotRefs } = assembleMaterials(
@@ -326,8 +331,8 @@ describe('解说长句按换气级短语拆字幕', () => {
       probeMap,
       {},
     );
-    // 32 字 = 2×16 行宽，仍可两行容纳 → 维持单条折行
-    expect(shotRefs[0].textCues).toBeUndefined();
+    // 32 字 = 2×16 行宽 → 切两条单行字幕
+    expect(shotRefs[0].textCues?.length).toBe(2);
     const longer = within + '天地玄黄';
     const { shotRefs: refs2 } = assembleMaterials(
       [makeShot({ keepOriginalAudio: false, aiText: longer, duration: 6 })],
@@ -335,7 +340,33 @@ describe('解说长句按换气级短语拆字幕', () => {
       probeMap,
       {},
     );
-    expect(refs2[0].textCues?.length).toBe(2);
+    expect(refs2[0].textCues?.length).toBe(3);
+  });
+
+  it('无标点长短语优先在句子重启词前断开（另一个女人／她还不知道）', () => {
+    const text = '同一趟航班上还坐着另一个女人她还不知道';
+    const { texts } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: false, aiText: text, duration: 3.4 })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    const lines = texts.map((t) => JSON.parse((t as any).content).text);
+    expect(lines).toEqual(['同一趟航班上还坐着另一个女人', '她还不知道']);
+  });
+
+  it('TTS 控制标记不进入字幕（[pause: 400ms] 不得残留为 pause 400ms）', () => {
+    const text = '反而更可怕 [pause: 400ms] 他到底';
+    const { texts } = assembleMaterials(
+      [makeShot({ keepOriginalAudio: false, aiText: text, duration: 2.4 })],
+      SOURCE_PATH,
+      probeMap,
+      {},
+    );
+    const all = texts.map((t) => JSON.parse((t as any).content).text).join('');
+    expect(all).not.toMatch(/pause/i);
+    expect(all).not.toMatch(/400/);
+    expect(all).toContain('他到底');
   });
 });
 

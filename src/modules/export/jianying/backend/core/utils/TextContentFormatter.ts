@@ -46,19 +46,32 @@ export function formatTextContent(text: string, style: SubtitleStyle = DEFAULT_S
 }
 
 /**
+ * 剥掉 TTS 控制标记（`[pause: 500ms]` / `[tone: shocked]` 等）。
+ *
+ * 这类标记只给合成器调节奏，绝不能出现在字幕上。必须在**切分与去标点之前**整体删除：
+ * 一旦先按冒号/括号切开，方括号被当标点清掉后就会残留「pause 400ms」半截标记
+ * （2026-10-25 实测草稿里出现「反而更可怕 pause 400ms 他到底」）。
+ *
+ * @param text 原始文案
+ * @returns 已删除 TTS 控制标记的文案
+ */
+export function stripTtsControlMarkers(text: string): string {
+  return (text || '')
+    .replace(/\[(?:pause|tone|break|emphasis|speed)\s*[:：]?\s*[^\]]*\]/gi, '')
+    .replace(/\b(?:pause|tone)\s*\d+\s*ms\b/gi, '');
+}
+
+/**
  * 字幕文本清洗：去除中英文标点与符号（视频剪辑行业规范：字幕不出现标点符号）。
  *
- * 规则：
- *  - 移除全部 Unicode 标点（\p{P}：，。！？；：""''《》（）…— , . ! ? ; : " ' ( ) 等）
- *    与符号（\p{S}：￥$%&+<=>~ 等）；
- *  - 换行/制表等空白折叠为单个空格（保留英文单词间隔）；
- *  - 保留文字、数字、字母与空格。
+ * 规则：先剥 TTS 控制标记 → 空白折叠为单个空格 → 移除全部 Unicode 标点（\p{P}）
+ * 与符号（\p{S}），保留文字、数字、字母与空格。
  *
  * @param text 原始字幕文案
  * @returns 清洗后的文案（无标点）
  */
 export function sanitizeSubtitleText(text: string): string {
-  return (text || '')
+  return stripTtsControlMarkers(text)
     .replace(/\s+/g, ' ')
     .replace(/[\p{P}\p{S}]/gu, '')
     .trim();

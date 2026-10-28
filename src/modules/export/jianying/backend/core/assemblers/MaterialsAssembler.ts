@@ -12,7 +12,7 @@ import * as path from 'path';
 import type { CompileShot, SubtitleStyle } from '../../../types';
 import { DEFAULT_SUBTITLE_STYLE } from '../../../types';
 import { genHexId } from '../utils/IdUtils';
-import { formatTextContent, sanitizeSubtitleText, wrapSubtitleText } from '../utils/TextContentFormatter';
+import { formatTextContent, sanitizeSubtitleText, stripTtsControlMarkers, wrapSubtitleText } from '../utils/TextContentFormatter';
 import {
   SUBTITLE_LINE_WIDTH_LIMIT,
   SUBTITLE_LINE_WIDTH_LIMIT_PORTRAIT,
@@ -648,6 +648,45 @@ function snapCueCuts(
   return rebuilt.every((c) => c.durationUs > 0) ? rebuilt : cues;
 }
 
+/** 句子重启词：在这些字之前断开，比按字数硬切更自然（实测「…另一个女人／她还不知道」） */
+const CLAUSE_RESTART_CHAR = /[却但而可还竟偏原这那又就]/;
+/** 主语代词优先：断在「她/他/它」前，句子读起来才像重新起头 */
+const SUBJECT_PRONOUN_CHAR = /[她他它]/;
+
+/**
+ * 把超出一行宽的字幕短语再切短（2026-10-25，修「一条字幕 19 字铺满屏」）。
+ *
+ * 优先断在主语代词（她/他/它）前，其次断在「句子重启词」（却/但/而/可/还…）前，
+ * 且保证切出的头片不少于行宽的 60%，避免切出「同一趟」这种过短碎片；
+ * 没有合适断点时按行宽硬切。
+ *
+ * @param clean     已清洗（无标点）的字幕短语
+ * @param lineLimit 单行等效宽度
+ * @returns 每片 ≤ lineLimit 等效宽（末片可能更短）
+ */
+function splitLongCue(clean: string, lineLimit: number): string[] {
+  if (clean.length <= lineLimit) return [clean];
+  const out: string[] = [];
+  let rest = clean;
+  while (rest.length > lineLimit) {
+    const minHead = Math.ceil(lineLimit * 0.6);
+    let cut = lineLimit;
+    for (const probe of [SUBJECT_PRONOUN_CHAR, CLAUSE_RESTART_CHAR]) {
+      for (let i = lineLimit; i >= minHead; i--) {
+        if (probe.test(rest[i] || '')) {
+          cut = i;
+          break;
+        }
+      }
+      if (cut !== lineLimit) break;
+    }
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
 /**
  * 函数级中文注释：把一段解说按「换气级」标点切成多条字幕（2026-10-23，修「一长条显示到音频结束」）。
  *
@@ -657,8 +696,8 @@ function snapCueCuts(
  * 实现「读到哪句显示哪句，换气后切下一句」。
  *
  * 切分口径：
- *  - 优先在句号级（。！？；）与逗号级（，、）后切分，标点本身在清洗阶段去掉；
- *  - 单片仍超过 2 倍行宽（≈两行显示量）时按行宽硬切，避免再出现超长条；
+ *  - 优先在句号级（。！？；）与逗号级（，、）后切分，破折号/省略号/冒号同样算换气点，标点本身在清洗阶段去掉；
+ *  - 单片仍超过一行宽时，在「句子重启词」处再切开，避免出现 19 字铺满屏的单条字幕；
  *  - 清洗后为空的片（纯符号）直接丢弃。
  * 时长分配：
  *  - 按清洗后字数比例分摊整段音频时长，前缀和铺排、末片吸收余量，片间不重叠且首尾贴合；
@@ -677,24 +716,21 @@ function buildClauseCuePlans(
   pauses?: PauseInterval[],
 ): Array<{ content: string; offsetUs: number; durationUs: number }> {
   if (!rawText || durationUs <= 0) return [];
-  const rawPhrases = String(rawText)
-    .split(/(?<=[。！？!?；;，,、])/)
+  // ⚠️ 必须先剥 TTS 控制标记再按标点切分：标记内含冒号/括号，先切就会切出「[pause:」「400ms]」两片，
+  //    清洗后方括号消失，只剩「pause」「400ms」残留在字幕上（2026-10-25 实测草稿）。
+  const rawPhrases = stripTtsControlMarkers(String(rawText))
+    // 破折号/省略号/冒号同样是换气点（实测「另一个女人——她还不知道」整条显示，2026-10-25）
+    .split(/(?<=[。！？!?；;，,、—…：:])/)
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // 清洗后按显示字数判断是否仍超长；超长（>2 行宽）再按行宽硬切
-  const maxChars = Math.max(8, lineLimit * 2);
+  // 单条字幕上限 = 一行宽（横屏 16 / 竖屏 12 等效宽）。超过一行宽的短语在句子重启词处再切，
+  // 不允许出现「一条字幕 19 字铺满屏、一直显示到该段配音结束」。
   const cleaned: string[] = [];
   for (const phrase of rawPhrases) {
     const clean = sanitizeSubtitleText(phrase);
     if (!clean) continue;
-    if (clean.length > maxChars) {
-      for (let i = 0; i < clean.length; i += maxChars) {
-        cleaned.push(clean.slice(i, i + maxChars));
-      }
-    } else {
-      cleaned.push(clean);
-    }
+    for (const piece of splitLongCue(clean, lineLimit)) cleaned.push(piece);
   }
   if (cleaned.length < 2) return [];
 
