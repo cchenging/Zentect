@@ -15,7 +15,7 @@ import { API } from '@renderer/api';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useStep1Store } from '../../pipeline/stores/useStep1Store';
 import { useStep2Store } from '../../pipeline/stores/useStep2Store';
-import { useStep3Store } from '../../pipeline/stores/useStep3Store';
+import { useStep3Store, DEFAULT_SPEECH_RATE } from '../../pipeline/stores/useStep3Store';
 import { useStep4Store } from '../../pipeline/stores/useStep4Store';
 import { useStep5Store } from '../../pipeline/stores/useStep5Store';
 import { useEditorNavStore } from './useEditorNavStore';
@@ -762,7 +762,8 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       s3.setScriptParagraphs(Array.isArray(d.scriptParagraphs) ? d.scriptParagraphs : []);
     }
     if (typeof s3.setScriptStyle === 'function') s3.setScriptStyle((d.scriptStyle as string) || '');
-    if (typeof s3.setSpeechRate === 'function') s3.setSpeechRate(Number(d.speechRate) || 4.5);
+    // 缺省回退与 store 默认态同源（DEFAULT_SPEECH_RATE），避免旧工程/缺字段时语速回退值与前缀不一致
+    if (typeof s3.setSpeechRate === 'function') s3.setSpeechRate(Number(d.speechRate) || DEFAULT_SPEECH_RATE);
     if (d.pipelineParams && typeof s3.setPipelineParams === 'function') s3.setPipelineParams(d.pipelineParams as any);
 
     // ── Step4Store ──

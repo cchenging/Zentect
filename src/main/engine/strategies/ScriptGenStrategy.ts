@@ -491,6 +491,10 @@ const ACT_DEFS: Array<{ start: number; end: number; label: string; directive: st
   { start: 0.90, end: 1.00, label: '第五幕·余韵隐喻', directive: '收束落点：必须回扣开篇抛出的问题，给出明确判断/代价/人性指向（可以是余味，但不能是悬空氛围句）；严禁在此引入新人物、新悬念或"突然断流"。' },
 ];
 
+/** 📏 字数预算容差（±20%）：LLM 产出天然有起伏，硬卡精确值会逼模型机械均摊/截断句子。
+ * 单源口径：两阶段章节兑现阀 `enforceChapterQuota` 与单阶段 prompt 上限共用本常量。 */
+const QUOTA_TOLERANCE_RATIO = 1.2;
+
 /** 函数级中文注释：按归一化章节进度把章节归入五幕之一（p < end 即落入该幕，半边开区间 [start, end)）。
  * 边界纪律：首章 k=0 恒入第一幕（钩子位）；末章恒入第五幕（余韵隐喻收尾）——否则 K≤9 时末章 p=(K-1)/K<0.90，
  * 第五幕区间 [0.90,1.00) 永远无人命中，结尾将误判为"破局"而丢失"留白哲理收尾"指令（戏剧弧线断在第四幕）。
@@ -1867,7 +1871,7 @@ ${roleMapLines.join('\n')}
     })();
 
     /**
-     * 定律二兑现阀：章节产物超出配额 ±20% 时本地截断回填（不静默放水）。
+     * 定律二兑现阀：章节产物超出配额 +20% 容差时本地截断回填（不静默放水）。
      * 原声段落不计入解说净字数；越界段按句末标点贪心截断保留最长完整句，
      * 其后分镜一律留白交还画面时间轴，防止单章击穿全局预算造成前松后紧。
      */
@@ -1876,7 +1880,7 @@ ${roleMapLines.join('\n')}
       quotaWords: number,
     ): typeof shots => {
       if (!(quotaWords > 0)) return shots;
-      const upper = Math.ceil(quotaWords * 1.2);
+      const upper = Math.ceil(quotaWords * QUOTA_TOLERANCE_RATIO);
       const narrLens = shots.map((s) => (s.keepOriginalAudio === true ? 0 : String(s.text || '').length));
       const total = narrLens.reduce((a, b) => a + b, 0);
       if (total <= upper) return shots;
@@ -1931,6 +1935,136 @@ ${roleMapLines.join('\n')}
         `[文案生成] 章节配额兑现阀触发：实际 ${total} 字 > 配额上限 ${upper} 字（quota ${quotaWords}），已截断至 ${acc} 字、尾部 ${shots.length - kept.length} 个分镜留白`,
       );
       return kept;
+    };
+
+    /**
+     * 定律二兑现阀（压缩重写版，2026-10-26 用户裁决）：
+     * 章节超配额时优先让模型「整章压缩重写」——保留本章关键剧情/转折，删次要铺垫，
+     * 而不是像 enforceChapterQuota 那样从章首保留到配额用完、把章内高潮整段砍掉
+     * （实测：23min 源片 × 180s 目标时每章只留开头 1~2 句，15 章拼起来全是章节开头 ⇒ 碎片化）。
+     *
+     * 返回数组与入参**等长同序**（被压缩掉的镜头 text 置空），调用方按下标映射 shot→chunk 不会错位；
+     * 首次产物不合规（半句 / 过度压缩 / 仍超上限）时把失败原因回填给模型重试一次；
+     * 两次均不达标才回退 enforceChapterQuota 本地截断兜底，行为不劣化。
+     */
+    const compressChapterToQuota = async (
+      shots: Array<{ shotId: string; text: string; duration: number; emotion?: string; visualIntent?: string; keepOriginalAudio?: boolean }>,
+      quotaWords: number,
+      chapterLabel: string,
+    ): Promise<typeof shots> => {
+      if (!(quotaWords > 0)) return shots;
+      const upper = Math.ceil(quotaWords * QUOTA_TOLERANCE_RATIO);
+      const narrShotIdx = shots
+        .map((s, i) => ({ s, i }))
+        .filter(({ s }) => s.keepOriginalAudio !== true && String(s.text || '').trim())
+        .map(({ i }) => i);
+      const total = narrShotIdx.reduce((acc, i) => acc + String(shots[i].text || '').length, 0);
+      AppLogger.info(
+        LOG_TAGS.AI_AGENT,
+        `[章节配额核对] ${chapterLabel}：原始 ${total} 字 / 解说镜头 ${narrShotIdx.length} / 配额 ${quotaWords} / 上限 ${upper}`,
+      );
+      if (total <= upper) return shots;
+
+      const payload = narrShotIdx.map((shotIdx, i) => ({
+        idx: i,
+        text: shots[shotIdx].text,
+        durationSec: Number(shots[shotIdx].duration) || 0,
+      }));
+      const origLens = narrShotIdx.map((shotIdx) => String(shots[shotIdx].text || '').length);
+      const systemPrompt = [
+        '你是短视频解说主编，负责把「超出字数预算的一章解说」压缩重写。硬性要求：',
+        `1. 只输出 JSON 对象 {"paragraphs":[{"idx":0,"text":"..."}]}；idx 为输入条目下标，必须原样返回、不增不删不换号；`,
+        `2. 全部 text 的解说净字数合计必须 ≤ ${quotaWords} 字（绝对上限 ${upper} 字）；`,
+        '3. 只能删减/改写输入中已有内容，严禁编造新剧情、新人物或新事实；',
+        '4. 优先保留本章最关键剧情/冲突/转折/情绪落点，删掉重复铺垫、次要过渡与画面直述；次要镜头可整条留空（text=""）；',
+        '5. 每个非空 text 必须是完整句（以。！？…收尾），严禁半句；可合并原句信息，但不得跨镜头续写；',
+        '6. 允许精简，但单句不得短于 8 字（原文本身更短时保持原样），严禁压缩成「酒吧遇渣男。」这类电报体。',
+      ].join('\n');
+
+      // 最多两次：首次失败后把失败原因回填给模型，要求更激进地删减（2026-10-27 实测小配额章首次
+      // 常只压到 27 字、仍超 21 上限，而它其实还能再删一半）
+      let lastFailure = '';
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const retryHint = attempt === 1
+            ? ''
+            : `\n⚠️ 上一次压缩未达标：${lastFailure}。这次必须更激进：只保留本章最关键的一句或两句，其余全部留空，确保合计 ≤ ${quotaWords} 字。`;
+          const resp = await adapter.chat(
+            [
+              { role: 'system', content: systemPrompt },
+              {
+                role: 'user',
+                content: `本章配额 ${quotaWords} 字（上限 ${upper} 字），当前 ${total} 字，需压缩至配额内。${retryHint}\n待压缩条目：\n${JSON.stringify(payload, null, 2)}`,
+              },
+            ],
+            modelName,
+            temperature,
+            { max_tokens: 4000, response_format: { type: 'json_object' } },
+          );
+          if (!resp.success || !resp.text) throw new Error(resp.error || '压缩响应为空');
+          const parsed = NetworkPipeline.strictParseJson(resp.text);
+          const list: any[] = Array.isArray(parsed)
+            ? parsed
+            : [parsed?.paragraphs, parsed?.results, parsed?.items, parsed?.data]
+              .find((v) => Array.isArray(v)) || [];
+          if (list.length === 0) throw new Error('压缩响应解析不出条目');
+
+          const textByIdx = new Map<number, string>();
+          for (const r of list) {
+            const idx = Number(r?.idx ?? r?.i ?? r?.index);
+            const text = String(r?.text ?? '').trim();
+            if (Number.isInteger(idx) && idx >= 0 && idx < narrShotIdx.length) textByIdx.set(idx, text);
+          }
+          if (textByIdx.size === 0) throw new Error('压缩响应无有效 idx');
+
+          const compressed = shots.slice();
+          narrShotIdx.forEach((shotIdx, i) => {
+            compressed[shotIdx] = { ...shots[shotIdx], text: textByIdx.get(i) ?? '' };
+          });
+
+          // 合规校验（任一不过即进入重试，重试仍不过才回退截断兜底）：
+          // ① 非空必须是完整句；② 单句不得短于 min(8, 原文长度) 防过度压缩；
+          // ③ 总量必须落进上限；④ 整章不得压得过空（< 配额 50%），避免「27 字 → 7 字」式塌缩。
+          const FINISHED_END = /[。！？!?…](?:["'"”’」』）)】]*)$/;
+          let compressedTotal = 0;
+          for (let i = 0; i < narrShotIdx.length; i++) {
+            const t = String(compressed[narrShotIdx[i]].text || '').trim();
+            if (!t) continue;
+            if (!FINISHED_END.test(t)) {
+              throw new Error(`压缩产物非完整句：「${t.slice(0, 20)}」`);
+            }
+            const minLen = Math.min(8, origLens[i]);
+            if (t.length < minLen) {
+              throw new Error(`压缩过度（${t.length} 字 < 下限 ${minLen}）：「${t.slice(0, 20)}」`);
+            }
+            compressedTotal += t.length;
+          }
+          if (compressedTotal > upper) throw new Error(`压缩后仍超上限：${compressedTotal} > ${upper}`);
+          const floor = Math.ceil(quotaWords * 0.5);
+          if (compressedTotal > 0 && compressedTotal < floor) {
+            throw new Error(`压缩过度：整章仅剩 ${compressedTotal} 字 < 下限 ${floor} 字`);
+          }
+
+          AppLogger.info(
+            LOG_TAGS.AI_AGENT,
+            `[文案生成] 章节压缩重写${attempt > 1 ? '（重试成功）' : ''}（${chapterLabel}）：${total} 字 → ${compressedTotal} 字（配额 ${quotaWords}，上限 ${upper}）`,
+          );
+          return compressed;
+        } catch (e: any) {
+          lastFailure = e?.message || String(e);
+          if (attempt === 1) {
+            AppLogger.warn(
+              LOG_TAGS.AI_AGENT,
+              `[文案生成] 章节压缩首次未达标（${chapterLabel}）：${lastFailure}，带反馈重试一次`,
+            );
+          }
+        }
+      }
+      AppLogger.warn(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成] 章节压缩重写两次均失败（${chapterLabel}）：${lastFailure}，回退本地截断兜底`,
+      );
+      return enforceChapterQuota(shots, quotaWords);
     };
 
     /**
@@ -2011,7 +2145,12 @@ ${roleMapLines.join('\n')}
       if (!Array.isArray(shots)) return shots;
       return deduplicatePrefixIterations(shots).map((s) => ({
         ...s,
-        text: sanitizePauseTags(s.text || s.content || ''),
+        // 🧹 标签清洗（2026-10-27 实测泄漏）：模型偶发把内部情绪标记写进正文
+        // （如「[tone: shocked]她掏钱想结账走人，…」），会原样流进 TTS/字幕。
+        // 只清 tone/emotion/mood/情绪/语气 类标记，[pause: Nms] 等合法控制标签保留。
+        text: sanitizePauseTags(s.text || s.content || '')
+          .replace(/\[(?:tone|emotion|mood|情绪|语气)\s*[:=：][^\]]*\]/gi, '')
+          .trim(),
       }));
     };
 
@@ -2251,12 +2390,34 @@ ${roleMapLines.join('\n')}
           },
         );
 
-        /** ±20% 兑现：超配额本地截断，同时登记 shot→chunk 全局映射（钳制到本章末位） */
-        const enforced = enforceChapterQuota(chapterRaw, quotaWords);
+        /** ±20% 兑现（压缩优先）：超配额先整章压缩重写（保住章内高潮），失败才回退本地截断；
+         *  返回等长同序数组，shot→chunk 映射仍按下标即可正确（钳制到本章末位） */
+        let enforced = await compressChapterToQuota(
+          chapterRaw,
+          quotaWords,
+          `第 ${k + 1}/${chapterGroups.length} 章`,
+        );
+        /** 🛡️ 硬保险（2026-10-27）：压缩/截断链路任一环漏网时，最终产物仍不得越章上限。
+         *  实测第 14 章曾整体绕过兑现阀（无压缩/截断日志），导致全片 790 字（+42%，越过 ±20% 容差）。 */
+        const enforcedUpper = Math.ceil(quotaWords * QUOTA_TOLERANCE_RATIO);
+        const enforcedChars = enforced.reduce(
+          (acc, s) => acc + (s.keepOriginalAudio === true ? 0 : String(s.text || '').length),
+          0,
+        );
+        if (enforcedChars > enforcedUpper) {
+          AppLogger.warn(
+            LOG_TAGS.AI_AGENT,
+            `[章节配额核对] 第 ${k + 1}/${chapterGroups.length} 章最终 ${enforcedChars} 字 > 上限 ${enforcedUpper}，强制本地截断兜底`,
+          );
+          enforced = enforceChapterQuota(enforced, quotaWords);
+        }
         for (let i = 0; i < enforced.length; i++) {
+          const s = enforced[i];
+          // 压缩后留空的解说镜头不产段落；原声段保留（其文本后续由 ASR 原文覆盖）
+          if (s.keepOriginalAudio !== true && !String(s.text || '').trim()) continue;
+          rawShots.push(s);
           chunkIndexByShot.push(baseIndex + Math.min(i, group.length - 1));
         }
-        rawShots.push(...enforced);
       }
       AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 两阶段滑窗完成：${chapterGroups.length} 章 · 共 ${rawShots.length} 段分镜`);
     }
@@ -2587,7 +2748,19 @@ ${roleMapLines.join('\n')}
           const textOf = (r: any): string =>
             String(r?.text ?? r?.narration ?? r?.rewritten ?? '').trim();
 
+          /** 🛡️ 全片解说预算闸（2026-10-27 用户裁决）：原声→解说的改写在章节配额循环之后执行，
+           *  新增的解说字数此前完全不受全片预算约束。实测 12:34 重跑：13 段改写 +236 字，
+           *  全片 790 字（+42%，越过 ±20% 上限 667）。口径：只应用到「剩余额度」用完为止，
+           *  放不下的候选段保持原声（原声段不计入解说字数），保证全片仍落在 ±20% 容差内。 */
+          const narrationCap = Math.ceil(phaseTotalBudgetChars * QUOTA_TOLERANCE_RATIO);
+          let narrationChars = parsedShots.reduce(
+            (acc, s) => acc + (s.keepOriginalAudio === true ? 0 : String(s.text || '').length),
+            0,
+          );
+          const narrationCharsBefore = narrationChars;
+          let remainingQuota = Math.max(0, narrationCap - narrationChars);
           let rewritten = 0;
+          let skippedByBudget = 0;
           candidates.forEach(({ shot }, i) => {
             const hit = quotaList.find((r: any) => String(r?.id) === String(shot.id));
             // 位置兜底：模型漏回 id / 改写 id 时按数组顺序一一对应（"条数与输入一致"是硬要求）
@@ -2596,6 +2769,13 @@ ${roleMapLines.join('\n')}
               nextText = textOf(quotaList[i]);
             }
             if (!nextText) return;
+            // 预算闸：本段改写会超出全片上限 → 放弃改写，保留原声
+            if (nextText.length > remainingQuota) {
+              skippedByBudget++;
+              return;
+            }
+            remainingQuota -= nextText.length;
+            narrationChars += nextText.length;
             const scan = lexiconFilter.scan(nextText);
             shot.text = scan.original;
             shot.cleanText = scan.cleanText;
@@ -2608,12 +2788,18 @@ ${roleMapLines.join('\n')}
             shot.audioSource = undefined;
             rewritten++;
           });
+          /** 实际保留原声的时长：预算闸跳过的段仍计原声，故按最终产物重算（不复用贪心 keepSec） */
+          const finalKeepSec = parsedShots
+            .filter((s) => s.keepOriginalAudio === true)
+            .reduce((acc, s) => acc + originalWindowSec(s), 0);
           AppLogger.info(
             LOG_TAGS.AI_AGENT,
             `[文案生成][原声] 超额硬修正：目标 ${excess} 段`
             + `（段数上限 ${allowedByCount}｜时长上限 ${Number.isFinite(allowedByTimeSec) ? `${allowedByTimeSec.toFixed(0)}s` : '未设'}），`
             + `实际改写 ${rewritten} 段为解说`
-            + `（保留 ${originals.length - rewritten}/${total} 段原声，占 ${keepSec.toFixed(1)}s）`,
+            + `（保留 ${originals.length - rewritten}/${total} 段原声，占 ${finalKeepSec.toFixed(1)}s`
+            + `${skippedByBudget > 0 ? `；预算不足跳过 ${skippedByBudget} 段改写、保持原声` : ''}）`
+            + `｜解说 ${narrationCharsBefore} → ${narrationChars} 字（全片上限 ${narrationCap}）`,
           );
         } catch (e: any) {
           AppLogger.warn(
@@ -2681,6 +2867,50 @@ ${roleMapLines.join('\n')}
       AppLogger.warn(
         LOG_TAGS.AI_AGENT,
         `[文案生成][首尾打磨] 打磨失败，保留原文：${e?.message || String(e)}`,
+      );
+    }
+
+    // 🧩 打磨产物超安全框重切（2026-10-28）：首尾打磨发生在 `breakLongParagraphs` 之后，
+    //   模型返回的长句会绕过字幕安全框上限 —— 实测 17:06 落库首/尾段 31/32/32 字（SUB_MAX=24），
+    //   字幕会挤出安全框、TTS 也回到"一口气读长句"。此处只对超框段就地重切，
+    //   派生字段按 parsedShots 同口径重算（字数/敏感词扫描/时长与毫秒分摊由断句器给出）。
+    const SUB_MAX_CHARS = 24;
+    const overlongIdx = parsedShots
+      .map((s, i) => ({ s, i }))
+      .filter(({ s }) => s.keepOriginalAudio !== true && String(s.text || '').length > SUB_MAX_CHARS)
+      .map(({ i }) => i);
+    if (overlongIdx.length > 0) {
+      const rebuilt: GeneratedShot[] = [];
+      const beforeCount = parsedShots.length;
+      parsedShots.forEach((cur, i) => {
+        if (!overlongIdx.includes(i)) {
+          rebuilt.push(cur);
+          return;
+        }
+        for (const piece of breakLongParagraphs([cur as any], { matchUnit: matchUnitMode })) {
+          const scan = lexiconFilter.scan(piece.text);
+          rebuilt.push({
+            ...cur,
+            id: piece.id,
+            shotId: piece.id,
+            text: scan.original,
+            cleanText: scan.cleanText,
+            audioSafeText: lexiconFilter.getAudioSafeText(scan.cleanText, scan.original),
+            flagged: scan.flagged,
+            replaced: scan.replaced,
+            lexiconMarks: scan.matches.map((m) => ({ word: m.word, level: m.level, replaced: m.replaced })),
+            duration: piece.duration,
+            startMs: piece.startMs ?? cur.startMs,
+            durationMs: piece.durationMs ?? cur.durationMs,
+            ...(piece.matchUnitId ? { matchUnitId: piece.matchUnitId } : {}),
+          });
+        }
+      });
+      parsedShots.length = 0;
+      parsedShots.push(...rebuilt);
+      AppLogger.info(
+        LOG_TAGS.AI_AGENT,
+        `[文案生成][首尾打磨] 超安全框重切 ${overlongIdx.length} 段（${beforeCount} → ${rebuilt.length} 段）`,
       );
     }
 
@@ -3054,7 +3284,10 @@ ${roleMapLines.join('\n')}
         ?? (!hasAnyAddress && list.length === targets.length ? textOf(list[targets.indexOf(target)]) : '');
       if (!next) return;
       // 完结标点兜底：下游断句器/质量校验要求每段以完结标点收束
-      const text = /[。！？!?…]$/.test(next) ? next : `${next}。`;
+      // ⚠️ 先剥掉句末残留的逗号级标点：模型偶发返回以「，」收尾的半句，直接补「。」会产出
+      //    「…被宠了五年的女人，。」（实测 2026-10-27 21:02 重跑落库），字幕上就是双标点。
+      const trimmedTail = next.replace(/[，,、；;：:\s]+$/, '');
+      const text = /[。！？!?…]$/.test(next) ? next : `${trimmedTail}。`;
       if (shot.keepOriginalAudio === true) {
         // 首尾原声段改写后必须转为解说：否则原声结尾仍会"话音一停进黑屏"
         shot.keepOriginalAudio = false;
@@ -3168,6 +3401,22 @@ ${roleMapLines.join('\n')}
       ? `【开头钩子（强度${(args.hookIntensity * 100).toFixed(0)}%）】：第一句设置适度悬念吸引观众。示例："这个故事，要从一杯水说起。"`
       : `【开头风格（强度${(args.hookIntensity * 100).toFixed(0)}%）】：平铺直叙开场，适合纪录片。示例："今天给大家讲讲高启强的故事。"`;
 
+    // ⛔ 单阶段预算唯一真源（与定律一 N_total = ⌊T_target × v × DR × α⌋ 同口径）：
+    //    有目标预算 targetBudgetChars 直接取用；无目标时退化为「源片满速」容量估算。
+    //    严禁按「源片总时长」推算——用户设定 targetDurationSec 时，若用源时长放量会架空目标篇幅
+    //    （实例：目标 180s 的定律一预算 556 字，源片 1383s 的满速口径却达 8390 字）。
+    const singlePhaseBudgetChars = args.targetBudgetChars !== null
+      ? args.targetBudgetChars
+      : Math.floor(args.totalDurationSec * args.speechRate * args.densityFillRate * args.discountFactor);
+    // 容差与两阶段章节兑现阀同口径（+20%）：目标是「贴近预算」而非逐字卡死，
+    // 上限只用于兜底防放量，允许模型在关键段写满、过渡段留白自然浮动。
+    const singlePhaseUpperChars = Math.ceil(singlePhaseBudgetChars * QUOTA_TOLERANCE_RATIO);
+    const quotaTolerancePct = Math.round((QUOTA_TOLERANCE_RATIO - 1) * 100);
+    /** 单段字数参考均值：仅作量级参照（按剧情密度分配，不要求逐段均摊） */
+    const singlePhaseDensityPerSec = args.targetBudgetChars !== null && args.targetSec !== null
+      ? args.targetBudgetChars / Math.max(1, args.targetSec)
+      : args.speechRate * args.densityFillRate * args.discountFactor;
+
     return `${PERSONAS.SCREENWRITER}
 
 ## Task
@@ -3213,7 +3462,7 @@ ${args.endingDirective}${args.allowOriginalMark ? `
 ${args.chapterQuotaWords !== null ? `## 📏 本章硬性字数配额（Hard Quota）
 本请求只负责撰写整片中的其中一个章节解说：解说词净字数必须控制在 **≤ ${args.chapterQuotaWords} 字**（keepOriginalAudio 原声段不计入）。这是全局预算分摊到你这一章的硬性配额，宁可稍少、严禁超发。
 **⚠️ 配额有限，必须择重**：本章配额仅 ${args.chapterQuotaWords} 字，只够覆盖少数关键镜头，切勿平均分配到每个镜头。请挑【关键剧情/冲突/转折】镜头写丰满，其余过渡/次要镜头${args.allowOriginalMark ? `优先标记 "keepOriginalAudio": true 留白给原声（但全片原声段落占比不得超过 ${originalRatioMaxPct}%，超限时改用精简解说）` : '尽量不写'}——否则必然超发并触发整段截断。` : args.targetSec !== null ? `## 📏 目标解说总时长（总量约束，与"解说占比"独立）
-本片目标解说总时长约 ${args.targetSec} 秒（约 ${args.targetBudgetChars} 字）。片段流中存在过渡/次要段落时：优先为关键剧情/冲突/转折段落撰写**丰满**解说（每段按字数上限写满，保留解读）；过渡/次要段落应${args.allowOriginalMark ? `优先标记 "keepOriginalAudio": true 留白给原声（但全片原声段落占比不得超过 ${originalRatioMaxPct}%，超限时精简字数）` : '精简字数'}，使全部解说总量贴近目标时长。` : ''}
+本片目标解说总时长约 ${args.targetSec} 秒（约 ${args.targetBudgetChars} 字，允许 ±20% 浮动）。片段流中存在过渡/次要段落时：优先为关键剧情/冲突/转折段落撰写**丰满**解说（每段按字数上限写满，保留解读）；过渡/次要段落应${args.allowOriginalMark ? `优先标记 "keepOriginalAudio": true 留白给原声（但全片原声段落占比不得超过 ${originalRatioMaxPct}%，超限时精简字数）` : '精简字数'}，使全部解说总量贴近目标时长。` : ''}
 
 ## ⚡ 爆款短句与卡点硬性规则 (Core Short-Sentence Rules)
 1. **叙事为主、短句为手段（去矛盾）**：每个单句（两个标点之间的文字）为叙事通顺可略超 ${maxSentenceChars} 字，但**优先保证剧情表达完整、承前启后**，绝不为了让句子变短而打断叙事（与规则2 的连贯叙事、规则6 的完结收尾一致）。真正的"短句卡点感"靠**内容密度**（动词、意象）而非机械截断长度。仅当本段时长极短（画面撑不住长句）时才拆分短句并保持收尾完结。多用动词、感叹号与短促有力的表达（如："死死盯住！"）点缀节奏。
@@ -3236,10 +3485,9 @@ ${CONSTRAINTS.NO_DRAFT_ITERATION}
 【严格字数约束】：每个解说段应写成通顺连贯的完整句子或短句群，确保剧情表达完整，不要为了凑字数而碎成几个字。
 ${args.chapterQuotaWords !== null ? `- 本章解说总配额 ${args.chapterQuotaWords} 字须摊在本章 ${args.totalDurationSec.toFixed(1)} 秒画面上 = 平均 ${(args.chapterQuotaWords / Math.max(1, args.totalDurationSec)).toFixed(2)} 字/秒（远低于满速解说）。
 - 因此**单段字数上限 = ⌊ 本段时长(秒) × ${(args.chapterQuotaWords / Math.max(1, args.totalDurationSec)).toFixed(3)} ⌋**——数值极小，只够用在关键镜头上。
-- 严禁按"每秒 3~4 字"的常规语速写满每个镜头，那会直接超发数倍；过渡/次要镜头请留白（keepOriginalAudio）给原声让路，但全片原声段落占比不得超过 ${originalRatioMaxPct}%（超限的过渡镜头改用精简解说）。` : `- 单段字数上限 = ⌊ 时长(秒) × ${args.speechRate} × ${(args.densityFillRate * 100).toFixed(0)}% × ${args.discountFactor} ⌋
-- 例如一个 3 秒的分镜，解说词应约 ${Math.floor(3 * args.speechRate * args.densityFillRate * args.discountFactor)} 字
-- 一个 5 秒的分镜，解说词应约 ${Math.floor(5 * args.speechRate * args.densityFillRate * args.discountFactor)} 字`}
-${args.chapterQuotaWords !== null ? `- 本章解说词总量严格执行上方硬性配额（≤ ${args.chapterQuotaWords} 字），原声段不计入，严禁超出配额超发` : `- 视频总时长约 ${args.totalDurationSec.toFixed(1)} 秒，解说词总量绝对严禁超过 ${Math.floor(args.totalDurationSec * args.speechRate * args.densityFillRate * args.discountFactor)} 字`}
+- 严禁按"每秒 3~4 字"的常规语速写满每个镜头，那会直接超发数倍；过渡/次要镜头请留白（keepOriginalAudio）给原声让路，但全片原声段落占比不得超过 ${originalRatioMaxPct}%（超限的过渡镜头改用精简解说）。` : `- 单段字数参考均值 = ⌊ 时长(秒) × ${singlePhaseDensityPerSec.toFixed(3)} ⌋（= ${args.targetBudgetChars !== null ? `目标预算 ${singlePhaseBudgetChars} 字 ÷ 目标篇幅 ${args.targetSec} 秒` : `语速 ${args.speechRate} × 解说密度 ${(args.densityFillRate * 100).toFixed(0)}% × 折损 ${args.discountFactor}`}）——这是全片平均密度，仅供量级参照，按剧情密度分配：关键剧情/冲突段写满，过渡/次要段留白或精简，严禁为凑数机械均摊。
+- 例如一个 3 秒的分镜参考约 ${Math.floor(3 * singlePhaseDensityPerSec)} 字，一个 5 秒的分镜参考约 ${Math.floor(5 * singlePhaseDensityPerSec)} 字（关键段可更满，过渡段可留白）`}
+${args.chapterQuotaWords !== null ? `- 本章解说词总量严格执行上方硬性配额（≤ ${args.chapterQuotaWords} 字），原声段不计入，严禁超出配额超发` : `- 解说词总量目标约 ${singlePhaseBudgetChars} 字（${args.targetBudgetChars !== null ? `按目标篇幅 ${args.targetSec} 秒核算` : `按源片 ${args.totalDurationSec.toFixed(1)} 秒容量核算`}），允许 ±${quotaTolerancePct}% 浮动（即 ${singlePhaseBudgetChars}~${singlePhaseUpperChars} 字）；严禁超过上限 ${singlePhaseUpperChars} 字`}
 
 【专业解说参数指引】：
 - 叙事视角：${perspectiveMap[args.narrativePerspective] || perspectiveMap.third}

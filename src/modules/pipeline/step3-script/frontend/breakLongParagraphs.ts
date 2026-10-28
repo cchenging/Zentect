@@ -98,6 +98,27 @@ function splitByPunct(text: string, punct: string): string[] {
 }
 
 /**
+ * 与 {@link splitByPunct} 同源，但把「——」当作**单一**断点符号处理（断点归前段）。
+ * 破折号由两个「—」组成，按字符切会切出「…女人—」+「—她还以为…」两个以破折号开头的碎片。
+ *
+ * @param text 原文
+ * @param punct 单字符断点集合（与 splitByPunct 同口径）
+ * @returns 切分后的片段数组（断点标点保留在片段末尾）
+ */
+function splitByBreakPoint(text: string, punct: string): string[] {
+  return text
+    .split(new RegExp(`(——|[${punct}])`))
+    .reduce((acc: string[], val, i, arr) => {
+      if (i % 2 === 0) {
+        const nextPunct = arr[i + 1] || '';
+        if (val.trim()) acc.push(val.trim() + nextPunct);
+      }
+      return acc;
+    }, [])
+    .filter((s) => s.length > 0);
+}
+
+/**
  * 硬截断：无任何标点可用的超长堆叠，按固定长度 max 硬切，作为最后兜底。
  * @param text 待截断文本（已确认无标点可用）
  * @param max 每段最大字数（安全框容量）
@@ -105,8 +126,22 @@ function splitByPunct(text: string, punct: string): string[] {
  */
 function hardSplit(text: string, max: number): string[] {
   const parts: string[] = [];
-  for (let i = 0; i < text.length; i += max) {
-    parts.push(text.slice(i, i + max));
+  let i = 0;
+  // 非末片要给延续标点「，」预留 1 字：否则补标点后越框（实测 24+1=25 字，竖屏要多出第三行）。
+  while (text.length - i > max) {
+    parts.push(text.slice(i, i + max - 1));
+    i += max - 1;
+  }
+  parts.push(text.slice(i));
+  // 尾片过短（<8 字，如「会。」）→ 从前片匀一部分过来，避免落库出 2 字残片。
+  if (parts.length >= 2) {
+    const last = parts.length - 1;
+    const deficit = 8 - parts[last].length;
+    const movable = deficit > 0 ? Math.min(deficit, parts[last - 1].length - 1) : 0;
+    if (movable > 0) {
+      parts[last] = parts[last - 1].slice(parts[last - 1].length - movable) + parts[last];
+      parts[last - 1] = parts[last - 1].slice(0, parts[last - 1].length - movable);
+    }
   }
   return parts;
 }
@@ -197,7 +232,9 @@ export function breakLongParagraphs(
     // 句号级结尾标点：句子结束，是最优先的断句点（SSOT：@shared/utils/scriptMatchUnit，与诊断口径同源）。
     const SENTENCE_END_PUNCT = SCRIPT_SENTENCE_END_PUNCT;
     // 逗号级句中标点：句子超框时才作为断句点。
-    const COMMA_PUNCT = '，,、；;';
+    // 「—…」也在其中：破折号/省略号是天然的语义停顿点，不纳入会逼出硬截断
+    // （实测 seg_1「…另一个女人——她还以为那是误会。」25 字被硬切成 24+「。」两片）。
+    const COMMA_PUNCT = '，,、；;—…';
 
     // 第一步：先按句号级标点分出完整句子（用已遮蔽小数的 protectedText，避免小数被切）。
     // 🎯 这里切出的「完整句」即 sentence 档下的匹配单位：一个完整句 = 一个匹配单位。
@@ -209,22 +246,58 @@ export function breakLongParagraphs(
     const pieceUnitIdx: number[] = [];
     for (let si = 0; si < sentences.length; si++) {
       const sent = sentences[si];
-      // 安全框内（≤16 字）：整句保留，即使带逗号也不拆（"老舅的货，价廉优"保持一整句）。
+      // 安全框内（≤SUB_MAX）：整句保留，即使带逗号也不拆（"老舅的货，价廉优"保持一整句）。
       if (sent.length <= SUB_MAX) {
         pieces.push(sent);
         pieceUnitIdx.push(si);
         continue;
       }
-      // 超框（>16 字）：优先用逗号级标点切分。
+      // 超框（>SUB_MAX）：优先用逗号级标点切分，再按安全框容量贪心装箱。
       // ⚠️ 必须用字符类 [..] 包裹标点集合：裸 `new RegExp(COMMA_PUNCT)` 对全角标点会匹配失败（实测 regex bug）。
       if (new RegExp(`[${COMMA_PUNCT}]`).test(sent)) {
-        const commaParts = splitByPunct(sent, COMMA_PUNCT);
-        for (const part of commaParts) {
-          // 逗号切出的段仍超框（即该段无逗号可再切）→ 硬按安全框容量截断兜底，中间片补延续逗号。
-          const hardParts = part.length > SUB_MAX ? appendContinuationPunct(hardSplit(part, SUB_MAX)) : [part];
-          pieces.push(...hardParts);
-          for (let k = 0; k < hardParts.length; k++) pieceUnitIdx.push(si);
+        // ① 原子段：逗号级切分；单个原子段仍超框（无逗号可再切）→ 硬截断兜底并给中间片补延续逗号。
+        const atoms: string[] = [];
+        for (const part of splitByBreakPoint(sent, COMMA_PUNCT)) {
+          if (part.length > SUB_MAX) atoms.push(...appendContinuationPunct(hardSplit(part, SUB_MAX)));
+          else atoms.push(part);
         }
+        // ② 贪心装箱：相邻原子段拼到「再拼就超框」为止。
+        // 旧实现让每个原子段独立成片，会把仅超框 1 字的句子切碎——实测 seg_46
+        // 「同一句话，被人翻来覆去地念，像在提醒，又像在试探。」（25 字）
+        // 被切成 5/9/5/6 四片；装箱后为 14/11 两片：既守字幕安全框，又保住 TTS 句内韵律。
+        const groups: string[][] = [];
+        for (const atom of atoms) {
+          const last = groups[groups.length - 1];
+          if (last && last.join('').length + atom.length <= SUB_MAX) last.push(atom);
+          else groups.push([atom]);
+        }
+        // ③ 尾片过短回补：从左填满会把尾巴压成 5~6 字碎片；把前一组最后一个原子段挪给尾片
+        //   （仅当挪后两片都不超框），让尾片达到 MIN_SUB 的字面完整性。
+        const MIN_SUB = 8;
+        if (groups.length >= 2) {
+          const tail = groups[groups.length - 1];
+          const prev = groups[groups.length - 2];
+          const tailLen = tail.join('').length;
+          if (tailLen < MIN_SUB && prev.length > 1) {
+            const moved = prev[prev.length - 1];
+            if (tailLen + moved.length <= SUB_MAX) {
+              prev.pop();
+              tail.unshift(moved);
+            }
+          }
+        }
+        // ④ 纯标点原子段（「。」「—」「…」）不得独立成片：并回前一片（并进去会越框则直接丢弃该标点），
+        //   否则落库会出现 1 字段落、UI 出现空字幕卡（实测 seg_1_sub_3 = 「。」）。
+        for (let gi = groups.length - 1; gi > 0; gi--) {
+          if (/^[。！？；.!?;，,、—…\s]+$/.test(groups[gi].join(''))) {
+            const mergedLen = groups[gi - 1].join('').length + groups[gi].join('').length;
+            if (mergedLen <= SUB_MAX) groups[gi - 1].push(...groups[gi]);
+            groups.splice(gi, 1);
+          }
+        }
+        const packed = groups.map((g) => g.join(''));
+        pieces.push(...packed);
+        for (let k = 0; k < packed.length; k++) pieceUnitIdx.push(si);
       } else {
         // 超框且无任何逗号级标点 → 硬按安全框容量截断兜底，中间片补延续逗号。
         const hardParts = appendContinuationPunct(hardSplit(sent, SUB_MAX));

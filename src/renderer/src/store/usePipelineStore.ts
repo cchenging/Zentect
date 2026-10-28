@@ -108,8 +108,9 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
     vibePreset: 'viral',
     narrationRatio: 0.7,
     rhythmMode: 'mixed',
-    emotionTone: 'neutral',
-    hookIntensity: 0.7,
+    // 默认态与 useStep3Store.DEFAULT_PIPELINE_PARAMS 的离散参数逐项对齐（third / epic / 0.8）
+    emotionTone: 'epic',
+    hookIntensity: 0.8,
     targetNarrationDurationSec: 0,
     // 🎯 目标成片篇幅：0 = 自动（沿用视频总长推导）
     targetDurationSec: 0,
@@ -195,8 +196,9 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
     vibePreset: 'viral',
     narrationRatio: 0.7,
     rhythmMode: 'mixed',
-    emotionTone: 'neutral',
-    hookIntensity: 0.7,
+    // 默认态与 useStep3Store.DEFAULT_PIPELINE_PARAMS 的离散参数逐项对齐（third / epic / 0.8）
+    emotionTone: 'epic',
+    hookIntensity: 0.8,
     targetNarrationDurationSec: 0,
     // 🎯 目标成片篇幅：0 = 自动（沿用视频总长推导）
     targetDurationSec: 0,

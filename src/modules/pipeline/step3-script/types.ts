@@ -43,6 +43,8 @@ export interface Step3Output {
 /** View Props 接口（Container → View） */
 export interface StepScriptGenerationProps {
   scriptParagraphs: ScriptParagraph[];
+  /** 文案风格（SCRIPT_STYLES 六选一）：直接决定 system prompt 的风格词库/句式模板 */
+  scriptStyle: string;
   speechRate: number;
   pipelineParams: PipelineParams;
   vlmFrames: VlmFrame[];
@@ -50,6 +52,7 @@ export interface StepScriptGenerationProps {
   /** 章粒度流式元数据：生成中展示"正在推演第k/N章"与章节进度条（§五 5.3-C） */
   streamMeta: Step3StreamMeta | null;
   onSetSpeechRate: (rate: number) => void;
+  onSetScriptStyle: (style: string) => void;
   onSetPipelineParams: (params: PipelineParams) => void;
   onUpdateParagraph: (id: string, text: string) => void;
   onUpdateParagraphEmotion: (id: string, emotion: string) => void;

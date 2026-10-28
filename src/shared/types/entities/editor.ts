@@ -269,7 +269,7 @@ export interface PipelineParams {
   targetNarrationDurationSec?: number;
   /**
    * 🎯 目标成片篇幅（秒）：定律一预算公式 N_total = ⌊T_target × v × DR × α⌋ 的 T_target 输入，
-   * 其中 v=基准语速（vibePreset 联动）、DR=原声密度比（audioStrategy 三档打包）、α=0.85 标点停顿折损。
+   * 其中 v=基准语速（步骤3 高级设置直调）、DR=原声密度比（audioStrategy 三档打包）、α=0.85 标点停顿折损。
    * 预设档：180=3min 快剪 / 600=10min 精讲(推荐) / 1200=20min 深度大片。
    * 0 / undefined = 自动：沿用视频总长推导（T_target = totalDurationSec），避免老工程行为跳变。
    * ⛔ 语义区分：本字段为"成片总时长"口径，与 targetNarrationDurationSec（解说净时长软约束）不可混用；

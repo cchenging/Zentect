@@ -23,10 +23,12 @@ import { normalizeScriptParagraph } from "../../../../shared/utils/normalizeScri
 
 export const StepScriptGeneration: React.FC = () => {
   const scriptParagraphs = useStep3Store((s) => s.scriptParagraphs);
+  const scriptStyle = useStep3Store((s) => s.scriptStyle);
   const speechRate = useStep3Store((s) => s.speechRate);
   const pipelineParams = useStep3Store((s) => s.pipelineParams);
   const streamMeta = useStep3Store((s) => s.streamMeta);
   const setSpeechRate = useStep3Store((s) => s.setSpeechRate);
+  const setScriptStyle = useStep3Store((s) => s.setScriptStyle);
   const setPipelineParams = useStep3Store((s) => s.setPipelineParams);
   const updateScriptParagraph = useStep3Store((s) => s.updateScriptParagraph);
   const setScriptParagraphs = useStep3Store((s) => s.setScriptParagraphs);
@@ -60,7 +62,7 @@ export const StepScriptGeneration: React.FC = () => {
         params: {
           ...(node.params || {}),
           mediaPath: projectState.mediaItems?.[0]?.filePath || "",
-          scriptStyle: step3State.scriptStyle || "叙事",
+          scriptStyle: step3State.scriptStyle || "爆款短视频",
           speechRate: step3State.speechRate || 4.5,
           pipelineParams: step3State.pipelineParams,
           visionResult: {
@@ -178,26 +180,44 @@ export const StepScriptGeneration: React.FC = () => {
   }, []);
 
   // ── 步骤3 参数即时持久化 ──
-  // 根因：pipelineParams（含目标时长 targetDurationSec）此前只在管线执行/重新生成时落盘，
-  //       用户仅修改参数（如填时长）不点生成就切走/关窗 → DB 从未写入新值 → 重进项目回退默认。
-  // 修复：修改参数即防抖落盘；自定义秒数输入框 onChange 连续触发，故 500ms 合并后一次性写入。
+  // 根因：pipelineParams / scriptStyle / speechRate 此前只在管线执行/重新生成时落盘，
+  //       用户仅修改参数（填时长、切调性预设、换风格）不点生成就切走/关窗 → DB 从未写入新值 → 重进项目回退默认。
+  // 修复：三类参数任一变更即防抖落盘；自定义秒数输入框 onChange 连续触发，故 500ms 合并后一次性写入。
+  // 🔧 speechRate 必须同批落盘：调性预设切档会同步改写语速（View.handleVibePresetChange），
+  //    若只写 pipelineParams，重进项目会得到「预设=epic/0.8 但语速仍是旧的 4.5」的分裂态。
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flushPipelineParams = useCallback((params: PipelineParams) => {
+  const flushStep3Params = useCallback(() => {
     const projectId = useProjectStore.getState().projectId;
     if (!projectId) return;
-    API.project.saveData(projectId, { pipelineParams: params }).catch((err) => {
+    const s3 = useStep3Store.getState();
+    API.project.saveData(projectId, {
+      pipelineParams: s3.pipelineParams,
+      speechRate: s3.speechRate,
+      scriptStyle: s3.scriptStyle,
+    }).catch((err) => {
       console.error("[步骤3] 参数落盘失败:", err);
     });
   }, []);
-  const handleSetPipelineParams = useCallback((params: PipelineParams) => {
-    setPipelineParams(params);
+  const scheduleSave = useCallback(() => {
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     // 落盘 store 归一化后的最终态：setPipelineParams 内做 SSOT 兼容迁移
     // （audioStrategy 缺失回填默认档并同步 narrationRatio 镜像），确保 DB 持久化值
     // 与 UI 展示、后端 DR 折减三处口径一致，legacy 残留值（如 narrationRatio=0.85）随
     // 任一次参数变更即被修复，不会在重开项目后再次回退成旧值。
-    saveTimerRef.current = setTimeout(() => flushPipelineParams(useStep3Store.getState().pipelineParams), 500);
-  }, [setPipelineParams, flushPipelineParams]);
+    saveTimerRef.current = setTimeout(flushStep3Params, 500);
+  }, [flushStep3Params]);
+  const handleSetPipelineParams = useCallback((params: PipelineParams) => {
+    setPipelineParams(params);
+    scheduleSave();
+  }, [setPipelineParams, scheduleSave]);
+  const handleSetSpeechRate = useCallback((rate: number) => {
+    setSpeechRate(rate);
+    scheduleSave();
+  }, [setSpeechRate, scheduleSave]);
+  const handleSetScriptStyle = useCallback((style: string) => {
+    setScriptStyle(style);
+    scheduleSave();
+  }, [setScriptStyle, scheduleSave]);
   // 组件卸载时清理未触发的防抖定时器，避免泄漏
   useEffect(() => () => {
     if (saveTimerRef.current) {
@@ -209,12 +229,14 @@ export const StepScriptGeneration: React.FC = () => {
   return (
     <StepScriptGenerationView
       scriptParagraphs={scriptParagraphs}
+      scriptStyle={scriptStyle}
       speechRate={speechRate}
       pipelineParams={pipelineParams}
       vlmFrames={vlmFrames}
       isGenerating={pipelineRunning}
       streamMeta={streamMeta}
-      onSetSpeechRate={setSpeechRate}
+      onSetSpeechRate={handleSetSpeechRate}
+      onSetScriptStyle={handleSetScriptStyle}
       onSetPipelineParams={handleSetPipelineParams}
       onUpdateParagraph={updateScriptParagraph}
       onUpdateParagraphEmotion={updateParagraphEmotion}

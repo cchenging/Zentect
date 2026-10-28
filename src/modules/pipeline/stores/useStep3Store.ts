@@ -11,9 +11,17 @@ import { DENSITY_RATIO_BY_AUDIO_STRATEGY } from '../../../shared/types/entities/
 export type { PipelineParams } from '../../../shared/types/entities/editor';
 
 /**
- * 默认参数：爆款短视频导向（智能保留原声/解说占比70%/长短交替/客观基调）。
- * SSOT 红线：audioStrategy 三档与 narrationRatio 数值绑定同源（smart_keep ⇔ 0.70），
- * 用户切换三档按钮时由 View 层一次性整体改写二者并 setPipelineParams 提交。
+ * 默认基准语速（字/秒）：新工程首屏默认值（原「爆款爽感」预设档的语速 5.2），
+ * 用户可在步骤3「高级设置 → 基准语速」直接调整。
+ */
+export const DEFAULT_SPEECH_RATE = 5.2;
+
+/**
+ * 默认参数：爆款短视频导向（智能保留原声/解说占比70%/长短交替/高燃基调/强钩子）。
+ * SSOT 红线：① audioStrategy 三档与 narrationRatio 数值绑定同源（smart_keep ⇔ 0.70）；
+ * ② 默认离散参数（第三人称 / epic / 0.8）即步骤3 首屏控件的展示值，后端读取的也正是这三项，
+ *    不得再引入「展示用聚合档」，否则会重现「界面显示一档、后端按另一档运行」的分裂态。
+ * ③ vibePreset 仅为旧工程兼容保留（后端零消费、UI 已无入口），新建/改动一律直接写离散参数。
  */
 export const DEFAULT_PIPELINE_PARAMS: PipelineParams = {
   narrativePerspective: 'third',
@@ -21,8 +29,8 @@ export const DEFAULT_PIPELINE_PARAMS: PipelineParams = {
   vibePreset: 'viral',
   narrationRatio: 0.7,
   rhythmMode: 'mixed',
-  emotionTone: 'neutral',
-  hookIntensity: 0.7,
+  emotionTone: 'epic',
+  hookIntensity: 0.8,
   targetNarrationDurationSec: 0,
   // 🎯 目标成片篇幅：0 = 自动（沿用视频总长推导），预设档 180/600/1200 由前端三选一驱动
   targetDurationSec: 0,
@@ -63,7 +71,7 @@ export interface Step3Store {
 export const useStep3Store = create<Step3Store>()((set) => ({
   scriptParagraphs: [],
   scriptStyle: '爆款短视频',
-  speechRate: 4.5,
+  speechRate: DEFAULT_SPEECH_RATE,
   pipelineParams: { ...DEFAULT_PIPELINE_PARAMS },
   streamMeta: null,
 
@@ -118,7 +126,7 @@ export const useStep3Store = create<Step3Store>()((set) => ({
   reset: () => set({
     scriptParagraphs: [],
     scriptStyle: '爆款短视频',
-    speechRate: 4.5,
+    speechRate: DEFAULT_SPEECH_RATE,
     pipelineParams: { ...DEFAULT_PIPELINE_PARAMS },
     streamMeta: null,
   }),

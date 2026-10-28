@@ -151,12 +151,13 @@ describe('breakLongParagraphs 匹配单位（sentence / legacy）', () => {
     const legacy = summarizeScriptMatchUnits(legacyShots, sentences);
     const sentence = summarizeScriptMatchUnits(sentenceShots, sentences);
 
-    // legacy：每个碎片各算一个匹配单位 ⇒ 碎片率 = (3 − 1) / 3 ≈ 66.7%
-    expect(legacy.clauses).toBe(3);
-    expect(legacy.matchUnits).toBe(3);
-    expect(legacy.fragmentRate).toBeGreaterThan(0.5);
+    // legacy：每个碎片各算一个匹配单位 ⇒ 碎片率 = (2 − 1) / 2 = 50%
+    // （逗号原子段贪心装箱后碎片数由 3 降为 2：18 字 + 22 字）
+    expect(legacy.clauses).toBe(2);
+    expect(legacy.matchUnits).toBe(2);
+    expect(legacy.fragmentRate).toBe(0.5);
     // sentence：一个完整句只算一个匹配单位 ⇒ 碎片率 0%
-    expect(sentence.clauses).toBe(3);
+    expect(sentence.clauses).toBe(2);
     expect(sentence.matchUnits).toBe(1);
     expect(sentence.fragmentRate).toBe(0);
   });

@@ -28,13 +28,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@renderer/components/ui/select";
-// SSOT 契约层单源：三档/五档取值元组 + 密度折减系数映射（DR 表禁止在前端复写数值）
+// SSOT 契约层单源：原声三档取值元组 + 人称三档取值元组 + 密度折减系数映射（DR 表禁止在前端复写数值）
 import {
   AUDIO_STRATEGY_VALUES,
   DENSITY_RATIO_BY_AUDIO_STRATEGY,
-  VIBE_PRESET_VALUES,
+  NARRATIVE_PERSPECTIVE_VALUES,
 } from "../../../../shared/types/entities/editor";
-import type { AudioStrategy, NarrativePerspective, PipelineParams, VibePreset } from "../../../../shared/types/entities/editor";
+import type { AudioStrategy, NarrativePerspective, PipelineParams } from "../../../../shared/types/entities/editor";
+// 📐 文案风格六选一（SSOT：与后端 STYLE_PROMPTS 词库同源，禁止在前端另起中文风格名）
+import { SCRIPT_STYLES } from "@modules/editor/shell/utils/pipelineConstants";
 import type { StepScriptGenerationProps } from "../types";
 // 章粒度流式元数据类型：骨架卡旁的"正在推演第k/N章"进度条入参
 import type { Step3StreamMeta } from "../../stores/useStep3Store";
@@ -50,14 +52,44 @@ const TARGET_DURATION_OPTIONS = [
   { value: 1200, label: "1200s", hint: "20min 大片" },
 ];
 
-/** vibePreset ↔ 基准语速联动表（字/秒，SSOT 与方案 §2.1 语速映射一致，禁止在此改数值） */
-const SPEED_BY_VIBE_PRESET: Record<VibePreset, number> = {
-  viral: 5.2,
-  deep_suspense: 4.5,
-  sharp_roast: 5.0,
-  immersive_first: 4.5,
-  documentary: 3.8,
+/**
+ * 🗣️ 解说人称三档（取值顺序取自契约层 NARRATIVE_PERSPECTIVE_VALUES 单源）：
+ * 直接暴露离散参数，后端 ScriptGenStrategy 按此写入 prompt 的视角指令（vibePreset 打包层已拆除）。
+ */
+const NARRATIVE_PERSPECTIVE_META: Record<NarrativePerspective, { emoji: string; label: string; hint: string }> = {
+  third: { emoji: "🌌", label: "第三人称", hint: "上帝视角" },
+  first: { emoji: "👤", label: "第一人称", hint: "入戏“我”" },
+  second: { emoji: "💬", label: "第二人称", hint: "观众互动“你”" },
 };
+const NARRATIVE_PERSPECTIVE_OPTIONS = NARRATIVE_PERSPECTIVE_VALUES.map((v) => ({ value: v, ...NARRATIVE_PERSPECTIVE_META[v] }));
+
+/** 🎭 情绪基调五档（取值域 = PipelineParams.emotionTone，后端用于 prompt 情绪指令 + 步骤5 BGM 选型） */
+const EMOTION_TONE_META: Record<PipelineParams["emotionTone"], { label: string; hint: string }> = {
+  neutral: { label: "平静客观", hint: "克制陈述" },
+  emotional: { label: "细腻共情", hint: "情绪共鸣" },
+  epic: { label: "高燃热血", hint: "强情绪卡点" },
+  suspense: { label: "层层悬疑", hint: "设问·伏笔" },
+  comedy: { label: "轻快诙谐", hint: "吐槽·反差" },
+};
+const EMOTION_TONE_OPTIONS = (["neutral", "emotional", "epic", "suspense", "comedy"] as const).map((v) => ({
+  value: v,
+  label: `${EMOTION_TONE_META[v].label} · ${EMOTION_TONE_META[v].hint}`,
+}));
+
+/** 🥁 叙事节奏三档（取值域 = PipelineParams.rhythmMode，决定单句字数上限与节奏折损口径） */
+const RHYTHM_MODE_META: Record<PipelineParams["rhythmMode"], { label: string; hint: string }> = {
+  short_fast: { label: "短句快切", hint: "≤18字/句" },
+  mixed: { label: "长短交替", hint: "默认" },
+  slow_soothing: { label: "舒缓长句", hint: "≤40字/句" },
+};
+const RHYTHM_MODE_OPTIONS = (["short_fast", "mixed", "slow_soothing"] as const).map((v) => ({ value: v, ...RHYTHM_MODE_META[v] }));
+
+/** 🪝 钩子强度三档（后端 hookIntensity ∈ [0,1]，>=0.8 强钩子 / <0.8 常规） */
+const HOOK_LEVELS: { value: number; label: string; hint: string }[] = [
+  { value: 0.3, label: "低", hint: "平铺直叙" },
+  { value: 0.6, label: "中", hint: "适度设问" },
+  { value: 0.8, label: "高", hint: "黄金3秒强钩" },
+];
 
 /**
  * 🎚️ 原声策略三档展示文案（取值与配比数值均来自契约层单源 AUDIO_STRATEGY_VALUES /
@@ -75,40 +107,19 @@ const AUDIO_STRATEGY_META: Record<AudioStrategy, { emoji: string; label: string;
 /** 三选一按钮选项：档位顺序取自契约层元组，文案查 META（Record 键穷尽性由编译期保证） */
 const AUDIO_STRATEGY_OPTIONS = AUDIO_STRATEGY_VALUES.map((v) => ({ value: v, ...AUDIO_STRATEGY_META[v] }));
 
-/**
- * 🎨 调性预设五档展示文案 + 联动写入的离散参数（情绪基调/人称/钩子强度等）；
- * 这些离散参数已无独立 UI 控件，本预设是它们唯一的用户写入入口，基准语速联动见 SPEED_BY_VIBE_PRESET。
- * 解说人称五档全绑定（方案 §2.1 视角联动口径）：爆款爽感/深度悬疑/纪录片质感→第三人称、
- * 犀利吐槽→第二人称、第一人称沉浸→第一人称，切档自动写入并在下方展示行联动刷新。
- */
-const VIBE_PRESET_META: Record<VibePreset, { emoji: string; label: string; apply: Partial<PipelineParams> }> = {
-  viral: { emoji: "🔥", label: "爆款爽感", apply: { narrativePerspective: "third", emotionTone: "epic", hookIntensity: 0.8 } },
-  deep_suspense: { emoji: "🧠", label: "深度悬疑", apply: { narrativePerspective: "third", emotionTone: "suspense", hookIntensity: 0.75 } },
-  sharp_roast: { emoji: "🤡", label: "犀利吐槽", apply: { narrativePerspective: "second", emotionTone: "comedy", hookIntensity: 0.7 } },
-  immersive_first: { emoji: "🎙️", label: "第一人称沉浸", apply: { narrativePerspective: "first", emotionTone: "emotional", hookIntensity: 0.5 } },
-  documentary: { emoji: "📖", label: "纪录片质感", apply: { narrativePerspective: "third", emotionTone: "neutral", rhythmMode: "slow_soothing", hookIntensity: 0.3 } },
-};
-/** 五选一按钮选项：档位顺序取自契约层元组，文案与联动表查 VIBE_PRESET_META */
-const VIBE_PRESET_OPTIONS = VIBE_PRESET_VALUES.map((v) => ({ value: v, ...VIBE_PRESET_META[v] }));
-
-/**
- * 🗣️ 解说人称三档展示文案（取值顺序取自契约层 NARRATIVE_PERSPECTIVE_VALUES 单源）：
- * 人称与调性预设五档绑定（见 VIBE_PRESET_META.apply，无独立手动控件），仅供页面展示行读取。
- */
-const NARRATIVE_PERSPECTIVE_META: Record<NarrativePerspective, { emoji: string; label: string; hint: string }> = {
-  third: { emoji: "🌌", label: "第三人称", hint: "上帝视角" },
-  first: { emoji: "👤", label: "第一人称", hint: "入戏“我”" },
-  second: { emoji: "💬", label: "第二人称", hint: "观众互动“你”" },
-};
-
 /** 段落级情绪标签 */
 const EMOTIONS = ["激昂", "温馨", "幽默", "平静", "紧张", "感慨", "震撼", "庄重"];
 
 /** Tooltips 说明词（具体量化，不模糊） */
 const TOOLTIPS: Record<string, string> = {
-  targetDuration: "目标成片篇幅（定律一 T_target，秒）：写作预算 = 篇幅 × 语速 × 解说密度 × 标点停顿折损 0.85。自动 = 跟随原片时长推导；180s 快剪 / 600s 精讲（推荐）/ 1200s 大片，也可输入任意秒数",
+  targetDuration: "目标成片篇幅（定律一 T_target，秒）：写作预算 = 篇幅 × 语速 × 解说密度 × 标点停顿折损 0.85。自动 = 跟随原片时长推导；180s 快剪 / 600s 精讲（推荐）/ 1200s 大片，也可输入任意秒数；基准语速在「高级设置」中调整",
+  scriptStyle: "文案风格（六选一）：切换 system prompt 的风格词库与句式模板（爆款短视频/深度解说/评述视角/情感叙事/悬疑推理/硬核科普），只改写法，不改人称/情绪/钩子",
   audioStrategy: "解说与原声的配比策略三选一：智能保留=重点节点解说+完整原声叙事（默认）/ 纯解说=高密度解说覆盖全程 / 原声主打=名场面原声完整保留、解说只在缝隙点睛。选中档位按密度定律统一折减全文写作预算",
-  vibePreset: "一键套用的创作调性预设：切换时联动写入基准语速 / 解说人称 / 情绪基调 / 钩子强度等参数，可随时换档重选。人称绑定：爆款爽感/深度悬疑/纪录片质感→第三人称，犀利吐槽→第二人称，第一人称沉浸→第一人称",
+  narrativePerspective: "解说人称三选一，直接写入后端 prompt 视角指令：第三人称=上帝视角（他/她）/ 第一人称=主角自述（我）/ 第二人称=对观众对话（你）",
+  emotionTone: "情绪基调五选一：平静客观 / 细腻共情 / 高燃热血 / 层层悬疑 / 轻快诙谐。影响步骤3 写作情绪指令，并作为步骤5 BGM 选型依据",
+  rhythmMode: "叙事节奏三选一：短句快切（单句 ≤18 字）/ 长短交替（默认，混排）/ 舒缓长句（单句 ≤40 字，适合长视频）",
+  hookIntensity: "开头钩子强度三档：低=平铺直叙 / 中=适度设问 / 高=黄金3秒强钩（后端阈值为 0.8，用于切换钩子指令）",
+  speechRate: "基准语速（字/秒）：解说写作总预算 = 目标篇幅 × 语速 × 解说密度 × 0.85。中文字幕旁白常速约 4~5 字/秒，语速越高同样篇幅可容纳越多字",
 };
 
 
@@ -302,12 +313,14 @@ const ChapterStreamProgress: React.FC<{ meta: Step3StreamMeta }> = ({ meta }) =>
 export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (props) => {
   const {
     scriptParagraphs,
+    scriptStyle,
     speechRate,
     pipelineParams,
     vlmFrames,
     isGenerating,
     streamMeta,
     onSetSpeechRate,
+    onSetScriptStyle,
     onSetPipelineParams,
     onUpdateParagraph,
     onUpdateParagraphEmotion,
@@ -318,6 +331,8 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
   const [matchingParagraphId, setMatchingParagraphId] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
   const [overviewOpen, setOverviewOpen] = useState<boolean>(false);
+  /** 🎛️ 高级设置折叠态（节奏 / 钩子强度 / 基准语速；常驻控件只保留篇幅·原声配比·人称·情绪·风格） */
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
 
   /** 字数聚合双口径收窄：text 仅存在于解说段（原声段以 audioSource.transcript 承载语义），聚合口径只统计 type='narration' */
   const totalChars = useMemo(
@@ -367,15 +382,13 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
   const narrationRatioEff = Math.max(0, Math.min(1,
     DENSITY_RATIO_BY_AUDIO_STRATEGY[pipelineParams.audioStrategy ?? "smart_keep"]
   ));
-  /** 当前生效的解说人称（与调性预设绑定联动写入，仅供下方展示行只读显示，无独立控件） */
-  const perspectiveMetaEff = NARRATIVE_PERSPECTIVE_META[pipelineParams.narrativePerspective ?? "third"];
   /** 🎯 目标成片篇幅有效值（秒，定律一 T_target）：0 = 自动档（跟随原片时长推导预算），与后端取值链①③对齐 */
   const targetDurationEff = pipelineParams.targetDurationSec ?? 0;
 
   /**
    * 总字数预算（SSOT 与后端 ScriptGenStrategy 定律一取值链对齐）：
    * N = ⌊T_target × v × DR × α⌋，T_target=targetDurationSec（成片篇幅，自动档取原片总时长推导）、
-   * v=speechRate（vibePreset 联动）、DR=narrationRatio（audioStrategy 三档同源）、α=0.85 标点停顿折损单乘。
+   * v=speechRate（高级设置直调）、DR=narrationRatio（audioStrategy 三档同源）、α=0.85 标点停顿折损单乘。
    * ⛔ 与后端同款红线：新定律一路径不再叠加 rhythmMode 节奏折损表；源片时间轴缺失时返回 null（看板隐藏）。
    */
   const totalBudgetChars = useMemo(() => {
@@ -408,13 +421,10 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
   };
 
   /**
-   * 🎨 调性预设切换（三控制器之二）：vibePreset 即基准语速 v 的 SSOT 载体（方案 §2.1 语速映射表），
-   * 切档时联动写入语速 + VIBE_PRESET_META 联动表离散参数（情绪基调/视角/钩子强度）后整体提交。
+   * 🪝 钩子强度切档：直接写离散值（后端阈值 0.8 决定是否切「强钩子」指令），
+   * 与节奏/语速同属高级设置，不再经由预设打包层。
    */
-  const handleVibePresetChange = (v: VibePreset) => {
-    onSetSpeechRate(SPEED_BY_VIBE_PRESET[v]);
-    onSetPipelineParams({ ...pipelineParams, vibePreset: v, ...VIBE_PRESET_META[v].apply });
-  };
+  const handleHookChange = (v: number) => updateParam("hookIntensity", v);
 
 
 
@@ -430,7 +440,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
             </div>
             <div>
               <h3 className="text-[14px] font-semibold text-foreground tracking-wide">AI 脚本控制台</h3>
-              <p className="text-[12px] text-muted-foreground/80">篇幅 / 声画配比 / 调性预设三控制器，写作预算按密度定律自动核算</p>
+              <p className="text-[12px] text-muted-foreground/80">篇幅 / 声画配比 / 写法与调性三控制器，写作预算按密度定律自动核算</p>
             </div>
           </div>
           {scriptParagraphs.length > 0 && (
@@ -479,7 +489,7 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
               <span className="text-[12px] text-muted-foreground shrink-0">秒</span>
             </div>
             <p className="text-[11px] leading-relaxed text-muted-foreground/70 px-0.5">
-              预算 = 篇幅 × 语速 × 解说密度 × 标点停顿折损（0.85）。自动 = 跟随原片时长推导；输入非预设秒数后四档自动取消高亮，语速随调性预设联动。
+              预算 = 篇幅 × 语速 × 解说密度 × 标点停顿折损（0.85）。自动 = 跟随原片时长推导；输入非预设秒数后四档自动取消高亮，基准语速见「高级设置」。
             </p>
           </div>
 
@@ -511,24 +521,132 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
               </p>
             </div>
 
-            {/* 🎨 风格氛围五选一（预设联动载体：一键写入情绪基调/人称/钩子强度等离散参数） */}
-            <div className="md:col-span-2 flex flex-col gap-1.5">
+            {/* 🗣️ 解说人称（直接暴露离散参数）：写入 prompt 视角指令 */}
+            <div className="flex flex-col gap-1.5">
               <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
-                <Sparkles size={12} className="mr-1 text-accent/80" />
-                风格氛围预设
-                <HelpTip text={TOOLTIPS.vibePreset} />
+                <User size={12} className="mr-1 text-accent/80" />
+                解说人称
+                <HelpTip text={TOOLTIPS.narrativePerspective} />
               </span>
-              <SegmentedControl
-                options={VIBE_PRESET_OPTIONS}
-                value={pipelineParams.vibePreset ?? "viral"}
-                onChange={handleVibePresetChange}
+              <SegmentedControl<NarrativePerspective>
+                options={NARRATIVE_PERSPECTIVE_OPTIONS}
+                value={pipelineParams.narrativePerspective ?? "third"}
+                onChange={(v) => updateParam("narrativePerspective", v)}
                 disabled={isGenerating}
               />
-              {/* 🗣️ 人称绑定展示（只读）：人称与调性预设五档绑定（VIBE_PRESET_META.apply），切档自动写入并在此联动刷新 */}
-              <p className="text-[11px] leading-relaxed text-muted-foreground/70 px-0.5 flex items-center gap-1">
-                <User size={11} className="text-accent/70 shrink-0" />
-                当前人称：{perspectiveMetaEff.emoji} {perspectiveMetaEff.label}（{perspectiveMetaEff.hint}）
+            </div>
+
+            {/* 🎭 情绪基调（直接暴露离散参数）：prompt 情绪指令 + 步骤5 BGM 选型 */}
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
+                <Sparkles size={12} className="mr-1 text-accent/80" />
+                情绪基调
+                <HelpTip text={TOOLTIPS.emotionTone} />
+              </span>
+              <CustomSelect
+                value={pipelineParams.emotionTone ?? "epic"}
+                onChange={(v) => updateParam("emotionTone", v as PipelineParams["emotionTone"])}
+                options={EMOTION_TONE_OPTIONS}
+                placeholder="选择情绪基调"
+                disabled={isGenerating}
+              />
+            </div>
+
+            {/* 📐 文案风格六选一：直接决定 system prompt 的风格词库/句式模板（只改写法，不改人称/情绪） */}
+            <div className="md:col-span-2 flex flex-col gap-1.5">
+              <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
+                <BookOpen size={12} className="mr-1 text-accent/80" />
+                文案风格
+                <HelpTip text={TOOLTIPS.scriptStyle} />
+              </span>
+              <CustomSelect
+                value={scriptStyle || "爆款短视频"}
+                onChange={onSetScriptStyle}
+                options={SCRIPT_STYLES}
+                placeholder="选择文案风格"
+                disabled={isGenerating}
+              />
+              <p className="text-[11px] leading-relaxed text-muted-foreground/70 px-0.5">
+                风格只影响写法（词汇库 / 句式模板 / 叙事手法）；人称与情绪在上方直接选，节奏·钩子·语速在下方高级设置。
               </p>
+            </div>
+
+            {/* 🎛️ 高级设置（折叠）：节奏 / 钩子强度 / 基准语速 —— 低频调参不占首屏 */}
+            <div className="md:col-span-2 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                className="self-start inline-flex items-center gap-1.5 text-[12.5px] font-medium text-muted-foreground hover:text-accent transition-colors cursor-pointer px-2 py-1 rounded-lg bg-bg-secondary/60 border border-border/30 hover:border-accent/40"
+              >
+                <SlidersHorizontal size={12} />
+                高级设置
+                {showAdvanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+              {showAdvanced && (
+                <div className="flex flex-col gap-3.5 p-3.5 rounded-xl border border-border/30 bg-bg-tertiary/40">
+                  {/* 🥁 叙事节奏 */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[12.5px] font-medium text-muted-foreground/90 flex items-center">
+                      叙事节奏
+                      <HelpTip text={TOOLTIPS.rhythmMode} />
+                    </span>
+                    <SegmentedControl<PipelineParams["rhythmMode"]>
+                      options={RHYTHM_MODE_OPTIONS}
+                      value={pipelineParams.rhythmMode ?? "mixed"}
+                      onChange={(v) => updateParam("rhythmMode", v)}
+                      disabled={isGenerating}
+                    />
+                  </div>
+
+                  {/* 🪝 钩子强度 */}
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[12.5px] font-medium text-muted-foreground/90 flex items-center">
+                        开头钩子强度
+                        <HelpTip text={TOOLTIPS.hookIntensity} />
+                      </span>
+                      <Badge variant="accent" className="text-[12px] font-mono py-0 px-1.5">
+                        {(pipelineParams.hookIntensity ?? 0.8).toFixed(1)}
+                      </Badge>
+                    </div>
+                    <SegmentedControl<number>
+                      options={HOOK_LEVELS}
+                      value={pipelineParams.hookIntensity ?? 0.8}
+                      onChange={handleHookChange}
+                      disabled={isGenerating}
+                    />
+                  </div>
+
+                  {/* 🗣️ 基准语速（写作预算的 v 项） */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[12.5px] font-medium text-muted-foreground/90 flex items-center">
+                      基准语速
+                      <HelpTip text={TOOLTIPS.speechRate} />
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={2}
+                        max={8}
+                        step={0.1}
+                        value={speechRate}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (Number.isFinite(v)) onSetSpeechRate(Math.max(2, Math.min(8, v)));
+                        }}
+                        disabled={isGenerating}
+                        className="h-9 w-[92px] px-2.5 text-[12.5px] font-mono rounded-xl border border-border/40 bg-bg-tertiary/80 text-foreground hover:border-accent/60 focus:border-accent/60 focus:ring-1 focus:ring-accent/30 outline-none transition-all"
+                      />
+                      <span className="text-[12px] text-muted-foreground">字/秒</span>
+                      {totalBudgetChars !== null && (
+                        <span className="text-[11.5px] text-muted-foreground/70">
+                          ⇒ 预算约 {totalBudgetChars} 字
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
           </div>

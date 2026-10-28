@@ -251,6 +251,7 @@ describe('Step3 Types', () => {
     it('应包含所有 View 需要的回调函数', () => {
       const props: StepScriptGenerationProps = {
         scriptParagraphs: [],
+        scriptStyle: '爆款短视频',
         speechRate: 4.5,
         pipelineParams: {
           narrativePerspective: 'third',
@@ -263,6 +264,7 @@ describe('Step3 Types', () => {
         isGenerating: false,
         streamMeta: null,
         onSetSpeechRate: () => {},
+        onSetScriptStyle: () => {},
         onSetPipelineParams: () => {},
         onUpdateParagraph: () => {},
         onUpdateParagraphEmotion: () => {},
@@ -282,6 +284,7 @@ describe('Step3 Types', () => {
     it('isGenerating 为 true 时应正常传递', () => {
       const props: StepScriptGenerationProps = {
         scriptParagraphs: [{ id: 's1', type: 'narration', startMs: 0, durationMs: 3000, text: '文案', editing: false }],
+        scriptStyle: '情感叙事',
         speechRate: 3.0,
         pipelineParams: {
           narrativePerspective: 'first',
@@ -294,6 +297,7 @@ describe('Step3 Types', () => {
         isGenerating: true,
         streamMeta: null,
         onSetSpeechRate: () => {},
+        onSetScriptStyle: () => {},
         onSetPipelineParams: () => {},
         onUpdateParagraph: () => {},
         onUpdateParagraphEmotion: () => {},

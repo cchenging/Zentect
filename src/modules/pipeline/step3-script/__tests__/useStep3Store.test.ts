@@ -7,6 +7,22 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useStep3Store } from '../../stores/useStep3Store';
 
+describe('useStep3Store - 默认态与首屏控件一致', () => {
+  beforeEach(() => {
+    useStep3Store.getState().reset();
+  });
+
+  // 根因回归：旧默认曾出现「展示聚合档 vs 实际离散参数」分裂（viral 显示 + neutral/0.7/4.5 生效）；
+  // 现 UI 已拆除聚合预设，默认值必须是步骤3 首屏直接展示的三项（第三人称 / 高燃 / 0.8）+ 语速 5.2。
+  it('默认离散参数与语速必须可直接落进首屏控件（third / epic / 0.8 / 5.2）', () => {
+    const s = useStep3Store.getState();
+    expect(s.pipelineParams.narrativePerspective).toBe('third');
+    expect(s.pipelineParams.emotionTone).toBe('epic');
+    expect(s.pipelineParams.hookIntensity).toBe(0.8);
+    expect(s.speechRate).toBe(5.2); // = DEFAULT_SPEECH_RATE
+  });
+});
+
 describe('useStep3Store - setPipelineParams SSOT 兼容迁移', () => {
   beforeEach(() => {
     // zustand store 为模块级单例，跨用例必须 reset 清理，避免状态污染

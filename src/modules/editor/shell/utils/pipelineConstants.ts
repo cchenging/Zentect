@@ -25,8 +25,9 @@ export const STEP_SEQUENCES: Record<number, PipelineTask[]> = {
 
 /**
  * 文案风格选项（重写：去掉废话文学，改为专业解说方向）
- * 风格作为"词汇库/语法框架"总模板预设，选中时自动填充默认的 emotionTone
- * 用户可手动微调（微调可能产生语义冲突，UI 会显式告警但不静默修正）
+ * 风格作为"词汇库/语法框架"总模板预设，直接映射后端 ScriptGenStrategy.STYLE_PROMPTS 同名 key；
+ * ⛔ 不得在前端另起中文风格名，否则后端查不到 key 会静默回落「爆款短视频」。
+ * 🔀 与调性参数正交：风格只管写法，人称/情绪/节奏/钩子由步骤3 控件直接选，二者互不覆盖。
  */
 export const SCRIPT_STYLES = [
   '爆款短视频',   // 抖音/快手快剪风格：高钩子、短句快切、网感词
@@ -36,38 +37,6 @@ export const SCRIPT_STYLES = [
   '悬疑推理',     // 悬疑营造风格：层层设问、伏笔铺设、真相拼凑
   '硬核科普',     // 知识科普风格：事实准确、专业术语、逻辑清晰
 ];
-
-/**
- * 创作风格预设 → 默认参数组合映射（SSOT：唯一真源，View.tsx 消费此表）
- * 选中风格时自动写入 emotionTone，后续用户手动微调不回写此表
- * 注释说明各组合的设计意图，保证正交切分
- */
-export const STYLE_PRESET_MAP: Record<string, { emotionTone: import('../../../../shared/types/entities/editor').PipelineParams['emotionTone']; description: string }> = {
-  '爆款短视频': {
-    emotionTone: 'epic',         // 高燃热血：拉高情绪卡点，追求完播率
-    description: '高燃基调，适配短视频快剪高钩子',
-  },
-  '深度解说': {
-    emotionTone: 'neutral',      // 客观中立：严谨分析，避免主观情绪干扰
-    description: '中立基调，适配 B 站长视频硬核分析',
-  },
-  '评述视角': {
-    emotionTone: 'emotional',    // 情感渲染：带强烈个人立场和情绪共鸣
-    description: '情感基调，适配 UP 主个人 IP 观点输出',
-  },
-  '情感叙事': {
-    emotionTone: 'emotional',    // 情感渲染：细腻笔触 + 比喻意象
-    description: '情感基调，适配文艺类/情感类内容感性叙事',
-  },
-  '悬疑推理': {
-    emotionTone: 'suspense',     // 悬疑营造：张弛有度、引导观众思考
-    description: '悬疑基调，适配推理/烧脑类剧情分析',
-  },
-  '硬核科普': {
-    emotionTone: 'neutral',      // 客观中立：事实准确、忌主观情绪
-    description: '中立基调，适配科技/历史/自然类知识科普',
-  },
-};
 
 /** 素材库标签（icon 为组件引用，消费方需自行渲染） */
 export const MEDIA_TABS: { key: string; label: string; icon?: LucideIcon }[] = [
