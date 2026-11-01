@@ -33,12 +33,11 @@ export interface FrameIndexSeed {
   description: string;
 }
 
-/** 召回 query：句文案 + 画面意图 + 步骤3 真锚点释义（P1 产物） */
+/** 召回 query：句文案 + 画面意图 */
 export interface FrameRecallQuery {
   shotId: string;
   text?: string;
   visualIntent?: string;
-  refFrameDesc?: string;
 }
 
 /** 召回结果：一个候选镜头（= 上卷后的匹配单元） */
@@ -78,7 +77,7 @@ export interface FrameIndexBuildStats {
 }
 
 /**
- * query 拼接文本：句文案 + 画面意图 + 真锚点释义。
+ * query 拼接文本：句文案 + 画面意图。
  *
  * ⚠️ 这里**刻意重复拼接 visualIntent**：`q.text` 在 SemanticAnalyzeStrategy 已拼成
  *    `${正文} | ${visualIntent}`，故 VI 实际出现两次（与 daemon 语义主分只吃一次不同）。
@@ -87,13 +86,6 @@ export interface FrameIndexBuildStats {
  *    ⇒ 重复拼接在帧召回里起「往画面意图方向拉」的作用，属实测有效、刻意保留，**勿当 bug 删除**。
  */
 export function buildFrameRecallQueryText(q: FrameRecallQuery): string {
-  /** 🔧 2026-10-19：移除 refFrameDesc 拼接。
-   *  离线实证（本项目 442 帧向量 + bge-small-zh-v1.5 复算 P3 召回）：
-   *  参考帧描述是「素材原本是什么画面」，把它拼进召回 query 会把该画面本身及其语义邻域
-   *  硬拉进候选白名单，挤占真实候选名额。
-   *  典型：seg_2 文案「越经不起一张照片的考验」，其 refFrameDesc=「旁人举手机拍照」
-   *  → 选中「手指持握手机浏览屏幕评论」镜头；而该镜头在纯文案召回里只排第 42 名，
-   *  本不该进 top-24。visualIntent 已足够表达目标画面，不再叠加来源画面描述。 */
   return [q.text || '', q.visualIntent || '']
     .map((s) => String(s).trim())
     .filter(Boolean)
@@ -298,7 +290,7 @@ export class FrameRecallService {
 
   /**
    * 帧召回 + 上卷镜头候选。
-   * @param queries 逐句召回 query（shotId + 文案 + visualIntent + refFrameDesc）
+   * @param queries 逐句召回 query（shotId + 文案 + visualIntent）
    * @param projectId 项目 id
    * @param mediaId 素材 id
    * @param opts topFrames/topShots

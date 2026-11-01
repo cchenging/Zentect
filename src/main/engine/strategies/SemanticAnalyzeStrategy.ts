@@ -411,14 +411,17 @@ interface UnitFragmentWindow {
 export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
   readonly nodeType = 'semantic-analyze';
 
-  /** 🔬 Step1 Layer1 段落级时间窗（决策 #1 冻结值，与 daemon 端 _query_window 口径一致）：
+  /** 🔬 Step1 Layer1 段落级时间窗（决策 #1 冻结值，与旧 KM 端 _query_window 口径一致）：
    *  前探 30s 覆盖铺垫，后延 60s 覆盖冲突发酵。 */
   private static readonly WINDOW_LEAD_MS = 30000;
   private static readonly WINDOW_TAIL_MS = 60000;
 
   /** 🔬 Step1 Layer1：为 query 附加段落级时间窗闭包 [windowStartMs, windowEndMs]（决策 #1）。
-   *  由源锚 startMs/durationMs 派生（与 daemon 派生口径一致），daemon 端优先生效此显式窗口；
-   *  源锚无效时保留为 0，daemon 回退其内部兜底逻辑。 */
+   *  ⚠️ 2026-10-31 核验纠偏：该字段**仅旧 KM（`ZENTECT_KM_STORYBOARD_MODE=off/shadow` 的
+   *  `timeline_solver._query_window`）消费**；新引擎 `beam_search` 全文不读 windowStartMs/windowEndMs
+   *  （时间约束走 `_src_time_prox` 源时间邻近软罚）。保留它是旧 KM 回滚保险丝的一部分，不是死代码；
+   *  但切勿再按注释以为新引擎在用它做硬边界。
+   *  窗口中心来自段落 `startMs`（章节切片几何摊派产物），不是真实时间依据——这也是参考帧锚点退役的同一根因。 */
   private static attachQueryWindow(query: any): any {
     const start = Number(query?.startMs) || 0;
     const dur = Number(query?.durationMs) || 0;
@@ -1788,7 +1791,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     }
 
     /** 🎬 P3（2026-09-30）帧召回 + 上卷镜头候选 —— **取代**段级 TF-IDF 预选（preselectTopK）。
-     *  spec §4.3：拿「句文案 + visualIntent + refFrameDesc(真锚点)」去跟**帧释义**（一帧一条，零损耗）
+     *  spec §4.3：拿「句文案 + visualIntent」去跟**帧释义**（一帧一条，零损耗）
      *  求最像画面瞬间，命中帧按归属镜头（chunk_id）上卷计票 ⇒ 逐句"确实被命中的镜头清单"。
      *  为什么换：段是"镜头内均分"产物、语义逐字继承母镜头，同镜头内兄弟段文本完全同分
      *  （分不出切菜/洗碗）；帧级召回才分辨得出瞬间，上卷后得到的是真命中镜头而非抄来的简介。
@@ -1810,7 +1813,6 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         shotId: String(q.shotId),
         text: q.text,
         visualIntent: q.visualIntent,
-        refFrameDesc: q.refFrameDesc,
       })),
       projectId,
       sceneMediaId,
@@ -1984,8 +1986,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
     try {
       const kmResult = await AIDaemon.getInstance().post('/api/solver/kuhn_munkres_match', {
-        /** 🔬 Step1 Layer1：为每个 query 附加段落级时间窗闭包（windowStartMs/windowEndMs），
-         *  daemon 按此窗做硬边界过滤 + 候选不足自适应扩张，杜绝跨幕次跳变（决策 #1）。 */
+        /** 🔬 Step1 Layer1：为每个 query 附加段落级时间窗闭包（windowStartMs/windowEndMs）。
+         *  ⚠️ 2026-10-31：仅旧 KM 消费；新引擎（mode=on → beam_search）不读该字段，详见 attachQueryWindow。 */
         queries: kmQueries.map(SemanticAnalyzeStrategy.attachQueryWindow),
         videoChunks: kmVideoChunks,
         /** 🔧 缓存隔离：补传 projectId + mediaId，与 detect_scene_chunks 写入端同构的兜底 key（<projectId>:<mediaId>），
@@ -3088,12 +3090,13 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     isAbstractNarration?: boolean;
     /** 🎬 决策 #2 契约化（ADR-003）：显式闪回标记透传（优先级高于 KM 内部时间豁免关键词猜测） */
     isFlashback?: boolean;
-    /** 🎯 参考帧锚点（步骤3 产出的真实画面锚点，源视频坐标）：本层仅透传、不消费，
-     *  供 daemon 请求体携带，后续"以真实画面锚点为 query"的重构使用。 */
+    /** 🚫 已退役（2026-10-31）：参考帧锚点三字段（refFrameTimeMs/refFrameDesc/refFrameSource）。
+     *  锚点由"文案↔帧释义字面重合"选出、段落与母块是几何均分摊派，无真实依据，已从生成与消费链路移除。
+     *  字段仅保留给老工程请求体读取，不再写入、不再参与匹配调度。 */
     refFrameTimeMs?: number;
-    /** 🎯 参考帧画面描述（步骤2 帧描述；退化段为空字符串） */
+    /** @deprecated 同 refFrameTimeMs */
     refFrameDesc?: string;
-    /** 🎯 参考帧来源：matched=命中真实帧 / block_first=退化为母块首帧时间 */
+    /** @deprecated 同 refFrameTimeMs */
     refFrameSource?: 'matched' | 'block_first';
     /** 🔒 B域（§10.2.3 动作2）：锁1 位置校正媒体物理坐标透传——
      *   trimStartMs=已裁片头偏移（补丁4 幻觉守卫用）；sourceDurationMs=源视频总时长（越界守卫用）。 */
@@ -3405,16 +3408,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       isAbstractNarration: shots.some((shot: any) => shot.isAbstractNarration === true),
       /** 🎬 决策 #2 契约化（ADR-003）：显式闪回标记透传（优先级高于 KM 内部时间豁免关键词猜测）；折叠口径同上 */
       isFlashback: shots.some((shot: any) => shot.isFlashback === true),
-      /** 🎯 参考帧锚点透传（步骤3 产出，本层仅搬运不改口径）：
-       *  daemon 侧 query 模型对未知字段宽容忽略，本次仅保证字段进入请求体。
-       *  折叠口径：取组内首个非空项（碎片继承自同一母句的真实参考帧，正常同值；缺失留空）。 */
-      refFrameTimeMs: pickFirst((shot) => (typeof shot.refFrameTimeMs === 'number' && Number.isFinite(shot.refFrameTimeMs)
-        ? Math.round(shot.refFrameTimeMs)
-        : undefined)),
-      refFrameDesc: pickFirst((shot) => (typeof shot.refFrameDesc === 'string' ? shot.refFrameDesc : undefined)),
-      refFrameSource: pickFirst((shot) => (shot.refFrameSource === 'matched' || shot.refFrameSource === 'block_first'
-        ? shot.refFrameSource
-        : undefined)),
+      /** 🎯 参考帧锚点搬运已退役（2026-10-31）：锚点由几何摊派 + 文本重合选出，无真实依据，
+       *  不再写入 query（daemon 侧强锚围栏与软邻近加权同步下线）。 */
       /** 🎯 匹配单位 id：碎片自身所属「完整句」的 id（sentence 档由步骤3 断句器写入；折叠后=本 query 自身 shotId）。
        *  步骤5 出结果后按该 id（既有映射）把"单位级命中"展开回该单位覆盖的全部碎片，数量守恒。
        *  legacy 档不写出（emitMatchUnitId=false）⇒ 与现状字段集完全一致。 */
@@ -4128,6 +4123,14 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       return seq;
     };
 
+    /**
+     * 🚫 锚点交付侧调度已退役（2026-10-31）：L1 锚点重排 / L2 锚点邻近入池 / L2-b 首位让位全部删除。
+     *  原因：步骤3 的「参考帧锚点」是"文案↔帧释义字面重合"选出的、段落与母块又是几何均分摊派
+     *  （实测 15 章全部段数≠切片数），锚点无真实时间依据；以它排序只会把正确镜头挤掉。
+     *  现在 P4 候选次序恢复为：命中帧镜头 → KM 匹配镜头 → 召回白名单（最多 1+MAX_EXTRA_SHOTS）。
+     *  时间先验改由章级时间带 / 原声 ASR 时间窗提供（后续第 4 段接入）。
+     */
+
     /** 构造子窗：srcFile 恒给（同镜头时与命中镜头同一文件）；跨镜头才带 srcParent（供导出层按硬切处理） */
     const windowOf = (chunk: any, startMs: number, endMs: number, isCross: boolean): UnitFragmentWindow => ({
       startMs,
@@ -4139,6 +4142,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       ...(chunk?.description ? { srcDesc: String(chunk.description) } : {}),
     });
 
+    /** L0 归因：allocate 最近一次拒收原因（tail=镜头余量不足、supply=可供给时长不足、replay=回放闸门） */
+    let lastReject = '';
     /** 在指定镜头内开窗：入点 = 消费游标 ?? 命中帧 ?? 镜头起点；返回 null 表示该镜头余量不足或被回放闸门拦下 */
     const allocate = (
       chunk: any,
@@ -4148,10 +4153,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       fragIndex: number,
       allowReplay: boolean,
     ): UnitFragmentWindow | null => {
+      lastReject = '';
       const cid = String(chunk?.id || '');
       const s0 = Number(chunk?.startMs);
       const e0 = Number(chunk?.endMs);
-      if (!cid || !Number.isFinite(s0) || !Number.isFinite(e0) || e0 - s0 <= EPS) return null;
+      if (!cid || !Number.isFinite(s0) || !Number.isFinite(e0) || e0 - s0 <= EPS) { lastReject = 'invalid'; return null; }
       const cursor = cursorByShot.get(cid);
       const hit = Number.isFinite(hitMs) && hitMs >= s0 && hitMs <= e0 ? hitMs : NaN;
       /**
@@ -4172,7 +4178,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         rawEntry = Number.isFinite(hit) ? hit : s0;
       }
       const entry = Math.min(Math.max(rawEntry, s0), e0);
-      if (e0 - entry <= MIN_TAIL_MS) return null;                  // 命中片自身余量不足以承载画面起点
+      if (e0 - entry <= MIN_TAIL_MS) { lastReject = 'tail'; return null; }                  // 命中片自身余量不足以承载画面起点
       /**
        * 可供给上界 cover：旧口径 = 本片末（`e0`）；乙案开 ⇒ 沿同文件**源时间连续**的后继镜头链延伸，
        * 直到够承载本句配音为止（链上每片都如实登记消费，后续句不回头重放）。
@@ -4194,12 +4200,13 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
        *  现口径：可供给 < 需要 ⇒ **弃该镜头**（不推进游标、不白耗余料），交候选链后续镜头（顺延）或
        *  整镜头兜底收口。宁可不取这一镜的料，也绝不把画面拉长成慢放。
        */
-      if (neededMs > EPS && avail < neededMs - EPS) return null;
+      if (neededMs > EPS && avail < neededMs - EPS) { lastReject = 'supply'; return null; }
       const want = neededMs > EPS ? neededMs : Math.min(avail, DEFAULT_WINDOW_MS);
       const end = Math.min(cover, entry + want);
       /** 🎬 回放闸门（2026-10-26）：真重叠 / 同镜非相邻复用 ⇒ 本轮拒收，交由候选链顺延次优 */
       if (!allowReplay && isReplayWindow(chunk, entry, end, fragIndex)) {
         stats.replayBlocked += 1;
+        lastReject = 'replay';
         return null;
       }
       cursorByShot.set(cid, Math.min(end, e0));                    // 单向锁：只增不减
@@ -4239,6 +4246,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       push(hitId);
       push(anchorId);
       for (const id of candidateIdsByUnit?.[unitKey] || []) push(String(id));
+      /** 候选池快照：命中镜头 → 匹配镜头 → 召回白名单（锚点排序/入池/首位让位均已退役，不再重排） */
       const list = cands.slice(0, 1 + MAX_EXTRA_SHOTS);
 
       const needed = Number((q as any)?.audioDurationMs);
@@ -4246,13 +4254,16 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
       let win: UnitFragmentWindow | null = null;
       let pickedId = '';
+      /** L0 归因：本次每个候选被拒的原因（首轮口径：tail/supply/replay 优先于兜底轮的回放放行） */
+      const rejectOf = new Map<string, string>();
       /** 两轮：先避开回放（真重叠 / 非相邻同镜）；全被拦下才放行，宁可回放也不留空窗 */
       for (const allowReplay of [false, true]) {
         for (const cid of list) {
           const chunk = chunkById.get(cid);
-          if (!chunk) continue;
+          if (!chunk) { if (!rejectOf.has(cid)) rejectOf.set(cid, 'nochunk'); continue; }
           const got = allocate(chunk, neededMs, cid === hitId ? hitMs : NaN, cid !== anchorId, fragIndex, allowReplay);
           if (got) { win = got; pickedId = cid; break; }
+          if (!rejectOf.has(cid)) rejectOf.set(cid, lastReject || 'unknown');
         }
         if (win) break;
       }

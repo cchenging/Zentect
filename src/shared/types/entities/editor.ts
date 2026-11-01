@@ -103,22 +103,15 @@ export interface BaseScriptParagraph {
    */
   duration?: number;
   /**
-   * 🎯 参考帧时间（源视频坐标，ms）：步骤3 为该段文案从"母块时间窗内"选出的**真实画面锚点**，
-   * 与 startMs（母块内等分插值得到的近似锚点）并存、互不替换。
-   * 选择规则见 ScriptGenStrategy#resolveParagraphRefFrame：窗内帧描述与段文案（text+visualIntent）
-   * 字符二元组 Jaccard 重合度最高者；缺失帧描述时退化为母块首帧时间（refFrameSource='block_first'）。
+   * 🚫 已退役（2026-10-31）：参考帧锚点。步骤3 的「锚点」由"文案↔帧释义字面重合"选出，
+   * 而段落与母块是几何均分摊派（15 章全部段数≠切片数），锚点无真实依据，已从生成与消费链路移除。
+   * 字段仅保留给老工程 metadata 读取，不再写入、不再参与匹配。
+   * @deprecated 2026-10-31 锚点机制退役，禁止新增读取
    */
   refFrameTimeMs?: number;
-  /**
-   * 🎯 参考帧画面描述：refFrameTimeMs 对应帧的步骤2 VLM 画面描述（景别前缀 + action）；
-   * 退化（refFrameSource='block_first'）时为空字符串，不伪造描述。
-   */
+  /** @deprecated 同 refFrameTimeMs */
   refFrameDesc?: string;
-  /**
-   * 🎯 参考帧来源可解释标记：
-   * - matched     = 母块时间窗内命中"文本重合度最高"的真实帧；
-   * - block_first = 窗内无可用帧描述，退化为母块首帧时间 + 空描述。
-   */
+  /** @deprecated 同 refFrameTimeMs */
   refFrameSource?: 'matched' | 'block_first';
   /**
    * 🔁 兼容迁移期遗留标记（@deprecated，保留一个版本周期）：判别联合落地前旧数据的原声布尔标记。
@@ -308,6 +301,12 @@ export interface MatchResult {
   videoTimelineEndMs?: number;
   /** 🎯 候选不足降级警示（2026-09-06）：daemon 候选不足降级到全池时置 true，前端显示"兜底匹配"警示 */
   degraded?: boolean;
+  /** @deprecated 2026-10-31 锚点机制退役：见 ScriptParagraph.refFrameTimeMs */
+  refFrameTimeMs?: number;
+  /** @deprecated 同 refFrameTimeMs */
+  refFrameDesc?: string;
+  /** @deprecated 同 refFrameTimeMs */
+  refFrameSource?: 'matched' | 'block_first';
   /** 🔒 K2 手动锁定锚点（2026-09-21）：用户手动替换/确认后置 true；重新匹配时该节点冻结不变 */
   isUserLocked?: boolean;
 }

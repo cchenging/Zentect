@@ -212,12 +212,13 @@ class KMMatchQuery(BaseModel):
     Node 侧 VI 绝对优先锁定（R2-2）、正文仅在 VI 无情绪词时兜底并取转折终点状态；
     daemon 侧非空时**替换 query.emotion** 作为 emotion_sim 的 query 侧输入（复用既有 EMOTION_CATEGORIES/EMOTION_COMPAT 冲突抑制，R2-4）。"""
     moodIntent: str = ''
-    """🎯 参考帧锚点（源视频坐标，ms）：步骤3 为该段文案选出的真实参考帧时间（与 startMs 等分插值并存）。
-    ⚠️ 本期 daemon **不做任何消费**，仅接收以确保字段能到达请求体；后续"以真实画面锚点为 query"重构再启用。"""
+    """🚫 已退役（2026-10-31）：参考帧锚点三字段。锚点由"文案↔帧释义字面重合"选出、
+    段落与母块又是几何均分摊派，无真实时间依据；Node 不再写入，daemon 不再消费。
+    字段仅保留以兼容老请求体（恒为 0/空，_query_window 不再据此定窗）。"""
     refFrameTimeMs: float = 0
-    """🎯 参考帧画面描述（步骤2 帧描述；退化段为空字符串），本期仅接收不消费。"""
+    """@deprecated 同 refFrameTimeMs"""
     refFrameDesc: str = ''
-    """🎯 参考帧来源：matched=命中真实帧 / block_first=退化为母块首帧时间，本期仅接收不消费。"""
+    """@deprecated 同 refFrameTimeMs"""
     refFrameSource: str = ''
     """📗 步骤1 ③ 句尾静音气口毫秒（原声段磁吸，补丁2/7 消费；None=无 ASR 气口数据，规则卡中性放行不造假）。"""
     silenceGapMs: Optional[float] = None
@@ -326,7 +327,6 @@ WINDOW_LEAD_MS = 30000       # 前探：覆盖章节铺垫
 WINDOW_TAIL_MS = 60000       # 后延：覆盖冲突发酵
 WINDOW_EXPAND_MS = 120000    # 候选不足单向扩张步长
 WINDOW_MIN_CANDIDATES = 5    # 窗内候选不足阈值
-STRONG_ANCHOR_FENCE_MS = 60000  # B域（§10.2.3 动作1）：真实参考帧强锚 ±60s 物理围栏
 WINDOW_PENALTY = 5.0         # 窗外强惩罚（与 candidateIds 同通道量级，远超 combined 的 [0,1]）
 
 # 🎬 P4 空镜复用硬额度（2026-09-15）：空镜允许跨段复用（B-Roll 是剪辑常规手法），
@@ -338,35 +338,16 @@ BROLL_MAX_REUSE = 2
 
 def _query_window(query, universe_indices, video_chunks):
     """段落级时间窗 [w0, w1]。
-    - B域（§10.2.3 动作1）真实参考帧强锚优先：`refFrameSource=='matched'` → 以
-      refFrameTimeMs 为中心的**强锚 ±60s 物理围栏**（替换近似 startMs 派生窗）；
-      `block_first` → 同 ±60s，但窗内候选不足时放宽到近似派生窗（⟨段⟩ 的上界）。
-    - 无锚（refFrameTimeMs≤0 / refFrameSource 空）→ 退章节映射：
-      优先取 Node 显式透传的 windowStartMs/windowEndMs（决策 #1：Node 侧算好直接给）；
+    - ⚠️ 2026-10-31 核验纠偏：本函数**仅旧 KM（mode=off/shadow）可达**；新引擎 beam_search 全文不读
+      windowStartMs/windowEndMs（其时间约束走 `_src_time_prox` 源时间邻近软罚）。
+    - 🚫 参考帧强锚分支已退役（2026-10-31）：锚点由几何摊派 + 文本重合选出，无真实时间依据。
+    - 章级时间带优先：取 Node 显式透传的 windowStartMs/windowEndMs（决策 #1：Node 侧算好直接给）；
       仍未透传时由源锚派生：w0=max(0,startMs−30s)，w1=startMs+durationMs+60s。
     - 候选不足（窗内切片数 < WINDOW_MIN_CANDIDATES）时单向扩张：先 +120s 后延，仍不足再 −120s 前探。
     - 🎬 批1 R2-3 场景感知扩张：query 带 sceneGroup 时，扩张判据从"窗内切片数 ≥5"
       改为"窗内存在同组切片"——只要窗内无同组切片且未达上限(+600s)，继续 +120s 单向扩张，
       让散布全片的目标场景切片能进入候选（教室切片 0.5~24min 散布实证 F5）。
     返回 (w0, w1)；源锚也无效（startMs 与 durationMs 均 ≤0）返回 None，调用方走旧 ±3 块兜底。"""
-    # ---- 强锚（B域 §10.2.3 动作1）：步骤3 真实参考帧优先 ----
-    ref_frame = float(getattr(query, 'refFrameTimeMs', 0) or 0)
-    ref_src = str(getattr(query, 'refFrameSource', '') or '')
-    if ref_frame > 0 and ref_src in ('matched', 'block_first'):
-        w0 = max(0.0, ref_frame - STRONG_ANCHOR_FENCE_MS)
-        w1 = ref_frame + STRONG_ANCHOR_FENCE_MS
-        # block_first 候选不足时放宽到章节派生窗（"放宽到段"的物理上界）。
-        start = float(query.startMs or 0)
-        dur = float(query.durationMs or 0)
-        if ref_src == 'block_first' and universe_indices:
-            def _in_win(_w0, _w1):
-                return sum(1 for i in universe_indices
-                           if _w0 <= float(video_chunks[i].get('startMs') or 0) <= _w1)
-            if _in_win(w0, w1) < WINDOW_MIN_CANDIDATES and (start > 0 or dur > 0):
-                w0 = max(0.0, start - WINDOW_LEAD_MS)
-                w1 = start + dur + WINDOW_TAIL_MS
-        return (w0, w1)
-
     w0 = float(getattr(query, 'windowStartMs', 0) or 0)
     w1 = float(getattr(query, 'windowEndMs', 0) or 0)
     if not (w1 > w0):
@@ -3354,11 +3335,6 @@ def _kuhn_munkres_match_sync_impl(req: KMMatchReq) -> dict:
     n_chunks = len(video_chunks)
     # 打印本次请求规模（长耗时排查关键指标：query × chunk 规模）
     print(f"[KM] 请求规模：{n_queries} queries × {n_chunks} chunks", file=sys.stderr)
-    # 🎯 诊断（本期不消费）：确认步骤3 产出的参考帧锚点确实随请求体到达 daemon
-    _ref_frame_cnt = sum(
-        1 for _q in req.queries if float(getattr(_q, "refFrameTimeMs", 0) or 0) > 0
-    )
-    print(f"[KM] 收到 refFrameTimeMs 的 query 数: {_ref_frame_cnt}/{n_queries}", file=sys.stderr)
 
     # 🧪 P1 消融复现用：把**本次求解的有效输入**（queries + 实际消费的 videoChunks）整体落盘。
     #   目的：约束消融需要 N 次「改开关→跑步骤5」，每次都要用户在 App 里点一遍；
@@ -5918,7 +5894,7 @@ def _agg_slate_scores(queries, chunk_by_id) -> dict:
     类级缓存）。每句：四路全池 rank01 → 各取 Top `VLM_RR_AGG_UNION_K` 并集 → 并集内均值。
 
     Args:
-        queries: 归一化脚本句（build_req_context 产出，含 text/visualIntent/refFrameDesc）。
+        queries: 归一化脚本句（build_req_context 产出，含 text/visualIntent）。
         chunk_by_id: 切片资产索引 {chunkId: chunk}。
 
     Returns:
@@ -5944,9 +5920,8 @@ def _agg_slate_scores(queries, chunk_by_id) -> dict:
     q_text = [build_text_query_text(q) for q in queries]
     q_frame = []
     for q in queries:
-        # 对齐实验 rtext 口径：q(=text vi) + vi（刻意双拼，与帧召回一致）+ 参考画面描述。
-        parts = (build_query_text(q), str(q.get('visualIntent') or '').strip(),
-                 str(q.get('refFrameDesc') or '').strip())
+        # 对齐实验 rtext 口径：q(=text vi) + vi（刻意双拼，与帧召回一致）。
+        parts = (build_query_text(q), str(q.get('visualIntent') or '').strip())
         q_frame.append(' '.join(s for s in parts if s))
     S_concat = np.asarray(AIModels.encode_texts(q_concat), dtype=np.float32) @ D.T
     S_text = np.asarray(AIModels.encode_texts(q_text), dtype=np.float32) @ D.T

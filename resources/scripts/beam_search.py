@@ -13,8 +13,9 @@ beam_search.py —— 受限束搜索前向排产（§8.2 / §9，Q1/Q2 准绳�
   束宽 Beam=3；候选代价注入满足时仍守恒选择；逐句前向推进。
   受限点：
     · 掩码（补丁6，粒度 = **镜头 + 时间窗**，P4 修正）：逐镜头维护本路径的**下一窗入点游标**
-      （`BeamPath.win_cursor_ms`，跨场不清零 ⇒ 历史归全局黑名单）。同一镜头可被多句复用，
+      （`BeamPath.win_cursor_ms`，跨场不清零）。同一镜头可被多句**连续**复用，
       但每句只开**新窗**（入点 = 上句窗末 ⇒ 窗序号严格递增，同镜同窗结构性禁复用，防 PPT 化）；
+      一旦被切走即「离场」（`BeamPath.retired_shots`），此后不得再回来取用——重复播放影响观感；
       「Σ 窗长 ≤ 镜头时长」按「剩余窗长 ≥ 本句窗长」判定（`_win_exhausted`），窗用尽则
       该镜头后续句不得再选 —— 杜绝回滚重取 a→b 段（§1.2 剪辑师基准：起点单调不减）。
     · 多样性剪枝（补丁6）：每一层保留的 3 条路径**末端切片互异**，杜绝微小变体霸位。
@@ -119,6 +120,9 @@ class BeamPath:
             只增不减（跨场不清零）：同一镜头可被多句复用，但每句只开**新窗**（入点 = 上句窗末，
             窗序号严格递增 ⇒ 同镜同窗结构性禁复用）；游标触及镜头末 ⇒ 该镜头用尽、后续句不得再选。
             兄弟路径各持独立副本（`build_path` 拷贝），互不污染。
+        retired_shots: 已离场镜头黑名单（2026-11-01 产品口径）——本路径**切走过**的镜头键集合。
+            长镜头连续顺延（同镜换窗）不算离场、不受限；一旦切走再回头取用即观众眼里的「重复播放」，
+            故展开层据此拦截（三级熔断 force 时放开，兑现「绝不白屏」）。路径级独立副本。
         prev_scale: 上一镜景别（转移代价输入）。
         continuation_count: 自末次 NEW_SHOT 起连续顺延句数。
         last_shot_commit_ms: 末次强切/新镜的落点时间（顺延 7s 判据）。
@@ -129,6 +133,7 @@ class BeamPath:
     curr_chunk_id: Optional[str] = None
     curr_chunk: Optional[dict] = None
     win_cursor_ms: Dict[str, float] = field(default_factory=dict)
+    retired_shots: Dict[str, bool] = field(default_factory=dict)
     prev_scale: str = ''
     continuation_count: int = 0
     last_shot_commit_ms: float = 0.0
@@ -165,6 +170,12 @@ def build_path(path: BeamPath, chunk: dict, shot_id: str, scene_id: int,
     _key = _shot_key(chunk)
     _s0 = float(chunk.get('startMs') or 0.0)
     _e0 = float(chunk.get('endMs') or 0.0)
+    # 复用闸（2026-11-01 产品口径）：镜头一旦被本路径**切走**即离场，此后不得再回来取用——
+    #   长镜头连续顺延（同镜换窗、从未离场）不受限；「离场后再取」才是观众眼里的重复播放。
+    _retired = dict(path.retired_shots)
+    _prev_key = _shot_key(path.curr_chunk) if path.curr_chunk else ''
+    if _prev_key and _prev_key != _key:
+        _retired[_prev_key] = True
     _win_cursor = dict(path.win_cursor_ms)
     _cursor_new = float(entry_ms) + float(need_ms)
     if _e0 > _s0:
@@ -175,6 +186,7 @@ def build_path(path: BeamPath, chunk: dict, shot_id: str, scene_id: int,
         curr_chunk_id=chunk.get('id'),
         curr_chunk=chunk,
         win_cursor_ms=_win_cursor,
+        retired_shots=_retired,
         prev_scale=str(chunk.get('shotScale') or ''),
         continuation_count=0,  # NEW_SHOT 重开顺延计数（调 setUp 由展开层显式控制）
         last_shot_commit_ms=float(chunk.get('startMs') or 0),
@@ -276,17 +288,16 @@ def _win_exhausted(chunk: dict, cursor: Optional[float], need_ms: float) -> bool
     return _win_residual_ms(chunk, cursor) < float(need_ms) - CONTINUE_QUOTA_EPS
 
 
-def _win_entry_ms(path: BeamPath, chunk: dict, anchor_ms: Optional[float]) -> float:
+def _win_entry_ms(path: BeamPath, chunk: dict) -> float:
     """本句在该镜头上开窗的入点（源 ms）。
 
-    优先本路径窗游标（= 上句窗末 ⇒ 顺延，只增不减）；否则取命中帧强锚（**锚点须确在本镜头
-    区间内**，跨界锚不得借用 —— 错就错，不造假入点）；再退回镜头起点。取料层
-    `buildShotWindowTable.allocate` 按同一口径（cursor ?? hit ?? startMs）开窗，两侧入点一致。
+    优先本路径窗游标（= 上句窗末 ⇒ 顺延，只增不减）；否则退回镜头起点。取料层
+    `buildShotWindowTable.allocate` 按同一口径（cursor ?? hit ?? startMs）开窗。
+    🚫 参考帧锚点入点已退役（2026-10-31）：锚点由几何摊派 + 文本重合选出，无真实依据。
 
     Args:
         path: 本路径（读 `win_cursor_ms`）。
         chunk: 本句候选镜头。
-        anchor_ms: 本句真实参考帧时间（仅 matched 强锚 / 开关 on 的 block_first 弱锚非 None）。
 
     Returns:
         float: 本窗入点（源 ms）。
@@ -295,11 +306,6 @@ def _win_entry_ms(path: BeamPath, chunk: dict, anchor_ms: Optional[float]) -> fl
     cursor = path.win_cursor_ms.get(_shot_key(chunk))
     if cursor is not None:
         return max(float(cursor), s0)
-    if anchor_ms is not None:
-        a = float(anchor_ms)
-        e0 = float(chunk.get('endMs') or 0.0)
-        if a >= s0 and (e0 <= s0 or a <= e0):
-            return a
     return s0
 
 
@@ -413,11 +419,8 @@ def solve(
     fl_stats: Dict[str, int] = {'hits': 0, 'cost': 0.0, 'step': 0, 'pool_empty': 0,
                                 'probe': 0, 'guard': 0, 'miss_pool': 0, 'wide': 0,
                                 'scarce': 0, 'sole': 0}
-    # 弱锚接线（丙①，落码点3）开关与诊断计数：缺省 off = 零行为变化（block_first 锚仍不参与）。
-    #   集合按 shotId 去重计数（_expand_paths 熔断时会被多次调用，直接计数会虚高）。
-    _block_anchor = _read_block_anchor()
-    _anc_shots: set = set()
-
+    # 复用闸拦截计数（镜头离场后回取候选的拦截数）；整趟汇总一行诊断。
+    reuse_stats: Dict[str, int] = {'blocked': 0}
     for qi, query in enumerate(ctx.queries):
         sid = str(query['shotId'])
         scene = ctx.shotid_to_segment.get(sid) or 0
@@ -446,6 +449,9 @@ def solve(
             if not future_pools:
                 _bump(fl_stats, 'pool_empty')
 
+        # 🚫 参考帧强锚/弱锚解析已退役（2026-10-31）：锚点无真实时间依据，
+        #   窗入点不再取锚点，仅由上句窗末游标（顺延）或镜头起点决定。
+
         # 展开一条本句的候选路径（K1 熔断复用：active_rules 控制硬门禁是否生效）。
         def _expand_paths(active_rules, force=False):
             """对当前存活路径展开本句候选；force=True 时跳过全部规则（三级熔断）。
@@ -460,30 +466,24 @@ def solve(
             out: List[BeamPath] = []
             # 本句所需窗长：配音时长缺失按 WINDOW_FALLBACK_MS 占一个真实窗（与取料层同口径）。
             _need = _win_need_ms(tts_duration_ms.get(sid))
-            # 强锚解析（B域动作3）：matched 强锚恒生效；block_first（母块首帧，真实源坐标）为**弱锚**，
-            #   仅在开关 on 时接线（丙①，落码点3）。须先于规则执行——补丁11 单向锁按「本窗入点」判据
-            #   （由 rctx['entryMs'] 注入）。弱锚只改单向锁起算点，不掺任何代价/门禁。
-            _anchor_ms = None
-            _rf = float(query.get('refFrameTimeMs') or 0)
-            if _rf > 0:
-                _src_kind = str(query.get('refFrameSource') or '')
-                if _src_kind == 'matched':
-                    _anchor_ms = _rf
-                elif _src_kind == 'block_first' and _block_anchor:
-                    _anchor_ms = _rf
-                    _anc_shots.add(sid)
             for path in paths:
                 prev_chunk = path.curr_chunk
                 for cand_id, base_cost in scored:
                     cand = ctx.chunk_by_id[cand_id]
+                    # 复用闸（2026-11-01 产品口径）：本路径已**切走**的镜头不得再回来选——
+                    #   长镜头连续顺延（同镜换窗、未离场）完全不受限；「离场后再取」= 重复播放，直接拦。
+                    #   三级熔断 force=True 时放开（否则可能无解），并照常标 all_beam_death 降级待确认。
+                    if not force and _shot_key(cand) in path.retired_shots:
+                        reuse_stats['blocked'] += 1
+                        continue
                     # 掩码（补丁6，粒度 = 镜头 + 时间窗）：本路径已在该镜开过窗且**剩余窗长不足本句窗长**
                     #   ⇒ 该镜窗用尽，本句不得再选。force=True（三级熔断）忽略掩码，确保「绝不白屏」。
                     if not force and _win_exhausted(
                             cand, path.win_cursor_ms.get(_shot_key(cand)), _need):
                         continue
-                    # 本窗入点（源 ms）：路径游标 ?? 命中帧强锚（须确在本镜内）?? 镜头起点，
+                    # 本窗入点（源 ms）：路径游标（顺延）?? 镜头起点，
                     #   与取料层 `buildShotWindowTable.allocate` 同口径（两侧开窗起点一致）。
-                    entry = _win_entry_ms(path, cand, _anchor_ms)
+                    entry = _win_entry_ms(path, cand)
                     total = base_cost
                     if not force:
                         # 规则上下文：state / 句 / 跨场首步标记 / 本窗入点（规则卡只读，Δ_advance 写入）。
@@ -509,6 +509,8 @@ def solve(
                             if _tp > 0.0:
                                 # 用权重缩放（缺省 1.0，线性加权），确保默认即生效、可整档关闭。
                                 total += _tp * _tp_w
+                        # 同文件源时间单调分层（第 4 段结构性方案）在候选集层面裁决（见下方 _expand_ids），
+                        #   打分侧不再叠加任何倒退阻尼——实测权重方案会压过语义主分、性价比不成立。
                         # CONTINUE_PREV 同父软偏好：仅对断言顺延上一镜的句生效。候选与上一镜
                         # 父镜头一致时降成本，从源头延续同父（reconcile 兜底）。prev_chunk 即
                         # path.curr_chunk——对每条第路径独立判断，故只影响本句候选间排序。
@@ -563,6 +565,10 @@ def solve(
     # 此处仅按叙事行序把**束内真实落点**如实翻译为消费端权威分类，绝不改写选片。
     _classify_continuation(ctx, results, tts_duration_ms)
 
+    # 4c 产出侧审计（只读统计，不改解）：覆盖 / 候选分布 / 同文件邻近倒退 / 换文件 / 复用。
+    _time_pool_audit(ctx, results)
+    # 复用闸诊断（常开约束，非开关）：输出拦截量，用于确认「离场后回取」确实被结构性拦住。
+    _fl_diag('[reuse-guard] 镜头离场后不得回取 ｜ 拦截候选=%d' % int(reuse_stats['blocked']))
     # 前向审望（补丁1）诊断：仅开关 on 时输出（off 档日志零变化，符合「缺省零行为变化」）。
     if fl_weight > 0.0:
         _fl_diag(f'[forward-lookout] 补丁1 前瞻惩罚 on(weight={fl_weight}) '
@@ -572,11 +578,6 @@ def solve(
                  f'未相交={fl_stats["miss_pool"]} 宽裕={fl_stats["wide"]} '
                  f'濒危={fl_stats["scarce"]} 唯一={fl_stats["sole"]} ｜ '
                  f'空池步={fl_stats["pool_empty"]}/{fl_stats["step"]}')
-
-    # 弱锚接线（丙①，落码点3）诊断：仅开关 on 时输出（off 档日志零变化），与前瞻诊断同落盘口。
-    if _block_anchor:
-        _fl_diag(f'[block-anchor] 丙① 弱锚接线 on：block_first 句实际锚定 {len(_anc_shots)} 句'
-                 f'（matched 强锚不受影响；仅改补丁11 单向锁起算点，不掺代价/门禁）')
 
     return results
 
@@ -886,20 +887,6 @@ def _read_forward_lookout() -> float:
     return max(0.0, w)
 
 
-def _read_block_anchor() -> bool:
-    """读取「母块首帧弱锚」接线开关（env `ZENTECT_KM_BLOCK_ANCHOR`，缺省 off）。
-
-    off（缺省）= 零行为变化：`refFrameSource='block_first'` 的句仍按无锚处理（现状，实测
-    本项目 43/43 段该锚完全未参与）。on = 把母块首帧（真实源坐标）接为**弱锚**，仅作
-    补丁11 单向锁起算点（与 matched 强锚同管线，不掺代价/门禁），收益需经 L2/L3 裁判验证。
-
-    Returns:
-        bool: True 表示接线生效。
-    """
-    import os
-    return str(os.environ.get('ZENTECT_KM_BLOCK_ANCHOR', '0')).strip().lower() in ('1', 'on', 'true')
-
-
 def _forward_lookout_pools(queries: List[dict], cands_by_shotid: Dict[str, List[str]],
                            qi: int,
                            tts_duration_ms: Optional[Dict[str, float]] = None,
@@ -1065,6 +1052,66 @@ def _to_confidence(base_cost) -> float:
     if isinstance(base_cost, bool) or not isinstance(base_cost, (int, float)):
         return 0.0
     return round(max(0.0, min(1.0, 1.0 - float(base_cost))), 4)
+
+
+def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
+    """第 4 段 4c：产出侧时间/覆盖/复用审计（只读统计，绝不改解）。
+
+    口径全部可从结果直接算，不依赖新数据源：
+      · 覆盖：已匹配句数 / 总句数（0 候选句通过候选分布一并暴露）。
+      · 邻近倒退**形态记录（非质量红线）**：按叙事行序遍历相邻已匹配句，同 filePath 且源时间倒退
+        > 4s 计一次。2026-11-01 产品确认：B-roll 池只要求「文案配对的画面正确」，同一素材内按需
+        来回取料属正常剪辑手法，回跳本身不算缺陷；故该计数只作形态观测，**不得据此加时间方向约束**
+        （实测每压掉一次回跳都要牺牲明显语义贴合度）。跨文件（异源插入）另计，同样只观测。
+      · 复用：同一 chunk 被多段引用的次数分布（最大复用次数 / 被复用过的片段数）。
+      · 候选分布：每句候选池大小的 min / 中位 / max。
+
+    Args:
+        ctx: 标准候选池上下文（供 chunk 回查与候选分布）。
+        results: 本趟装配产物 {shotId: MatchResult-dict}。
+    """
+    _queries = list(getattr(ctx, 'queries', []) or [])
+    _total = len(_queries)
+    _matched = 0
+    _backward = 0
+    _cross_file = 0
+    _reuse: Dict[str, int] = {}
+    _prev_chunk: Optional[dict] = None
+    for _q in _queries:
+        _sid = str(_q.get('shotId') or '')
+        _m = results.get(_sid)
+        if not _m:
+            continue
+        _cid = str(_m.get('chosenChunkId') or '')
+        _c = ctx.chunk_by_id.get(_cid) or (_m.get('chunkData') if isinstance(_m.get('chunkData'), dict) else None)
+        if not _c:
+            continue
+        _matched += 1
+        if _cid:
+            _reuse[_cid] = _reuse.get(_cid, 0) + 1
+        if _prev_chunk is not None:
+            _pf = str(_prev_chunk.get('filePath') or '')
+            _cf = str(_c.get('filePath') or '')
+            if _pf and _cf and _pf == _cf:
+                _ps = float(_prev_chunk.get('startMs') or 0.0)
+                _cs = float(_c.get('startMs') or 0.0)
+                if _ps > 0 and _cs > 0 and (_ps - _cs) > TIME_PROX_WINDOW_MS:
+                    _backward += 1
+            elif _pf and _cf:
+                _cross_file += 1
+        _prev_chunk = _c
+    _sizes = sorted(len((ctx.cands_by_shotid or {}).get(str(_q.get('shotId') or '')) or [])
+                    for _q in _queries)
+    _cand_min = _sizes[0] if _sizes else 0
+    _cand_med = _sizes[len(_sizes) // 2] if _sizes else 0
+    _cand_max = _sizes[-1] if _sizes else 0
+    _zero_pool = sum(1 for _n in _sizes if _n == 0)
+    _reused_chunks = sum(1 for _n in _reuse.values() if _n > 1)
+    _reuse_max = max(_reuse.values()) if _reuse else 0
+    _fl_diag('[time-audit] 覆盖=%d/%d（零候选=%d） ｜ 候选 min/中位/max=%d/%d/%d ｜ '
+             '同文件源时间回跳=%d（形态记录，非红线） ｜ 换素材文件=%d ｜ 最大复用=%d 复用片数=%d' % (
+                 _matched, _total, _zero_pool, _cand_min, _cand_med, _cand_max,
+                 _backward, _cross_file, _reuse_max, _reused_chunks))
 
 
 def _pick_best_for_shot(paths: List[BeamPath], query: dict,

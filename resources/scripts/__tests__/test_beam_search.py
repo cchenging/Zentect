@@ -304,6 +304,32 @@ def test_continuation_in_beam_same_shot():
     print("✓ test_continuation_in_beam_same_shot: 顺延镜头级正常参与，束内直接选到上一镜本体")
 
 
+def test_reuse_guard_blocks_revisiting_retired_shot():
+    """复用闸：镜头被切走后不得回取；无合法替身时熔断强挂并标降级（绝不白屏）。"""
+    qs = [assemble_query({'shotId': s, 'text': '句' + s}) for s in ('s1', 's2', 's3')]
+    c1 = assemble_chunk({'id': 'c1', 'parentChunkId': 'C1', 'startMs': 1000, 'endMs': 5000})
+    c2 = assemble_chunk({'id': 'c2', 'parentChunkId': 'C2', 'startMs': 6000, 'endMs': 9000})
+    c3 = assemble_chunk({'id': 'c3', 'parentChunkId': 'C3', 'startMs': 10000, 'endMs': 14000})
+
+    # ① 有合法替身 ⇒ s3 必须换镜，不得回取已离场的 c1（即便 c1 语义更优），且不算降级。
+    ctx = _mk_ctx(qs, [c1, c2, c3], {'s1': ['c1'], 's2': ['c2'], 's3': ['c1', 'c3']})
+    out = solve(ctx, {'s1': {'c1': 0.1}, 's2': {'c2': 0.1}, 's3': {'c1': 0.1, 'c3': 0.5}}, [],
+                {'s1': 1000.0, 's2': 1000.0, 's3': 1000.0})
+    assert out['s2']['chosenChunkId'] == 'c2', "s2 应正常换镜"
+    assert out['s3']['chosenChunkId'] == 'c3', \
+        "已离场镜头 c1 不得回取（重复播放），应改选 c3"
+    assert not out['s3'].get('isDegraded'), "有合法替身时属正常排产，不应降级"
+
+    # ② 唯一候选就是离场镜头 ⇒ 三级熔断强挂（绝不白屏），并标降级供 UI 待确认。
+    ctx2 = _mk_ctx(qs, [c1, c2], {'s1': ['c1'], 's2': ['c2'], 's3': ['c1']})
+    out2 = solve(ctx2, {'s1': {'c1': 0.1}, 's2': {'c2': 0.1}, 's3': {'c1': 0.1}}, [],
+                 {'s1': 1000.0, 's2': 1000.0, 's3': 1000.0})
+    assert out2['s3']['chosenChunkId'] == 'c1', "无合法候选时必须强挂（绝不白屏）"
+    assert out2['s3'].get('isDegraded') is True, "强挂离场镜头必须标降级"
+    assert out2['s3'].get('degradeKind') == 'all_beam_death'
+    print("✓ test_reuse_guard_blocks_revisiting_retired_shot: 离场镜头禁回取 + 熔断保底正确")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("🔎 步骤5 新引擎 · 束搜索求解核验证（⓪ 单测骨架）")
@@ -320,5 +346,6 @@ if __name__ == "__main__":
     test_degraded_confidence_capped_below_confirm_threshold()
     test_monotonic_lock_reads_window_entry()
     test_continuation_in_beam_same_shot()
+    test_reuse_guard_blocks_revisiting_retired_shot()
     print("=" * 60)
     print("全部通过 ✅")

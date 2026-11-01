@@ -82,6 +82,8 @@ import {
   dedupeDuplicateOriginalSegments,
   originalWindowSec,
   verifyOutlineGrounding,
+  allocateChapterShotChunkIndex,
+  deriveShotsFromFrames,
 } from '../ScriptGenStrategy';
 import { AppLogger } from '../../../core/AppLogger';
 
@@ -1621,5 +1623,85 @@ describe('首尾打磨 polishHeadTail', () => {
     const stat = await polish([]);
     expect(mockChat).not.toHaveBeenCalled();
     expect(stat).toEqual({ total: 0, headRewritten: 0, tailRewritten: 0 });
+  });
+});
+
+describe('ScriptGenStrategy - 章内 shot→chunk 定位（allocateChapterShotChunkIndex）', () => {
+  it('镜头数 == chunk 数：恒等映射（旧行为逐字节不变）', () => {
+    const chunks = [{ startMs: 1000, durationMs: 5000 }, { startMs: 6000, durationMs: 5000 }, { startMs: 11000, durationMs: 5000 }];
+    expect([0, 1, 2].map((i) => allocateChapterShotChunkIndex(i, 3, chunks))).toEqual([0, 1, 2]);
+  });
+
+  it('镜头数 < chunk 数：按章内时长铺开，不再只盖住章首', () => {
+    const chunks = Array.from({ length: 5 }, (_, i) => ({ startMs: i * 4000, durationMs: 4000 }));
+    // 旧口径 = [0,1]（只覆盖章首 2 个 chunk，章尾全留白）
+    expect([0, 1].map((i) => allocateChapterShotChunkIndex(i, 2, chunks))).toEqual([1, 3]);
+  });
+
+  it('🎯 末章覆盖率回归（3 段解说 / 10 chunk）：末段必须落到章尾附近', () => {
+    const chunks = Array.from({ length: 10 }, (_, i) => ({ startMs: i * 10000, durationMs: 10000 }));
+    const got = [0, 1, 2].map((i) => allocateChapterShotChunkIndex(i, 3, chunks));
+    expect(got).toEqual([1, 5, 8]);
+    // 末段锚点必须越过章长的 80%，否则片尾剧情整段无解说
+    expect(got[got.length - 1]).toBeGreaterThanOrEqual(8);
+  });
+
+  it('🎯 末章实测形态（5 段 / 2 chunk，前 42.3s 后 3s）：不再全部钳到末位 3 秒', () => {
+    const chunks = [
+      { startMs: 2657300, durationMs: 423000 },   // 2657.3 ~ 2699.6s（聚会/口红所在大 chunk）
+      { startMs: 2699600, durationMs: 3000 },     // 2699.6 ~ 2702.6s（片尾车门）
+    ];
+    const got = [0, 1, 2, 3, 4].map((i) => allocateChapterShotChunkIndex(i, 5, chunks));
+    // 旧口径 = [0,1,1,1,1]：4 段挤在末位 3 秒 ⇒ 参考帧塌缩到片尾
+    expect(got).toEqual([0, 0, 0, 0, 0]);
+    expect(got.filter((x) => x === 1)).toHaveLength(0);
+  });
+
+  it('等长 chunk 溢出时按时间均分（4 段 / 2 chunk → 0,0,1,1）', () => {
+    const chunks = [{ startMs: 0, durationMs: 10000 }, { startMs: 10000, durationMs: 10000 }];
+    expect([0, 1, 2, 3].map((i) => allocateChapterShotChunkIndex(i, 4, chunks))).toEqual([0, 0, 1, 1]);
+  });
+
+  it('空章 / 非法时间轴：退化为 0，不抛错', () => {
+    expect(allocateChapterShotChunkIndex(0, 3, [])).toBe(0);
+    expect(allocateChapterShotChunkIndex(9, 9, [{ startMs: undefined, durationMs: 0 }])).toBe(0);
+  });
+});
+
+describe('ScriptGenStrategy - 帧→结构化镜头派生（deriveShotsFromFrames）', () => {
+  it('把 downstream 结构化字段提到顶层，并保留 timeMs/description/asrText', () => {
+    const shots = deriveShotsFromFrames([
+      { timeMs: 230400, description: '【中景】男子站立', asrText: '结五周年快乐', downstream: { action: '男子面带微笑站立', shotType: '中景', keywords: ['微笑'] } },
+    ]);
+    expect(shots).toHaveLength(1);
+    expect(shots[0]).toMatchObject({
+      timeMs: 230400,
+      action: '男子面带微笑站立',
+      shotType: '中景',
+      keywords: ['微笑'],
+      description: '【中景】男子站立',
+      asrText: '结五周年快乐',
+    });
+  });
+
+  it('asrText 顶层缺失时回落到 downstream.asrText', () => {
+    const shots = deriveShotsFromFrames([{ timeMs: 1000, downstream: { asrText: '台词', action: '走动' } }]);
+    expect(shots[0].asrText).toBe('台词');
+  });
+
+  it('timeMs 非法的帧被剔除，不参与时间轴', () => {
+    const shots = deriveShotsFromFrames([
+      { timeMs: 1000, downstream: { action: 'A' } },
+      { description: '无时间戳' },
+      { timeMs: 'abc', downstream: { action: 'B' } },
+      null as any,
+    ]);
+    expect(shots).toHaveLength(1);
+    expect(shots[0].timeMs).toBe(1000);
+  });
+
+  it('非数组输入返回空数组，不抛错', () => {
+    expect(deriveShotsFromFrames(undefined as any)).toEqual([]);
+    expect(deriveShotsFromFrames({} as any)).toEqual([]);
   });
 });

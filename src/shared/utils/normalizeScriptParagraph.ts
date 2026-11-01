@@ -40,8 +40,8 @@ function numOr(value: unknown, fallback: number): number {
  * - 时间轴：startMs / durationMs 强制非空（durationMs 缺失时依次尝试 legacy 秒级 duration × 1000、
  *   再退 3000ms 兜底），杜绝下游渲染 / 定位读到 NaN 或 undefined；
  * - 解说旁白段：text 以 cleanText 回退兜底（保证 UI 与 TTS 永远有字符串可读）、characters 补空数组；
- * - 参考帧锚点（refFrameTimeMs/refFrameDesc/refFrameSource）：原样透传（三字段同源，任一非法即整体丢弃），
- *   保证「生成时写入」与「重开工程水合」两条路都不丢步骤3 产出的真实画面锚点；
+ * - 参考帧锚点（refFrameTimeMs/refFrameDesc/refFrameSource）：2026-10-31 随锚点机制退役，
+ *   不再从历史数据读出、不再写入产物（旧工程里的这三个键在此被自然丢弃）；
  * - 原声穿插段：audioSource 缺失时按「源时间窗 = [startMs, startMs+durationMs]」重建，
  *   transcript 从 legacy text 回退，speaker 标注占位提示人工复核，duckingBgm 取 true 保护台词可听性；
  * - 错就错：非对象输入 / 缺失主键 id 直接抛错暴露，绝不静默降级生成假数据污染时间轴。
@@ -92,19 +92,9 @@ export function normalizeScriptParagraph(raw: unknown): ScriptParagraph {
     startMs,
     durationMs,
     ...(typeof src.emotion === 'string' && src.emotion ? { emotion: src.emotion } : {}),
-    /** 🎯 参考帧锚点三字段同源：仅当时间合法且来源标记合法时才整体落库（描述允许空串），
-     *  避免半截数据（有时间无来源）流入步骤5 query。 */
-    ...(typeof src.refFrameTimeMs === 'number' && Number.isFinite(src.refFrameTimeMs)
-      && (src.refFrameSource === 'matched' || src.refFrameSource === 'block_first')
-      ? {
-          refFrameTimeMs: Math.round(src.refFrameTimeMs),
-          refFrameDesc: typeof src.refFrameDesc === 'string' ? src.refFrameDesc : '',
-          refFrameSource: src.refFrameSource,
-        }
-      : {}),
   } satisfies Pick<
     NarrationParagraph | OriginalAudioParagraph,
-    'id' | 'shotId' | 'startMs' | 'durationMs' | 'emotion' | 'refFrameTimeMs' | 'refFrameDesc' | 'refFrameSource'
+    'id' | 'shotId' | 'startMs' | 'durationMs' | 'emotion'
   >;
 
   // ── 分支构造 ──

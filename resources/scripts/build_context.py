@@ -207,19 +207,17 @@ def resolve_source_ref_time(query: dict, seg_by_id: Dict[int, dict]) -> dict:
     两步：
       ① 锚点解析：query 显式有效 sourceRefTimeMs 直用；否则若 sourceSceneId 非空，
          取 segments[sourceSceneId].startMs 查表转译；两者皆无保留 0。
-      ② 锁1 校验（忠实消费步骤3 真实参考帧，去幻觉，守「错就错」非兜底混淆）：
-         - 越界守卫：0 ≤ refFrameTimeMs ≤ sourceDurationMs，越界判幻觉置 0（交由下方置信分级）。
-         - 片头幻觉守卫（补丁4）：refFrameTimeMs 落入已裁片头 [0, trimStartMs) 判幻觉 += trimStartMs
-           （步骤3 在 source 坐标里选帧，trimStart 前的帧属刚被裁掉的序场残影）。
-      锁1 不改 sourceRefTimeMs（那仍是段锚），只对 refFrameTimeMs 做物理合法性校准；
-      二者在束搜索消费时分层：refFrameSource=='matched' → 强锚 ±60s，否则退段锚。
+      ② 锁1 校验（🚫 2026-10-31 锚点退役后输入恒为 0，此处已退化为 no-op）：
+         - 越界守卫：0 ≤ refFrameTimeMs ≤ sourceDurationMs，越界判幻觉置 0。
+         - 片头幻觉守卫（补丁4）：refFrameTimeMs 落入已裁片头 [0, trimStartMs) 判幻觉 += trimStartMs。
+      锁1 不改 sourceRefTimeMs（那仍是段锚）；refFrame 相关分支仅作为老请求体兼容保留。
 
     Args:
         query: 脚本句（合并工单后）。
         seg_by_id: 场次索引。
 
     Returns:
-        dict: 已解析 sourceRefTimeMs + 已锁1 校验 refFrameTimeMs 的同一查询副本。
+        dict: 已解析 sourceRefTimeMs 的同一查询副本。
     """
     _q = dict(query)
 

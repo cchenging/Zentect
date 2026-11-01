@@ -47,13 +47,9 @@ export interface SegmentQuery {
   sourceRefTimeMs: number;
   /** 补丁9：语义对标场景引用（严禁手写绝对毫秒） */
   sourceSceneId: string;
-  /** 真实参考帧时间（源视频绝对坐标，锁1 强锚消费） */
-  refFrameTimeMs: number;
-  /** matched=命中真实帧 / block_first=退化为母块首帧 / 空=无锚 */
-  refFrameSource: string;
-  /** 已裁片头偏移（补丁4 幻觉守卫：refFrame 落入[0,trimStartMs)判幻觉 +=trimStartMs） */
+  /** 已裁片头偏移（补丁4 幻觉守卫预留） */
   trimStartMs: number;
-  /** 源视频总时长（锁1 越界守卫：refFrame>源时长判幻觉置 0） */
+  /** 源视频总时长（锁1 越界守卫预留） */
   sourceDurationMs: number;
   /** 原声段 ASR 台词起始（补丁20 hasHardSub 对齐用） */
   asrAnchorStartMs: number | null;

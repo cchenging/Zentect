@@ -3,7 +3,7 @@
 //
 // 定位：一帧一行，落「帧内容 hash（图像 md5，与 vlm_frame_cache 同源）+ 归属镜头 chunk_id +
 //      源时间 timeMs + 帧释义 description + BGE 向量 vec」。步骤5 的帧召回（P3）据此
-//      用「句文案 + visualIntent + refFrameDesc」在**帧级**求最像画面瞬间，再按 chunk_id 上卷成镜头候选。
+//      用「句文案 + visualIntent」在**帧级**求最像画面瞬间，再按 chunk_id 上卷成镜头候选。
 //
 // 为什么必须独立于 vlm_frame_cache：后者主键是图像 md5（全局跨项目去重），**结构上不承载
 //      「这帧属于哪个镜头」**（归属是项目级的），且不存向量（每次召回要重编码 3325 帧）。

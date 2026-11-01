@@ -42,10 +42,6 @@ export interface BreakLongParagraphInput {
   /** 🎯 P3 时间轴锚定：父段落对应 chunk 的时间起点/时长（ms），子句原样继承 */
   startMs?: number;
   durationMs?: number;
-  /** 🎯 参考帧锚点：父段落命中真实参考帧的时间/描述/来源，子句原样继承（步骤5 真实匹配锚点） */
-  refFrameTimeMs?: number;
-  refFrameDesc?: string;
-  refFrameSource?: 'matched' | 'block_first';
   /** 父段落原始序号：子句透传此值，供调用方按原始顺序合并（原声/非原声混排时保持顺序） */
   __order?: number;
   /** 🎯 匹配单位：sentence 档下父段落自带的匹配单位 id（透传给占位/空文本段，保持分组不散） */
@@ -67,10 +63,6 @@ export interface BreakLongParagraphOutput {
   /** 🎯 P3 时间轴锚定：子句继承父段落对应 chunk 的时间起点/时长（ms） */
   startMs?: number;
   durationMs?: number;
-  /** 🎯 参考帧锚点：子句继承父段落命中的真实参考帧时间/描述/来源 */
-  refFrameTimeMs?: number;
-  refFrameDesc?: string;
-  refFrameSource?: 'matched' | 'block_first';
   /** 父段落原始序号透传 */
   __order?: number;
   /** 🎯 匹配单位 id：本片所属的「完整句」id（sentence 档写入；legacy 档不写，保持产物零变化）。
@@ -214,10 +206,6 @@ export function breakLongParagraphs(
         isAbstractNarration: inheritedAbstract,
         startMs: p.startMs,
         durationMs: p.durationMs,
-        // 🎯 参考帧锚点：空文本占位段同样继承父段落参考帧，保持字段不丢
-        refFrameTimeMs: p.refFrameTimeMs,
-        refFrameDesc: p.refFrameDesc,
-        refFrameSource: p.refFrameSource,
         __order: inheritedOrder,
         // 🎯 匹配单位：空文本占位段无完整句可归属，沿用自身 id（保持 sentence 档下"段段有单位"不散链）
         ...(emitMatchUnitId ? { matchUnitId: inheritedMatchUnitId || p.id || `para_${idx}` } : {}),
@@ -374,11 +362,6 @@ export function breakLongParagraphs(
         // 🎯 P3 时间轴锚定修正：按前缀和铺排子句起点与时长（ms）；父级毫秒轴缺失时透传原值
         startMs: hasParentTimeline ? startsMs[sIdx] : p.startMs,
         durationMs: hasParentTimeline ? dursMs[sIdx] : p.durationMs,
-        // 🎯 参考帧锚点：子句继承父段落命中的真实参考帧（时间/描述/来源），
-        //   保证断句拆分后步骤5 query 仍能拿到真实画面锚点（startMs 仍为母块内插值，二者并存）
-        refFrameTimeMs: p.refFrameTimeMs,
-        refFrameDesc: p.refFrameDesc,
-        refFrameSource: p.refFrameSource,
         // 子句透传父段落原始序号，供调用方按原始顺序合并
         __order: inheritedOrder,
         // 🎯 匹配单位：sentence 档标记本碎片所属「完整句」的 id（一个完整句 = 一个匹配单位）。

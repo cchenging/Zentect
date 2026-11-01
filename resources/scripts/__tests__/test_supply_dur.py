@@ -1,12 +1,11 @@
 """
-test_supply_dur.py — 🎬 落码点3 可供给时长口径（乙案）+ 母块首帧弱锚开关（丙①）验证
+test_supply_dur.py — 🎬 落码点3 可供给时长口径（乙案）验证
 
-锁定两处「缺省 off = 零行为变化」的新口径（守「禁止未测量即上线」）：
+锁定「缺省 off = 零行为变化」的新口径（守「禁止未测量即上线」）：
 
   1. 乙案（`ZENTECT_KM_SUPPLY_DUR`）：`build_supply_ms` 同母块**源时间连续**后继链合并是否正确
      （断链 / 异素材文件 / 无 parent 退化），以及「供得起 ⇒ 不罚、供不起 ⇒ 如实罚」的计分口径。
-  2. 丙①（`ZENTECT_KM_BLOCK_ANCHOR`）：`_read_block_anchor` 缺省 off（block_first 锚不参与，
-     现状零变化）、仅显式 on 才接线。
+  2. 🚫 母块首帧弱锚（丙①，`ZENTECT_KM_BLOCK_ANCHOR`）已于 2026-10-31 随参考帧锚点机制退役删除。
 
 运行方式：
   cd resources/scripts
@@ -19,7 +18,6 @@ import sys
 # 将 scripts 目录加入 path，以便 import 新引擎各模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from beam_search import _read_block_anchor
 from match_cost import SUPPLY_CHAIN_GAP_MS, _read_supply_dur, build_supply_ms
 from montage_contract import assemble_chunk
 from timeline_solver import _chain_cover_window, _compute_duration_score
@@ -115,15 +113,6 @@ def test_supply_basis_does_not_penalize_ample_material():
     print("✓ test_supply_basis_does_not_penalize_ample_material: 供给口径计分语义正确")
 
 
-def test_block_anchor_flag_default_off():
-    """丙① 弱锚开关：缺省 off（block_first 锚仍不参与，现状零变化）；显式 1 才接线。"""
-    assert _with_env('ZENTECT_KM_BLOCK_ANCHOR', None, _read_block_anchor) is False, \
-        "缺省必须 off（43/43 段 block_first 锚不参与是现状基线）"
-    assert _with_env('ZENTECT_KM_BLOCK_ANCHOR', '1', _read_block_anchor) is True
-    assert _with_env('ZENTECT_KM_BLOCK_ANCHOR', 'off', _read_block_anchor) is False
-    print("✓ test_block_anchor_flag_default_off: 丙① 弱锚开关缺省关闭")
-
-
 def test_chain_cover_window_extends_to_target_and_consumes():
     """乙案② 交付端：命中片不够 ⇒ 沿同母块连续后继链扩到恰好覆盖配音；吃掉的兄弟片进独占集合。"""
     chunks = [
@@ -217,13 +206,12 @@ def test_chain_cover_window_backfills_from_predecessors():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🎬 落码点3 · 可供给时长口径（乙案）+ 母块首帧弱锚（丙①）验证")
+    print("🎬 落码点3 · 可供给时长口径（乙案）验证")
     print("=" * 60)
     test_supply_chain_merges_contiguous_siblings()
     test_supply_chain_breaks_on_gap_and_file()
     test_supply_dur_flag_default_off_and_switchable()
     test_supply_basis_does_not_penalize_ample_material()
-    test_block_anchor_flag_default_off()
     test_chain_cover_window_extends_to_target_and_consumes()
     test_chain_cover_window_partial_and_blocked_cases()
     test_chain_cover_window_backfills_from_predecessors()

@@ -238,6 +238,15 @@ describe('原声定位兜底与标记保真（跨切片边界回归）', () => {
     expect(m.score).toBe(0.9);
     expect(m.confirmed).toBe(true);                     // 0.9 >= 0.88 阈值
   });
+
+  it('🚫 参考帧台账已退役（2026-10-31）：matchResult 不再写出 refFrame 三字段', () => {
+    const q = { shotId: 'seg_46', text: '婚姻却输给了这支口红', audioDurationMs: 2200 };
+    const kmChunk = { chunkId: 'c_1', confidence: 0.91, chunkData: { id: 'c_1', startMs: 1000, endMs: 4000 } };
+    const m = SemanticAnalyzeStrategy.buildMatchResult(q, kmChunk, false);
+    expect('refFrameTimeMs' in m).toBe(false);
+    expect('refFrameDesc' in m).toBe(false);
+    expect('refFrameSource' in m).toBe(false);
+  });
 });
 
 // ============================================================

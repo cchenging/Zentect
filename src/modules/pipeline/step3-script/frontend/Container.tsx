@@ -110,10 +110,6 @@ export const StepScriptGeneration: React.FC = () => {
               /** 🎯 P3 时间轴锚定：透传对应 chunk 的时间起点/时长（ms），供步骤5 锚定切片 */
               startMs: p.startMs,
               durationMs: p.durationMs,
-              /** 🎯 参考帧锚点透传：步骤3 产出的真实画面锚点，供断句子句继承后进入步骤5 query */
-              refFrameTimeMs: p.refFrameTimeMs,
-              refFrameDesc: p.refFrameDesc,
-              refFrameSource: p.refFrameSource,
               /** 🎯 匹配单位：透传步骤3 断句器写入的「完整句」id（sentence 档才有，legacy 档为 undefined） */
               matchUnitId: p.matchUnitId,
               /** 🎙️ 原声保留段判别信息透传：缺失时 Normalizer 会把原声段误判为解说段，

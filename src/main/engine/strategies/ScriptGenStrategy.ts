@@ -114,13 +114,6 @@ export interface GeneratedShot {
   startMs?: number;
   /** 🎯 P3 时间轴锚定：本段解说词对应的画面时长（ms） */
   durationMs?: number;
-  /** 🎯 参考帧时间（源视频坐标，ms）：本段文案在母块时间窗内命中的**真实参考帧**时间。
-   *  与 startMs（母块内等分插值的近似锚点）并存，供步骤5 作为真实匹配查询锚点透传。 */
-  refFrameTimeMs?: number;
-  /** 🎯 参考帧画面描述：refFrameTimeMs 对应帧的步骤2 VLM 描述；退化为母块首帧时为空字符串 */
-  refFrameDesc?: string;
-  /** 🎯 参考帧来源：matched=窗内文本重合度最高帧命中；block_first=无可用帧描述时的退化标记 */
-  refFrameSource?: 'matched' | 'block_first';
   /** 🎬 决策 #6：抽象旁白标记。True = 本段为**无具体人物/动作/事件**的评论/感叹/隐喻/格言/时间流逝类
    *  抽象抒情（判定口径：删掉此句不影响剧情信息），步骤5 匹配时语义主分改由景别分级抽象分取代
    *  （空镜/远景优先），并跳过关键词/情绪路由。
@@ -332,153 +325,69 @@ function ensureVisualIntentFilled(
 }
 
 /**
- * 🎯 由步骤2 帧结构拼装"帧描述"文本（参考帧的可读画面描述）。
- * 规则（不造假）：
- *  1. 优先使用 VLM 结构化动作 action，带景别前缀便于步骤5 复用镜头语言信号（如：【特写】死死盯住冰鱼）；
- *  2. action 缺失时退化为该帧关键词拼接（最多 6 个，动作/道具类，供文本重合度打分有料可用）；
- *  3. 二者皆缺返回空字符串——调用方据此走 block_first 退化，绝不用编造描述充数。
+ * 🎯 帧 → 结构化镜头派生（2026-10-30）：把步骤2 原始帧（`downstream` 下嵌结构化字段 + 顶层 timeMs）
+ * 升维成与 `downstreamContext.shots` **同形状**的扁平镜头（字段提到顶层），供 chunk 时间轴/视觉上下文/锚点共用。
+ * 规则（不造假）：仅接受带合法 timeMs 的帧；下游结构化字段原样透传，缺失即空。
  *
- * @param frame 步骤2 帧对象：downstreamContext.shots（扁平 action/shotType/keywords）
- *              或 FrameDetail/vlmFrames（结构化字段嵌在 downstream 下 + 顶层 description）
- * @returns 帧描述文本（可能为空字符串）
+ * @param frames 步骤2 原始帧数组（FrameDetail / vlmFrames）
+ * @returns 扁平镜头数组（每帧一条；timeMs 非法者剔除）
  */
-function frameDescriptionOf(frame: any): string {
-  /** 🎯 P1（2026-09-30）双形状兼容：步骤2 有两套同构产出——
-   *  ① downstreamContext.shots：`{...downstream, timeMs, asrText}`（字段在**顶层**）；
-   *  ② FrameDetail / vlmFrames：结构化字段在 **downstream 下**，另有顶层 description。
-   *  旧实现只读①形状 ⇒ 收到②形状帧时 action/shotType/keywords 全空 ⇒ 有描述的帧被误判为
-   *  "无描述帧" ⇒ 锚点整体退化 block_first（实测 43/43）。此处统一双源读取，优先级 downstream > 顶层。 */
-  const ds = frame?.downstream;
-  const action = String(ds?.action || frame?.action || '').trim();
-  const shotType = String(ds?.shotType || frame?.shotType || '').trim();
-  const prefix = shotType ? `【${shotType}】` : '';
-  if (action) return `${prefix}${action}`;
-  const kwSrc = (Array.isArray(ds?.keywords) && ds.keywords.length > 0) ? ds.keywords : frame?.keywords;
-  const keywords = Array.isArray(kwSrc)
-    ? kwSrc.filter((k: any) => typeof k === 'string' && k.trim()).slice(0, 6).join('、')
-    : '';
-  if (keywords) return keywords;
-  /** 顶层原始描述兜底：FrameDetail.description 是步骤2 VLM 的自然语言画面描述（真实内容，非编造），
-   *  结构化字段全缺时用它参与锚点文本重合度比较，避免"帧有描述却因形状错位被当空描述"。 */
-  return String(frame?.description || '').trim();
+export function deriveShotsFromFrames(frames: any[]): any[] {
+  if (!Array.isArray(frames)) return [];
+  const shots: any[] = [];
+  for (const frame of frames) {
+    if (!frame || typeof frame !== 'object') continue;
+    const timeMs = Number(frame.timeMs);
+    if (!Number.isFinite(timeMs)) continue;
+    const ds = frame.downstream && typeof frame.downstream === 'object' ? frame.downstream : {};
+    shots.push({
+      ...ds,
+      timeMs,
+      asrText: String(frame.asrText || ds.asrText || ''),
+      description: String(frame.description || ''),
+    });
+  }
+  return shots;
 }
 
 /**
- * 🎯 文本重合度打分（简单、可解释、可离线复算）：字符二元组 Jaccard 相似度 ∈ [0,1]。
- * 归一化仅保留中文/字母/数字（去标点空白），任一文本不足 2 字时退化为字符一元组；
- * 任一侧为空返回 0（不给分），保证"无描述帧"永远不会被误判为最佳匹配。
+ * 🎯 章内 shot → chunk 定位（2026-10-30）。
  *
- * @param a 待比较文本 A（段文案 text + visualIntent）
- * @param b 待比较文本 B（帧描述）
- * @returns Jaccard 重合度（0~1，越大越重合）
+ * 旧口径 `min(i, n-1)` 在「本章解说镜头数 > chunk 数」时把溢出镜头**全部钳到本章末位 chunk**：
+ * 实测末章 5 段解说只对应 2 个 chunk ⇒ 4 段全锚在末位那 3 秒（源坐标 2699.6~2702.6s），
+ * 参考帧随之塌缩到片尾（「那支口红」句锚到「手拉车门把手」），步骤5 的时间锚也一起失真。
+ *
+ * 新口径：镜头数 == chunk 数时保持恒等映射（旧行为逐字节不变）；
+ * 镜头数与 chunk 数**不相等**（无论多还是少）时，按本章视觉时长把解说顺序均分铺开，
+ * 取「该段覆盖时刻」所在 chunk：
+ *  - 镜头 > chunk：锚点不再挤在末位；
+ *  - 镜头 < chunk（2026-10-30 二次订正）：旧口径只覆盖本章**开头**那一截 chunk，
+ *    实测末章 710s 时长只配到 11 段解说 ⇒ 段落全落在 1991s 起的前 110s，片尾 2000~2700s 无一句解说
+ *    （烧烤宴/门禁等结局段整段留白）。铺开后解说按剧情推进覆盖全章，末尾段落自然落到片尾帧。
+ *
+ * @param shotIndex 本段在本章保留镜头中的序号（0 基）
+ * @param shotCount 本章保留镜头总数
+ * @param chapterChunks 本章 ContextChunk 序列（须按时间升序，含 startMs/durationMs）
  */
-function frameTextOverlap(a: string, b: string): number {
-  const norm = (s: string): string => String(s || '').toLowerCase().replace(/[^\u4e00-\u9fa5a-z0-9]/g, '');
-  const sa = norm(a);
-  const sb = norm(b);
-  if (!sa || !sb) return 0;
-  const gramSize = sa.length >= 2 && sb.length >= 2 ? 2 : 1;
-  const toGrams = (s: string): Set<string> => {
-    const set = new Set<string>();
-    for (let i = 0; i + gramSize <= s.length; i++) set.add(s.slice(i, i + gramSize));
-    return set;
-  };
-  const A = toGrams(sa);
-  const B = toGrams(sb);
-  if (A.size === 0 || B.size === 0) return 0;
-  let inter = 0;
-  A.forEach((g) => { if (B.has(g)) inter += 1; });
-  const union = A.size + B.size - inter;
-  return union > 0 ? inter / union : 0;
-}
-
-/**
- * 🎯 参考帧选择（步骤3 真实画面锚点，落到段落的 refFrameTimeMs/refFrameDesc/refFrameSource）。
- *
- * 选择规则（简单、可解释、可离线复算）：
- *   1. 候选集 = 步骤2 帧中 timeMs 落在"母块时间窗 [chunk.startMs, chunk.startMs + chunk.durationMs)"内的帧；
- *   2. 对每帧按 frameDescriptionOf 取帧描述，与"段文案（text + visualIntent）"做 frameTextOverlap 打分，
- *      取重合度最高的一帧（同分取时间更早者，保证结果确定可复算）；
- *   3. 命中且描述非空 → refFrameSource='matched'，写入该帧时间（源坐标）与描述；
- *   4. 母块窗内无帧 / 帧描述全空 / 母块时间轴非法 → 退化为 refFrameSource='block_first'，
- *      时间取"母块首帧时间"（窗内最早帧时间，窗内无帧时回退母块起点 startMs），描述为空字符串。
- *
- * ⚠️ 本函数只产出**新增**字段，不改变 startMs/durationMs 的既有计算逻辑。
- *
- * @param chunk 该段文案对应的母块 ContextChunk（含 startMs/durationMs）
- * @param paragraphText 段文案拼接文本（text + visualIntent）
- * @param frames 锚点帧源（见调用处 anchorFrames：visualShots 扁平形状 优先，回退 input.visionResult.frames）
- * @param stat 🔬 P1 探针（可选）：三道闸计数累计器，调用方聚合后打印；不传则行为与旧实现逐字节一致
- * @returns 参考帧三字段（timeMs 在退化且母块时间轴非法时为 undefined）
- */
-type RefFrameGateStat = {
-  /** 总调用次数 */
-  total: number;
-  /** 闸① 母块 startMs/durationMs 非法 */
-  gateA: number;
-  /** 闸② 窗内无帧（坐标错位 / 帧源为空） */
-  gateB: number;
-  /** 闸③ 窗内有帧但描述全空（形状错位） */
-  gateC: number;
-  /** 三道闸皆过 → matched */
-  ok: number;
-  /** 帧源整体为空（闸②的极端形态，用于区分"输入空"与"坐标错位"） */
-  emptyFrames: number;
-  /** 前 N 条未命中明细 */
-  sample: string[];
-};
-
-function resolveParagraphRefFrame(
-  chunk: any,
-  paragraphText: string,
-  frames: any[],
-  stat?: RefFrameGateStat,
-): { refFrameTimeMs?: number; refFrameDesc: string; refFrameSource: 'matched' | 'block_first' } {
-  if (stat) {
-    stat.total++;
-    if (!Array.isArray(frames) || frames.length === 0) stat.emptyFrames++;
+export function allocateChapterShotChunkIndex(
+  shotIndex: number,
+  shotCount: number,
+  chapterChunks: Array<{ startMs?: number; durationMs?: number }>,
+): number {
+  const n = Array.isArray(chapterChunks) ? chapterChunks.length : 0;
+  if (n <= 0) return 0;
+  if (shotCount === n) return shotIndex;
+  const startMs = Number(chapterChunks[0]?.startMs);
+  const spanMs = chapterChunks.reduce((acc, c) => acc + (Number(c?.durationMs) || 0), 0);
+  if (!Number.isFinite(startMs) || spanMs <= 0) return Math.min(shotIndex, n - 1);
+  /** 第 shotIndex 段覆盖章内 [(i)/m, (i+1)/m] 区间 ⇒ 用区间中点定位所属 chunk */
+  const targetMs = startMs + (spanMs * (shotIndex + 0.5)) / shotCount;
+  let accMs = startMs;
+  for (let i = 0; i < n; i++) {
+    accMs += Number(chapterChunks[i]?.durationMs) || 0;
+    if (targetMs < accMs) return i;
   }
-  const winStart = Number(chunk?.startMs);
-  const winDur = Number(chunk?.durationMs);
-  if (!Number.isFinite(winStart) || !Number.isFinite(winDur) || winDur <= 0) {
-    // 母块时间轴非法：无锚点可退化，返回 undefined + 空描述（不伪造时间）
-    if (stat) {
-      stat.gateA++;
-      if (stat.sample.length < 8) stat.sample.push(`闸① ${chunk?.id ?? '?'} 时间轴非法 start=${chunk?.startMs} dur=${chunk?.durationMs}`);
-    }
-    return { refFrameDesc: '', refFrameSource: 'block_first' };
-  }
-  const winEnd = winStart + winDur;
-  const framesInWindow = (Array.isArray(frames) ? frames : [])
-    .map((f) => ({ t: Number(f?.timeMs), f }))
-    .filter((x) => Number.isFinite(x.t) && x.t >= winStart && x.t < winEnd)
-    .sort((a, b) => a.t - b.t);
-  // 母块首帧时间：窗内最早帧时间；窗内无帧时回退母块起点
-  const blockFirstFrameMs = framesInWindow.length > 0 ? framesInWindow[0].t : Math.round(winStart);
-
-  const queryText = String(paragraphText || '');
-  let best: { t: number; desc: string; score: number } | null = null;
-  for (const { t, f } of framesInWindow) {
-    const desc = frameDescriptionOf(f);
-    if (!desc) continue; // 无描述帧不参与匹配（不给假锚点）
-    const score = frameTextOverlap(queryText, desc);
-    // 严格大于：同分保留更早的帧，保证选择结果确定、可离线复算
-    if (!best || score > best.score) best = { t, desc, score };
-  }
-  if (best && best.desc) {
-    if (stat) stat.ok++;
-    return { refFrameTimeMs: Math.round(best.t), refFrameDesc: best.desc, refFrameSource: 'matched' };
-  }
-  if (stat) {
-    if (framesInWindow.length === 0) {
-      stat.gateB++;
-      if (stat.sample.length < 8) stat.sample.push(`闸② ${chunk?.id ?? '?'} 窗内0帧 win=[${winStart},${winEnd}) 帧源=${Array.isArray(frames) ? frames.length : 0}`);
-    } else {
-      stat.gateC++;
-      if (stat.sample.length < 8) stat.sample.push(`闸③ ${chunk?.id ?? '?'} 窗内${framesInWindow.length}帧 描述全空`);
-    }
-  }
-  return { refFrameTimeMs: Math.round(blockFirstFrameMs), refFrameDesc: '', refFrameSource: 'block_first' };
+  return n - 1;
 }
 
 /** 🎭 五幕张力曲线（步骤3 爆款文案升级）：按归一化章节进度分配戏剧任务，映射到 chapterGroups 索引。
@@ -1049,20 +958,24 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       asrLines = input.audioResult.lines;
     }
 
-    /** 🎯 P1（2026-09-30）锚点帧源解析链：`visualShots`（downstreamContext.shots 扁平形状，
-     *  含 action/shotType/keywords/timeMs）→ `input.visionResult.frames`（步骤2 原始产出
-     *  FrameDetail / vlmFrames，结构化字段嵌在 downstream 下 + 顶层 description）。
-     *  实测根因：步骤3 为单节点执行（STEP_SEQUENCES[3].dependsOn=[]），orchestrator 只注入
-     *  `visionResult.frames`、不注入 `downstreamContext.shots` ⇒ visualShots 恒为空 ⇒
-     *  resolveParagraphRefFrame 收到空帧集 ⇒ 全片退化为 block_first（实测 43/43，refT==startMs）。
-     *  本解析链只服务"文案 → 真实画面锚点"选择，**不参与 chunk 时间轴构建**
-     *  （时间轴改动波及 startMs/durationMs 契约，另案评估，本步不越界）。 */
-    const anchorFrames: any[] = (visualShots.length > 0 && visualShots.some((s: any) => frameDescriptionOf(s)))
-      ? visualShots
-      : (Array.isArray(input.visionResult?.frames) ? input.visionResult.frames : visualShots);
-    AppLogger.info(LOG_TAGS.AI_AGENT,
-      `[文案生成] 🎯 锚点帧源：visualShots=${visualShots.length}（有描述 ${visualShots.filter((s: any) => frameDescriptionOf(s)).length}）`
-      + ` → 选定 ${anchorFrames.length} 帧（visualShots 优先，回退 visionResult.frames）`);
+    /** 🎯 帧 → 结构化镜头派生（2026-10-30）：步骤3 单节点执行时上游只注入 `visionResult.frames`
+     *  （步骤2 原始帧，结构化字段嵌在 downstream 下 + 顶层 timeMs/description），
+     *  `downstreamContext.shots` 恒缺失 ⇒ visualShots 恒空 ⇒ 两条链路同时失真：
+     *  ① chunk 时间轴退化为「ASR 行数均分估算」——帧数 > ASR 行数时尾部 chunk 全部钳到最后一行台词，
+     *     再被短 chunk 合并累加成越界长窗（实测末章 startMs 2695708/2699708、dur 10635/12325，超出片长）；
+     *  ② 所有 chunk 的 visualContext 全空，LLM 只能看台词写文案（实测剧情/道具与画面脱节：烧烤、门禁句）。
+     *  此处按帧真实 timeMs 派生与 downstreamContext.shots 同形状的镜头，一次修好时间轴 + 视觉上下文 + 锚点。 */
+    if (visualShots.length === 0) {
+      const derivedShots = deriveShotsFromFrames(
+        Array.isArray(input.visionResult?.frames) ? input.visionResult.frames : [],
+      );
+      if (derivedShots.length > 0) {
+        visualShots = derivedShots;
+        AppLogger.info(LOG_TAGS.AI_AGENT,
+          `[文案生成] 🎯 帧→镜头派生：downstreamContext.shots 缺失，改由 visionResult.frames 派生 `
+          + `${derivedShots.length} 个结构化镜头（启用帧真实时间轴 + 帧视觉上下文）`);
+      }
+    }
 
     // 构建 ContextChunk JSON 数组：将视觉片段与 ASR 台词按时序对齐
     // 每个 chunk 含 chunkId/timeRange/durationMs/anchoredCharacters/asrContext/visualContext
@@ -2411,12 +2324,23 @@ ${roleMapLines.join('\n')}
           );
           enforced = enforceChapterQuota(enforced, quotaWords);
         }
+        /** 压缩后留空的解说镜头不产段落；原声段保留（其文本后续由 ASR 原文覆盖） */
+        const retainedCount = enforced.filter(
+          (s) => s.keepOriginalAudio === true || String(s.text || '').trim(),
+        ).length;
+        if (retainedCount !== group.length) {
+          AppLogger.info(LOG_TAGS.AI_AGENT,
+            `[文案生成] 第 ${k + 1}/${chapterGroups.length} 章 shot→chunk 均分定位：`
+            + `${retainedCount} 段 / ${group.length} chunk（旧口径${retainedCount > group.length ? '会把溢出段钳到末位 chunk' : '只覆盖章首 chunk、章尾留白'}）`);
+        }
         for (let i = 0; i < enforced.length; i++) {
           const s = enforced[i];
           // 压缩后留空的解说镜头不产段落；原声段保留（其文本后续由 ASR 原文覆盖）
           if (s.keepOriginalAudio !== true && !String(s.text || '').trim()) continue;
           rawShots.push(s);
-          chunkIndexByShot.push(baseIndex + Math.min(i, group.length - 1));
+          // 🎯 章内定位：仍按「原始镜头序号」保时间对齐（留白镜头不压缩后续段落的 chunk 位置）；
+          //    镜头数与 chunk 数不相等时按视觉时长均分，避免锚点塌缩到末位 chunk / 只盖住章首。
+          chunkIndexByShot.push(baseIndex + allocateChapterShotChunkIndex(i, enforced.length, group));
         }
       }
       AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 两阶段滑窗完成：${chapterGroups.length} 章 · 共 ${rawShots.length} 段分镜`);
@@ -2461,9 +2385,6 @@ ${roleMapLines.join('\n')}
     // 分镜时长必须等于画面真实时长，否则步骤5 匹配时解说段与画面错位。
 
     // 先构造带 __order 的中间分镜（__order = chunk 下标，供断句后按原始顺序合并、回查 contextChunks）
-    /** 🔬 P1 探针（2026-09-30）：三道闸计数 + 未命中明细，定位"锚点退化"落在哪一闸
-     *  （闸① 时间轴非法 / 闸② 窗内无帧=坐标错位或帧源空 / 闸③ 窗内帧描述全空=形状错位）。 */
-    const refFrameStat: RefFrameGateStat = { total: 0, gateA: 0, gateB: 0, gateC: 0, ok: 0, emptyFrames: 0, sample: [] };
     const parsed = rawShotsWithVI.map((raw, idx) => {
       const srcChunk = contextChunks[chunkIndexByShot[idx] ?? idx];
       const baseDuration = srcChunk?.durationSec ?? (raw.duration || 3);
@@ -2488,29 +2409,11 @@ ${roleMapLines.join('\n')}
         /** 🎯 P3 时间轴锚定：对应 chunk 的画面时间起点/时长（ms），供步骤5 锚定切片 */
         startMs: srcChunk?.startMs ?? 0,
         durationMs: srcChunk?.durationMs ?? 0,
-        /** 🎯 参考帧锚点（新增字段，与 startMs 并存不替换）：本段文案在其母块时间窗内命中
-         *  "与文案文本重合度最高"的真实帧，写入该帧时间（源坐标）+ 帧描述 + 来源标记；
-         *  无可用帧描述时退化为母块首帧时间 + 空描述。断句后由子句原样继承，最终透传到步骤5 query。 */
-        ...resolveParagraphRefFrame(
-          srcChunk,
-          `${raw.text || ''} ${raw.visualIntent || ''}`.trim(),
-          anchorFrames,
-          refFrameStat,
-        ),
         /** 🎬 决策 #6：抽象旁白标记（LLM 按契约产出，仅 true 才为真），
          *  断句后由子句继承，最终驱动步骤5 的空镜优先路由 */
         isAbstractNarration: raw.isAbstractNarration === true,
       };
     });
-
-    /** 🔬 P1 探针输出：matched 占比 + 三闸分布 + 前 N 条明细（验收口径：matched 脱离 0/43）。 */
-    AppLogger.info(LOG_TAGS.AI_AGENT,
-      `[文案生成] 🎯 参考帧锚点：matched ${refFrameStat.ok}/${refFrameStat.total}｜`
-      + `闸①时间轴非法 ${refFrameStat.gateA}｜闸②窗内无帧 ${refFrameStat.gateB}（其中帧源为空 ${refFrameStat.emptyFrames} 次）｜`
-      + `闸③描述全空 ${refFrameStat.gateC}｜锚点帧源 ${anchorFrames.length} 帧`);
-    if (refFrameStat.sample.length > 0) {
-      AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 🔬 锚点未命中明细：${refFrameStat.sample.join(' ‖ ')}`);
-    }
 
     // 🎯 匹配单位模式（开关 ZENTECT_SCRIPT_MATCH_UNIT，取值 sentence/legacy，缺省 legacy）：
     //   legacy = 每个按标点切出的碎片各算一个匹配单位（线上现状，默认零变化）；
@@ -2535,7 +2438,7 @@ ${roleMapLines.join('\n')}
     //   seg_6="电话打不通，接待方人间蒸发，她彻底慌了。" 与 seg_7 的首个子句 seg_7_sub_1 逐字相同
     //   （原始 seg_7 是更长的段落，二者在段落级并不相等，只有断句后才暴露重复）。
     //   故在断句终产物交给下游（TTS/步骤5/落库）之前，复用同一套判定再跑一次。
-    //   并行数组确认：此阶段 chunk 相关数据（startMs/durationMs/refFrame*/characters/__order）已在
+    //   并行数组确认：此阶段 chunk 相关数据（startMs/durationMs/characters/__order）已在
     //   构造 parsed 时内联进每个子句对象，chunkIndexByShot 不再被引用，无按下标一一对应的并行数组，
     //   故只需裁剪子句列表本身，无错位风险；顺序键 __order 随对象内联，删除不改变相对顺序。
     //   id 不做重排：保留原有 {母句id}_sub_{n} 与 matchUnitId 语义（删首个子句后可能出现 _sub 序号跳号，属预期）。
@@ -2601,11 +2504,6 @@ ${roleMapLines.join('\n')}
         /** 🎯 P3 时间轴锚定：子句继承父段落对应 chunk 的时间起点/时长（ms） */
         startMs: (p as any).startMs ?? 0,
         durationMs: (p as any).durationMs ?? 0,
-        /** 🎯 参考帧锚点透传：子句继承父段落命中的真实参考帧（时间/描述/来源），
-         *  供步骤5 buildMatchQueries 原样带入 query（与 startMs 并存，不改变既有匹配输入口径）。 */
-        refFrameTimeMs: (p as any).refFrameTimeMs,
-        refFrameDesc: (p as any).refFrameDesc,
-        refFrameSource: (p as any).refFrameSource,
         /** 🎬 决策 #6：抽象旁白标记透传到最终产物，供步骤5 matchQueries 读取并走空镜优先路由 */
         isAbstractNarration: (p as any).isAbstractNarration === true,
         /** 🎯 匹配单位：透传断句器写入的 matchUnitId（sentence 档才有；legacy 档缺省不写，保持产物零变化） */

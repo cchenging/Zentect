@@ -714,11 +714,9 @@ def default_query() -> dict:
         'windowEndMs': 0.0,
         'sourceRefTimeMs': 0.0,       # 补丁9：剧情锚点（segments[sourceSceneId].startMs 查表，绝对坐标）
         'sourceSceneId': '',          # 补丁9：语义对标场景引用（严禁手写绝对毫秒）
-        # -- B域（§10.2.3）：步骤3 本地确定性选帧的真实参考帧（源坐标）--
-        'refFrameTimeMs': 0.0,        # 真实参考帧时间（源视频绝对坐标，锁1 强锚消费）
-        'refFrameSource': '',         # matched=命中真实帧 / block_first=退化为母块首帧 / 空=无锚
-        'trimStartMs': 0.0,           # 已裁片头偏移（补丁4 幻觉守卫：refFrame 落入[0,trimStartMs)判幻觉 +=trimStartMs）
-        'sourceDurationMs': 0.0,      # 源视频总时长（锁1 越界守卫：refFrame>源时长判幻觉置 0）
+        # -- B域（§10.2.3）：媒体物理坐标（🚫 参考帧锚点已退役 2026-10-31，trimStart/sourceDuration 保留）--
+        'trimStartMs': 0.0,           # 已裁片头偏移（补丁4 幻觉守卫预留）
+        'sourceDurationMs': 0.0,      # 源视频总时长（锁1 越界守卫预留）
         'asrAnchorStartMs': None,     # 原声段 ASR 台词起始（补丁20 hasHardSub 对齐用）
         'asrAnchorEndMs': None,
         # -- 步骤1 ③ ASR 句尾气口（补丁2/7 磁吸消费；TTS 旁白/无 ASR 数据恒 None ➜ 规则卡中性放行不造假）--

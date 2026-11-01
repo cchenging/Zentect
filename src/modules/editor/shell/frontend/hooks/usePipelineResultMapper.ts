@@ -157,11 +157,6 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
             startMs: typeof p.startMs === 'number' ? p.startMs : undefined,
             durationMs: typeof p.durationMs === 'number' ? p.durationMs : undefined,
             visualIntent: typeof p.visualIntent === 'string' ? p.visualIntent : undefined,
-            /** 🎯 参考帧锚点透传：步骤3 产出的真实画面锚点（时间/描述/来源）。
-             *  此处若漏透传则只在生成时写、水合时丢，步骤5 query 拿不到真实锚点。 */
-            refFrameTimeMs: typeof p.refFrameTimeMs === 'number' ? p.refFrameTimeMs : undefined,
-            refFrameDesc: typeof p.refFrameDesc === 'string' ? p.refFrameDesc : undefined,
-            refFrameSource: p.refFrameSource === 'matched' || p.refFrameSource === 'block_first' ? p.refFrameSource : undefined,
             /** 🎯 匹配单位：透传步骤3 断句器写入的「完整句」id（sentence 档才有）。
              *  此处若漏透传，则生成时有、落库/重开即丢，步骤5 折叠 query 的分组依据断裂。 */
             matchUnitId: typeof p.matchUnitId === 'string' && p.matchUnitId.trim() ? p.matchUnitId : undefined,
@@ -260,11 +255,22 @@ export const mapPipelineResultToState = (result: Record<string, any>, mappers: P
             };
           }));
         }
+        /** 🔍 步骤5 落库诊断：MATCH 分支此前是静默分支——产物键名不符/为空时既不写 store 也不报错，
+         *  表现为「DB 里 matchResults 永远是上一轮旧值」，无从排查。这里把分支选择结果打到 main.log。 */
+        console.info(
+          `[步骤5映射] 节点 ${nodeId}｜matches=${matches.length}`
+          + `｜segments=${Array.isArray(nodeResult.segments) ? nodeResult.segments.length : 0}`
+          + `｜首条=${matches.length > 0 ? (matches[0]?.id ?? matches[0]?.shotId ?? '') : '—'}`
+          + `｜产物键=${Object.keys(nodeResult).join(',')}`
+        );
+        if (matches.length === 0 && !(Array.isArray(nodeResult.segments) && nodeResult.segments.length > 0)) {
+          console.warn('[步骤5映射] 产物既无 matches 也无 segments，matchResults 将保持旧值');
+        }
         /** 同步视频切片池和 BGM 节拍到 Store */
-        if (nodeResult.videoChunks) {
+        if (Array.isArray(nodeResult.videoChunks)) {
           mappers.setVideoChunks(nodeResult.videoChunks);
         }
-        if (nodeResult.bgmBeats) {
+        if (Array.isArray(nodeResult.bgmBeats)) {
           mappers.setBeatTimestamps(nodeResult.bgmBeats.map((b: number) => Math.round(b * 1000)));
         }
         /** 🔧 匹配诊断透出：后端 SemanticAnalyzeStrategy 返回 diagnostics（切片池空/KM 全未命中/原声定位失败），
