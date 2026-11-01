@@ -330,6 +330,29 @@ def test_reuse_guard_blocks_revisiting_retired_shot():
     print("✓ test_reuse_guard_blocks_revisiting_retired_shot: 离场镜头禁回取 + 熔断保底正确")
 
 
+def test_reuse_recent_first_when_forced_to_revisit():
+    """三级熔断回取择近：候选池耗尽只能回取离场镜头时，优先**最近离场**者（即便语义更差）。"""
+    ids = ('s1', 's2', 's3', 's4', 's5')
+    qs = [assemble_query({'shotId': s, 'text': '句' + s}) for s in ids]
+    a = assemble_chunk({'id': 'a', 'parentChunkId': 'A', 'startMs': 0, 'endMs': 6000})
+    b = assemble_chunk({'id': 'b', 'parentChunkId': 'B', 'startMs': 8000, 'endMs': 14000})
+    c = assemble_chunk({'id': 'c', 'parentChunkId': 'C', 'startMs': 16000, 'endMs': 22000})
+    d = assemble_chunk({'id': 'd', 'parentChunkId': 'D', 'startMs': 24000, 'endMs': 30000})
+    # 依次独占 a/b/c/d ⇒ s5 时离场 age：A=3、B=2、C=1；s5 只能在 a、c 里回取。
+    ctx = _mk_ctx(qs, [a, b, c, d],
+                  {'s1': ['a'], 's2': ['b'], 's3': ['c'], 's4': ['d'], 's5': ['a', 'c']})
+    cost = {'s1': {'a': 0.1}, 's2': {'b': 0.1}, 's3': {'c': 0.1}, 's4': {'d': 0.1},
+            's5': {'a': 0.1, 'c': 0.8}}   # a 语义明显更优，但离场更早
+
+    out = solve(ctx, cost, [], {s: 1000.0 for s in ids})
+
+    assert out['s5']['chosenChunkId'] == 'c', \
+        "强挂应优先最近离场的 c（age=1），不得跳回更早离场的 a（age=3）"
+    assert out['s5'].get('isDegraded') is True and out['s5'].get('degradeKind') == 'all_beam_death', \
+        "回取离场镜头仍属熔断强挂，必须标降级"
+    print("✓ test_reuse_recent_first_when_forced_to_revisit: 强挂按最近离场择近")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("🔎 步骤5 新引擎 · 束搜索求解核验证（⓪ 单测骨架）")
@@ -347,5 +370,6 @@ if __name__ == "__main__":
     test_monotonic_lock_reads_window_entry()
     test_continuation_in_beam_same_shot()
     test_reuse_guard_blocks_revisiting_retired_shot()
+    test_reuse_recent_first_when_forced_to_revisit()
     print("=" * 60)
     print("全部通过 ✅")

@@ -72,6 +72,12 @@ TIME_PROX_SOFT_MAX = 0.5
 TIME_PROX_WINDOW_MS = 4000.0
 TIME_PROX_RAMP_MS = 12000.0
 
+# 三级熔断「回取离场镜头」的择近容差（2026-11-01 产品口径补充）：
+#   候选池耗尽、非 force 无解时只能回取已离场镜头（否则白屏）。此时按「离场后经过的句数 age」
+#   分档，只在**最近离场档**（age ≤ 最小 age + 本容差）内按语义选 —— 避免「刚切走 A，
+#   下一句又跳回更早的 B」，把源时间跳跃和观感断裂压到最小。age 由 build_path 每步递增维护。
+REUSE_RECENT_TOLERANCE = 1
+
 # 前向审望资源耗尽惩罚（补丁1，env `ZENTECT_KM_FORWARD_LOOKOUT`，缺省 0=关闭）：
 #   本句若抢占「后句唯一可用主粮」，后半句就断供（无料可用）。前瞻窗口内逐句统计该候选在
 #   未来句候选池里的剩余可用数 rem（按本路径窗游标计：该镜剩余窗长 ≥ 该未来句窗长即算可用）：
@@ -120,9 +126,10 @@ class BeamPath:
             只增不减（跨场不清零）：同一镜头可被多句复用，但每句只开**新窗**（入点 = 上句窗末，
             窗序号严格递增 ⇒ 同镜同窗结构性禁复用）；游标触及镜头末 ⇒ 该镜头用尽、后续句不得再选。
             兄弟路径各持独立副本（`build_path` 拷贝），互不污染。
-        retired_shots: 已离场镜头黑名单（2026-11-01 产品口径）——本路径**切走过**的镜头键集合。
+        retired_shots: 已离场镜头黑名单（2026-11-01 产品口径）——{镜头键: 离场后经过的句数 age}。
             长镜头连续顺延（同镜换窗）不算离场、不受限；一旦切走再回头取用即观众眼里的「重复播放」，
-            故展开层据此拦截（三级熔断 force 时放开，兑现「绝不白屏」）。路径级独立副本。
+            故展开层据此拦截（三级熔断 force 时放开，兑现「绝不白屏」）。放开时按 age 择近：
+            只回取最近离场档，避免跳回更早的镜头。路径级独立副本。
         prev_scale: 上一镜景别（转移代价输入）。
         continuation_count: 自末次 NEW_SHOT 起连续顺延句数。
         last_shot_commit_ms: 末次强切/新镜的落点时间（顺延 7s 判据）。
@@ -133,7 +140,7 @@ class BeamPath:
     curr_chunk_id: Optional[str] = None
     curr_chunk: Optional[dict] = None
     win_cursor_ms: Dict[str, float] = field(default_factory=dict)
-    retired_shots: Dict[str, bool] = field(default_factory=dict)
+    retired_shots: Dict[str, int] = field(default_factory=dict)
     prev_scale: str = ''
     continuation_count: int = 0
     last_shot_commit_ms: float = 0.0
@@ -172,10 +179,11 @@ def build_path(path: BeamPath, chunk: dict, shot_id: str, scene_id: int,
     _e0 = float(chunk.get('endMs') or 0.0)
     # 复用闸（2026-11-01 产品口径）：镜头一旦被本路径**切走**即离场，此后不得再回来取用——
     #   长镜头连续顺延（同镜换窗、从未离场）不受限；「离场后再取」才是观众眼里的重复播放。
-    _retired = dict(path.retired_shots)
+    #   值 = 离场后经过的句数 age（每步 +1），供三级熔断强挂时按「最近离场」择近。
+    _retired = {k: int(v) + 1 for k, v in path.retired_shots.items()}
     _prev_key = _shot_key(path.curr_chunk) if path.curr_chunk else ''
     if _prev_key and _prev_key != _key:
-        _retired[_prev_key] = True
+        _retired[_prev_key] = 1
     _win_cursor = dict(path.win_cursor_ms)
     _cursor_new = float(entry_ms) + float(need_ms)
     if _e0 > _s0:
@@ -468,12 +476,23 @@ def solve(
             _need = _win_need_ms(tts_duration_ms.get(sid))
             for path in paths:
                 prev_chunk = path.curr_chunk
+                # 三级熔断择近（2026-11-01）：force 时只从「最近离场档」里挑（见 REUSE_RECENT_TOLERANCE）。
+                #   未离场候选 age=0 会自动把上限压到容差内；最小 age 档必非空，故绝不失解。
+                _age_cap = 0
+                if force and scored:
+                    _ages = [path.retired_shots.get(_shot_key(ctx.chunk_by_id[cid]), 0)
+                             for cid, _c0 in scored]
+                    _age_cap = min(_ages) + REUSE_RECENT_TOLERANCE
                 for cand_id, base_cost in scored:
                     cand = ctx.chunk_by_id[cand_id]
                     # 复用闸（2026-11-01 产品口径）：本路径已**切走**的镜头不得再回来选——
                     #   长镜头连续顺延（同镜换窗、未离场）完全不受限；「离场后再取」= 重复播放，直接拦。
                     #   三级熔断 force=True 时放开（否则可能无解），并照常标 all_beam_death 降级待确认。
                     if not force and _shot_key(cand) in path.retired_shots:
+                        reuse_stats['blocked'] += 1
+                        continue
+                    # force 择近：放开回取后仍排除「更早离场」的镜头，只留最近离场档（跳跃最小）。
+                    if force and path.retired_shots.get(_shot_key(cand), 0) > _age_cap:
                         reuse_stats['blocked'] += 1
                         continue
                     # 掩码（补丁6，粒度 = 镜头 + 时间窗）：本路径已在该镜开过窗且**剩余窗长不足本句窗长**
@@ -1063,7 +1082,9 @@ def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
         > 4s 计一次。2026-11-01 产品确认：B-roll 池只要求「文案配对的画面正确」，同一素材内按需
         来回取料属正常剪辑手法，回跳本身不算缺陷；故该计数只作形态观测，**不得据此加时间方向约束**
         （实测每压掉一次回跳都要牺牲明显语义贴合度）。跨文件（异源插入）另计，同样只观测。
-      · 复用：同一 chunk 被多段引用的次数分布（最大复用次数 / 被复用过的片段数）。
+      · 复用：同一 chunk 被多段引用的次数分布（最大复用次数 / 被复用过的片段数），并拆成
+        「连续复用」（与上次引用相邻 = 长镜头连续顺延，合法）与「离散复用」（切走后回取，
+        违反复用闸，正常应为 0）；熔断强挂句数单列（强挂可绕过闸门，需人工看）。
       · 候选分布：每句候选池大小的 min / 中位 / max。
 
     Args:
@@ -1076,6 +1097,10 @@ def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
     _backward = 0
     _cross_file = 0
     _reuse: Dict[str, int] = {}
+    _last_pos: Dict[str, int] = {}   # chunkId → 上次出现的叙事序号
+    _discrete = 0                    # 切走后回取次数（复用闸失效的直接证据，应恒为 0）
+    _degraded = 0                    # 熔断强挂句数（强挂可能绕过复用闸，故单列）
+    _pos = -1
     _prev_chunk: Optional[dict] = None
     for _q in _queries:
         _sid = str(_q.get('shotId') or '')
@@ -1086,9 +1111,18 @@ def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
         _c = ctx.chunk_by_id.get(_cid) or (_m.get('chunkData') if isinstance(_m.get('chunkData'), dict) else None)
         if not _c:
             continue
+        _pos += 1
         _matched += 1
+        if _m.get('isDegraded'):
+            _degraded += 1
         if _cid:
             _reuse[_cid] = _reuse.get(_cid, 0) + 1
+            # 复用口径拆分：与上次引用**相邻**（pos 差 1）= 长镜头连续顺延（合法）；
+            # 非相邻 = 切走后回取（违反「离场后不得回取」，值非 0 即复用闸有漏洞）。
+            _prev_pos = _last_pos.get(_cid)
+            if _prev_pos is not None and _pos - _prev_pos > 1:
+                _discrete += 1
+            _last_pos[_cid] = _pos
         if _prev_chunk is not None:
             _pf = str(_prev_chunk.get('filePath') or '')
             _cf = str(_c.get('filePath') or '')
@@ -1109,9 +1143,10 @@ def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
     _reused_chunks = sum(1 for _n in _reuse.values() if _n > 1)
     _reuse_max = max(_reuse.values()) if _reuse else 0
     _fl_diag('[time-audit] 覆盖=%d/%d（零候选=%d） ｜ 候选 min/中位/max=%d/%d/%d ｜ '
-             '同文件源时间回跳=%d（形态记录，非红线） ｜ 换素材文件=%d ｜ 最大复用=%d 复用片数=%d' % (
+             '同文件源时间回跳=%d（形态记录，非红线） ｜ 换素材文件=%d ｜ 最大复用=%d 复用片数=%d ｜ '
+             '离散复用=%d 降级句=%d' % (
                  _matched, _total, _zero_pool, _cand_min, _cand_med, _cand_max,
-                 _backward, _cross_file, _reuse_max, _reused_chunks))
+                 _backward, _cross_file, _reuse_max, _reused_chunks, _discrete, _degraded))
 
 
 def _pick_best_for_shot(paths: List[BeamPath], query: dict,
