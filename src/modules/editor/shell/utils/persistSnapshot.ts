@@ -34,36 +34,58 @@ export async function persistProjectSnapshot(projectId: string): Promise<void> {
   const step5Final = useStep5Store.getState();
   const navState = useEditorNavStore.getState();
 
-  await API.project.saveData(projectId, {
-    shots: currentProjectState.shots,
-    aiShots: currentProjectState.aiShots,
-    roles: currentProjectState.roles,
-    mediaItems: currentProjectState.mediaItems,
-    asrLines: step1State.asrLines,
-    // 统一数据源：frameCount 从 framePaths 派生，保证存库一致
-    frameCount: currentProjectState.extractedData?.framePaths?.length || 0,
-    framePaths: currentProjectState.extractedData?.framePaths || [],
-    audioSeparated: step1State.audioSeparated,
-    subStepStatuses: ps.subStepStatuses,
-    subStepProgresses: ps.subStepProgresses,
-    subStepTimings: ps.subStepTimings,
-    stepStatuses: ps.stepStatuses,
-    stepCompleted: ps.stepCompleted,
-    currentStep: navState.currentStep,
-    extractionConfig: step1State.extractionConfig,
-    vlmFrames: step2Final.vlmFrames,
-    scriptParagraphs: step3Final.scriptParagraphs,
-    scriptStyle: step3Final.scriptStyle,
-    speechRate: step3Final.speechRate,
-    pipelineParams: step3Final.pipelineParams,
-    ttsResults: step4Final.ttsResults,
-    ttsEngine: step4Final.ttsEngine,
-    ttsVoiceId: step4Final.ttsVoiceId,
-    /** 步骤5 数据持久化：匹配结果/切片池/BGM 节拍，重启后从 metadata 恢复 */
-    matchResults: step5Final.matchResults,
-    videoChunks: step5Final.videoChunks,
-    activeBgm: step5Final.activeBgm,
-    beatTimestamps: step5Final.beatTimestamps,
-    deepRecommendation: step5Final.deepRecommendation,
-  });
+  /** 🔍 步骤5 落库链路取证：调用点已收敛到 4 处（步骤4/5 独立流程、管线编排器、步骤5 手动改动）。
+   *  这里成对打「开始 / 完成(或失败)」，用于区分三种故障形态：
+   *  a) 根本没有「开始」→ 上游根本没调用落盘（映射抛异常 / 流程未走到）；
+   *  b) 有「开始」无后续 → IPC 卡死或渲染进程被关；
+   *  c) 有「完成」但 DB 仍旧值 → 写入的是 store 里的旧值。
+   *  仅在携带步骤5结果时打印，避免普通步骤落盘刷屏。 */
+  const mrCount = Array.isArray(step5Final.matchResults) ? step5Final.matchResults.length : 0;
+  const shouldTrace = mrCount > 0;
+  if (shouldTrace) {
+    console.info(`[落盘] 开始 项目=${projectId} matchResults=${mrCount} 首条=${step5Final.matchResults[0]?.id ?? ''}`);
+  }
+
+  try {
+    await API.project.saveData(projectId, {
+      shots: currentProjectState.shots,
+      aiShots: currentProjectState.aiShots,
+      roles: currentProjectState.roles,
+      mediaItems: currentProjectState.mediaItems,
+      asrLines: step1State.asrLines,
+      // 统一数据源：frameCount 从 framePaths 派生，保证存库一致
+      frameCount: currentProjectState.extractedData?.framePaths?.length || 0,
+      framePaths: currentProjectState.extractedData?.framePaths || [],
+      audioSeparated: step1State.audioSeparated,
+      subStepStatuses: ps.subStepStatuses,
+      subStepProgresses: ps.subStepProgresses,
+      subStepTimings: ps.subStepTimings,
+      stepStatuses: ps.stepStatuses,
+      stepCompleted: ps.stepCompleted,
+      currentStep: navState.currentStep,
+      extractionConfig: step1State.extractionConfig,
+      vlmFrames: step2Final.vlmFrames,
+      scriptParagraphs: step3Final.scriptParagraphs,
+      scriptStyle: step3Final.scriptStyle,
+      speechRate: step3Final.speechRate,
+      pipelineParams: step3Final.pipelineParams,
+      ttsResults: step4Final.ttsResults,
+      ttsEngine: step4Final.ttsEngine,
+      ttsVoiceId: step4Final.ttsVoiceId,
+      /** 步骤5 数据持久化：匹配结果/切片池/BGM 节拍，重启后从 metadata 恢复 */
+      matchResults: step5Final.matchResults,
+      videoChunks: step5Final.videoChunks,
+      activeBgm: step5Final.activeBgm,
+      beatTimestamps: step5Final.beatTimestamps,
+      deepRecommendation: step5Final.deepRecommendation,
+    });
+  } catch (e) {
+    /** 兜底取证：调用点各自的 catch 只打自己一句话，若某处漏 log 则落盘失败会完全静默 */
+    console.error(`[落盘] 失败 项目=${projectId} matchResults=${mrCount}`, e);
+    throw e;
+  }
+
+  if (shouldTrace) {
+    console.info(`[落盘] 完成 项目=${projectId} matchResults=${mrCount}`);
+  }
 }

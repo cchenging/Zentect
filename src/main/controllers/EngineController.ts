@@ -145,6 +145,13 @@ export class EngineController {
             }
           }
         );
+        /** ✅ 步骤5 匹配结果主进程权威落库（2026-10-30 修复）
+         *  背景：步骤5 此前唯一写 metadata.matchResults 的入口是渲染进程 persistProjectSnapshot，
+         *  渲染进程只要在映射/落盘前中断（异常、关窗、时序竞争），结果就只活在前端内存里——
+         *  实测 22:18 那趟 DB 最后写入停在 updateQuickCardMetadata，matchResults 仍是上一轮的旧值。
+         *  这里在节点产物返回后由主进程直接合并写库，与渲染进程的落盘互相独立、幂等。
+         *  注：用户手动锁定/替换（isUserLocked）由渲染进程在恢复锁定后再次落盘覆盖，顺序安全。 */
+        EngineController.persistStep5Result(pid, result);
         return { data: result, message: '工作流执行圆满完成' };
       } catch (error: any) {
         const errMsg = error?.message || error?.toString() || '未知异常';
@@ -658,6 +665,48 @@ export class EngineController {
     });
 
     AppLogger.info(LOG_TAGS.SYSTEM, 'EngineController 注册完成 (含 V1.2 批量队列)')
+  }
+
+  /**
+   * 步骤5 产物主进程落库：从管线总线（nodeId → 节点产物）中提取 semantic-analyze 的
+   * 匹配结果 / 切片池 / BGM 节拍，合并写入 projects.metadata。
+   * 复用 saveFullProjectData 的「空值不覆盖」合并语义，只覆盖本方法提供的字段。
+   * 写库失败只告警不抛出：渲染进程 persistProjectSnapshot 仍有一次落盘机会，主流程不被阻断。
+   */
+  private static persistStep5Result(projectId: string, result: any) {
+    if (!result || typeof result !== 'object') return;
+    for (const [nodeId, nodeResult] of Object.entries(result as Record<string, any>)) {
+      if (!nodeResult || typeof nodeResult !== 'object') continue;
+      const matches = (nodeResult as any).matches;
+      /** 只认语义匹配节点产物；其它节点（无 matches 数组）直接跳过 */
+      if (!Array.isArray(matches) || matches.length === 0) continue;
+      try {
+        const matchResults = matches
+          .filter((m: any) => m && typeof m === 'object')
+          .map((m: any) => ({ ...m, id: String(m.id ?? m.shotId ?? '').trim() }))
+          .filter((m: any) => m.id.length > 0);
+        if (matchResults.length === 0) {
+          AppLogger.warn(LOG_TAGS.SYSTEM, `[步骤5落库] 节点 ${nodeId} 产物无有效段落主键，跳过写库`);
+          continue;
+        }
+        const payload: any = { matchResults };
+        if (Array.isArray((nodeResult as any).videoChunks) && (nodeResult as any).videoChunks.length > 0) {
+          payload.videoChunks = (nodeResult as any).videoChunks;
+        }
+        if (Array.isArray((nodeResult as any).bgmBeats) && (nodeResult as any).bgmBeats.length > 0) {
+          payload.beatTimestamps = (nodeResult as any).bgmBeats.map((b: any) => Math.round(Number(b) * 1000));
+        }
+        new ProjectRepository().saveFullProjectData(projectId, payload);
+        const first: any = matchResults[0];
+        AppLogger.info(LOG_TAGS.SYSTEM,
+          `[步骤5落库] 节点 ${nodeId} 匹配结果已写库：matchResults=${matchResults.length}`
+          + `｜首条=${first?.id}→${first?.mediaId ?? first?.chunkId ?? ''}`
+          + `｜切片池=${payload.videoChunks ? payload.videoChunks.length : '保持原值'}`
+          + `｜节拍=${payload.beatTimestamps ? payload.beatTimestamps.length : '保持原值'}`);
+      } catch (e: any) {
+        AppLogger.error(LOG_TAGS.SYSTEM, `[步骤5落库] 主进程写库失败（渲染进程仍会再落一次）: ${e?.message || e}`, e);
+      }
+    }
   }
 }
 
