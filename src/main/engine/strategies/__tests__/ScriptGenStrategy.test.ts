@@ -197,6 +197,33 @@ describe('ScriptGenStrategy - P0 人物角色注入测试', () => {
     expect(userContent).not.toContain('【全局已知角色列表】');
   });
 
+  // ===== 👤 角色命名一致性（2026-11-02 通用化）：挡住「同一角色前半段叫 A、后半段叫 B」 =====
+
+  it('系统提示应注入角色命名一致性硬规则与真实姓名清单（过滤占位编号）', async () => {
+    const input = buildInput([
+      { id: 'r1', name: '刘白', representative: { gender: 1 } },
+      { id: 'r2', name: '角色_9' }, // 步骤1 自动占位编号，不得作为可念姓名注入
+    ]);
+
+    await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
+
+    const systemContent = mockChat.mock.calls[2][0][0].content;
+    expect(systemContent).toContain('角色命名一致性');
+    expect(systemContent).toContain('- 刘白');
+    expect(systemContent).not.toContain('- 角色_9');
+  });
+
+  it('角色库仅有占位编号时，系统提示要求从台词确定唯一姓名并全篇沿用', async () => {
+    const input = buildInput([{ id: 'r1', name: '角色_0' }]);
+
+    await (strategy as any).performTask(input, buildContext(), '/tmp/cache', vi.fn());
+
+    const systemContent = mockChat.mock.calls[2][0][0].content;
+    expect(systemContent).toContain('角色命名一致性');
+    expect(systemContent).toContain('确定唯一姓名');
+    expect(systemContent).not.toContain('- 角色_0');
+  });
+
   it('传入空 roles 数组时，userPrompt 不应包含全局角色列表段', async () => {
     const input = buildInput([]);
 
@@ -993,6 +1020,57 @@ describe('ScriptGenStrategy - 相邻重复段落去重（dedupeAdjacentParagraph
     const input = [{ text: '第一句。' }, { text: '第二句。' }];
     const { paragraphs, keptIndexes } = dedupeAdjacentParagraphs(input);
     expect(paragraphs.map((p) => p.text)).toEqual(['第一句。', '第二句。']);
+    expect(keptIndexes).toEqual([0, 1]);
+  });
+
+  // ===== 近似复述（2026-11-02 通用化）：不再是「只认逐字相同」，挡住整段带前缀复述碎片 =====
+
+  it('近似复述：整段（带场景前缀）与碎片同句 → 删整段，保留碎片所属单位', () => {
+    const input = [
+      { id: 'seg_28', text: '聚会上，温小姐端着酒杯，笑盈盈打量每个女员工。' },
+      { id: 'seg_29_sub_1', text: '温小姐端着酒杯，笑盈盈打量每个女员工。' },
+      { id: 'seg_29_sub_2', text: '她的目光停在角落那名女员工身上。' },
+    ];
+    const { paragraphs, keptIndexes } = dedupeAdjacentParagraphs(input as any);
+    // 整段被删，单位 seg_29 的碎片链完整保留（TTS/字幕不被拆断）
+    expect(keptIndexes).toEqual([1, 2]);
+    expect(paragraphs.map((p: any) => p.id)).toEqual(['seg_29_sub_1', 'seg_29_sub_2']);
+  });
+
+  it('近似复述：两整段同句 → 删被覆盖的较短段，保留信息更全的一段', () => {
+    const input = [
+      { text: '电话打不通，接待方人间蒸发，她彻底慌了。' },
+      { text: '电话打不通，接待方人间蒸发，她彻底慌了，连夜赶回老家。' },
+    ];
+    const { paragraphs, keptIndexes } = dedupeAdjacentParagraphs(input);
+    expect(keptIndexes).toEqual([1]);
+    expect(paragraphs[0].text).toContain('连夜赶回老家');
+  });
+
+  it('正常叙事承接不误删（仅共享短主语，重合不足 12 字）', () => {
+    const input = [
+      { text: '他推开门。' },
+      { text: '他推开门，看见桌上放着一张泛黄的照片。' },
+    ];
+    const { keptIndexes } = dedupeAdjacentParagraphs(input);
+    expect(keptIndexes).toEqual([0, 1]);
+  });
+
+  it('两段都是 _sub_ 碎片时近似复述不删（避免拆断匹配单位）', () => {
+    const input = [
+      { id: 'seg_7_sub_1', text: '电话打不通，接待方人间蒸发。' },
+      { id: 'seg_8_sub_1', text: '电话打不通，接待方人间蒸发，她彻底慌了。' },
+    ];
+    const { keptIndexes } = dedupeAdjacentParagraphs(input as any);
+    expect(keptIndexes).toEqual([0, 1]);
+  });
+
+  it('整段承载碎片之外的新信息（独有内容 >8 字）时保留两段', () => {
+    const input = [
+      { id: 'seg_30', text: '那天夜里，她独自站在空荡的客厅里，想起他临走前那句没说完的话，眼泪突然掉了下来。' },
+      { id: 'seg_31_sub_1', text: '她独自站在空荡的客厅里，想起他临走前那句没说完的话。' },
+    ];
+    const { keptIndexes } = dedupeAdjacentParagraphs(input as any);
     expect(keptIndexes).toEqual([0, 1]);
   });
 });

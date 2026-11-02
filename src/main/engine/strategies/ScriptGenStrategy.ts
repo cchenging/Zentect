@@ -429,8 +429,18 @@ function actIndexForChapter(chapterIdx: number, chapterCount: number): number {
  * 上一章末句原文（改用剧情概要 + 明令禁止逐字复用）；② assertChapterQuality 跨章共享已见集合，
  * 跨章逐字重复命中即抛错走内联重试。本函数继续保留，兜住"校验盲区"（如空文本透明、断句后暴露的重复）。
  *
- * 判定口径：仅比较「紧邻的两个有效段落」，归一化（trim + 去除所有空白字符）后**完全相同**才删除后出现那段；
- * 只删「后出现者」，保留首次出现，绝不因为共享长前缀而误删正常叙事承接（那是 deduplicatePrefixIterations 的职责）。
+ * 判定口径（2026-11-02 通用化，不再依赖具体片子的手工改数据）：
+ * - **精确重复**：紧邻有效段落去空白后完全相同 ⇒ 只删后出现者、保留首次（原行为不变）；
+ * - **近似复述**：去空白 + 去标点后，较短段内容几乎被较长段完整覆盖（LCS 差距 ≤2 字、重合率 ≥85%、
+ *   绝对重合 ≥12 字）⇒ 判为「同一句换措辞/加场景前缀后复述」，按下列归属策略删除；
+ *   阈值保守，正常叙事承接（如「他推开门。」→「他推开门，看见…」仅重合 4 字）不触发。
+ *
+ * 近似复述的删除归属（避免把正常承接或单位碎片拆坏）：
+ * 1. 两段都是整段 ⇒ 仅当较长者独有内容 ≤8 字（同一句加少量承接词）时才删「被覆盖（较短）」的一方；
+ *    独有内容 >8 字说明是「复述 + 另起一段完整新叙事」的承接关系，两段都留，交给断句子句级去重删除重复的那一句；
+ * 2. 整段 vs `_sub_` 碎片 ⇒ 删整段（碎片属于更长匹配单位，删它会拆断该单位的 TTS/字幕）；
+ *    仅当整段是较长者且其独有内容 >8 字（承载碎片之外的新信息）时保留两段；
+ * 3. 两段都是 `_sub_` 碎片 ⇒ 一律不删（分属不同完整句时删除会拆断匹配单位）。
  *
  * 空文本纪律：空文本段落（原声段 keepOriginalAudio 的占位文本 / 空占位段）一律「跳过」——
  * 既不被删除，也不参与比较、不作为比较基准。若把空串也纳入比较，seg_12~seg_16 这类连续空原声段
@@ -444,26 +454,111 @@ export function dedupeAdjacentParagraphs<T extends { text?: string }>(
   paragraphs: T[],
 ): { paragraphs: T[]; keptIndexes: number[] } {
   if (!Array.isArray(paragraphs)) return { paragraphs: [], keptIndexes: [] };
-  const keptParagraphs: T[] = [];
-  const keptIndexes: number[] = [];
-  /** 上一个「有效（非空）」段落的归一化文本；空文本不更新它，即对相邻判定透明 */
-  let prevNorm: string | null = null;
+  /** 近似复述判定常量（保守阈值，详见函数注释） */
+  const NEAR_MIN_LCS = 12;
+  const NEAR_LCS_TOLERANCE = 2;
+  const NEAR_RATIO = 0.85;
+  const WHOLE_MAX_DROP_EXTRA = 8;
+  /** 已保留的非空段下标栈：栈顶 = 最近的保留段（空文本不入栈，保持对相邻判定透明） */
+  const survivors: number[] = [];
+  /** 与 survivors 同下标的「去空白」归一化文本（精确重复判定用） */
+  const survivorNorms: string[] = [];
+  /** 与 survivors 同下标的「去空白 + 去标点」文本（近似复述判定用） */
+  const survivorNear: string[] = [];
+  const dropped = new Set<number>();
+
+  const dropText = (text: unknown): string =>
+    String(text ?? '').replace(/\s+/g, '').replace(/[\p{P}\p{S}]/gu, '');
+  /** 最长公共子序列长度（仅用于「是否几乎整句复述」判定，段落长度有限，O(n*m) 可接受） */
+  const lcsLength = (a: string, b: string): number => {
+    let prevRow = new Array<number>(b.length + 1).fill(0);
+    let curRow = new Array<number>(b.length + 1).fill(0);
+    for (let i = 1; i <= a.length; i++) {
+      for (let j = 1; j <= b.length; j++) {
+        curRow[j] = a[i - 1] === b[j - 1] ? prevRow[j - 1] + 1 : Math.max(prevRow[j], curRow[j - 1]);
+      }
+      const tmp = prevRow;
+      prevRow = curRow;
+      curRow = tmp;
+      curRow.fill(0);
+    }
+    return prevRow[b.length];
+  };
+  /** `_sub_N` 碎片判定：碎片属于一个完整句匹配单位，删除它会拆断该单位的 TTS/字幕 */
+  const isFragment = (p: T): boolean => /_sub_\d+$/.test(String((p as { id?: unknown })?.id ?? ''));
+
   for (let i = 0; i < paragraphs.length; i++) {
     const norm = String(paragraphs[i]?.text ?? '').replace(/\s+/g, '');
-    if (!norm) {
-      // 空文本：跳过（保留、不参与比较、不更新基准）
-      keptParagraphs.push(paragraphs[i]);
-      keptIndexes.push(i);
-      continue;
+    if (!norm) continue; // 空文本：保留但不参与比较、不入栈
+    let curDropped = false;
+    // 与最近的保留段逐级比较：删掉前一段后继续与更早的保留段比较，支持三连/链式复读
+    while (survivors.length > 0) {
+      const prevIdx = survivors[survivors.length - 1];
+      const prevNorm = survivorNorms[survivors.length - 1];
+      if (prevNorm === norm) {
+        // 精确重复：保留首次出现，删除后出现者（原行为不变）
+        curDropped = true;
+        break;
+      }
+      const prevNear = survivorNear[survivors.length - 1];
+      const curNear = dropText(norm);
+      const shorterLen = Math.min(prevNear.length, curNear.length);
+      if (shorterLen >= NEAR_MIN_LCS) {
+        const lcs = lcsLength(prevNear, curNear);
+        const matched = lcs >= NEAR_MIN_LCS
+          && lcs >= shorterLen - NEAR_LCS_TOLERANCE
+          && lcs / shorterLen >= NEAR_RATIO;
+        if (matched) {
+          const prevShorter = prevNear.length <= curNear.length;
+          const prevFrag = isFragment(paragraphs[prevIdx]);
+          const curFrag = isFragment(paragraphs[i]);
+          let action: 'dropPrev' | 'dropCur' | null = null;
+          if (prevFrag && curFrag) {
+            // 两段都是碎片：分属不同完整句时删除会拆断匹配单位 ⇒ 不删
+            action = null;
+          } else if (!prevFrag && !curFrag) {
+            // 两整段：独有内容（较长者比 LCS 多出的字）≤ 上限 ⇒ 同一句换了措辞/加了承接词，删被覆盖的较短段；
+            // 超过上限 ⇒ 较长者另有完整新叙事（属承接而非复述），两段都保留，重复的那一句留给断句子句级去重处理
+            const extra = Math.max(prevNear.length, curNear.length) - lcs;
+            action = extra <= WHOLE_MAX_DROP_EXTRA ? (prevShorter ? 'dropPrev' : 'dropCur') : null;
+          } else {
+            // 整段 vs 碎片：优先删整段（碎片承载更长单位的 TTS/字幕）
+            const wholeIsPrev = !prevFrag;
+            if (wholeIsPrev === prevShorter) {
+              // 整段本身是被覆盖的较短者 ⇒ 信息全在碎片里，安全删除
+              action = wholeIsPrev ? 'dropPrev' : 'dropCur';
+            } else {
+              // 整段是较长者：独有内容 > 上限说明它承载碎片之外的新信息，保留两段
+              const extra = Math.max(prevNear.length, curNear.length) - lcs;
+              action = extra <= WHOLE_MAX_DROP_EXTRA ? (wholeIsPrev ? 'dropPrev' : 'dropCur') : null;
+            }
+          }
+          if (action === 'dropCur') {
+            curDropped = true;
+            break;
+          }
+          if (action === 'dropPrev') {
+            dropped.add(prevIdx);
+            survivors.pop();
+            survivorNorms.pop();
+            survivorNear.pop();
+            continue; // 继续与更早的保留段比较
+          }
+        }
+      }
+      break;
     }
-    if (prevNorm !== null && norm === prevNorm) {
-      // 与上一个有效段落归一化后完全相同 → 删除后出现的这一段（配音重复念的第二/第三遍）
-      continue;
+    if (curDropped) {
+      dropped.add(i);
+    } else {
+      survivors.push(i);
+      survivorNorms.push(norm);
+      survivorNear.push(dropText(norm));
     }
-    prevNorm = norm;
-    keptParagraphs.push(paragraphs[i]);
-    keptIndexes.push(i);
   }
+
+  const keptParagraphs = paragraphs.filter((_, idx) => !dropped.has(idx));
+  const keptIndexes = paragraphs.map((_, idx) => idx).filter((idx) => !dropped.has(idx));
   return { paragraphs: keptParagraphs, keptIndexes };
 }
 
@@ -1466,9 +1561,17 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
       .filter((r: any) => r && r.name)
       .map((r: any) => String(r.name).trim())
       .filter(Boolean);
+    const roleLineFor = (r: any): string =>
+      `- ${r.name}${r.representative?.gender !== undefined ? (r.representative.gender === 1 || r.representative.gender === 'M' || r.representative.gender === 'male' ? '（男）' : '（女）') : ''}`;
     const roleLinesForOutline = (input.roles || [])
       .filter((r: any) => r && r.name)
-      .map((r: any) => `- ${r.name}${r.representative?.gender !== undefined ? (r.representative.gender === 1 || r.representative.gender === 'M' || r.representative.gender === 'male' ? '（男）' : '（女）') : ''}`)
+      .map(roleLineFor)
+      .join('\n');
+    /** 👤 阶段B 系统提示的角色姓名清单：只收真实姓名，过滤步骤1 自动占位编号「角色_N」
+     *  （占位名不是可念的人名，强制逐字沿用会让文案出现「角色_3」这种机器编号）。 */
+    const canonicalRoleLines = (input.roles || [])
+      .filter((r: any) => r && r.name && !/^角色_\d+$/.test(String(r.name).trim()))
+      .map(roleLineFor)
       .join('\n');
     const outlineSystemPrompt = `你是一位顶级的影视剧情分析师。你的任务是从片段流中提炼完整剧情主线，供解说创作者撰写"贴合剧情"的解说文案。
 你绝不描述画面细节（那是画面翻译，不是剧情理解），只提炼剧情逻辑：发生了什么、为什么、人物想要什么、转折在哪里。
@@ -1480,7 +1583,7 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
 4. characterMotives 的键只能使用【角色列表】中出现的人名，无角色时留空对象；
 5. 画面与台词冲突时以画面为准；台词缺失时只依据画面推断，绝不编造台词；
 6. 粒度保真（严禁"细节升级"）：台词/画面给到什么粒度就写到什么粒度。不得把模糊信息具体化——如台词只说"中奖/抽中"不得补成"银行抽奖"；台词只表现"向人求情"不得补出对方职务（刑警/医生）或"司法程序"；台词只说某人怀孕，不得改换怀孕主体、也不得补"私奔"等未出现情节。宁可表述笼统，也绝不把不确定信息具体化；
-7. 角色命名：严格沿用【角色列表】给出的姓名；列表只给代称（如"角色_N"）或只给名未给姓时，可依台词音译补名，但同一角色全篇必须用同一姓名，且不得与台词中的姓名读音冲突。`;
+7. 角色命名：严格沿用【角色列表】给出的姓名；列表只给代称（如"角色_N"）或只给名未给姓时，可依台词音译补名，但同一角色全篇必须用同一姓名，且不得与台词中的姓名读音冲突。台词里出现同一角色的多个称呼/姓名（别名、昵称、音近名）时，只能择一作为主称，全篇（含后续章节与正文）统一沿用主称，严禁前半段用一个姓名、后半段改用另一个姓名。`;
     /** 阈值与重试上限（用户确认口径：剧情符合度 > 95%） */
     const FIDELITY_THRESHOLD = 0.95;
     const MAX_OUTLINE_ATTEMPTS = 3;
@@ -1744,6 +1847,8 @@ ${outlineSourceJson}
       rhythmMode: params.rhythmMode,
       emotionTone: params.emotionTone,
       narrativePerspective: params.narrativePerspective,
+      /** 👤 真实角色姓名清单（空串 = 角色库无真实姓名/仅占位编号），注入角色命名一致性硬规则 */
+      roleLines: canonicalRoleLines,
       /** 两阶段每章注入的本章配额字数；null 表示单阶段全局模式 */
       chapterQuotaWords: null as number | null,
       /** 🎬 结尾收束（2026-10-23 改为恒注入）：此前只在「单阶段 + 明确结局」时注入，导致开放式/悬念式
@@ -3099,7 +3204,9 @@ ${roleMapLines.join('\n')}
       '· 两拍合计目标 ≤7 秒（实测每段≈3 秒，段数≈秒数）：第 1 拍只负责"是什么事"，第 2 拍只负责"证据+钩子"，',
       '  不得重复介绍人物，不得把证据提前写成结论；',
       '· 称呼三种都合格：真实人名 / "网红妻子、出轨丈夫"这类关系称谓 / 代词；有人名优先，不得生造人名，',
-      '  不得输出「角色_0 / role_1」这类内部编号。',
+      '  不得输出「角色_0 / role_1」这类内部编号；',
+      '· 同一角色全篇只能用一个本名：故事背景的「可用角色名」或「全片段落顺序」里已出现该角色姓名时必须沿用同一个，',
+      '  不得另起别名、音近名或换称呼当人名（改的是句子修辞，不是人物身份）；',
       '',
       '【结尾段 · 必须收束】position="tail" 的段：',
       '1. 必须以判断句收束：说清「谁赢了什么/输了什么、付出的代价是什么、人性指向是什么」，让观众听到"这一段讲完了"；',
@@ -3253,6 +3360,8 @@ ${roleMapLines.join('\n')}
     actDirective?: string;
     /** 🎬 结尾收束指令（仅当剧情有明确结局时注入：结尾段完成因果闭环/主题升华，不做悬念留白） */
     endingDirective?: string;
+    /** 👤 真实角色姓名清单（`- 姓名（性别）` 每行一条；空串表示角色库无真实姓名或仅有占位编号） */
+    roleLines?: string;
   }): string {
     // 风格词库：用户未选风格时回退默认
     const styleInstruction = STYLE_PROMPTS[args.styleName] || STYLE_PROMPTS['爆款短视频'];
@@ -3315,6 +3424,21 @@ ${roleMapLines.join('\n')}
       ? args.targetBudgetChars / Math.max(1, args.targetSec)
       : args.speechRate * args.densityFillRate * args.discountFactor;
 
+    /** 👤 角色命名一致性块（硬性，2026-11-02 通用防线）：
+     *  历史缺陷：同一角色在前半段叫「张涛」、后半段叫「刘白」（台词里两种称呼都在，
+     *  模型逐章独立生成时各取一个），TTS/字幕观众会误以为是两个人。
+     *  有真实姓名清单时逐字强制；仅有占位编号/无角色时，要求模型从台词确定唯一姓名并全篇沿用。
+     *  「只用一个名字」与 ROLE_ALIAS 的代词轮换不冲突：可换「他/她/这个卖鱼佬」，不可换本名。 */
+    const roleNamingBlock = `## 👤 角色命名一致性（硬性，优先于文采）
+${args.roleLines
+  ? `本片角色库给出的姓名如下，必须逐字沿用，不得改写、音译或另起别名：\n${args.roleLines}`
+  : '本片角色库未提供真实姓名（为空或仅有占位编号“角色_N”）。请从台词/剧情中为每个角色确定唯一姓名。'}
+- 同一角色全篇只能使用**一个本名**；台词里出现同一角色的别称、化名、昵称或音近名时，必须择一作为主称，全篇统一用主称。
+- 严禁给同一角色另起第二个本名（前半段叫 A、后半段改叫 B）；不同角色也不得共用同一姓名。
+- 若角色列表姓名与台词称呼冲突：以角色列表为准；列表未给姓名时，以你首次确定的姓名为准，之后严禁更换。
+- 该一致性要求跨章节同样生效：本章姓名必须与前面章节已使用的姓名完全一致，不得因换章而换名。
+- 代词轮换（他/她/身份代称）不受限制，但本名必须唯一。`;
+
     return `${PERSONAS.SCREENWRITER}
 
 ## Task
@@ -3338,6 +3462,8 @@ ${JSON.stringify(args.plotOutline, null, 2)}` : ''}
 
 ## 创作风格
 ${args.styleName}：${styleInstruction}
+
+${roleNamingBlock}
 
 ${hookInstruction}
 
