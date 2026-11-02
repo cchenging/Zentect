@@ -406,6 +406,11 @@ interface UnitFragmentWindow {
   srcChunkId?: string;
   srcCover?: string;
   srcDesc?: string;
+  /** 跨镜拼接（超长句，2026-11-02）：daemon 为「单镜窗不足」的降级句配好的两段相邻源区间。
+   *  存在时 startMs/endMs 已是两段 union（首段起点 ~ 末段终点），导出/渲染按一条连续源区间消费。
+   *  一个完整句折叠成多碎片时，本窗只是该碎片在 union 上的比例子窗；仅单片单位才向结果透出完整 parts。 */
+  parts?: Array<{ chunkId: string; startMs: number; endMs: number }>;
+  stitchWholeUnit?: boolean;
 }
 
 export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
@@ -2108,6 +2113,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         /** 未匹配到的段落 */
         return SemanticAnalyzeStrategy.buildMatchResult(q, null, q.keepOriginalAudio === true);
       });
+
+      /** 📊 交付口径审计（2026-11-02）：与 daemon 的「求解口径 [time-audit]」成对输出。
+       *  求解层统计的是 daemon `chosenChunkId`（取料层顺延/拼接之前），会残留「同镜被选两次」的计数；
+       *  本行按**最终交付**的 chunkData.id + 源窗重算，只反映成片真实情况（同素材区间重叠=0 即无重复画面）。 */
+      SemanticAnalyzeStrategy.auditDeliveredWindows(matches);
 
       /** 📊 审计：KM 最终匹配 vs Top-K 预选集合。命中率 <0.95 打 warn，方便后续调 K。
        *  sentence 档 perQueryTopK 以匹配单位 id 为键 ⇒ 先把碎片级结果 id 归一为单位 id 再审计；
@@ -4047,7 +4057,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
 
     const out = new Map<string, UnitFragmentWindow>();
     /** shortfall = 不变量自检计数：窗长 < 配音时长的碎片数，正常恒 0（仅整镜头兜底的短镜头可能为 1） */
-    const stats = { windows: 0, advanced: 0, shortfall: 0, reassigned: 0, fallback: 0, uncovered: 0, supplied: 0, replayBlocked: 0 };
+    const stats = { windows: 0, advanced: 0, shortfall: 0, reassigned: 0, fallback: 0, uncovered: 0, supplied: 0, replayBlocked: 0, stitched: 0 };
     /** 物理镜头 → 已消费到的源时间（跨句生效、只增不减 ⇒ 起点单调不减） */
     const cursorByShot = new Map<string, number>();
     /**
@@ -4220,6 +4230,28 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       return windowOf(chunk, entry, end, isCross);
     };
 
+    /** 跨镜拼接句的分片切分口径：sentence 档一个完整句含多碎片时，各碎片按配音时长比例把
+     *  拼接 union 区间首尾相接切开，避免同一 union 被每个碎片整段重复交付。 */
+    const fragAudioSplit = new Map<string, { before: number; total: number }>();
+    const unitFragCount = new Map<string, number>();
+    {
+      const totalByUnit = new Map<string, number>();
+      for (const q of shotLevelQueries) {
+        const uk = String((q as any)?.matchUnitId || (q as any)?.shotId || '');
+        const a = Math.max(0, Number((q as any)?.audioDurationMs) || 0);
+        totalByUnit.set(uk, (totalByUnit.get(uk) || 0) + a);
+        unitFragCount.set(uk, (unitFragCount.get(uk) || 0) + 1);
+      }
+      const beforeByUnit = new Map<string, number>();
+      for (const q of shotLevelQueries) {
+        const uk = String((q as any)?.matchUnitId || (q as any)?.shotId || '');
+        const fid = String((q as any)?.shotId || '');
+        const a = Math.max(0, Number((q as any)?.audioDurationMs) || 0);
+        fragAudioSplit.set(fid, { before: beforeByUnit.get(uk) || 0, total: totalByUnit.get(uk) || 0 });
+        beforeByUnit.set(uk, (beforeByUnit.get(uk) || 0) + a);
+      }
+    }
+
     for (let fragIndex = 0; fragIndex < shotLevelQueries.length; fragIndex += 1) {
       const q = shotLevelQueries[fragIndex];
       /** 原声段有独立定位窗（不经本表），跳过以免污染消费游标 */
@@ -4252,20 +4284,75 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       const needed = Number((q as any)?.audioDurationMs);
       const neededMs = Number.isFinite(needed) && needed > EPS ? needed : 0;
 
-      let win: UnitFragmentWindow | null = null;
-      let pickedId = '';
+      /**
+       * 🔗 跨镜拼接（超长句，2026-11-02）：daemon 已为「单镜剩余窗不足」的降级句配好两段
+       * 同文件、源时间相邻的区间。取料层不再走单镜分配 —— 单镜余量必然不足，最终只会退成
+       * 整镜兜底/回放（同一镜头从头重播，正是拼接要消除的观感）。这里按 union（首段起点 ~
+       * 末段终点）作为一条连续源区间交付：两镜同文件且相邻，union 即「主镜剩余 + 下一镜头部」。
+       */
+      let stitchWin: UnitFragmentWindow | null = null;
+      const rawParts = matched?.isStitched === true && Array.isArray(matched?.parts) ? matched.parts : [];
+      if (rawParts.length >= 2) {
+        const parts: Array<{ chunkId: string; startMs: number; endMs: number }> = [];
+        let valid = true;
+        for (const p of rawParts) {
+          const pid = String(p?.chunkId || '');
+          const pc = chunkById.get(pid);
+          const ps = Number(p?.startMs);
+          const pe = Number(p?.endMs);
+          if (!pid || !pc || !Number.isFinite(ps) || !Number.isFinite(pe) || pe - ps <= EPS) { valid = false; break; }
+          parts.push({ chunkId: pid, startMs: ps, endMs: pe });
+        }
+        const firstChunk = valid && parts.length > 0 ? chunkById.get(parts[0].chunkId) : undefined;
+        if (firstChunk && parts[parts.length - 1].endMs > parts[0].startMs + EPS) {
+          const uStart = parts[0].startMs;
+          const uEnd = parts[parts.length - 1].endMs;
+          /** 碎片子窗：按配音比例落在 union 上（单片单位 = 整段 union）。 */
+          const split = fragAudioSplit.get(fragId);
+          let fStart = uStart;
+          let fEnd = uEnd;
+          if (split && split.total > 0 && neededMs > 0) {
+            const scale = (uEnd - uStart) / split.total;
+            fStart = Math.min(uStart + split.before * scale, uEnd);
+            fEnd = Math.min(uEnd, fStart + neededMs * scale);
+          }
+          if (fEnd - fStart > EPS) {
+            /** 卡片归属（2026-11-02）：按与碎片子窗**重叠最长**的那一段判归属。
+             *  跨段碎片（拼接窗横跨主镜末、进入下一镜）若按「窗口起点所在段」归属，会出现
+             *  画面大部分已落在下一镜、卡片缩略图/描述却仍标主镜的脱节（实测 seg_29_sub_2
+             *  3.7s 在镜头35，卡片标镜头34）；重叠最长即「本碎片覆盖主体所在段」。 */
+            let ownerPart = parts[0];
+            let ownerOverlap = -1;
+            for (const p of parts) {
+              const overlap = Math.min(fEnd, p.endMs) - Math.max(fStart, p.startMs);
+              if (overlap > ownerOverlap) { ownerOverlap = overlap; ownerPart = p; }
+            }
+            const ownerChunk = chunkById.get(ownerPart.chunkId) || firstChunk;
+            stitchWin = {
+              ...windowOf(ownerChunk, fStart, fEnd, String(ownerChunk.id) !== anchorId),
+              parts,
+              stitchWholeUnit: (unitFragCount.get(unitKey) || 1) === 1,
+            };
+          }
+        }
+      }
+
+      let win: UnitFragmentWindow | null = stitchWin;
+      let pickedId = stitchWin?.parts?.[0].chunkId || '';
       /** L0 归因：本次每个候选被拒的原因（首轮口径：tail/supply/replay 优先于兜底轮的回放放行） */
       const rejectOf = new Map<string, string>();
       /** 两轮：先避开回放（真重叠 / 非相邻同镜）；全被拦下才放行，宁可回放也不留空窗 */
-      for (const allowReplay of [false, true]) {
-        for (const cid of list) {
-          const chunk = chunkById.get(cid);
-          if (!chunk) { if (!rejectOf.has(cid)) rejectOf.set(cid, 'nochunk'); continue; }
-          const got = allocate(chunk, neededMs, cid === hitId ? hitMs : NaN, cid !== anchorId, fragIndex, allowReplay);
-          if (got) { win = got; pickedId = cid; break; }
-          if (!rejectOf.has(cid)) rejectOf.set(cid, lastReject || 'unknown');
+      if (!win) {
+        for (const allowReplay of [false, true]) {
+          for (const cid of list) {
+            const chunk = chunkById.get(cid);
+            if (!chunk) { if (!rejectOf.has(cid)) rejectOf.set(cid, 'nochunk'); continue; }
+            const got = allocate(chunk, neededMs, cid === hitId ? hitMs : NaN, cid !== anchorId, fragIndex, allowReplay);
+            if (got) { win = got; pickedId = cid; break; }
+            if (!rejectOf.has(cid)) rejectOf.set(cid, lastReject || 'unknown');
+          }
+          if (win) break;
         }
-        if (win) break;
       }
       /** 候选全耗尽：退回「命中镜头整镜头」兜底窗（不留空窗，保证卡片有画面） */
       if (!win) {
@@ -4283,6 +4370,19 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       if (!win) { stats.uncovered += 1; continue; }
 
       stats.windows += 1;
+      /** 跨镜拼接句：两段各自登记消费游标与已交付区间，后续句不得再回头取用同一段源画面 */
+      if (win.parts) {
+        for (const p of win.parts) {
+          const pc = chunkById.get(p.chunkId);
+          if (!pc) continue;
+          const prev = cursorByShot.get(p.chunkId);
+          cursorByShot.set(p.chunkId, Math.max(prev === undefined ? -Infinity : prev, p.endMs));
+          commitWindow(pc, p.startMs, p.endMs, fragIndex, unitKey);
+        }
+        stats.stitched += 1;
+        out.set(fragId, win);
+        continue;
+      }
       /** 不变量自检（期望 0）：出窗长度不得 < 配音时长；仅「整镜头兜底」遇到本身比配音还短的镜头才会如实计 1 */
       if (win.endMs - win.startMs < neededMs - EPS) stats.shortfall += 1;
       if (pickedId && pickedId !== (list[0] || '')) stats.reassigned += 1;
@@ -4295,7 +4395,7 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     AppLogger.info(LOG_TAGS.AI_AGENT,
       `[镜头匹配] 🎬 P4 镜头内连续切窗：出窗碎片 ${stats.windows}/${shotLevelQueries.length}｜`
       + `顺延起窗 ${stats.advanced}｜窗长不足配音 ${stats.shortfall}｜顺延次优镜头 ${stats.reassigned}｜`
-      + `连续片链补窗 ${stats.supplied}｜回放拦下 ${stats.replayBlocked}｜`
+      + `连续片链补窗 ${stats.supplied}｜回放拦下 ${stats.replayBlocked}｜跨镜拼接 ${stats.stitched}｜`
       + `整镜头兜底 ${stats.fallback}｜无窗/未匹配 ${stats.uncovered}`);
     return out;
   }
@@ -4373,9 +4473,69 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         ...(win.srcFile ? { filePath: win.srcFile } : {}),
         ...(win.srcParent ? { parentChunkId: win.srcParent } : {}),
       },
+      /** 跨镜拼接（2026-11-02）：单片单位透出两段源区间供审计/未来精确分段渲染；
+       *  多碎片单位各碎片只是 union 上的比例子窗，不重复透出整段 parts。
+       *  chunkData/timeline 已按本碎片子窗改写，旧消费方按单区间消费即正确。 */
+      ...(win.parts && win.stitchWholeUnit ? { parts: win.parts, isStitched: true } : {}),
       videoTimelineStartMs: win.startMs,
       videoTimelineEndMs: win.endMs,
     };
+  }
+
+  /**
+   * 📊 交付口径时间池审计（2026-11-02）：对最终 matchResults 重算「覆盖 / 短窗 / 同素材重叠 / 复用」。
+   *
+   * 背景：daemon 的 `[time-audit][求解口径]` 读 `chosenChunkId` 与单位级 `chunkData`，发生在 Node 取料层
+   * （顺延次优镜头、跨镜拼接、身份改写）之前 ⇒ 会出现「求解层离散复用=1、成片却零重复」的口径差。
+   * 本方法只读交付后的 `chunkData.id / startMs / endMs / filePath`：
+   *   - 复用：同一交付镜头的碎片数（最大/片数）；
+   *   - 离散复用：同一交付镜头在**不相邻碎片序**再次出现（同句多碎片相邻 ⇒ 连续顺延，不计）；
+   *   - 同素材区间重叠：同一文件内两段源区间相交（>1ms 即算重复画面，唯一红线式硬指标）。
+   *
+   * @param matches 已经 retimeFragmentWindow 改写、即将落库的碎片级结果
+   */
+  private static auditDeliveredWindows(matches: any[]): void {
+    let total = 0, covered = 0, short = 0, overlap = 0, discrete = 0, reuseMax = 0, reused = 0;
+    const byChunk = new Map<string, number[]>();
+    const byFile = new Map<string, Array<[number, number]>>();
+    matches.forEach((m, i) => {
+      if (!m || !String(m.id || '')) return;
+      total += 1;
+      const cd = m.chunkData;
+      if (!cd || typeof cd !== 'object') return;
+      const cid = String(cd.id || '');
+      if (!cid) return;
+      covered += 1;
+      const s = Number(cd.startMs);
+      const e = Number(cd.endMs);
+      const audio = Number(m.audioDurationMs);
+      if (Number.isFinite(s) && Number.isFinite(e) && Number.isFinite(audio) && audio > 0 && e - s < audio - 1) short += 1;
+      if (!byChunk.has(cid)) byChunk.set(cid, []);
+      byChunk.get(cid)!.push(i);
+      if (Number.isFinite(s) && Number.isFinite(e) && e > s) {
+        const file = String(cd.filePath || '');
+        if (!byFile.has(file)) byFile.set(file, []);
+        byFile.get(file)!.push([s, e]);
+      }
+    });
+    byChunk.forEach((idx) => {
+      reuseMax = Math.max(reuseMax, idx.length);
+      if (idx.length > 1) {
+        reused += 1;
+        for (let k = 1; k < idx.length; k++) if (idx[k] - idx[k - 1] > 1) discrete += 1;
+      }
+    });
+    byFile.forEach((arr) => {
+      const a = arr.slice().sort((x, y) => x[0] - y[0]);
+      for (let i = 0; i < a.length; i++) {
+        for (let j = i + 1; j < a.length && a[j][0] < a[i][1] - 1; j++) {
+          if (Math.min(a[i][1], a[j][1]) - Math.max(a[i][0], a[j][0]) > 1) overlap += 1;
+        }
+      }
+    });
+    AppLogger.info(LOG_TAGS.AI_AGENT,
+      `[time-audit][交付口径] 覆盖 ${covered}/${total}｜窗短于配音 ${short}｜同素材区间重叠 ${overlap}｜`
+      + `最大复用 ${reuseMax} 复用片数 ${reused}｜离散复用 ${discrete}`);
   }
 
   /**

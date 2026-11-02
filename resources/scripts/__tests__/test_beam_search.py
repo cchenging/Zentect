@@ -353,6 +353,51 @@ def test_reuse_recent_first_when_forced_to_revisit():
     print("✓ test_reuse_recent_first_when_forced_to_revisit: 强挂按最近离场择近")
 
 
+def test_stitch_long_sentence_uses_adjacent_shot():
+    """跨镜拼接：单镜剩余窗不足 ⇒ 用同文件源时间紧接的下一镜补第二段，撤销降级。"""
+    q1 = assemble_query({'shotId': 's1', 'text': '句1'})
+    q2 = assemble_query({'shotId': 's2', 'text': '句2'})
+    c1 = assemble_chunk({'id': 'c1', 'startMs': 0, 'endMs': 6925, 'filePath': 'v.mp4'})
+    c2 = assemble_chunk({'id': 'c2', 'startMs': 6925, 'endMs': 11000, 'filePath': 'v.mp4'})
+    # s2 只有 c1 可选；c1 已被 s1 消费 4117ms，剩余 2808ms < 本句 6925ms ⇒ 必然熔断强挂。
+    ctx = _mk_ctx([q1, q2], [c1, c2], {'s1': ['c1'], 's2': ['c1']})
+
+    out = solve(ctx, {'s1': {'c1': 0.1}, 's2': {'c1': 0.1}}, [], {'s1': 4117.0, 's2': 6925.0})
+
+    r2 = out['s2']
+    assert r2['chosenChunkId'] == 'c1', "主段应仍是束搜索强挂的 c1"
+    assert len(r2['parts']) == 2, f"应输出两段拼接，实际 {r2.get('parts')!r}"
+    assert r2['parts'][0]['chunkId'] == 'c1' and r2['parts'][0]['startMs'] == 4117.0 \
+        and r2['parts'][0]['endMs'] == 6925.0, "主段须从上一句消费终点起，吃到镜头末"
+    assert r2['parts'][1]['chunkId'] == 'c2' and r2['parts'][1]['startMs'] == 6925.0, \
+        "补段须为同文件、源时间紧接主镜末的下一镜"
+    total = sum(p['endMs'] - p['startMs'] for p in r2['parts'])
+    assert 6925.0 * 0.92 <= total <= 6925.0 * 1.08, f"两段合计须覆盖整句配音（±8%），实际 {total}"
+    assert r2['isStitched'] is True and not r2.get('isDegraded'), \
+        "拼接成功即撤销降级（观众不再看到同镜从头重播）"
+    assert r2['confidence'] <= DEGRADED_CONF_CAP, "拼接段置信度仍保持熔断封顶，不虚高"
+    assert out['s1']['parts'] == [] and out['s1']['isStitched'] is False, \
+        "正常句零改动：单段句 parts 为空"
+    print("✓ test_stitch_long_sentence_uses_adjacent_shot: 超长降级句跨镜拼接成功")
+
+
+def test_stitch_skips_non_adjacent_shot():
+    """跨镜拼接反例：补镜与主镜末源时间不紧接（>500ms）⇒ 保持降级、不输出 parts。"""
+    q1 = assemble_query({'shotId': 's1', 'text': '句1'})
+    q2 = assemble_query({'shotId': 's2', 'text': '句2'})
+    c1 = assemble_chunk({'id': 'c1', 'startMs': 0, 'endMs': 6925, 'filePath': 'v.mp4'})
+    o = assemble_chunk({'id': 'o', 'startMs': 9200, 'endMs': 12000, 'filePath': 'v.mp4'})
+    ctx = _mk_ctx([q1, q2], [c1, o], {'s1': ['c1'], 's2': ['c1']})
+
+    out = solve(ctx, {'s1': {'c1': 0.1}, 's2': {'c1': 0.1}}, [], {'s1': 4117.0, 's2': 6925.0})
+
+    r2 = out['s2']
+    assert r2['parts'] == [], "无合规补镜时不得伪造两段"
+    assert r2.get('isDegraded') is True and r2.get('degradeKind') == 'all_beam_death', \
+        "无合规补镜须保持熔断降级，显性待确认"
+    print("✓ test_stitch_skips_non_adjacent_shot: 非紧接补镜不拼接，保持降级")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("🔎 步骤5 新引擎 · 束搜索求解核验证（⓪ 单测骨架）")
@@ -371,5 +416,7 @@ if __name__ == "__main__":
     test_continuation_in_beam_same_shot()
     test_reuse_guard_blocks_revisiting_retired_shot()
     test_reuse_recent_first_when_forced_to_revisit()
+    test_stitch_long_sentence_uses_adjacent_shot()
+    test_stitch_skips_non_adjacent_shot()
     print("=" * 60)
     print("全部通过 ✅")

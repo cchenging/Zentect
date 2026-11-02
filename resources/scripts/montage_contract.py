@@ -950,6 +950,12 @@ def default_result() -> dict:
         'isExactSpeed': False,        # 哨兵：纯裁剪段（1.00x），禁止 linear stretch
         'audioDurationMs': 0.0,       # 配音时长
         'chunkData': {},              # 原始切片引用（透传）
+        # -- 跨镜拼接（超长句，2026-11-02）--
+        #   降级句「单镜剩余窗不足」时，用同文件源时间紧接的相邻镜头补第二段，覆盖整句配音。
+        #   parts 空 = 单段（旧行为，绝大多数句）；非空 = 两段（源坐标），消费端优先读 parts，
+        #   缺省回落 chosenChunkId/chunkData（主段始终是 parts[0]，保证旧消费方仍能工作）。
+        'parts': [],
+        'isStitched': False,          # 是否由两段素材拼接覆盖本句（仅降级句可救时置 True）
         # -- 文案 --
         'text': '',
         'keepOriginalAudio': False,

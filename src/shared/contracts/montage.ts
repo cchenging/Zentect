@@ -198,6 +198,9 @@ export interface MatchResult {
   audioDurationMs: number;
   /** 原始切片引用（透传） */
   chunkData: VideoChunkAsset;
+  parts: Array<any>;
+  /** 是否由两段素材拼接覆盖本句（仅降级句可救时置 True） */
+  isStitched: boolean;
   text: string;
   keepOriginalAudio: boolean;
   videoTimelineStartMs: number;

@@ -38,6 +38,8 @@ type Win = {
   srcChunkId?: string;
   srcCover?: string;
   srcDesc?: string;
+  parts?: Array<{ chunkId: string; startMs: number; endMs: number }>;
+  stitchWholeUnit?: boolean;
 };
 
 /** 取窗序列（按碎片顺序，缺窗报错暴露，不静默兜底） */
@@ -332,6 +334,71 @@ describe('buildShotWindowTable（P4 镜头内连续切窗取料）', () => {
     expect(diag).toContain('回放拦下 1');       // 第一轮被拦
     expect(diag).toContain('整镜头兜底 0');     // 第二轮放行成功，非兜底
     expect(diag).toContain('出窗碎片 3/3');
+  });
+
+  it('G1. 跨镜拼接句（daemon 已配 parts）⇒ 取料层按 union 交付，不再退整镜兜底', () => {
+    const c1 = mkChunk('c1', 'C1', 0, 6925);
+    const c2 = mkChunk('c2', 'C2', 6925, 11000);
+    const queries = [{ shotId: 'u1_a', matchUnitId: 'u1', audioDurationMs: 6925 }];
+    const parts = [
+      { chunkId: 'c1', startMs: 4117, endMs: 6925 },
+      { chunkId: 'c2', startMs: 6925, endMs: 11000 },
+    ];
+    const matchById = new Map<string, any>([['u1', { chunkData: c1, isStitched: true, parts }]]);
+    const chunkById = new Map<string, any>([['c1', c1], ['c2', c2]]);
+    const table = S.buildShotWindowTable(queries, matchById, chunkById, null, null);
+
+    const w = table.get('u1_a')!;
+    /** 卡片归属按「与碎片子窗重叠最长的段」判定：union 内 c2 覆盖 4075ms > c1 的 2808ms */
+    expect(w).toMatchObject({ startMs: 4117, endMs: 11000, srcChunkId: 'c2', srcParent: 'C2', srcFile: 'a.mp4' });
+    expect(w.parts).toHaveLength(2);
+    expect(w.stitchWholeUnit).toBe(true);
+    const diag = lastShotWindowDiag();
+    expect(diag).toContain('跨镜拼接 1');
+    expect(diag).toContain('整镜头兜底 0');
+
+    /** 单片单位 ⇒ retime 透出 parts/isStitched，且变速守 ±8% 上限口径 */
+    const out = S.retimeFragmentWindow(
+      { id: 'u1_a', shotId: 'u1_a', audioDurationMs: 6925, chunkData: c1 },
+      w,
+    );
+    expect(out.isStitched).toBe(true);
+    expect(out.parts).toHaveLength(2);
+    /** 归属段 ≠ 命中段 ⇒ 身份三件套跟随归属段（卡片不再停在主镜） */
+    expect(out.mediaId).toBe('c2');
+    expect(out.chunkData.id).toBe('c2');
+    expect(out.chunkData.parentChunkId).toBe('C2');
+    expect(out.videoTimelineStartMs).toBe(4117);
+    expect(out.videoTimelineEndMs).toBe(11000);
+    expect(out.appliedSpeedFactor).toBeLessThanOrEqual(1.08);
+  });
+
+  it('G2. 完整句含多碎片 ⇒ 各碎片按配音比例切分 union（首尾相接、不整段重复）', () => {
+    const c1 = mkChunk('c1', 'C1', 0, 6925);
+    const c2 = mkChunk('c2', 'C2', 6925, 11000);
+    const queries = [
+      { shotId: 'u1_sub_1', matchUnitId: 'u1', audioDurationMs: 4117 },
+      { shotId: 'u1_sub_2', matchUnitId: 'u1', audioDurationMs: 2808 },
+    ];
+    const parts = [
+      { chunkId: 'c1', startMs: 4117, endMs: 6925 },
+      { chunkId: 'c2', startMs: 6925, endMs: 11000 },
+    ];
+    const matchById = new Map<string, any>([['u1', { chunkData: c1, isStitched: true, parts }]]);
+    const chunkById = new Map<string, any>([['c1', c1], ['c2', c2]]);
+    const table = S.buildShotWindowTable(queries, matchById, chunkById, null, null);
+
+    const wins = pick(table, ['u1_sub_1', 'u1_sub_2']);
+    expect(wins[0].startMs).toBe(4117);
+    expect(wins[1].endMs).toBe(11000);
+    expectContiguous(wins);
+    /** 卡片归属按碎片子窗重叠最长的段：碎片1（4117~8209）主在 c1，碎片2（8209~11000）主在 c2 */
+    expect(wins[0].srcChunkId).toBe('c1');
+    expect(wins[0].srcParent).toBeUndefined();
+    expect(wins[1].srcChunkId).toBe('c2');
+    expect(wins[1].srcParent).toBe('C2');
+    // 多碎片单位不透出整段 parts（避免每个碎片都重复交付同一 union）
+    expect(wins.every((w) => w.stitchWholeUnit === false)).toBe(true);
   });
 });
 

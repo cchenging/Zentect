@@ -78,6 +78,13 @@ TIME_PROX_RAMP_MS = 12000.0
 #   下一句又跳回更早的 B」，把源时间跳跃和观感断裂压到最小。age 由 build_path 每步递增维护。
 REUSE_RECENT_TOLERANCE = 1
 
+# 跨镜拼接（超长句，2026-11-02）：降级句「单镜剩余窗不足」时，用同素材文件、源时间紧接
+#   （起点落在主镜末之后 0~STITCH_MAX_GAP_MS）的相邻镜头补第二段，覆盖整句配音 —— 代替「从头重播同一镜头」。
+#   只在降级句生效（正常句零改动）；**主段+空隙+补段合计**须落在 need×(1±8%)，与 Node 侧变速铁律同口径。
+#   补镜起点不得早于主镜末（禁止重叠）—— 重叠会让同一段源画面在一次拼接里重复出现。
+STITCH_MAX_GAP_MS = 500.0
+STITCH_SPEED_TOLERANCE = 0.08
+
 # 前向审望资源耗尽惩罚（补丁1，env `ZENTECT_KM_FORWARD_LOOKOUT`，缺省 0=关闭）：
 #   本句若抢占「后句唯一可用主粮」，后半句就断供（无料可用）。前瞻窗口内逐句统计该候选在
 #   未来句候选池里的剩余可用数 rem（按本路径窗游标计：该镜剩余窗长 ≥ 该未来句窗长即算可用）：
@@ -584,6 +591,12 @@ def solve(
     # 此处仅按叙事行序把**束内真实落点**如实翻译为消费端权威分类，绝不改写选片。
     _classify_continuation(ctx, results, tts_duration_ms)
 
+    # 跨镜拼接后处理（2026-11-02）：只救「单镜剩余窗不足」的降级句，正常句零改动。
+    _stitch = _stitch_degraded_sentences(ctx, results, tts_duration_ms)
+    if _stitch['cand'] or _stitch['ok']:
+        _fl_diag('[stitch] 跨镜拼接 ｜ 候选降级句=%d 成功=%d 无合规补镜=%d' % (
+            _stitch['cand'], _stitch['ok'], _stitch['fail']))
+
     # 4c 产出侧审计（只读统计，不改解）：覆盖 / 候选分布 / 同文件邻近倒退 / 换文件 / 复用。
     _time_pool_audit(ctx, results)
     # 复用闸诊断（常开约束，非开关）：输出拦截量，用于确认「离场后回取」确实被结构性拦住。
@@ -1073,6 +1086,108 @@ def _to_confidence(base_cost) -> float:
     return round(max(0.0, min(1.0, 1.0 - float(base_cost))), 4)
 
 
+def _stitch_degraded_sentences(ctx, results: Dict[str, dict],
+                               tts_duration_ms: Dict[str, float]) -> Dict[str, int]:
+    """跨镜拼接后处理（2026-11-02）：给「单镜剩余窗不足」的降级句补一段同文件紧邻镜头。
+
+    背景：某句配音很长（如 6.9s），最佳候选镜头的剩余窗只有 2.8s（前句已吃掉一截），
+    闸门拦下后无合规候选 ⇒ 三级熔断强挂，观众会看到同一镜头从头重播。
+    本后处理在**不改正常句**的前提下，只在降级句上做一次补救：
+
+    触发条件（全部满足）：
+      1. 本句 isDegraded（熔断强挂）——正常句永不进入；
+      2. 主镜剩余窗 < 所需时长 × (1 − 8%)（否则缺料原因不是窗长，交给原降级）；
+      3. 存在同 filePath、startMs 落在主镜末之后 0~STITCH_MAX_GAP_MS（不重叠）且未被本片用过的
+         镜头，其剩余可用时长足以补足（主段+空隙+补段合计落在 need × (1 ± 8%)）。
+
+    拼接后：`parts` 写两段源区间、`isStitched=True`、撤销 isDegraded（不再重复播放），
+    置信度保持熔断封顶值（不虚高）。Node 取料层把两段按 union（首段起点~末段终点）视作
+    一条连续源区间交付渲染 —— 两镜同文件且源时间相邻，union 即「主镜剩余 + 下一镜头部」。
+    找不到合规则不拼，保持原降级（显性待确认）。
+
+    Returns:
+        Dict[str, int]: {'cand': 候选降级句数, 'ok': 拼接成功数, 'fail': 无合规补镜数}。
+    """
+    used_end: Dict[str, float] = {}
+    by_file: Dict[str, List[dict]] = {}
+    for c in ctx.chunk_by_id.values():
+        fp = str(c.get('filePath') or '')
+        if fp:
+            by_file.setdefault(fp, []).append(c)
+    for arr in by_file.values():
+        arr.sort(key=lambda c: float(c.get('startMs') or 0.0))
+
+    stats = {'cand': 0, 'ok': 0, 'fail': 0}
+    # 契约一致性：所有结果项都带 parts / isStitched（缺省空 = 单段），消费端无需判 null。
+    for _r in results.values():
+        _r.setdefault('parts', [])
+        _r.setdefault('isStitched', False)
+    for query in ctx.queries:
+        sid = str(query.get('shotId') or '')
+        r = results.get(sid) or {}
+        main = ctx.chunk_by_id.get(str(r.get('chosenChunkId') or '')) or {}
+        if not main:
+            continue
+        pkey = _shot_key(main)
+        s0 = float(main.get('startMs') or 0.0)
+        e0 = float(main.get('endMs') or 0.0)
+        need = _win_need_ms(tts_duration_ms.get(sid, 0.0))
+        start_from = max(s0, float(used_end.get(pkey, s0)))
+        avail = max(0.0, e0 - start_from)
+        # 本句在主镜上的消费终点（与 build_path 窗游标同口径：入点 + 窗长，封顶镜头末）。
+        cursor_after = min(max(start_from + need, s0), e0) if e0 > s0 else e0
+
+        if not r.get('isDegraded') or avail >= need * (1.0 - STITCH_SPEED_TOLERANCE):
+            used_end[pkey] = max(float(used_end.get(pkey, 0.0)), cursor_after)
+            continue
+
+        stats['cand'] += 1
+        best = None  # (cand, take_ms, c_from, ckey)
+        for cand in by_file.get(str(main.get('filePath') or ''), []):
+            ckey = _shot_key(cand)
+            if not ckey or ckey == pkey:
+                continue
+            cs = float(cand.get('startMs') or 0.0)
+            ce = float(cand.get('endMs') or 0.0)
+            if ce <= cs:
+                continue
+            # 「相邻」= 补镜起点落在主镜末之后（0~500ms 空隙）；早于主镜末即重叠 ⇒ 同一画面重复，拒收。
+            if cs < e0 - 1.0 or cs > e0 + STITCH_MAX_GAP_MS:
+                continue
+            c_from = max(cs, float(used_end.get(ckey, cs)))
+            c_avail = max(0.0, ce - c_from)
+            # Node 侧把两段视作一条连续源区间（union = 主段 + 空隙 + 补段），故配额须含空隙。
+            gap = max(0.0, cs - e0)
+            total = avail + gap + c_avail
+            if c_avail <= 0.0 or total < need * (1.0 - STITCH_SPEED_TOLERANCE):
+                continue
+            take = min(c_avail, need * (1.0 + STITCH_SPEED_TOLERANCE) - avail - gap)
+            if take <= 0.0:
+                continue
+            if best is None or take > best[1]:
+                best = (cand, take, c_from, ckey)
+
+        if best is None:
+            stats['fail'] += 1
+            used_end[pkey] = max(float(used_end.get(pkey, 0.0)), cursor_after)
+            continue
+
+        cand, take, c_from, ckey = best
+        r['parts'] = [
+            {'chunkId': str(main.get('id') or ''), 'startMs': start_from, 'endMs': e0},
+            {'chunkId': str(cand.get('id') or ''), 'startMs': c_from, 'endMs': c_from + take},
+        ]
+        r['isStitched'] = True
+        r.pop('degradeKind', None)
+        r['isDegraded'] = False
+        # 主镜消费到镜头末（用尽）；补镜消费到拼接终点。
+        used_end[pkey] = max(float(used_end.get(pkey, 0.0)), e0)
+        used_end[ckey] = max(float(used_end.get(ckey, 0.0)), c_from + take)
+        stats['ok'] += 1
+
+    return stats
+
+
 def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
     """第 4 段 4c：产出侧时间/覆盖/复用审计（只读统计，绝不改解）。
 
@@ -1085,6 +1200,8 @@ def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
       · 复用：同一 chunk 被多段引用的次数分布（最大复用次数 / 被复用过的片段数），并拆成
         「连续复用」（与上次引用相邻 = 长镜头连续顺延，合法）与「离散复用」（切走后回取，
         违反复用闸，正常应为 0）；熔断强挂句数单列（强挂可绕过闸门，需人工看）。
+        离散复用非 0 时追加一行 `[reuse-detail]` 明细（chunkId + 两次命中序 + 两次交付源窗 + 后句状态），
+        供定位「是同一镜头回放还是同镜头换窗顺延」。
       · 候选分布：每句候选池大小的 min / 中位 / max。
 
     Args:
@@ -1098,7 +1215,9 @@ def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
     _cross_file = 0
     _reuse: Dict[str, int] = {}
     _last_pos: Dict[str, int] = {}   # chunkId → 上次出现的叙事序号
+    _last_win: Dict[str, tuple] = {}  # chunkId → 上次交付源窗（明细用）
     _discrete = 0                    # 切走后回取次数（复用闸失效的直接证据，应恒为 0）
+    _discrete_detail: List[str] = []  # 离散复用明细（chunkId + 命中序 + 两次源窗）
     _degraded = 0                    # 熔断强挂句数（强挂可能绕过复用闸，故单列）
     _pos = -1
     _prev_chunk: Optional[dict] = None
@@ -1115,6 +1234,9 @@ def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
         _matched += 1
         if _m.get('isDegraded'):
             _degraded += 1
+        # 明细口径的源窗：优先取交付窗 chunkData（含 in/out 清理与连续片链补窗后的真实区间）。
+        _cd = _m.get('chunkData') if isinstance(_m.get('chunkData'), dict) else _c
+        _win = (float(_cd.get('startMs') or 0.0), float(_cd.get('endMs') or 0.0))
         if _cid:
             _reuse[_cid] = _reuse.get(_cid, 0) + 1
             # 复用口径拆分：与上次引用**相邻**（pos 差 1）= 长镜头连续顺延（合法）；
@@ -1122,7 +1244,17 @@ def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
             _prev_pos = _last_pos.get(_cid)
             if _prev_pos is not None and _pos - _prev_pos > 1:
                 _discrete += 1
+                # 明细只留前 8 条，避免异常项目刷屏；不改变任何求解结果。
+                if len(_discrete_detail) < 8:
+                    _pw = _last_win.get(_cid, (0.0, 0.0))
+                    _discrete_detail.append(
+                        '%s 命中序 %d→%d（间隔 %d）｜ 源 %.0f~%.0f ⇒ %.0f~%.0f ｜ 后句%s%s' % (
+                            _cid, _prev_pos + 1, _pos + 1, _pos - _prev_pos,
+                            _pw[0], _pw[1], _win[0], _win[1],
+                            '降级' if _m.get('isDegraded') else '正常',
+                            '/拼接' if _m.get('isStitched') else ''))
             _last_pos[_cid] = _pos
+            _last_win[_cid] = _win
         if _prev_chunk is not None:
             _pf = str(_prev_chunk.get('filePath') or '')
             _cf = str(_c.get('filePath') or '')
@@ -1142,11 +1274,13 @@ def _time_pool_audit(ctx, results: Dict[str, dict]) -> None:
     _zero_pool = sum(1 for _n in _sizes if _n == 0)
     _reused_chunks = sum(1 for _n in _reuse.values() if _n > 1)
     _reuse_max = max(_reuse.values()) if _reuse else 0
-    _fl_diag('[time-audit] 覆盖=%d/%d（零候选=%d） ｜ 候选 min/中位/max=%d/%d/%d ｜ '
+    _fl_diag('[time-audit][求解口径] 覆盖=%d/%d（零候选=%d） ｜ 候选 min/中位/max=%d/%d/%d ｜ '
              '同文件源时间回跳=%d（形态记录，非红线） ｜ 换素材文件=%d ｜ 最大复用=%d 复用片数=%d ｜ '
              '离散复用=%d 降级句=%d' % (
                  _matched, _total, _zero_pool, _cand_min, _cand_med, _cand_max,
                  _backward, _cross_file, _reuse_max, _reused_chunks, _discrete, _degraded))
+    if _discrete_detail:
+        _fl_diag('[reuse-detail] 离散复用明细 ｜ %s' % ' ｜ '.join(_discrete_detail))
 
 
 def _pick_best_for_shot(paths: List[BeamPath], query: dict,
