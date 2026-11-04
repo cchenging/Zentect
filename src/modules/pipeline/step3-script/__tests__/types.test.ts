@@ -117,7 +117,6 @@ describe('Step3 Types', () => {
             emotion: '热情',
             editing: false,
             cleanText: '欢迎收看本期节目',
-            audioSafeText: '欢迎收看本期节目',
           },
         ],
       };
@@ -166,8 +165,8 @@ describe('Step3 Types', () => {
       expect(p.emotion).toBeUndefined();
     });
 
-    it('audioSafeText / cleanText 可选字段存在时应正常访问', () => {
-      // 判别联合契约落地后 cleanText/audioSafeText 为 narration 成员独有，夹具直接按成员类型构造
+    it('cleanText 可选字段存在时应正常访问', () => {
+      // 判别联合契约落地后 cleanText 为 narration 成员独有，夹具直接按成员类型构造
       const p: NarrationParagraph = {
         id: 'p2',
         type: 'narration',
@@ -176,11 +175,9 @@ describe('Step3 Types', () => {
         text: '原始文案',
         editing: false,
         cleanText: '清洗后文案',
-        audioSafeText: 'TTS 安全文案',
       };
 
       expect(p.cleanText).toBe('清洗后文案');
-      expect(p.audioSafeText).toBe('TTS 安全文案');
     });
   });
 

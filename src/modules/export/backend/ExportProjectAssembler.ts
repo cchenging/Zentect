@@ -45,6 +45,10 @@ export interface AssembleExportProjectOptions {
   includeSubtitleStyle?: boolean;
   /** 需要额外透传到 extras 的原始 DB 字段名（如剪映需要 scriptParagraphs 做字幕段落，成片不需要） */
   extraPayloadFields?: Array<'scriptParagraphs' | 'shots' | 'matchResults' | 'ttsResults'>;
+  /** 🎬 字幕敏感词打码：传入文本脱敏函数时，装配出的**字幕文本**（shots.text/aiText、
+   *  extras 中 scriptParagraphs/shots/matchResults 的 text/aiText）统一过该函数；
+   *  不传 = 关闭（默认）原文直出。TTS 配音文本不在装配层，保持 Audio-Safe Bypass 不受影响。 */
+  maskSubtitleText?: (text: string) => string;
 }
 
 /** 装配器返回值 */
@@ -254,7 +258,14 @@ export function assembleExportProjectSync(
   const enrichedShots = enrichMatchRelations(shots);
   // 6. S8 导出范围过滤：集中执行，无命中 fail-fast（不静默降级为全部）
   const exportRange = options.exportRange ?? 'all';
-  const scopedShots = applyExportRange(enrichedShots, exportRange, options.selectedShotIds);
+  const scopedRaw = applyExportRange(enrichedShots, exportRange, options.selectedShotIds);
+  // 🎬 字幕打码（可选）：只改字幕文本字段，不动时间窗/切片/配音路径；且返回新对象，不回写 DB 源数据
+  const maskSubtitleText = options.maskSubtitleText;
+  const maskText = (v: string | undefined): string | undefined =>
+    maskSubtitleText && typeof v === 'string' && v.length > 0 ? maskSubtitleText(v) : v;
+  const scopedShots = maskSubtitleText
+    ? scopedRaw.map((s) => ({ ...s, text: maskText(s.text), aiText: maskText(s.aiText) }))
+    : scopedRaw;
 
   // 6. BGM 装配：优先 extractedBgm（mediaItems type=audio 且 extractedBgm）→ 其次 activeBgm → 都无则 undefined
   //    ⚠️ activeBgm 持久化为对象 { id, filePath, name, bpm }（ProjectRepository 持久化约定，
@@ -295,10 +306,15 @@ export function assembleExportProjectSync(
   // 10. extras：按 extraPayloadFields 透传原始 DB 结构化字段（剪映端需要 scriptParagraphs 做字幕段落）
   const extras: Record<string, unknown> = {};
   const extraFields = options.extraPayloadFields || [];
+  /** 字幕打码同样作用于剪映端字幕源（scriptParagraphs 为主；shots/matchResults 为补充源），逐行克隆避免污染 DB 引用 */
+  const maskRows = (rows: any[]): any[] =>
+    maskSubtitleText
+      ? rows.map((r) => ({ ...r, text: maskText(r?.text), aiText: maskText(r?.aiText) }))
+      : rows;
   for (const f of extraFields) {
-    if (f === 'scriptParagraphs') extras.scriptParagraphs = projectData.scriptParagraphs || [];
-    else if (f === 'shots') extras.shots = projectData.shots || [];
-    else if (f === 'matchResults') extras.matchResults = projectData.matchResults || [];
+    if (f === 'scriptParagraphs') extras.scriptParagraphs = maskRows(projectData.scriptParagraphs || []);
+    else if (f === 'shots') extras.shots = maskRows(projectData.shots || []);
+    else if (f === 'matchResults') extras.matchResults = maskRows(projectData.matchResults || []);
     else if (f === 'ttsResults') extras.ttsResults = projectData.ttsResults || [];
   }
 

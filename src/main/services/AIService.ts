@@ -800,7 +800,6 @@ export class AIService {
            *  消费端一律读 id；shotId 保留同值兼容 */
           id: r.shotId,
           shotId: r.shotId,
-          mediaType: 'video_chunk' as const,
           mediaId: chunkId,
           score: r.confidence || 0,
           thumbnail: r.coverPath || (fullChunk?.coverPath || ''),

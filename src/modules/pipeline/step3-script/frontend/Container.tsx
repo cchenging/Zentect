@@ -14,6 +14,8 @@ import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/u
 import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
 import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
 import { diffParagraphs, applyDiffUpdate } from "@modules/editor/shell/utils/scriptDiffTree";
+import { persistProjectSnapshot } from "@modules/editor/shell/utils/persistSnapshot";
+import { invalidateDownstreamSteps } from "@modules/editor/shell/utils/invalidateDownstreamSteps";
 import { StepScriptGenerationView } from "./View";
 import { breakLongParagraphs } from "./breakLongParagraphs";
 // 🎯 匹配单位开关（renderer 侧只读；读不到 process.env 时按 legacy 兜底，主进程为权威来源）
@@ -34,7 +36,8 @@ export const StepScriptGeneration: React.FC = () => {
   const setScriptParagraphs = useStep3Store((s) => s.setScriptParagraphs);
 
   const vlmFrames = useStep2Store((s) => s.vlmFrames);
-  const pipelineRunning = usePipelineStore((s) => s.pipelineRunning);
+  // P2：运行态只看步骤3 自己，避免步骤2/4/5 运行时本步按钮也误显示「生成中」
+  const step3Running = usePipelineStore((s) => s.stepStatuses[2] === 'running');
 
   const updateParagraphEmotion = useCallback((paragraphId: string, emotion: string) => {
     const step3State = useStep3Store.getState();
@@ -53,9 +56,12 @@ export const StepScriptGeneration: React.FC = () => {
     pipelineState.resetPipeline();
     pipelineState.setStepStatus(3, "running");
     pipelineState.setPipelineRunning(true);
-    // 🔧 重新生成前先清空旧文案：避免旧文案残留显示；若本次生成失败，UI 显示空（符合"错就错"原则，
-    //   不让失败被旧文案 + completed 状态掩盖）。旧文案已持久化在 DB，可随时再生成恢复。
+    // 🔧 重新生成前先清空旧文案：避免旧文案残留显示；
+    //    🛡️ P2：失败时恢复旧文案（旧文案本已持久化，失败不该抹掉用户已有内容）。
+    const previousParagraphs = step3State.scriptParagraphs;
     setScriptParagraphs([]);
+    // 🛑 P0：文案重生成 → 旧配音/旧匹配作废（新文案例与旧配音时长不一致，继续沿用会产出错片）
+    invalidateDownstreamSteps(3);
     try {
       const sequence = STEP_SEQUENCES[3].map((node: any) => ({
         ...node,
@@ -144,21 +150,12 @@ export const StepScriptGeneration: React.FC = () => {
       pipelineState.setStepCompleted(3, true);
       pipelineState.setStepStatus(3, "completed");
 
-      // 🔧 修复：重新生成后持久化步骤3状态与文案，避免只改内存、重开项目后丢失
-      // 旧版 bug：handleRegenerate 只更新了内存中的 scriptParagraphs 与 stepStatuses，
-      //           未调用 saveData，导致 DB 中 scriptParagraphs 仍是旧文案，重启/重开即丢失。
-      const finalStep3State = useStep3Store.getState();
+      // 🔧 重新生成后持久化：统一走落盘入口，确保空的下游结果（ttsResults/matchResults/videoChunks）
+      //   与回退后的 stepStatuses/stepCompleted 一并写入 DB，避免重开项目后旧下游数据复活。
       const finalProjectState = useProjectStore.getState();
       if (finalProjectState.projectId) {
         try {
-          await API.project.saveData(finalProjectState.projectId, {
-            scriptParagraphs: finalStep3State.scriptParagraphs,
-            scriptStyle: finalStep3State.scriptStyle,
-            speechRate: finalStep3State.speechRate,
-            pipelineParams: finalStep3State.pipelineParams,
-            stepStatuses: pipelineState.stepStatuses,
-            stepCompleted: pipelineState.stepCompleted,
-          });
+          await persistProjectSnapshot(finalProjectState.projectId);
         } catch (saveErr) {
           console.error("[步骤3] 重新生成后落盘失败:", saveErr);
         }
@@ -166,6 +163,8 @@ export const StepScriptGeneration: React.FC = () => {
     } catch (err: any) {
       pipelineState.setStepStatus(3, "failed");
       pipelineState.setPipelineError(err?.message || "文案生成失败");
+      // 🛡️ P2：失败恢复上一次文案——一次失败不应抹掉用户已有内容（DB 也未写入新结果）
+      if (previousParagraphs.length > 0) setScriptParagraphs(previousParagraphs);
     } finally {
       pipelineState.setPipelineRunning(false);
     }
@@ -229,7 +228,7 @@ export const StepScriptGeneration: React.FC = () => {
       speechRate={speechRate}
       pipelineParams={pipelineParams}
       vlmFrames={vlmFrames}
-      isGenerating={pipelineRunning}
+      isGenerating={step3Running}
       streamMeta={streamMeta}
       onSetSpeechRate={handleSetSpeechRate}
       onSetScriptStyle={handleSetScriptStyle}

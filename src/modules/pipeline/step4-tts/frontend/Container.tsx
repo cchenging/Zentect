@@ -12,6 +12,7 @@ import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/u
 import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
 import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
 import { persistProjectSnapshot } from "@modules/editor/shell/utils/persistSnapshot";
+import { invalidateDownstreamSteps } from "@modules/editor/shell/utils/invalidateDownstreamSteps";
 import { AppNotifier } from "@renderer/core/AppNotifier";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { StepTTSSynthesisView } from "./View";
@@ -297,9 +298,12 @@ export const StepTTSSynthesis: React.FC = () => {
     console.log('[步骤4诊断] scriptParagraphs 数量=', step3State.scriptParagraphs.length, '首个=', JSON.stringify(step3State.scriptParagraphs[0]));
     setIsSynthesizing(true);
     // 合成前主动清空历史 TTS 结果与进度，避免残留旧数据（含试听/上次失败产物）被误匹配播放
-    // 严格遵循"错就错"原则：新合成开始即丢弃旧状态，错误以原始形态暴露，不靠 if 守卫兜底
+    // 🛡️ P2：先留一份旧配音，合成失败时恢复（失败不抹掉上一次可用成片）
+    const previousTtsResults = useStep4Store.getState().ttsResults;
     useStep4Store.getState().setTtsResults([]);
     useStep4Store.getState().setTtsProgress(0);
+    // 🛑 P0：配音重合成后，步骤5 的匹配时间窗/变速因子按旧配音时长计算，必须作废重跑
+    invalidateDownstreamSteps(4);
     // 🔧 修复：resetPipeline 必须在 setPipelineRunning(true) 之前调用
     pipelineState.resetPipeline();
     pipelineState.setStepStatus(4, "running");
@@ -336,6 +340,8 @@ export const StepTTSSynthesis: React.FC = () => {
     } catch (err: any) {
       pipelineState.setStepStatus(4, "failed");
       pipelineState.setPipelineError(err?.message || "配音合成失败");
+      // 🛡️ P2：恢复旧配音（状态仍为 failed，需重跑；仅保留数据供回退/对照）
+      if (previousTtsResults.length > 0) useStep4Store.getState().setTtsResults(previousTtsResults);
     }
     finally {
       pipelineState.setPipelineRunning(false);

@@ -3100,14 +3100,6 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     isAbstractNarration?: boolean;
     /** 🎬 决策 #2 契约化（ADR-003）：显式闪回标记透传（优先级高于 KM 内部时间豁免关键词猜测） */
     isFlashback?: boolean;
-    /** 🚫 已退役（2026-10-31）：参考帧锚点三字段（refFrameTimeMs/refFrameDesc/refFrameSource）。
-     *  锚点由"文案↔帧释义字面重合"选出、段落与母块是几何均分摊派，无真实依据，已从生成与消费链路移除。
-     *  字段仅保留给老工程请求体读取，不再写入、不再参与匹配调度。 */
-    refFrameTimeMs?: number;
-    /** @deprecated 同 refFrameTimeMs */
-    refFrameDesc?: string;
-    /** @deprecated 同 refFrameTimeMs */
-    refFrameSource?: 'matched' | 'block_first';
     /** 🔒 B域（§10.2.3 动作2）：锁1 位置校正媒体物理坐标透传——
      *   trimStartMs=已裁片头偏移（补丁4 幻觉守卫用）；sourceDurationMs=源视频总时长（越界守卫用）。 */
     trimStartMs?: number;
@@ -4582,7 +4574,6 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         /** 🔧 字幕纯净（第五轮）：出生处剥离 visualIntent 后缀，matchResult.text 只保留台词/解说正文 */
         text: SemanticAnalyzeStrategy.stripVisualIntentSuffix(q.text, q.visualIntent),
         keepOriginalAudio: isOriginal,
-        mediaType: 'video_chunk' as const,
         mediaId: matched.chunkId || matched.mediaId || '',
         score: isOriginal ? 0.95 : (matched.confidence || 0),
         thumbnail: matched.coverPath || '',
@@ -4607,7 +4598,6 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
       shotId: q.shotId,
       text: SemanticAnalyzeStrategy.stripVisualIntentSuffix(q.text, q.visualIntent),
       keepOriginalAudio: isOriginal,
-      mediaType: 'video_chunk' as const,
       mediaId: '',
       score: 0,
       thumbnail: '',

@@ -26,6 +26,8 @@ import {
   Crosshair,
 } from 'lucide-react';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
+// P1 · 片头片尾裁剪变化会改变整个抽取时间轴，需重置全部子任务并失效下游
+import { invalidateStep1SubSteps } from '@modules/editor/shell/utils/invalidateDownstreamSteps';
 import { Badge } from '@renderer/components/shared';
 import type { DetectionSource } from '../../../../../main/engine/utils/MediaTrimPolicy';
 
@@ -257,6 +259,7 @@ export const OpEdTrimConfig: React.FC<OpEdTrimConfigProps> = ({ projectId, media
       // 同步刷新 Step1Store 的 extractionConfig，让用户立即看到生效的 mediaTrim（UI 不卡刷新）
       try {
         _updateExtractionConfig({ mediaTrim: data.finalConfig || {} });
+        invalidateStep1SubSteps(['frames', 'audio', 'whisper', 'faces'], 1);
       } catch {}
     } catch (e: any) {
       setLastDetectError(e.message || String(e));

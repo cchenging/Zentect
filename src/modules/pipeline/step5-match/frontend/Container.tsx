@@ -28,7 +28,8 @@ export const StepShotMatching: React.FC = () => {
   const ttsResults = useStep4Store((s) => s.ttsResults);
 
   const mediaItems = useProjectStore((s) => s.mediaItems);
-  const pipelineRunning = usePipelineStore((s) => s.pipelineRunning);
+  // P2：运行态只看步骤5 自己，避免其它步骤运行时匹配按钮误显示「匹配中」
+  const step5Running = usePipelineStore((s) => s.stepStatuses[4] === 'running');
   /** 步骤2 逐帧 VLM 描述（含情绪/景别），P3 用于聚合多模态选曲信号 */
   const vlmFrames = useStep2Store((s) => s.vlmFrames);
   /** 解说文案段落（用于个性化 BGM 推荐的情绪分析） */
@@ -112,10 +113,12 @@ export const StepShotMatching: React.FC = () => {
         .filter((m: any) => m.isUserLocked)
         .map((m: any) => [m.id, m])
     );
+    pipelineState.resetPipeline();
     pipelineState.setStepStatus(5, "running");
     pipelineState.setPipelineRunning(true);
-    pipelineState.resetPipeline();
-    /** 🔧 新匹配开始：清空上一次匹配诊断（避免旧 warning 残留，等新结果返回再写入） */
+    /** 🔧 新匹配开始：清空上一次匹配诊断（避免旧 warning 残留，等新结果返回再写入）；
+     *  🛡️ P2：先留旧诊断，匹配失败时恢复 */
+    const previousDiagnostics = step5State.matchDiagnostics;
     step5State.setMatchDiagnostics(null);
     try {
       const sequence = STEP_SEQUENCES[5];
@@ -178,6 +181,8 @@ export const StepShotMatching: React.FC = () => {
     } catch (err: any) {
       pipelineState.setStepStatus(5, "failed");
       pipelineState.setPipelineError(err?.message || "匹配失败");
+      // 🛡️ P2：恢复旧诊断（matchResults/videoChunks 本次未清空，仍然可用）
+      useStep5Store.getState().setMatchDiagnostics(previousDiagnostics);
     } finally {
       pipelineState.setPipelineRunning(false);
     }
@@ -242,7 +247,7 @@ export const StepShotMatching: React.FC = () => {
       mediaItems={mediaItems}
       ttsResults={ttsResults}
       hasBgm={!!activeBgm}
-      isProcessing={pipelineRunning}
+      isProcessing={step5Running}
       activeBgm={activeBgm}
       scriptParagraphs={scriptParagraphs}
       emotionTone={emotionTone}

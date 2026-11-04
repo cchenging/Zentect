@@ -103,17 +103,6 @@ export interface BaseScriptParagraph {
    */
   duration?: number;
   /**
-   * 🚫 已退役（2026-10-31）：参考帧锚点。步骤3 的「锚点」由"文案↔帧释义字面重合"选出，
-   * 而段落与母块是几何均分摊派（15 章全部段数≠切片数），锚点无真实依据，已从生成与消费链路移除。
-   * 字段仅保留给老工程 metadata 读取，不再写入、不再参与匹配。
-   * @deprecated 2026-10-31 锚点机制退役，禁止新增读取
-   */
-  refFrameTimeMs?: number;
-  /** @deprecated 同 refFrameTimeMs */
-  refFrameDesc?: string;
-  /** @deprecated 同 refFrameTimeMs */
-  refFrameSource?: 'matched' | 'block_first';
-  /**
    * 🔁 兼容迁移期遗留标记（@deprecated，保留一个版本周期）：判别联合落地前旧数据的原声布尔标记。
    * 读取端临时以 `type ?? keepOriginalAudio` 回退判定；所有持久化入口已经
    * normalizeScriptParagraph（§4.1 Normalizer 工厂）统一净化补齐 type，期满整体删除本字段。
@@ -128,8 +117,6 @@ export interface NarrationParagraph extends BaseScriptParagraph {
   text: string;
   /** UI 行内编辑态 */
   editing?: boolean;
-  /** TTS 净化副本（剥离特殊符号后送合成） */
-  audioSafeText?: string;
   /** 计费/缓存用规范化文本 */
   cleanText?: string;
   /**
@@ -282,7 +269,7 @@ export interface TtsResult {
   /** ✅ 身份键统一：id 为段落唯一主键（出生处全局唯一），消费端一律读 id；shotId 保留同值兼容 */
   id: string;
   shotId: string;
-  audioUrl?: string; _failed?: boolean; _error?: string; _synthesizing?: boolean;
+  audioUrl?: string; _failed?: boolean; _error?: string;
 }
 
 /** 镜头匹配结果 */
@@ -301,12 +288,6 @@ export interface MatchResult {
   videoTimelineEndMs?: number;
   /** 🎯 候选不足降级警示（2026-09-06）：daemon 候选不足降级到全池时置 true，前端显示"兜底匹配"警示 */
   degraded?: boolean;
-  /** @deprecated 2026-10-31 锚点机制退役：见 ScriptParagraph.refFrameTimeMs */
-  refFrameTimeMs?: number;
-  /** @deprecated 同 refFrameTimeMs */
-  refFrameDesc?: string;
-  /** @deprecated 同 refFrameTimeMs */
-  refFrameSource?: 'matched' | 'block_first';
   /** 🔒 K2 手动锁定锚点（2026-09-21）：用户手动替换/确认后置 true；重新匹配时该节点冻结不变 */
   isUserLocked?: boolean;
 }

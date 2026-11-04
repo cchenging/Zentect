@@ -23,6 +23,7 @@ import type { Mp4ExportInput } from '../../modules/export/mp4/types';
 import { IPC_CHANNELS } from '../../modules/infra/ipc/IpcConstants';
 import type { WebContents } from 'electron';
 import { dehydrateMagicPath } from '../engine/utils/pathUtils';
+import { LexiconFilter } from '../engine/lexicon/LexiconFilter';
 import {
   assembleExportProjectSync,
   type AssembleExportProjectOptions,
@@ -31,6 +32,16 @@ import {
 export class ExportService {
   private projectRepo = new ProjectRepository();
   private settingsService = new SettingsService();
+  private lexiconFilter = new LexiconFilter();
+
+  /**
+   * 字幕打码函数：仅在导出请求显式开启时返回脱敏函数（高危词 → 哔——），关闭时返回 undefined 原文直出。
+   * 只作用于装配出的字幕文本，不触碰 TTS 配音链路。
+   */
+  private buildSubtitleMask(enabled: unknown): ((text: string) => string) | undefined {
+    if (enabled !== true) return undefined;
+    return (text: string) => this.lexiconFilter.scan(text).cleanText;
+  }
 
   /**
    * 向触发导出的渲染窗口推送导出进度（EXPORT_PROGRESS 通道）。
@@ -47,7 +58,7 @@ export class ExportService {
 
   /** 渲染最终成片（MP4） */
   public async exportVideo(payload: any, sender: Electron.WebContents): Promise<any> {
-    const { projectId, projectName, ratio, resolution, fps, preview, exportPath, subtitleMode, exportRange, selectedShotIds } = payload;
+    const { projectId, projectName, ratio, resolution, fps, preview, exportPath, subtitleMode, subtitleMask, exportRange, selectedShotIds } = payload;
     try {
       if (!projectId) throw new AppError(ErrorCode.SYS_INVALID_INPUT, '缺少 projectId');
 
@@ -58,6 +69,8 @@ export class ExportService {
         includeSubtitleStyle: true,
         /** 🛡️ 未匹配段默认拦截；前端勾选「忽略未匹配段」→ skip（不导出这些段的配音/字幕） */
         unmatchedPolicy: payload.skipUnmatched === true ? 'skip' : 'block',
+        /** 🎬 字幕打码（UI 开关）：开启时成片烧录字幕/附带字幕文件均用脱敏文本，配音不受影响 */
+        maskSubtitleText: this.buildSubtitleMask(subtitleMask),
       };
       const assembled = assembleExportProjectSync(projectId, assemblerOptions, {
         projectRepo: this.projectRepo,
@@ -110,7 +123,7 @@ export class ExportService {
 
   /** 导出剪映可编辑草稿 */
   public async exportToJianYing(payload: any, sender: Electron.WebContents): Promise<any> {
-    const { projectId, customPath, exportRange, selectedShotIds } = payload;
+    const { projectId, customPath, exportRange, selectedShotIds, subtitleMask } = payload;
     try {
       if (!projectId) throw new AppError(ErrorCode.SYS_INVALID_INPUT, '缺少 projectId');
 
@@ -127,6 +140,8 @@ export class ExportService {
         extraPayloadFields: ['scriptParagraphs', 'shots', 'matchResults', 'ttsResults'],
         /** 🛡️ 未匹配段默认拦截；前端勾选「忽略未匹配段」→ skip（不导出这些段的配音/字幕） */
         unmatchedPolicy: payload.skipUnmatched === true ? 'skip' : 'block',
+        /** 🎬 字幕打码（UI 开关）：同步作用于剪映字幕段落源 scriptParagraphs/shots/matchResults */
+        maskSubtitleText: this.buildSubtitleMask(subtitleMask),
       };
       const assembled = assembleExportProjectSync(projectId, assemblerOptions, {
         projectRepo: this.projectRepo,

@@ -35,6 +35,49 @@ function buildDeps(data: Record<string, unknown>) {
  *  ⚠️ unmatchedPolicy='keep'：本组测试校验装配层"坏窗口容错"，用 keep 显式保留旧"未匹配定格"语义；默认 block 的拦截行为由下方专有用例覆盖。 */
 const BASE_OPTIONS = { includeSubtitleStyle: false, unmatchedPolicy: 'keep' as const };
 
+describe('ExportProjectAssembler 字幕敏感词打码（maskSubtitleText）', () => {
+  const mask = (t: string) => t.replace('敏感词', '哔——');
+
+  it('开启：shots 字幕文本 + extras 字幕源全部打码，且不回写 DB 源数据', () => {
+    const data = {
+      ...buildProjectData({
+        mediaId: 'c1',
+        text: '这里有敏感词',
+        aiText: '这里有敏感词',
+        videoTimelineStartMs: 1000,
+        videoTimelineEndMs: 4000,
+        chunkData: { id: 'c1', startMs: 0, endMs: 999999 },
+      }),
+      scriptParagraphs: [{ id: 'seg_7', text: '这里有敏感词', editing: false }],
+      shots: [{ id: 'seg_7', text: '这里有敏感词', aiText: '这里有敏感词' }],
+    };
+    const { project, extras } = assembleExportProjectSync('p1', {
+      ...BASE_OPTIONS,
+      maskSubtitleText: mask,
+      extraPayloadFields: ['scriptParagraphs', 'shots'],
+    }, buildDeps(data));
+
+    expect(project.shots[0].text).toBe('这里有哔——');
+    expect(project.shots[0].aiText).toBe('这里有哔——');
+    expect((extras.scriptParagraphs as any[])[0].text).toBe('这里有哔——');
+    expect((extras.shots as any[])[0].aiText).toBe('这里有哔——');
+    // 克隆语义：不得把脱敏结果写回装配输入（DB 读取源）
+    expect(data.scriptParagraphs[0].text).toBe('这里有敏感词');
+  });
+
+  it('关闭（不传 maskSubtitleText）：原文直出，行为与现状一致', () => {
+    const data = buildProjectData({
+      mediaId: 'c1',
+      text: '这里有敏感词',
+      videoTimelineStartMs: 1000,
+      videoTimelineEndMs: 4000,
+      chunkData: { id: 'c1', startMs: 0, endMs: 999999 },
+    });
+    const { project } = assembleExportProjectSync('p1', BASE_OPTIONS, buildDeps(data));
+    expect(project.shots[0].text).toBe('这里有敏感词');
+  });
+});
+
 describe('ExportProjectAssembler 时间窗容错（坏 timeline 三级取值）', () => {
   it('🎯 核心回归（seg_7 实录）：timeline 两端相等 + 切片窗口合法 → 不抛错，回退切片窗口', () => {
     const { project } = assembleExportProjectSync('p1', BASE_OPTIONS, buildDeps(buildProjectData({

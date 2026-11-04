@@ -40,8 +40,6 @@ function numOr(value: unknown, fallback: number): number {
  * - 时间轴：startMs / durationMs 强制非空（durationMs 缺失时依次尝试 legacy 秒级 duration × 1000、
  *   再退 3000ms 兜底），杜绝下游渲染 / 定位读到 NaN 或 undefined；
  * - 解说旁白段：text 以 cleanText 回退兜底（保证 UI 与 TTS 永远有字符串可读）、characters 补空数组；
- * - 参考帧锚点（refFrameTimeMs/refFrameDesc/refFrameSource）：2026-10-31 随锚点机制退役，
- *   不再从历史数据读出、不再写入产物（旧工程里的这三个键在此被自然丢弃）；
  * - 原声穿插段：audioSource 缺失时按「源时间窗 = [startMs, startMs+durationMs]」重建，
  *   transcript 从 legacy text 回退，speaker 标注占位提示人工复核，duckingBgm 取 true 保护台词可听性；
  * - 错就错：非对象输入 / 缺失主键 id 直接抛错暴露，绝不静默降级生成假数据污染时间轴。
@@ -104,7 +102,6 @@ export function normalizeScriptParagraph(raw: unknown): ScriptParagraph {
       type: 'narration',
       text: typeof src.text === 'string' ? src.text : String(src.cleanText ?? ''),
       ...(typeof src.editing === 'boolean' ? { editing: src.editing } : {}),
-      ...(typeof src.audioSafeText === 'string' && src.audioSafeText ? { audioSafeText: src.audioSafeText } : {}),
       ...(typeof src.cleanText === 'string' && src.cleanText ? { cleanText: src.cleanText } : {}),
       ...(typeof src.visualIntent === 'string' && src.visualIntent ? { visualIntent: src.visualIntent } : {}),
       characters: Array.isArray(src.characters)

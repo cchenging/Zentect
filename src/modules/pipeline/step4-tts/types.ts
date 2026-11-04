@@ -28,8 +28,6 @@ export interface TTSResult {
   audioUrl?: string;
   _failed?: boolean;
   _error?: string;
-  /** 合成中标记：每段完成时由 Strategy 推送增量结果，前端用于显示"合成中"状态 */
-  _synthesizing?: boolean;
 }
 
 /** 音色选项 */

@@ -95,7 +95,6 @@ export interface GeneratedShot {
   shotId: string;
   text: string;
   cleanText: string;
-  audioSafeText: string;
   flagged: boolean;
   replaced: boolean;
   lexiconMarks: LexiconMark[];
@@ -143,6 +142,22 @@ const STYLE_PROMPTS: Record<string, string> = {
   '悬疑推理': '悬疑营造风格：用层层设问和伏笔构建悬念，每一句解说都是线索碎片（"注意看他的手"、"这个细节很多人都忽略了"），引导观众在脑中拼凑真相，节奏张弛有度。',
   '硬核科普': '知识科普风格：以严谨客观的语气进行知识性解说，注重事实准确性和逻辑清晰度，适当引用专业术语但保持通俗易懂，适合科技/历史/自然类内容。',
 };
+
+/**
+ * 函数级中文注释：判断一句文案是否已「完结收尾」（全链路单一真源）。
+ * 句号/叹号/问号是标准收尾；中文省略号「…」与连续英文点「...」也是合法的悬置收尾（剧本常见），
+ * 不得判为半截句（历史缺陷：单阶段校验认「…」、两阶段校验不认，导致合法悬尾句连续两次被判脏数据、整次生成失败）。
+ * 允许结尾追加收尾引号/括号（如「。」「……」）。
+ *
+ * @param text 待判定文案
+ * @returns true=已完结；空串=false
+ */
+export function isSentenceFinished(text: string): boolean {
+  const t = String(text ?? '').trim();
+  if (!t) return false;
+  return /[。！？!?…](?:["'"”’」』）)】]*)$/.test(t)
+    || /\.{2,}(?:["'"”’」』）)】]*)$/.test(t);
+}
 
 /** 将毫秒格式化为 HH:MM:SS.mmm 字符串（用于 ContextChunk.timeRange） */
 function formatMsToTime(ms: number): string {
@@ -416,6 +431,192 @@ function actIndexForChapter(chapterIdx: number, chapterCount: number): number {
     if (p < ACT_DEFS[i].end) return i;
   }
   return ACT_DEFS.length - 1;
+}
+
+/** 跨章已写文案回引窗口（章数）：回引当前章之前最近 N 章的实际定稿文案。
+ *  历史缺陷：只回引上一章（实测同一支口红的「发现→震惊」隔约 2 章又写一遍，恰好落在窗口外）。 */
+export const WRITTEN_RECAP_CHAPTER_WINDOW = 3;
+/** 跨章已写文案回引上限（字符）：最近 N 章的末尾部分，够模型识别「前文讲过什么」，
+ *  又不把整章塞进 prompt 诱导抄写。 */
+export const WRITTEN_RECAP_MAX_CHARS = 600;
+
+/**
+ * 函数级中文注释：把最近几章已定稿的段落拼成「已写文案」回引串（跨章语义重复防线，纯函数）。
+ * 只取解说段（原声段文本是 ASR 原文、不属于作者创作，回引无意义），从末尾向前累积到上限为止，
+ * 保留最近的句子（重复通常出现在章界附近，隔 1~2 章复述也由窗口覆盖）。
+ *
+ * @param paragraphs 最近几章最终定稿段落（压缩/截断后，非 LLM 草稿）
+ * @param maxChars 回引字符上限（默认 WRITTEN_RECAP_MAX_CHARS）
+ * @returns 回引文本；空输入/超限为 0 时返回空串
+ */
+export function formatWrittenRecap(
+  paragraphs: Array<{ text?: string; keepOriginalAudio?: boolean }>,
+  maxChars = WRITTEN_RECAP_MAX_CHARS,
+): string {
+  if (!Array.isArray(paragraphs) || maxChars <= 0) return '';
+  let acc = '';
+  for (let i = paragraphs.length - 1; i >= 0; i--) {
+    const p = paragraphs[i];
+    if (p?.keepOriginalAudio === true) continue;
+    const t = String(p?.text ?? '').trim();
+    if (!t) continue;
+    if (acc.length >= maxChars) break;
+    acc = t + acc;
+  }
+  return acc;
+}
+
+/**
+ * 函数级中文注释：构造本章 prompt 的「已写文案（仅供查重）」块。
+ * 空串返回 ''（单阶段/首章不注入，行为不变）。规则同时禁止逐字复用与换措辞复述，
+ * 并明确允许「同一物件再次出现时只补新信息」，避免模型为了不重复而跳过真实新剧情。
+ *
+ * @param recap formatWrittenRecap 的产物
+ * @returns 可直接并入 user prompt 的文本块；无内容时为空串
+ */
+export function buildWrittenRecapBlock(recap: string): string {
+  const text = String(recap ?? '').trim();
+  if (!text) return '';
+  return `【已写文案（本章之前最近几章的实际产出，仅供查重）】：\n${text}\n`
+    + '以上句子已经播过：本章既不得逐字复用，也不得换措辞复述其中的情节、道具发现、情绪反应或结论。'
+    + '同一道具的「发现/处置」、同一事件的同一拍、同一情绪反应，全片只能写一次；'
+    + '若本章镜头确实再次出现同一物件/同一动作，只能补充前文没讲过的新信息（谁做的、为什么、意味着什么、带来什么新后果），'
+    + '不得把「发现→震惊」「质问→不承认」这类节拍再写一遍。';
+}
+
+/** 全片语义查重复核：一条「后出现段落」的改写指令 */
+export interface SemanticDedupRewrite {
+  /** 重复节拍中【先出现】的段落 id（用于强制「只改后出现的那段」，模型写反会被拒） */
+  earlierId?: string;
+  /** 后出现的段落 id（本次复核输入里给的编号，如 seg_31） */
+  laterId: string;
+  /** 改写后的完整句（补新信息，不得复述同一拍） */
+  rewrittenText: string;
+  /** 为什么判为重复（诊断用，不参与校验） */
+  reason?: string;
+}
+
+/**
+ * 函数级中文注释：构造「全片语义查重」复核 prompt（纯函数）。
+ * 字符级去重（dedupeAdjacentParagraphs）与相邻章回引都挡不住「隔 1~2 章换措辞再讲同一拍」，
+ * 故在章节合并、段落去重之后，把全片解说段按播放顺序一次性交给模型复核，只允许改写后出现的那一段。
+ *
+ * @param paragraphs 全片段落（按播放顺序；原声段不参与，不会被列出）
+ * @returns 复核 user prompt；无可复核解说段时为空串
+ */
+export function buildSemanticDedupReviewPrompt(
+  paragraphs: Array<{ id?: string; text?: string; keepOriginalAudio?: boolean }>,
+): string {
+  const items = (Array.isArray(paragraphs) ? paragraphs : [])
+    .filter((p) => p && p.keepOriginalAudio !== true)
+    .map((p) => ({ id: String(p.id ?? '').trim(), text: String(p.text ?? '').trim() }))
+    .filter((p) => p.id && p.text)
+    .map((p) => `${p.id}｜${p.text}`);
+  if (items.length === 0) return '';
+  return [
+    '以下是本片全部解说段落，按播放顺序编号（id｜文案）：',
+    ...items,
+    '',
+    '任务：找出「语义重复」的段落对——同一情节、同一道具的同一个发现/处置、同一情绪反应或同一结论，被换措辞在后面的段落又讲了一遍。',
+    '只允许改写【后出现】的那一段，前一段保持原样；同一拍只保留最早一次。',
+    '改写要求：',
+    '1. 必须是完整句（以句号/叹号/问号/省略号收尾），不得半截句；',
+    '2. 不得逐字复用任何现有段落；',
+    '3. 只能补前文没讲过的新信息（后果、新线索、人物动机、关系变化），不得再把同一拍复述一遍；',
+    '4. 字数不得超过原段（尽量同长），人物称呼必须与原文一致；',
+    '5. 没有语义重复时返回空数组。',
+    '',
+    '仅输出 JSON：{"duplicates":[{"earlierId":"seg_17","laterId":"seg_31","reason":"与 seg_17 重复","rewrittenText":"改写后的完整句"}]}',
+  ].join('\n');
+}
+
+/**
+ * 函数级中文注释：应用「全片语义查重」的改写指令（纯函数，逐条校验，不合法就保留原文）。
+ * 校验口径：① 目标必须是解说段（原声段/空文本段不可改写）；② 必须是完整句；③ 不得超长
+ * （时长与配额固定，变长会挤压 TTS/画面）；④ 不得与任何现有段落逐字相同（避免制造新的重复）。
+ * 段数、顺序、keepOriginalAudio 等字段一律不动，只替换 text。
+ *
+ * @param paragraphs 全片段落（与 prompt 输入同序，id 已就绪）
+ * @param rewrites 模型返回的改写指令
+ * @returns 改写后的段落数组（同长同序）、实际生效 id、被拒指令及原因
+ */
+export function applySemanticDedupRewrites<
+  T extends { id?: string; text: string; keepOriginalAudio?: boolean },
+>(
+  paragraphs: T[],
+  rewrites: SemanticDedupRewrite[],
+): { paragraphs: T[]; applied: string[]; rejected: Array<{ id: string; reason: string }> } {
+  const out = Array.isArray(paragraphs) ? paragraphs.slice() : [];
+  const applied: string[] = [];
+  const rejected: Array<{ id: string; reason: string }> = [];
+  const normalize = (s: string) => String(s ?? '').replace(/\s+/g, '');
+  const indexById = new Map<string, number>();
+  const existingTexts = new Set<string>();
+  out.forEach((p, idx) => {
+    if (!p || p.keepOriginalAudio === true) return;
+    const id = String(p.id ?? '').trim();
+    const text = normalize(p.text);
+    if (!id || !text) return;
+    indexById.set(id, idx);
+    existingTexts.add(text);
+  });
+
+  const appliedIds = new Set<string>();
+  for (const r of Array.isArray(rewrites) ? rewrites : []) {
+    const id = String(r?.laterId ?? '').trim();
+    const targetIdx = indexById.get(id);
+    if (targetIdx === undefined) {
+      rejected.push({ id, reason: '不是可改写的解说段（原声段/空文本/编号不存在）' });
+      continue;
+    }
+    if (appliedIds.has(id)) {
+      rejected.push({ id, reason: '重复的改写指令' });
+      continue;
+    }
+    /** 「只改后出现的那段」硬校验：模型若把 earlier/later 写反，拒绝而不是改掉最早那次。 */
+    const earlierId = String(r?.earlierId ?? '').trim();
+    if (earlierId) {
+      const earlierIdx = indexById.get(earlierId);
+      if (earlierIdx === undefined) {
+        rejected.push({ id, reason: `earlierId ${earlierId} 不是可比较的解说段` });
+        continue;
+      }
+      if (targetIdx <= earlierIdx) {
+        rejected.push({ id, reason: 'not-later：只允许改写后出现的那一段' });
+        continue;
+      }
+    }
+    const rewritten = String(r?.rewrittenText ?? '').trim();
+    if (!rewritten) {
+      rejected.push({ id, reason: '改写文本为空' });
+      continue;
+    }
+    if (!isSentenceFinished(rewritten)) {
+      rejected.push({ id, reason: '改写文本不是完整句' });
+      continue;
+    }
+    const originalNorm = normalize(out[targetIdx].text);
+    const rewrittenNorm = normalize(rewritten);
+    if (rewrittenNorm === originalNorm) {
+      rejected.push({ id, reason: '改写文本与原文相同' });
+      continue;
+    }
+    if (rewrittenNorm.length > originalNorm.length) {
+      rejected.push({ id, reason: `改写超长（${rewrittenNorm.length} > ${originalNorm.length}）` });
+      continue;
+    }
+    if (existingTexts.has(rewrittenNorm)) {
+      rejected.push({ id, reason: '改写文本与现有段落逐字重复' });
+      continue;
+    }
+    existingTexts.delete(originalNorm);
+    existingTexts.add(rewrittenNorm);
+    out[targetIdx] = { ...out[targetIdx], text: rewritten };
+    appliedIds.add(id);
+    applied.push(id);
+  }
+
+  return { paragraphs: out, applied, rejected };
 }
 
 /**
@@ -1583,7 +1784,8 @@ export class ScriptGenStrategy extends BaseNodeStrategy<ScriptGenInput, Generate
 4. characterMotives 的键只能使用【角色列表】中出现的人名，无角色时留空对象；
 5. 画面与台词冲突时以画面为准；台词缺失时只依据画面推断，绝不编造台词；
 6. 粒度保真（严禁"细节升级"）：台词/画面给到什么粒度就写到什么粒度。不得把模糊信息具体化——如台词只说"中奖/抽中"不得补成"银行抽奖"；台词只表现"向人求情"不得补出对方职务（刑警/医生）或"司法程序"；台词只说某人怀孕，不得改换怀孕主体、也不得补"私奔"等未出现情节。宁可表述笼统，也绝不把不确定信息具体化；
-7. 角色命名：严格沿用【角色列表】给出的姓名；列表只给代称（如"角色_N"）或只给名未给姓时，可依台词音译补名，但同一角色全篇必须用同一姓名，且不得与台词中的姓名读音冲突。台词里出现同一角色的多个称呼/姓名（别名、昵称、音近名）时，只能择一作为主称，全篇（含后续章节与正文）统一沿用主称，严禁前半段用一个姓名、后半段改用另一个姓名。`;
+7. 角色命名：严格沿用【角色列表】给出的姓名；列表只给代称（如"角色_N"）或只给名未给姓时，可依台词音译补名，但同一角色全篇必须用同一姓名，且不得与台词中的姓名读音冲突。台词里出现同一角色的多个称呼/姓名（别名、昵称、音近名）时，只能择一作为主称，全篇（含后续章节与正文）统一沿用主称，严禁前半段用一个姓名、后半段改用另一个姓名。
+8. 章节推进（防跨章重复）：各章 summary 必须写该章独有的新进展，章节之间按时间/因果递增；同一事件、同一道具的同一个「发现/揭示」、同一个情绪反应，全片只能作为一个转折写一次，严禁在相邻章节概要里换措辞重复描述同一拍。若上一章已写「发现被人用过的口红」，下一章就不得再把同一支口红当作新转折，只能写它带来的新后果或新证据。`;
     /** 阈值与重试上限（用户确认口径：剧情符合度 > 95%） */
     const FIDELITY_THRESHOLD = 0.95;
     const MAX_OUTLINE_ATTEMPTS = 3;
@@ -2043,12 +2245,11 @@ ${roleMapLines.join('\n')}
           // 合规校验（任一不过即进入重试，重试仍不过才回退截断兜底）：
           // ① 非空必须是完整句；② 单句不得短于 min(8, 原文长度) 防过度压缩；
           // ③ 总量必须落进上限；④ 整章不得压得过空（< 配额 50%），避免「27 字 → 7 字」式塌缩。
-          const FINISHED_END = /[。！？!?…](?:["'"”’」』）)】]*)$/;
           let compressedTotal = 0;
           for (let i = 0; i < narrShotIdx.length; i++) {
             const t = String(compressed[narrShotIdx[i]].text || '').trim();
             if (!t) continue;
-            if (!FINISHED_END.test(t)) {
+            if (!isSentenceFinished(t)) {
               throw new Error(`压缩产物非完整句：「${t.slice(0, 20)}」`);
             }
             const minLen = Math.min(8, origLens[i]);
@@ -2121,7 +2322,6 @@ ${roleMapLines.join('\n')}
     ): T[] => {
       if (!Array.isArray(shots) || shots.length <= 1) return shots;
       const result: typeof shots = [];
-      const FINISHED_END = /[。！？!?](?:["'"”’」』）)】]*)$/;
       const clean = (s: string) => s.replace(/[，。！？、；：\s\[\]:0-9ms]/g, '');
       /** 最长公共前缀长度：逐字符比较，中文按码点相等判定即可 */
       const lcpLen = (a: string, b: string): number => {
@@ -2135,7 +2335,7 @@ ${roleMapLines.join('\n')}
         const next = (shots[i + 1]?.text || '').trim();
         if (!cur) continue; // 空文本占位段由下游保留语义，此处剔除
         // 已完结句永不删除：即便被下一句继续展开也保留，防误删正常叙事承接
-        if (FINISHED_END.test(cur)) {
+        if (isSentenceFinished(cur)) {
           result.push(shots[i]);
           continue;
         }
@@ -2190,8 +2390,7 @@ ${roleMapLines.join('\n')}
       shots: Array<{ shotId?: string; text?: string; keepOriginalAudio?: boolean }>,
       seenAcrossChapters: Set<string> = new Set<string>(),
     ): void => {
-      // 完结标点（中英文）：句号/叹号/问号
-      const FINISHED_END = /[。！？!?](?:["'"”’」』）)】]*)$/;
+      // 完结标点单一真源（含中文省略号「…」/ 连续英文点「...」这类合法悬置收尾）
       /** 章内 + 章间共用同一已见集合（见上注）；调用方跨章传入即覆盖跨章重复 */
       const seen = seenAcrossChapters;
       for (const shot of shots) {
@@ -2199,12 +2398,15 @@ ${roleMapLines.join('\n')}
         if (shot.keepOriginalAudio === true) continue;
         const t = String(shot.text || '').replace(/\s+/g, '');
         if (!t) continue; // 空文本占位段由下游保留，不判碎片
-        // 硬性完结：解说段必须以句号/叹号/问号收尾。
+        // 硬性完结：解说段必须以句号/叹号/问号/省略号收尾。
         // 用户反馈的悬空半句多以汉字悬空（"传承未断，可崔国明的脚步，却"以"却"收尾、
         // "这句话，像一盆冷水，浇在"以"在"收尾），旧版只查"以未完结标点收尾"会漏掉这些
         // 以汉字结尾的句子，故直接要求完结标点，命中即抛错走内联重试，绝不静默落库。
-        if (!FINISHED_END.test(t)) {
-          throw new Error(`碎片化半截句（未以句号/叹号/问号收尾）: "${t.slice(0, 24)}..."`);
+        if (!isSentenceFinished(t)) {
+          // 报错同时给头/尾，便于一眼看出是"悬空半句"还是"标点口径误判"（旧版只截头 24 字看不到结尾）
+          throw new Error(
+            `碎片化半截句（未以句号/叹号/问号/省略号收尾）: "${t.slice(0, 16)}…${t.slice(-12)}"`,
+          );
         }
         if (seen.has(t)) {
           throw new Error(`完全重复句（含跨章逐字重复）: "${t.slice(0, 24)}..."`);
@@ -2299,6 +2501,10 @@ ${roleMapLines.join('\n')}
       /** 跨章已见文本（归一化）：两阶段逐章共享，挡住「上一章末句被下一章逐字抄写」的跨章重复。
        *  单阶段路径不传入（整批一次校验），行为不变。 */
       let seenAcrossChapters = new Set<string>();
+      /** 最近几章最终定稿文案（按章分桶，压缩/截断后），供下一章 prompt 做「已写文案」查重回引；
+       *  通用防线：挡住「同一情节/道具发现换措辞再讲一遍」这类跨章语义重复（逐字重复另由 seenAcrossChapters 拦）。
+       *  只保留最近 WRITTEN_RECAP_CHAPTER_WINDOW 章，窗口外的旧章不再回引（避免 prompt 无限膨胀）。 */
+      const writtenRecapChapters: Array<Array<{ text?: string; keepOriginalAudio?: boolean }>> = [];
       for (let k = 0; k < chapterGroups.length; k++) {
         const group: any[] = chapterGroups[k];
         const baseIndex = chapterBaseIndexes[k];
@@ -2344,6 +2550,16 @@ ${roleMapLines.join('\n')}
             + '本章第一段须自然承接上一章的剧情与语气，但【严禁逐字复用上一章的任何句子或其片段】，'
             + '也不得复述上一章已讲过的信息——本章只推进新信息；若语义确有承接，必须换用全新措辞重写。',
           );
+          /** 跨章语义重复防线（2026-11-03 扩展窗口）：把最近 2~3 章**实际产出文案**回引给模型查重。
+           *  只给"剧情进度概要"挡不住换措辞复述（实测同一支口红的"发现→震惊"在相邻两章各写一遍，
+           *  另一处隔约 2 章又写一遍，只回引上一章恰好落在窗口外）；给真实文案后，模型能识别
+           *  「这个情节/道具已经讲过」。逐字抄写由 assertChapterQuality 兜底。 */
+          const recap = formatWrittenRecap(
+            writtenRecapChapters.slice(-WRITTEN_RECAP_CHAPTER_WINDOW).flat(),
+            WRITTEN_RECAP_MAX_CHARS,
+          );
+          const recapBlock = buildWrittenRecapBlock(recap);
+          if (recapBlock) parts.push(recapBlock);
         }
         parts.push(`【多模态上下文片段流（ContextChunk）——仅限本章 chunk ${group[0]?.chunkId ?? ''} ~ ${group[group.length - 1]?.chunkId ?? ''}】：\n\n${JSON.stringify(ScriptGenStrategy.slimContextChunks(group, plotOutline?.keyTurns), null, 2)}`);
         if (roleBlock) parts.push(roleBlock);
@@ -2361,7 +2577,19 @@ ${roleMapLines.join('\n')}
         let lastErr = '';
         for (let attempt = 1; attempt <= 2 && !chapterRaw; attempt++) {
           try {
-            const resp = await adapter.chat(messagesK, modelName, temperature, { max_tokens: 8000, response_format: { type: 'json_object' } });
+            /** 第二次尝试带上次失败原因作反馈：原实现两次发完全相同 prompt，
+             *  模型若稳定产出同一种脏数据（如固定用省略号/引号收尾），重试必然再失败；带反馈可打破这一循环。 */
+            const messagesAttempt = attempt === 2 && lastErr
+              ? [
+                  ...messagesK,
+                  {
+                    role: 'user',
+                    content: `上一版被判为脏数据（${lastErr}）。本次必须修正：每个解说段落都以句号/叹号/问号（或省略号）完整收尾，`
+                      + '不得出现半截句，也不得与上一章或本章前文有完全重复/换措辞复述。',
+                  },
+                ]
+              : messagesK;
+            const resp = await adapter.chat(messagesAttempt, modelName, temperature, { max_tokens: 8000, response_format: { type: 'json_object' } });
             // 🔧 防截断：3000 在配额大的章节会被 LLM 输出耗尽，JSON 数组被硬截断，
             // 报 "LLM JSON contract damaged: Expected ',' or ']' after array element ... position 6475"，
             // 提到 6000 覆盖 8000~12000 字符；但末章（如 18/18）配额最大、shot 最多，
@@ -2429,6 +2657,13 @@ ${roleMapLines.join('\n')}
           );
           enforced = enforceChapterQuota(enforced, quotaWords);
         }
+        /** 跨章语义重复防线：记录本章**最终定稿**文案（压缩/截断后），供后续章节 prompt 查重回引 */
+        writtenRecapChapters.push(
+          enforced.map((s) => ({ text: String(s.text ?? ''), keepOriginalAudio: s.keepOriginalAudio === true })),
+        );
+        if (writtenRecapChapters.length > WRITTEN_RECAP_CHAPTER_WINDOW) {
+          writtenRecapChapters.splice(0, writtenRecapChapters.length - WRITTEN_RECAP_CHAPTER_WINDOW);
+        }
         /** 压缩后留空的解说镜头不产段落；原声段保留（其文本后续由 ASR 原文覆盖） */
         const retainedCount = enforced.filter(
           (s) => s.keepOriginalAudio === true || String(s.text || '').trim(),
@@ -2464,6 +2699,96 @@ ${roleMapLines.join('\n')}
       chunkIndexByShot.length = 0;
       chunkIndexByShot.push(...alignedChunkIndexes);
       AppLogger.info(LOG_TAGS.AI_AGENT, `[文案生成] 相邻重复段落去重：删除 ${removedCount} 段`);
+    }
+
+    /** 🔍 全片语义查重复核（2026-11-03，两阶段专用）：字符级去重只能拦「逐字/近似逐字重复」，
+     *  挡不住「隔 1~2 章换措辞把同一拍再讲一遍」（实测同一支口红在 seg_17 与 seg_31/32 各写一次）。
+     *  章节合并、段落去重之后，把全片解说段一次性交给模型复核，只改写**后出现**的那一段；
+     *  段数与按段时长不变（只换 text），原声段不参与，故不破坏原声标记与 chunk 对齐。
+     *  调用失败连续两次则明确告警并保留原文（不静默删改，也不因复核失败拖垮整次生成）。 */
+    if (isTwoPhase && rawShots.length > 0) {
+      onProgress(88, '正在执行全片语义查重...');
+      const reviewItems = rawShots.map((s, idx) => ({
+        id: `seg_${idx}`,
+        text: String(s.text ?? ''),
+        keepOriginalAudio: s.keepOriginalAudio === true,
+      }));
+      const reviewPrompt = buildSemanticDedupReviewPrompt(reviewItems);
+      if (reviewPrompt) {
+        let reviewJson: any = null;
+        let reviewErr = '';
+        for (let attempt = 1; attempt <= 2 && !reviewJson; attempt++) {
+          try {
+            const resp = await adapter.chat(
+              [
+                { role: 'system', content: '你是剧本连续性审校。只输出 JSON，不得输出解释或 Markdown。' },
+                { role: 'user', content: reviewPrompt },
+              ],
+              modelName,
+              Math.min(temperature, 0.2),
+              { max_tokens: 4000, response_format: { type: 'json_object' } },
+            );
+            if (!resp.success) throw new Error(`请求失败: ${resp.error || '未知错误'}`);
+            if (!resp.text) throw new Error('响应 content 为空');
+            const parsedReview = NetworkPipeline.strictParseJson(resp.text);
+            if (!parsedReview || typeof parsedReview !== 'object' || !Array.isArray(parsedReview.duplicates)) {
+              throw new Error('缺少 duplicates 数组');
+            }
+            reviewJson = parsedReview;
+          } catch (e: any) {
+            reviewErr = e?.message || String(e);
+            AppLogger.warn(
+              LOG_TAGS.AI_AGENT,
+              `[文案生成] 全片语义查重复核失败（第 ${attempt}/2 次）：${reviewErr}`,
+            );
+          }
+        }
+        if (reviewJson) {
+          const rewrites: SemanticDedupRewrite[] = (reviewJson.duplicates as any[])
+            .map((d) => ({
+              earlierId: d?.earlierId === undefined ? undefined : String(d.earlierId).trim(),
+              laterId: String(d?.laterId ?? '').trim(),
+              rewrittenText: String(d?.rewrittenText ?? '').trim(),
+              reason: d?.reason === undefined ? undefined : String(d.reason),
+            }));
+          const reviewed = applySemanticDedupRewrites(reviewItems, rewrites);
+          const appliedIds: string[] = [];
+          for (const id of reviewed.applied) {
+            const idx = Number(id.replace(/^seg_/, ''));
+            if (!Number.isInteger(idx) || idx < 0 || idx >= rawShots.length) continue;
+            /** 复核文本与生成文本走同一套标签清洗，避免 [pause]/[tone] 泄漏绕过 normalizeRawShots */
+            const cleaned = sanitizePauseTags(String(reviewed.paragraphs[idx].text ?? ''))
+              .replace(/\[(?:tone|emotion|mood|情绪|语气)\s*[:=：][^\]]*\]/gi, '')
+              .trim();
+            // 清洗后仍需是完整句且不超长，否则保留原文（错就错，不留半截句）
+            if (!isSentenceFinished(cleaned)) continue;
+            if (cleaned.replace(/\s+/g, '').length > String(rawShots[idx].text ?? '').replace(/\s+/g, '').length) continue;
+            rawShots[idx] = { ...rawShots[idx], text: cleaned };
+            appliedIds.push(id);
+          }
+          if (appliedIds.length > 0) {
+            AppLogger.info(
+              LOG_TAGS.AI_AGENT,
+              `[文案生成] 全片语义查重：改写 ${appliedIds.length} 段（${appliedIds.join(',')}）`,
+            );
+          } else {
+            AppLogger.info(LOG_TAGS.AI_AGENT, '[文案生成] 全片语义查重：未发现可安全改写的重复节拍');
+          }
+          if (reviewed.rejected.length > 0) {
+            AppLogger.warn(
+              LOG_TAGS.AI_AGENT,
+              `[文案生成] 全片语义查重：${reviewed.rejected.length} 条改写被拒（${reviewed.rejected
+                .map((r) => `${r.id || '空id'}:${r.reason}`)
+                .join('；')}）`,
+            );
+          }
+        } else {
+          AppLogger.warn(
+            LOG_TAGS.AI_AGENT,
+            `[文案生成] 全片语义查重复核连续两次失败（${reviewErr}），跳过复核、保留原文`,
+          );
+        }
+      }
     }
 
     onProgress(90, '正在对生成的剧本进行反序列化...');
@@ -2587,7 +2912,6 @@ ${roleMapLines.join('\n')}
         shotId: p.id,
         text: scanResult.original,
         cleanText: scanResult.cleanText,
-        audioSafeText: lexiconFilter.getAudioSafeText(scanResult.cleanText, scanResult.original),
         flagged: scanResult.flagged,
         replaced: scanResult.replaced,
         lexiconMarks: scanResult.matches.map(m => ({
@@ -2782,7 +3106,6 @@ ${roleMapLines.join('\n')}
             const scan = lexiconFilter.scan(nextText);
             shot.text = scan.original;
             shot.cleanText = scan.cleanText;
-            shot.audioSafeText = lexiconFilter.getAudioSafeText(scan.cleanText, scan.original);
             shot.flagged = scan.flagged;
             shot.replaced = scan.replaced;
             shot.lexiconMarks = scan.matches.map((m) => ({ word: m.word, level: m.level, replaced: m.replaced }));
@@ -2898,7 +3221,6 @@ ${roleMapLines.join('\n')}
             shotId: piece.id,
             text: scan.original,
             cleanText: scan.cleanText,
-            audioSafeText: lexiconFilter.getAudioSafeText(scan.cleanText, scan.original),
             flagged: scan.flagged,
             replaced: scan.replaced,
             lexiconMarks: scan.matches.map((m) => ({ word: m.word, level: m.level, replaced: m.replaced })),

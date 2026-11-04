@@ -65,11 +65,6 @@ export class LexiconFilter {
     };
   }
 
-  /** Audio-Safe Bypass: TTS 配音时返回原文 (不做敏感词替换) */
-  getAudioSafeText(_cleanText: string, original: string): string {
-    return original;
-  }
-
   /** 为字幕/显示版本返回净化后文本 (高危词已替换) */
   getDisplayText(cleanText: string): string {
     return cleanText;

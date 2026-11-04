@@ -9,6 +9,7 @@ import { Badge, StatHeader, EmptyState } from "@renderer/components/shared";
 import { DragReorderList } from "@renderer/components/shared/drag-reorder-list";
 import { API } from "@renderer/api";
 import { AppNotifier } from "@renderer/core/AppNotifier";
+import { useI18n } from "@renderer/store/useI18n";
 import type { StepShotMatchingProps } from "../types";
 import { useStep5Store } from "../../stores/useStep5Store";
 import type { BgmTrack, BgmRecommendation } from "../../stores/useStep5Store";
@@ -39,6 +40,7 @@ const formatDuration = (ms?: number | null): string => {
  * @param onPick   点击选中回调
  */
 function ChunkPoolTile({ chunk, usedCount, onPick }: { chunk: any; usedCount: number; onPick: () => void }) {
+  const { t } = useI18n();
   // 🔧 封面与主卡片同源：coverPath(绝对路径) → getSafeMediaUrl → magic://（已验证能上屏）
   const coverSrc = chunk.coverPath || chunk.thumbnail ? getSafeMediaUrl(chunk.coverPath || chunk.thumbnail) : "";
   const startMs = typeof chunk.startMs === 'number' ? chunk.startMs : null;
@@ -58,21 +60,24 @@ function ChunkPoolTile({ chunk, usedCount, onPick }: { chunk: any; usedCount: nu
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center gap-1 px-1.5 text-center">
             <Film size={20} className="text-muted-foreground/30 shrink-0" />
-            <span className="text-[11px] text-muted-foreground leading-tight break-all line-clamp-2" title={`coverPath=${chunk.coverPath || '(空)'}`}>{chunk.name || chunk.id || "片段"}</span>
+            <span className="text-[11px] text-muted-foreground leading-tight break-all line-clamp-2" title={chunk.coverPath ? t["editor.step5.chunk.coverPath"].replace("{value}", chunk.coverPath) : t["editor.step5.chunk.coverPathEmpty"]}>{chunk.name || chunk.id || t["editor.step5.chunk.unnamed"]}</span>
           </div>
         )}
         {usedCount > 0 && (
-          <span className="absolute top-1 left-1 bg-accent/90 px-1.5 py-0.5 rounded text-[10px] text-white font-medium">已用 {usedCount}</span>
+          <span className="absolute top-1 left-1 bg-accent/90 px-1.5 py-0.5 rounded text-[10px] text-white font-medium">{t["editor.step5.chunk.used"].replace("{count}", String(usedCount))}</span>
         )}
         {startMs != null && endMs != null && (
           <span className="absolute bottom-1 right-1 bg-black/80 px-1 text-[11px] text-white font-mono rounded">{formatDuration(endMs - startMs)}</span>
         )}
       </div>
       <div className="flex flex-col gap-0.5">
-        <div className="text-[12px] font-medium truncate px-1 text-center">{chunk.name || chunk.id || "片段"}</div>
+        <div className="text-[12px] font-medium truncate px-1 text-center">{chunk.name || chunk.id || t["editor.step5.chunk.unnamed"]}</div>
         {startMs != null && endMs != null && (
           <div className="text-[10px] text-muted-foreground/75 font-mono text-center truncate px-1">
-            源 {formatDuration(startMs)}–{formatDuration(endMs)} · {formatIntSeconds(endMs - startMs)}
+            {t["editor.step5.chunk.sourceRange"]
+              .replace("{start}", formatDuration(startMs))
+              .replace("{end}", formatDuration(endMs))
+              .replace("{duration}", formatIntSeconds(endMs - startMs))}
           </div>
         )}
       </div>
@@ -113,13 +118,13 @@ const EMPTY_RECOMMENDATION: BgmRecommendation = {
 
 /** 本地曲库分类标签页 */
 const LOCAL_TONE_TABS = [
-  { value: 'all', label: '全部' },
-  { value: 'neutral', label: '中性' },
-  { value: 'emotional', label: '情感' },
-  { value: 'suspense', label: '悬疑' },
-  { value: 'epic', label: '史诗' },
-  { value: 'comedy', label: '喜剧' },
-];
+  { value: 'all', label: 'editor.step5.local.tabs.all' },
+  { value: 'neutral', label: 'editor.step5.local.tabs.neutral' },
+  { value: 'emotional', label: 'editor.step5.local.tabs.emotional' },
+  { value: 'suspense', label: 'editor.step5.local.tabs.suspense' },
+  { value: 'epic', label: 'editor.step5.local.tabs.epic' },
+  { value: 'comedy', label: 'editor.step5.local.tabs.comedy' },
+] as const;
 /** 本地曲库每页展示数量 */
 const LOCAL_PAGE_SIZE = 6;
 
@@ -132,11 +137,11 @@ const bgmBadgeWarm = `${bgmBadgeBase} bg-amber-500/15 text-amber-400 border bord
 const bgmBadgeCyan = `${bgmBadgeBase} bg-cyan-500/10 text-[#00e5ff] border border-cyan-500/30`;
 const bgmBadgeMuted = `${bgmBadgeBase} bg-bg-secondary/70 text-muted-foreground border border-border`;
 
-/** 情绪基调枚举 → 中文徽章文案（hero 横幅情绪徽章） */
-const EMOTION_TONE_ZH: Record<string, string> = {
-  neutral: "中性", emotional: "情感", suspense: "悬疑", epic: "史诗",
-  comedy: "喜剧", happy: "欢快", warm: "温暖", sad: "伤感", calm: "平静", action: "热血",
-};
+/** 情绪基调枚举 → i18n 键（hero 横幅情绪徽章） */
+const EMOTION_TONE_ZH = {
+  neutral: "editor.step5.tone.neutral", emotional: "editor.step5.tone.emotional", suspense: "editor.step5.tone.suspense", epic: "editor.step5.tone.epic",
+  comedy: "editor.step5.tone.comedy", happy: "editor.step5.tone.happy", warm: "editor.step5.tone.warm", sad: "editor.step5.tone.sad", calm: "editor.step5.tone.calm", action: "editor.step5.tone.action",
+} as const;
 
 /** 曲库封面 6 色渐变轮换（对齐原型 .cover.c1–c6，135° 渐变、圆形呈现） */
 const BGM_COVER_GRADIENTS = [
@@ -155,6 +160,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   onSetBgm, onRemoveBgm, onUploadBgm,
   onConfirm, onReplace, onRematch, onClearCacheAndRematch, onReorder,
 }) => {
+  const { t } = useI18n();
   /** 🔧 2026-09-05：「清空切片缓存」二次确认态（armed 后 3s 未点自动复位，防误触触发 80s 重切） */
   const [clearCacheArmed, setClearCacheArmed] = useState(false);
   useEffect(() => {
@@ -335,6 +341,8 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   /** 加载本地曲库全量列表（分类分页自选） */
   const loadLocalLibrary = useCallback(async () => {
     setLocalLoading(true);
+    const freeLicense = t["editor.step5.local.freeLicense"];
+    const sourcePrefix = t["editor.step5.local.source"];
     try {
       const res: any = await API.ai.bgmLocalList();
       if (res && (res as any).success === false) return;
@@ -344,7 +352,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
           name: t.name,
           artist: t.artist,
           mood: (t.tags || []).join(','),
-          source: `本地曲库 · ${t.license || '免费商用'}`,
+          source: sourcePrefix.replace("{license}", t.license || freeLicense),
           beatFit: '中',
           bpm: t.bpm,
           durationMs: t.durationMs,
@@ -356,7 +364,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
     } catch { /* 忽略 */ } finally {
       setLocalLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => { loadLocalLibrary(); }, [loadLocalLibrary]);
 
@@ -411,7 +419,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
       const res: any = await API.ai.recommendBgm(payload);
       // 后端明确失败（配置缺失 / LLM 调用异常）→ 透传真实原因，而非笼统提示
       if (res && (res as any).success === false) {
-        setDeepError((res as any).error || 'AI 深度推荐失败');
+        setDeepError((res as any).error || t["editor.step5.recommend.errorDefault"]);
         return;
       }
       const data = (res as any)?.data;
@@ -420,10 +428,10 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
       } else {
         /** 解析退化（LLM 有响应但结构异常）时给出针对性提示，并尽量带出原始内容片段 */
         const hasRaw = typeof (res as any)?.raw === 'string' && (res as any).raw.length > 0;
-        setDeepError(hasRaw ? 'AI 已返回内容但格式无法解析，请重试或换个模型' : 'AI 未能生成有效推荐，请确认 LLM 通道可用后重试');
+        setDeepError(hasRaw ? t["editor.step5.recommend.errorParse"] : t["editor.step5.recommend.errorEmpty"]);
       }
     } catch (e: any) {
-      setDeepError(e?.message || 'AI 深度推荐失败');
+      setDeepError(e?.message || t["editor.step5.recommend.errorDefault"]);
     } finally {
       setDeepLoading(false);
     }
@@ -492,32 +500,32 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   const trackKey = (t: BgmTrack) => `${t.libraryId || ''}|${t.name}|${t.artist}`;
 
   /** P1 一键应用：下载曲目到本地缓存 → onSetBgm 携带 bpm 应用 */
-  const handleApplyBgm = useCallback(async (t: BgmTrack) => {
-    const key = trackKey(t);
+  const handleApplyBgm = useCallback(async (track: BgmTrack) => {
+    const key = trackKey(track);
     setApplyingTrackKey(key);
     setApplyError('');
     try {
       const res: any = await API.ai.bgmDownload({
-        downloadUrl: t.downloadUrl,
-        libraryId: t.libraryId,
-        name: t.name,
+        downloadUrl: track.downloadUrl,
+        libraryId: track.libraryId,
+        name: track.name,
       });
       if (!res || (res as any).success === false) {
-        setApplyError((res as any)?.error || 'BGM 下载失败');
+        setApplyError((res as any)?.error || t["editor.step5.local.downloadErrorDefault"]);
         return;
       }
       const filePath = (res as any)?.filePath;
       if (!filePath) {
-        setApplyError('下载成功但未返回本地路径');
+        setApplyError(t["editor.step5.local.downloadNoPath"]);
         return;
       }
-      onSetBgm({ id: t.libraryId || filePath, filePath, name: t.name, bpm: t.bpm });
+      onSetBgm({ id: track.libraryId || filePath, filePath, name: track.name, bpm: track.bpm });
     } catch (e: any) {
-      setApplyError(e?.message || 'BGM 下载失败');
+      setApplyError(e?.message || t["editor.step5.local.downloadErrorDefault"]);
     } finally {
       setApplyingTrackKey(null);
     }
-  }, [onSetBgm]);
+  }, [onSetBgm, t]);
 
   /** 当前预览的匹配项、切片、配音音频 */
   const previewMatch = useMemo(
@@ -632,13 +640,13 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
           <div className="flex items-center gap-2">
             <div className="w-4 h-4 rounded bg-gradient-to-br from-accent to-accent-purple" />
             <div className="flex items-center gap-1.5 text-[14px] font-semibold">
-              <Music size={14} className="text-accent" /> BGM 背景音乐
-              {activeBgm && <span className={bgmBadgeSuccess}>已选</span>}
+              <Music size={14} className="text-accent" /> {t["editor.step5.bgm.panelTitle"]}
+              {activeBgm && <span className={bgmBadgeSuccess}>{t["editor.step5.bgm.selected"]}</span>}
             </div>
           </div>
           <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-            <span className="flex items-center gap-1"><Clock size={11} /> 视频时长 {formatDuration(videoDurationMs)}</span>
-            <span className="flex items-center gap-1"><FileText size={11} /> 解说词 {narrationCount} 段</span>
+            <span className="flex items-center gap-1"><Clock size={11} /> {t["editor.step5.bgm.videoDuration"].replace("{duration}", formatDuration(videoDurationMs))}</span>
+            <span className="flex items-center gap-1"><FileText size={11} /> {t["editor.step5.bgm.narrationCount"].replace("{count}", String(narrationCount))}</span>
           </div>
         </div>
 
@@ -651,38 +659,38 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
               </span>
               <button onClick={onRemoveBgm} disabled={isProcessing}
                 className="flex items-center gap-1 px-2 py-1 text-[12px] text-accent-rose hover:bg-accent-rose/10 rounded transition-all cursor-pointer disabled:opacity-50">
-                <Trash2 size={12} /> 移除
+                <Trash2 size={12} /> {t["editor.step5.bgm.remove"]}
               </button>
             </>
           ) : (
-            <div className="text-[12px] text-muted-foreground">未选择 BGM，画面切换将不卡音乐节奏</div>
+            <div className="text-[12px] text-muted-foreground">{t["editor.step5.bgm.noneHint"]}</div>
           )}
         </div>
 
         {/* 模式说明：AI 仅输出智能清单（不附带下载），搜索下载后上传导入 */}
         <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <ListMusic size={12} className="text-accent/70 shrink-0" />
-          <span>AI 仅输出「歌名 + 歌手 + 来源」智能清单：在音乐平台搜索下载后，通过「上传本地BGM」导入即可</span>
+          <span>{t["editor.step5.bgm.listHint"]}</span>
         </div>
 
         {/* ① AI 深度推荐区 */}
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-1.5 text-[13px] font-semibold">
-              <Sparkles size={13} className="text-accent" /> 个性化推荐
+              <Sparkles size={13} className="text-accent" /> {t["editor.step5.recommend.title"]}
               <span className="text-muted-foreground font-normal text-[11px]">
-                {deepRecommendation && !!deepRecommendation.tracks?.length ? "（AI 深度 · 依据文案语义）" : "（点击生成）"}
+                {deepRecommendation && !!deepRecommendation.tracks?.length ? t["editor.step5.recommend.modeDeep"] : t["editor.step5.recommend.modeClick"]}
               </span>
             </div>
             <div className="flex items-center gap-2">
               {deepRecommendation && !!deepRecommendation.tracks?.length ? (
-                <span className={bgmBadgeAccent}>{deepRecommendation.tracks.length} 首推荐</span>
+                <span className={bgmBadgeAccent}>{t["editor.step5.recommend.count"].replace("{count}", String(deepRecommendation.tracks.length))}</span>
               ) : null}
               <button onClick={handleDeepRecommend} disabled={deepLoading || isProcessing}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-accent text-accent-foreground hover:opacity-90 rounded-md transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed shadow-sm">
                 {deepLoading
-                  ? <><Loader2 size={12} className="animate-spin" /> 生成中...</>
-                  : <><Sparkles size={12} /> {deepRecommendation?.tracks?.length ? "重新AI推荐" : "AI 深度推荐"}</>}
+                  ? <><Loader2 size={12} className="animate-spin" /> {t["editor.step5.recommend.generating"]}</>
+                  : <><Sparkles size={12} /> {deepRecommendation?.tracks?.length ? t["editor.step5.recommend.regenerateAction"] : t["editor.step5.recommend.action"]}</>}
               </button>
             </div>
           </div>
@@ -690,7 +698,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
           {deepError && (
             <div className="flex items-start gap-1.5 px-2.5 py-1.5 rounded-md bg-accent-rose/10 border border-accent-rose/30 text-accent-rose text-[12px]">
               <X size={13} className="mt-0.5 shrink-0" />
-              <span>AI 深度推荐失败：{deepError}</span>
+              <span>{t["editor.step5.recommend.errorPrefix"].replace("{error}", deepError)}</span>
             </div>
           )}
 
@@ -706,9 +714,9 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                   </div>
                   <div className="hero-info flex-1 min-w-[220px]">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className={bgmBadgeWarm}>{EMOTION_TONE_ZH[emotionTone] || currentRecommendation.toneLabel || "情感向"}</span>
+                      <span className={bgmBadgeWarm}>{EMOTION_TONE_ZH[emotionTone as keyof typeof EMOTION_TONE_ZH] ? t[EMOTION_TONE_ZH[emotionTone as keyof typeof EMOTION_TONE_ZH]] : (currentRecommendation.toneLabel || t["editor.step5.tone.fallback"])}</span>
                       {currentRecommendation.toneLabel && (
-                        <span className="text-[13px] font-semibold text-foreground">情绪基调 · {currentRecommendation.toneLabel}</span>
+                        <span className="text-[13px] font-semibold text-foreground">{t["editor.step5.tone.labelPrefix"].replace("{tone}", currentRecommendation.toneLabel)}</span>
                       )}
                     </div>
                     {currentRecommendation.toneDesc && (
@@ -717,9 +725,9 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                   </div>
                   <div className="hero-stats flex items-center gap-2 flex-wrap">
                     {heroStats.bpmMin > 0 && heroStats.bpmMax > 0 && (
-                      <span className={bgmBadgeCyan}>推荐 BPM {heroStats.bpmMin}–{heroStats.bpmMax}</span>
+                      <span className={bgmBadgeCyan}>{t["editor.step5.tone.bpmRange"].replace("{min}", String(heroStats.bpmMin)).replace("{max}", String(heroStats.bpmMax))}</span>
                     )}
-                    <span className={bgmBadgeCyan}>卡点强度 {heroStats.beatStrength}</span>
+                    <span className={bgmBadgeCyan}>{t["editor.step5.tone.beatStrength"].replace("{strength}", heroStats.beatStrength === "强" ? t["editor.step5.beatStrength.strong"] : t["editor.step5.beatStrength.medium"])}</span>
                   </div>
                 </div>
               )}
@@ -729,51 +737,51 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                   故 ≥680px 时两列（单卡约 363px，最接近原型单卡观感），更窄自动退一列 */}
               <div className="@container">
                 <div className="grid grid-cols-1 @[680px]:grid-cols-2 gap-3">
-                {currentRecommendation.tracks.map((t, i) => (
-                  <div key={`${t.name}-${i}`} className="bgm-track-card relative border border-border rounded-[14px] p-3.5 flex flex-col gap-2.5 hover:border-accent/45 hover:-translate-y-0.5 hover:shadow-[var(--glow-accent)] transition-all">
+                {currentRecommendation.tracks.map((track, i) => (
+                  <div key={`${track.name}-${i}`} className="bgm-track-card relative border border-border rounded-[14px] p-3.5 flex flex-col gap-2.5 hover:border-accent/45 hover:-translate-y-0.5 hover:shadow-[var(--glow-accent)] transition-all">
                     <span className="absolute top-2.5 right-3 text-[13px] font-bold text-foreground/10 select-none">0{i + 1}</span>
-                    <div className="text-[14px] font-semibold truncate pr-[26px]" title={t.name}>{t.name}</div>
+                    <div className="text-[14px] font-semibold truncate pr-[26px]" title={track.name}>{track.name}</div>
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      {t.mood ? <span className={bgmBadgeWarm}>{t.mood}</span> : null}
-                      <span className="text-[11px] text-muted-foreground truncate">{t.artist} · {t.source}</span>
+                      {track.mood ? <span className={bgmBadgeWarm}>{track.mood}</span> : null}
+                      <span className="text-[11px] text-muted-foreground truncate">{track.artist} · {track.source}</span>
                     </div>
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className={bgmBadgeSuccess}>卡点 {t.beatFit || "中"}</span>
-                      {t.bpm ? <span className={bgmBadgeMuted}>{t.bpm} BPM</span> : null}
-                      <span className={bgmBadgeMuted}>{formatDuration(t.durationMs)}</span>
+                      <span className={bgmBadgeSuccess}>{t["editor.step5.track.beatFit"].replace("{fit}", track.beatFit || t["editor.step5.track.beatFitDefault"])}</span>
+                      {track.bpm ? <span className={bgmBadgeMuted}>{track.bpm} BPM</span> : null}
+                      <span className={bgmBadgeMuted}>{formatDuration(track.durationMs)}</span>
                     </div>
                     {/* 卡点契合度示意条（对齐原型 .t-fit：间距 12px；高档 accent 渐变，其余 cyan 渐变） */}
                     <div className="flex items-center gap-3 mt-0.5">
-                      <span className="text-[10px] text-muted-foreground shrink-0">卡点契合</span>
-                      <div className="flex-1 h-1 rounded-full bg-border/70 overflow-hidden" title={`卡点契合度：${t.beatFit}`}>
-                        <div className={`h-full rounded-full ${beatFitHigh(t.beatFit) ? "bg-gradient-to-r from-accent to-accent-purple" : "bg-gradient-to-r from-accent to-[#00e5ff]"}`} style={{ width: `${beatFitPct(t.beatFit)}%` }} />
+                      <span className="text-[10px] text-muted-foreground shrink-0">{t["editor.step5.track.beatFitLabel"]}</span>
+                      <div className="flex-1 h-1 rounded-full bg-border/70 overflow-hidden" title={t["editor.step5.track.beatFitTitle"].replace("{fit}", track.beatFit)}>
+                        <div className={`h-full rounded-full ${beatFitHigh(track.beatFit) ? "bg-gradient-to-r from-accent to-accent-purple" : "bg-gradient-to-r from-accent to-[#00e5ff]"}`} style={{ width: `${beatFitPct(track.beatFit)}%` }} />
                       </div>
                     </div>
                     {/* 动作区：试听（AI 无音源禁用）+ 找歌 + 应用 */}
                     <div className="mt-auto pt-1 flex items-center gap-2">
                       <button type="button" disabled
                         className="w-[30px] h-[30px] rounded-full flex items-center justify-center shrink-0 bg-bg-secondary/80 text-muted-foreground/50 cursor-not-allowed transition-all"
-                        title="AI 推荐暂无试听音源">
+                        title={t["editor.step5.track.noPreviewTitle"]}>
                         <Play size={12} className="ml-0.5" />
                       </button>
-                      <button onClick={() => handleFindSong(t)}
+                      <button onClick={() => handleFindSong(track)}
                         className="flex items-center justify-center gap-1.5 flex-1 px-2 py-1.5 text-[11px] font-medium bg-accent/15 text-accent hover:bg-accent hover:text-accent-foreground rounded-lg transition-all cursor-pointer">
-                        {copiedBgm === t.name ? <><Check size={12} /> 已复制</> : <><Search size={12} /> 找歌</>}
+                        {copiedBgm === track.name ? <><Check size={12} /> {t["editor.step5.copy.copied"]}</> : <><Search size={12} /> {t["editor.step5.track.findSong"]}</>}
                       </button>
                       <button type="button"
-                        onClick={() => { handleFindSong(t); AppNotifier.info("已复制曲目信息：请在音乐平台搜索下载后，通过「上传本地BGM」导入使用"); }}
+                        onClick={() => { handleFindSong(track); AppNotifier.info(t["editor.step5.track.findSongCopied"]); }}
                         className="flex items-center justify-center gap-1.5 flex-1 px-3 py-1.5 text-[11px] font-semibold text-white bg-gradient-to-r from-accent to-accent-purple rounded-lg shadow-[var(--glow-accent)] hover:brightness-110 transition-all cursor-pointer">
-                        <ListPlus size={12} /> 应用
+                        <ListPlus size={12} /> {t["editor.step5.track.apply"]}
                       </button>
                     </div>
                   </div>
                 ))}
                 </div>
               </div>
-              <div className="text-[11px] text-muted-foreground">以上为全网搜索推荐，点击「找歌」复制曲目后请到音乐平台自行搜索下载上传</div>
+              <div className="text-[11px] text-muted-foreground">{t["editor.step5.recommend.footer"]}</div>
             </>
           ) : !deepLoading && (
-            <div className="text-[12px] text-muted-foreground">点击「AI 深度推荐」，将依据解说文案语义生成全网选曲建议</div>
+            <div className="text-[12px] text-muted-foreground">{t["editor.step5.recommend.emptyHint"]}</div>
           )}
         </div>
 
@@ -781,12 +789,12 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-1.5 text-[13px] font-semibold">
-              <Music2 size={13} className="text-accent" /> 本地曲库
-              <span className="text-muted-foreground font-normal text-[11px]">（{localTracks.length} 首 · 免费商用）</span>
+              <Music2 size={13} className="text-accent" /> {t["editor.step5.local.title"]}
+              <span className="text-muted-foreground font-normal text-[11px]">{t["editor.step5.local.count"].replace("{count}", String(localTracks.length))}</span>
             </div>
             <button onClick={onUploadBgm} disabled={isProcessing}
               className="flex items-center gap-1.5 px-3 py-1.5 text-[12px] font-medium bg-bg-secondary/60 text-muted-foreground hover:text-foreground hover:bg-bg-secondary/80 rounded-md transition-all cursor-pointer disabled:opacity-50">
-              <ListPlus size={12} /> 导入曲库
+              <ListPlus size={12} /> {t["editor.step5.local.importAction"]}
             </button>
           </div>
 
@@ -797,12 +805,12 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
               <input
                 value={localSearch}
                 onChange={(e) => { setLocalSearch(e.target.value); setLocalPage(0); }}
-                placeholder="搜索曲名 / 歌手 / 情绪"
+                placeholder={t["editor.step5.local.searchPlaceholder"]}
                 className="w-full pl-8 pr-8 py-1.5 text-[12px] bg-bg-secondary/50 border border-border rounded-md outline-none placeholder:text-muted-foreground/50 focus:border-accent/60 focus:ring-1 focus:ring-accent/30 transition-all"
               />
               {localSearch && (
                 <button onClick={() => { setLocalSearch(""); setLocalPage(0); }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer" aria-label="清空搜索">
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground/60 hover:text-foreground transition-colors cursor-pointer" aria-label={t["editor.step5.local.searchClear"]}>
                   <X size={13} />
                 </button>
               )}
@@ -818,7 +826,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                         ? "bg-accent/15 text-accent border-accent/35"
                         : "bg-bg-secondary/60 text-muted-foreground hover:text-foreground hover:bg-bg-secondary/80 border-transparent"
                     }`}>
-                    {tab.label}
+                    {t[tab.label]}
                     <span className={`text-[10px] ${localTone === tab.value ? "text-accent/70" : "text-muted-foreground/50"}`}>{cnt}</span>
                   </button>
                 );
@@ -830,19 +838,19 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
           {applyError && (
             <div className="flex items-start gap-1.5 px-2.5 py-1.5 rounded-md bg-accent-rose/10 border border-accent-rose/30 text-accent-rose text-[12px]">
               <X size={13} className="mt-0.5 shrink-0" />
-              <span>BGM 下载失败：{applyError}</span>
+              <span>{t["editor.step5.local.downloadError"].replace("{error}", applyError)}</span>
             </div>
           )}
           {localLoading ? (
-            <div className="text-[12px] text-muted-foreground flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> 加载中...</div>
+            <div className="text-[12px] text-muted-foreground flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> {t["editor.step5.local.loading"]}</div>
           ) : pageLocalTracks.length > 0 ? (
             <>
               {/* 曲库网格：容器查询自适应（原型三列按 1240px 设计；本内容区约 738px → 两列，
                   单卡约 363px ≈ 原型单卡 407px 观感；拖窄左栏时 ≥880px 仍可三列） */}
               <div className="@container">
                 <div className="grid grid-cols-1 @[560px]:grid-cols-2 @[880px]:grid-cols-3 gap-2.5">
-                {pageLocalTracks.map((t, ci) => (
-                  <div key={t.libraryId} className="flex items-center gap-3 rounded-[10px] border border-border px-3 py-2.5 bg-bg-secondary/50 hover:border-accent/40 hover:bg-bg-hover/60 hover:-translate-y-0.5 hover:shadow-md transition-all">
+                {pageLocalTracks.map((track, ci) => (
+                  <div key={track.libraryId} className="flex items-center gap-3 rounded-[10px] border border-border px-3 py-2.5 bg-bg-secondary/50 hover:border-accent/40 hover:bg-bg-hover/60 hover:-translate-y-0.5 hover:shadow-md transition-all">
                     {/* 圆形渐变封面（对齐原型 .cover，6 色轮换） */}
                     <div className={`w-10 h-10 rounded-full shrink-0 flex items-center justify-center text-white/95 bg-gradient-to-br ${BGM_COVER_GRADIENTS[ci % BGM_COVER_GRADIENTS.length]}`}>
                       <Music2 size={15} />
@@ -850,36 +858,36 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                     <div className="flex-1 min-w-0 flex flex-col gap-1">
                       {/* 行1：曲名 + 播放中 EQ 动画 */}
                       <div className="flex items-center gap-1.5 min-w-0">
-                        <div className="text-[12px] font-semibold truncate" title={t.name}>{t.name}</div>
-                        {playingTrack?.libraryId === t.libraryId && !playPaused && <EqBars />}
+                        <div className="text-[12px] font-semibold truncate" title={track.name}>{track.name}</div>
+                        {playingTrack?.libraryId === track.libraryId && !playPaused && <EqBars />}
                       </div>
                       {/* 行2：歌手 · 本地曲库（对齐原型 lc-artist） */}
-                      <div className="text-[10px] text-muted-foreground truncate">{t.artist} · 本地曲库</div>
+                      <div className="text-[10px] text-muted-foreground truncate">{t["editor.step5.local.artistLine"].replace("{artist}", track.artist)}</div>
                       {/* 行3：情绪 + BPM（绿色 success）+ 时长徽章（对齐原型 lc-meta） */}
                       <div className="flex items-center gap-1 flex-wrap">
-                        {t.mood ? <span className={bgmBadgeWarm}>{t.mood.split(",")[0]}</span> : null}
-                        {t.bpm ? <span className={bgmBadgeSuccess}>{t.bpm} BPM</span> : null}
-                        <span className={bgmBadgeMuted}>{formatDuration(t.durationMs)}</span>
+                        {track.mood ? <span className={bgmBadgeWarm}>{track.mood.split(",")[0]}</span> : null}
+                        {track.bpm ? <span className={bgmBadgeSuccess}>{track.bpm} BPM</span> : null}
+                        <span className={bgmBadgeMuted}>{formatDuration(track.durationMs)}</span>
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      {t.previewUrl && (
-                        <button type="button" onClick={() => toggleBgmPreview(t)}
+                      {track.previewUrl && (
+                        <button type="button" onClick={() => toggleBgmPreview(track)}
                           className={`w-[30px] h-[30px] rounded-full flex items-center justify-center transition-all cursor-pointer ${
-                            playingTrack?.libraryId === t.libraryId && !playPaused
+                            playingTrack?.libraryId === track.libraryId && !playPaused
                               ? "bg-gradient-to-r from-accent to-accent-purple text-white shadow-[var(--glow-accent)] ring-2 ring-accent/30"
                               : "bg-bg-tertiary/80 text-muted-foreground hover:text-accent hover:bg-bg-hover"
                           }`}
-                          title={playingTrack?.libraryId === t.libraryId && !playPaused ? "暂停试听" : "试听"} aria-label="试听">
-                          {playingTrack?.libraryId === t.libraryId && !playPaused ? <Pause size={13} /> : <Play size={13} className="ml-0.5" />}
+                          title={playingTrack?.libraryId === track.libraryId && !playPaused ? t["editor.step5.local.pausePreview"] : t["editor.step5.local.preview"]} aria-label={t["editor.step5.local.preview"]}>
+                          {playingTrack?.libraryId === track.libraryId && !playPaused ? <Pause size={13} /> : <Play size={13} className="ml-0.5" />}
                         </button>
                       )}
                       <button type="button"
-                        disabled={isProcessing || applyingTrackKey === trackKey(t)}
-                        onClick={() => handleApplyBgm(t)}
+                        disabled={isProcessing || applyingTrackKey === trackKey(track)}
+                        onClick={() => handleApplyBgm(track)}
                         className="flex items-center justify-center gap-1 px-2.5 py-1.5 text-[11px] font-medium text-white bg-gradient-to-r from-accent to-accent-purple rounded-md shadow-[var(--glow-accent)] hover:brightness-110 transition-all cursor-pointer disabled:opacity-50 disabled:hover:brightness-100 disabled:shadow-none">
-                        {applyingTrackKey === trackKey(t) ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
-                        {applyingTrackKey === trackKey(t) ? "应用中" : "应用"}
+                        {applyingTrackKey === trackKey(track) ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                        {applyingTrackKey === trackKey(track) ? t["editor.step5.local.applying"] : t["editor.step5.track.apply"]}
                       </button>
                     </div>
                   </div>
@@ -889,7 +897,10 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
               <div className="flex flex-col items-center gap-2">
                 <div className="text-[10px] text-muted-foreground">
                   {filteredLocalTracks.length > 0
-                    ? `第 ${localPage * LOCAL_PAGE_SIZE + 1}–${Math.min((localPage + 1) * LOCAL_PAGE_SIZE, filteredLocalTracks.length)} 首 · 共 ${filteredLocalTracks.length} 首`
+                    ? t["editor.step5.local.page"]
+                      .replace("{from}", String(localPage * LOCAL_PAGE_SIZE + 1))
+                      .replace("{to}", String(Math.min((localPage + 1) * LOCAL_PAGE_SIZE, filteredLocalTracks.length)))
+                      .replace("{total}", String(filteredLocalTracks.length))
                     : ""}
                 </div>
                 {localTotalPages > 1 && (
@@ -912,7 +923,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
             </>
           ) : (
             <div className="text-[12px] text-muted-foreground">
-              {localSearch.trim() ? `未找到匹配「${localSearch.trim()}」的曲目` : "本地曲库为空或加载失败"}
+              {localSearch.trim() ? t["editor.step5.local.emptySearch"].replace("{keyword}", localSearch.trim()) : t["editor.step5.local.empty"]}
             </div>
           )}
         </div>
@@ -921,18 +932,18 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
         <div className="flex items-center gap-2.5 flex-wrap">
           <button onClick={onUploadBgm} disabled={isProcessing}
             className="flex items-center gap-1.5 px-3.5 py-2 text-[12px] font-medium bg-accent/10 text-accent border border-accent/25 hover:bg-accent/20 hover:border-accent/40 rounded-md transition-all cursor-pointer disabled:opacity-50">
-            <Upload size={13} /> 上传本地BGM
+            <Upload size={13} /> {t["editor.step5.local.uploadAction"]}
           </button>
           {bgmOptions.map((m) => (
-            <button key={m.id} onClick={() => onSetBgm({ id: m.id, filePath: (m as any).extractedBgm, name: (m as any).name || "伴奏" })} disabled={isProcessing}
+            <button key={m.id} onClick={() => onSetBgm({ id: m.id, filePath: (m as any).extractedBgm, name: (m as any).name || t["editor.step5.local.accompaniment"] })} disabled={isProcessing}
               className="flex items-center gap-1.5 px-3 py-2 bg-bg-secondary text-muted-foreground hover:text-foreground rounded-md text-[12px] transition-all cursor-pointer disabled:opacity-50">
-              <Music2 size={12} /> 用伴奏：{(m as any).name || "已分离伴奏"}
+              <Music2 size={12} /> {t["editor.step5.local.useAccompaniment"].replace("{name}", (m as any).name || t["editor.step5.local.separatedAccompaniment"])}
             </button>
           ))}
-          <div className="text-[10px] text-muted-foreground ml-auto">选择 BGM 后自动重匹配，镜头切换吸附鼓点避免夹帧</div>
+          <div className="text-[10px] text-muted-foreground ml-auto">{t["editor.step5.local.autoHint"]}</div>
         </div>
         {bgmOptions.length === 0 && (
-          <div className="text-[11px] text-muted-foreground">小提示：对原视频执行「音频分离」后，可在此直接选用分离出的纯伴奏作为 BGM</div>
+          <div className="text-[11px] text-muted-foreground">{t["editor.step5.local.separateTip"]}</div>
         )}
 
         {/* 面板级试听播放条（还原原型 player：常驻深色玻璃条、渐变进度 + 白点滑块） */}
@@ -943,14 +954,14 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                 ? "bg-gradient-to-r from-accent to-accent-purple text-white shadow-[var(--glow-accent)] cursor-pointer hover:brightness-110"
                 : "bg-white/10 text-white/40"
             } ${playingTrack ? "cursor-pointer" : "cursor-not-allowed"}`}
-            title={isPlayerActive ? "暂停" : playingTrack ? "继续播放" : "暂无试听曲目"}>
+            title={isPlayerActive ? t["editor.step5.player.pause"] : playingTrack ? t["editor.step5.player.resume"] : t["editor.step5.player.noTrack"]}>
             {isPlayerActive ? <Pause size={13} /> : <Play size={13} className="ml-0.5" />}
           </button>
           <div className={`text-[12px] font-medium truncate max-w-[220px] ${playingTrack ? "" : "text-white/40"}`} title={playingTrack?.name}>
-            {playingTrack?.name ?? "点击本地曲库卡片的「试听」开始预览"}
+            {playingTrack?.name ?? t["editor.step5.player.hint"]}
           </div>
           {isPlayerActive && <EqBars />}
-          <div className={`flex-1 h-1 rounded-full bg-white/15 overflow-visible cursor-pointer ${playingTrack ? "" : "pointer-events-none"}`} onClick={seekPlayer} title="点击跳转">
+          <div className={`flex-1 h-1 rounded-full bg-white/15 overflow-visible cursor-pointer ${playingTrack ? "" : "pointer-events-none"}`} onClick={seekPlayer} title={t["editor.step5.player.seekTitle"]}>
             <div className="relative h-full rounded-full bg-gradient-to-r from-accent to-[#00e5ff] after:content-[''] after:absolute after:-right-1 after:top-1/2 after:-translate-y-1/2 after:w-[7px] after:h-[7px] after:bg-white after:rounded-full after:shadow"
               style={{ width: `${playPct}%`, opacity: playingTrack ? 1 : 0 }} />
           </div>
@@ -975,29 +986,29 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
 
       <div className="flex items-center justify-between">
         <div className="text-[14px] font-semibold flex items-center gap-1.5">
-          <span>镜头匹配</span>
+          <span>{t["editor.step5.title"]}</span>
           {hasBgm && <Badge variant="success" className="flex items-center gap-0.5">BGM</Badge>}
         </div>
         <div className="flex items-center gap-3">
           {matchResults.length > 0 && (
-            <StatHeader value={matchResults.length} unit="个镜头" secondary={`已确认 ${matchResults.filter((m) => m.confirmed).length}/${matchResults.length}`} />
+            <StatHeader value={matchResults.length} unit={t["editor.step5.shotUnit"]} secondary={t["editor.step5.confirmedRatio"].replace("{confirmed}", String(matchResults.filter((m) => m.confirmed).length)).replace("{total}", String(matchResults.length))} />
           )}
           {typeof onClearCacheAndRematch === "function" && (
             <button onClick={handleClearCacheClick} disabled={isProcessing}
-              title="删除当前视频的切片缓存并强制重新检测切片后匹配（需重新切片，约 80 秒；不破坏步骤1~4 结果）"
+              title={t["editor.step5.clearCacheTitle"]}
               className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[13px] font-medium border transition-all disabled:opacity-50 cursor-pointer ${
                 clearCacheArmed
                   ? "border-red-500/60 bg-red-500/15 text-red-400"
                   : "border-border bg-bg-secondary/60 text-muted-foreground hover:text-foreground hover:border-border/80"
               }`}>
               <Trash2 size={12} className={clearCacheArmed ? "animate-pulse" : ""} />
-              {clearCacheArmed ? "确认清空并重切？" : "清空切片缓存"}
+              {clearCacheArmed ? t["editor.step5.clearCacheArmed"] : t["editor.step5.clearCacheAction"]}
             </button>
           )}
           <button onClick={onRematch} disabled={isProcessing}
             className="flex items-center gap-1.5 px-3 py-1 bg-accent text-accent-foreground rounded-md text-[13px] font-medium transition-all hover:opacity-90 disabled:opacity-50 cursor-pointer">
             <RefreshCw size={12} className={isProcessing ? "animate-spin" : ""} />
-            {isProcessing ? "匹配中..." : "重新匹配"}
+            {isProcessing ? t["editor.step5.matching"] : t["editor.step5.rematchAction"]}
           </button>
         </div>
       </div>
@@ -1016,25 +1027,25 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
       {/* 🔧 2026-09-14：匹配卡片区顶部「跳到第 N 段」快速定位（非滚动，固定于此），解决长列表翻找困难 */}
       {matchResults.length > 0 && (
         <div className="flex items-center gap-2 text-[12px] shrink-0">
-          <span className="text-muted-foreground">跳到第</span>
+          <span className="text-muted-foreground">{t["editor.step5.jump.label"]}</span>
           <input
             value={gotoN}
             onChange={(e) => setGotoN(e.target.value.replace(/[^0-9]/g, "").slice(0, 5))}
             onKeyDown={(e) => { if (e.key === "Enter") jumpToMatch(); }}
             disabled={isProcessing}
-            placeholder="序号"
-            title="输入段落序号后回车或点定位"
+            placeholder={t["editor.step5.jump.placeholder"]}
+            title={t["editor.step5.jump.inputTitle"]}
             className="w-16 px-2 py-1 text-center bg-bg-secondary/50 border border-border rounded-md outline-none placeholder:text-muted-foreground/40 focus:border-accent/60 disabled:opacity-40"
           />
-          <span className="text-muted-foreground">段</span>
+          <span className="text-muted-foreground">{t["editor.step5.jump.unit"]}</span>
           <button
             onClick={jumpToMatch}
             disabled={isProcessing}
-            title="滚动到该段卡片"
+            title={t["editor.step5.jump.scrollTitle"]}
             className="px-2.5 py-1 text-[12px] bg-accent/15 text-accent hover:bg-accent/25 rounded-md transition-all cursor-pointer disabled:opacity-40">
-            定位
+            {t["editor.step5.jump.action"]}
           </button>
-          <span className="text-muted-foreground">共 {matchResults.length} 段</span>
+          <span className="text-muted-foreground">{t["editor.step5.jump.total"].replace("{count}", String(matchResults.length))}</span>
         </div>
       )}
       {matchResults.length > 0 ? (
@@ -1057,38 +1068,38 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-[13px] font-medium break-words min-w-0 flex items-start gap-1.5" title={m.id}>
                         {m.text || m.id}
-                        {m.keepOriginalAudio && <Badge variant="warning" className="text-[11px] shrink-0">原声</Badge>}
-                        {m.degraded && <Badge variant="warning" className="text-[11px] shrink-0" title="该段候选不足，已自动选最相关镜头，建议人工确认或替换">待确认</Badge>}
-                        {m.isUserLocked && <Badge variant="default" className="text-[11px] shrink-0 flex items-center gap-0.5" title="该镜头已被你手动锁定/确认，重新匹配时保持不变（确定性锚点）"><Lock size={10} /> 已锁定</Badge>}
+                        {m.keepOriginalAudio && <Badge variant="warning" className="text-[11px] shrink-0">{t["editor.step5.badge.originalAudio"]}</Badge>}
+                        {m.degraded && <Badge variant="warning" className="text-[11px] shrink-0" title={t["editor.step5.badge.pendingTitle"]}>{t["editor.step5.badge.pending"]}</Badge>}
+                        {m.isUserLocked && <Badge variant="default" className="text-[11px] shrink-0 flex items-center gap-0.5" title={t["editor.step5.badge.lockedTitle"]}><Lock size={10} /> {t["editor.step5.badge.locked"]}</Badge>}
                       </span>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {m.text && (
                           <button onClick={() => handleCopyText(m.text, m.id)}
-                            className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-accent rounded transition-all cursor-pointer" title="复制文案">
+                            className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-accent rounded transition-all cursor-pointer" title={t["editor.step5.copy.title"]}>
                             {copiedId === m.id ? <Check size={11} /> : <Copy size={11} />}
-                            {copiedId === m.id ? "已复制" : "复制"}
+                            {copiedId === m.id ? t["editor.step5.copy.copied"] : t["editor.step5.copy.action"]}
                           </button>
                         )}
-                        <Badge variant={m.score > 0.8 ? "success" : m.score > 0.5 ? "warning" : "danger"} className="text-[11px] shrink-0" title="匹配度">{Math.round((m.score ?? 0) * 100)}%</Badge>
+                        <Badge variant={m.score > 0.8 ? "success" : m.score > 0.5 ? "warning" : "danger"} className="text-[11px] shrink-0" title={t["editor.step5.scoreLabel"]}>{Math.round((m.score ?? 0) * 100)}%</Badge>
                       </div>
                     </div>
                     <div className="text-[12px] text-muted-foreground flex items-center gap-2">
                       {m.keepOriginalAudio ? (
-                        <span className="bg-accent-rose/15 text-accent-rose px-1.5 py-0.5 rounded">原声轨</span>
+                        <span className="bg-accent-rose/15 text-accent-rose px-1.5 py-0.5 rounded">{t["editor.step5.card.originalTrack"]}</span>
                       ) : m.audioDurationMs && m.audioDurationMs > 0 ? (
-                        <span className="bg-bg-secondary/40 px-1.5 py-0.5 rounded">配音 {formatIntSeconds(m.audioDurationMs)}</span>
+                        <span className="bg-bg-secondary/40 px-1.5 py-0.5 rounded">{t["editor.step5.card.ttsDuration"].replace("{duration}", formatIntSeconds(m.audioDurationMs))}</span>
                       ) : null}
-                      {m.chunkData && <span className="bg-bg-secondary/40 px-1.5 py-0.5 rounded">片段 {formatIntSeconds((m.chunkData as any).endMs - (m.chunkData as any).startMs)}</span>}
+                      {m.chunkData && <span className="bg-bg-secondary/40 px-1.5 py-0.5 rounded">{t["editor.step5.chunkDuration"].replace("{duration}", formatIntSeconds((m.chunkData as any).endMs - (m.chunkData as any).startMs))}</span>}
                     </div>
                     <div className="flex items-center gap-2 mt-auto">
                       {/* 预览成品：视频 + 配音 + 台词 */}
-                      <button onClick={() => openPreview(m.id)} className="px-2.5 py-1 text-[12px] bg-accent/15 text-accent hover:bg-accent hover:text-accent-foreground rounded transition-all cursor-pointer flex items-center gap-1"><Play size={10} /> 预览</button>
+                      <button onClick={() => openPreview(m.id)} className="px-2.5 py-1 text-[12px] bg-accent/15 text-accent hover:bg-accent hover:text-accent-foreground rounded transition-all cursor-pointer flex items-center gap-1"><Play size={10} /> {t["editor.step5.card.preview"]}</button>
                       {m.confirmed ? (
-                        <span className="text-[12px] text-accent-green flex items-center gap-0.5"><Check size={12} /> 已确认</span>
+                        <span className="text-[12px] text-accent-green flex items-center gap-0.5"><Check size={12} /> {t["editor.step5.confirmed"]}</span>
                       ) : (
                         <>
-                          <button onClick={() => onConfirm(m.id)} className="px-2.5 py-1 text-[12px] bg-accent-green/20 text-accent-green hover:bg-accent-green hover:text-white rounded transition-all cursor-pointer">确认</button>
-                          <button onClick={() => openReplace(m)} className="px-2.5 py-1 text-[12px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer">替换</button>
+                          <button onClick={() => onConfirm(m.id)} className="px-2.5 py-1 text-[12px] bg-accent-green/20 text-accent-green hover:bg-accent-green hover:text-white rounded transition-all cursor-pointer">{t["editor.step5.card.confirm"]}</button>
+                          <button onClick={() => openReplace(m)} className="px-2.5 py-1 text-[12px] bg-bg-secondary text-muted-foreground hover:text-foreground rounded transition-all cursor-pointer">{t["editor.step5.card.replace"]}</button>
                         </>
                       )}
                     </div>
@@ -1097,10 +1108,10 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
               </div>
             )}
           />
-          <div className="text-[12px] text-muted-foreground text-center">拖拽卡片可调整顺序，点击预览可同步播放画面与配音</div>
+          <div className="text-[12px] text-muted-foreground text-center">{t["editor.step5.dragHintPreview"]}</div>
         </div>
       ) : (
-        <EmptyState title="智能匹配待生成" description="算法将自动结合 BGM 节奏、台词时长、通过全局搜索匹配算法获取动态视频片段" iconType="media" size="md" className="glass-card-sm" />
+        <EmptyState title={t["editor.step5.emptyTitle"]} description={t["editor.step5.emptyDesc"]} iconType="media" size="md" className="glass-card-sm" />
       )}
       {/* 替换弹窗：createPortal 挂到 document.body，脱离 glass-card(backdrop-filter)/滚动容器的
           特殊合成上下文 —— 修复 fixed 浮层内图片解码成功但上屏黑（与主卡片普通流渲染对齐） */}
@@ -1108,13 +1119,13 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
         <div className="fixed inset-0 z-[500] bg-black/60 flex items-center justify-center" onClick={() => setReplacingShotId(null)}>
           <div className="bg-bg-primary border border-border rounded-xl shadow-lg w-[640px] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-border bg-bg-secondary/60">
-              <span className="text-[14px] font-semibold">选择视频片段</span>
+              <span className="text-[14px] font-semibold">{t["editor.step5.replaceDialog.title"]}</span>
               <button onClick={() => setReplacingShotId(null)} className="text-muted-foreground hover:text-foreground cursor-pointer"><X size={18} /></button>
             </div>
             {/* 🔧 文案 + 候选模式工具条：默认"仅显示符合文案的相关候选"，可切回全部 */}
             <div className="shrink-0 px-4 py-2 border-b border-border bg-bg-primary/40 flex items-center gap-3">
               <span className="flex-1 min-w-0 text-[12px] text-muted-foreground truncate">
-                {replaceText ? `文案：${replaceText}` : '（本段暂无文案）'}
+                {replaceText ? t["editor.step5.replaceDialog.text"].replace("{text}", replaceText) : t["editor.step5.replaceDialog.noText"]}
               </span>
               <button
                 onClick={() => { if (relatedChunks === null) return; setShowRelated((s) => !s); setPoolPage(1); }}
@@ -1122,8 +1133,8 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                 className="shrink-0 text-[12px] px-2.5 py-1 rounded border border-border/60 text-muted-foreground hover:text-accent hover:border-accent/40 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-wait"
               >
                 {relatedChunks === null
-                  ? '检索相关中…'
-                  : (showRelated && relatedChunks.length > 0 ? `仅相关（${relatedChunks.length}）· 点此看全部` : '相关候选较少 · 当前显示全部')}
+                  ? t["editor.step5.replaceDialog.searching"]
+                  : (showRelated && relatedChunks.length > 0 ? t["editor.step5.replaceDialog.related"].replace("{count}", String(relatedChunks.length)) : t["editor.step5.replaceDialog.fallbackAll"])}
               </button>
             </div>
             <div
@@ -1143,12 +1154,12 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                   usedCount={usedChunkCount.get(String(chunk.parentChunkId || chunk.id)) || 0}
                   onPick={() => handleReplaceSelect(replacingShotId, chunk)}
                 />
-              )) : <div className="col-span-3"><EmptyState title="暂无片段素材" description="请先执行管线生成视频片段" iconType="search" size="md" /></div>}
+              )) : <div className="col-span-3"><EmptyState title={t["editor.step5.replaceDialog.emptyTitle"]} description={t["editor.step5.replaceDialog.emptyDesc"]} iconType="search" size="md" /></div>}
               {/* 底部哨兵：始终渲染，IntersectionObserver 监听其进入可视区即加载下一批（与滚动条是否出现解耦） */}
               <div ref={poolSentinelRef} className="col-span-3 py-2 text-center text-[12px] text-muted-foreground/70">
                 {chunkPool.length > poolPage * REPLACE_PAGE_SIZE
-                  ? `已加载 ${Math.min(chunkPool.length, poolPage * REPLACE_PAGE_SIZE)}/${chunkPool.length}，向下滚动继续加载`
-                  : (chunkPool.length > 0 ? '已加载全部片段' : '')}
+                  ? t["editor.step5.replaceDialog.loadingProgress"].replace("{loaded}", String(Math.min(chunkPool.length, poolPage * REPLACE_PAGE_SIZE))).replace("{total}", String(chunkPool.length))
+                  : (chunkPool.length > 0 ? t["editor.step5.replaceDialog.loadedAll"] : '')}
               </div>
             </div>
           </div>
@@ -1161,9 +1172,9 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
           <div className="bg-bg-primary border border-border rounded-xl shadow-lg w-[640px] max-h-[80vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-border bg-bg-secondary/60">
               <span className="text-[14px] font-semibold flex items-center gap-2">
-                成品预览
+                {t["editor.step5.preview.title"]}
                 <Badge variant={previewMatch.score > 0.8 ? "success" : previewMatch.score > 0.5 ? "warning" : "danger"} className="text-[12px]">
-                  匹配度 {Math.round((previewMatch.score ?? 0) * 100)}%
+                  {t["editor.step5.preview.score"].replace("{score}", String(Math.round((previewMatch.score ?? 0) * 100)))}
                 </Badge>
               </span>
               <button onClick={closePreview} className="text-muted-foreground hover:text-foreground cursor-pointer"><X size={18} /></button>
@@ -1195,7 +1206,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-muted-foreground/40">
                     <Film size={40} />
-                    <span className="text-[12px]">该段落未匹配到画面切片</span>
+                    <span className="text-[12px]">{t["editor.step5.preview.noChunk"]}</span>
                   </div>
                 )}
                 {/* 播放控制条 */}
@@ -1209,27 +1220,27 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                     {!previewVideoUrl && !previewAudioUrl ? (
                       <>
                         <VolumeX size={13} />
-                        <span>未匹配到画面切片，暂不可播放</span>
+                        <span>{t["editor.step5.preview.noChunkPlay"]}</span>
                       </>
                     ) : isOriginalAudio ? (
                       <>
                         <Volume2 size={13} />
-                        <span>原声播放（切片自带音轨）</span>
+                        <span>{t["editor.step5.preview.originalPlay"]}</span>
                       </>
                     ) : previewAudioUrl ? (
                       <>
                         <Volume2 size={13} />
-                        <span>配音同步播放</span>
+                        <span>{t["editor.step5.preview.ttsPlay"]}</span>
                       </>
                     ) : (
                       <>
                         <VolumeX size={13} />
-                        <span>无配音音频</span>
+                        <span>{t["editor.step5.preview.noTts"]}</span>
                       </>
                     )}
                   </div>
                   <span className="ml-auto text-[12px] text-white/70">
-                    {previewChunk?.endMs ? `片段 ${formatIntSeconds(previewChunk.endMs - previewChunk.startMs)}` : ""}
+                    {previewChunk?.endMs ? t["editor.step5.chunkDuration"].replace("{duration}", formatIntSeconds(previewChunk.endMs - previewChunk.startMs)) : ""}
                   </span>
                 </div>
               </div>
@@ -1240,21 +1251,21 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
               {/* 台词 */}
               <div className="rounded-lg bg-bg-secondary/50 border border-border p-3">
                 <div className="text-[12px] text-muted-foreground mb-1.5 flex items-center justify-between">
-                  <span>{isOriginalAudio ? "原声台词（保留原片原声）" : "解说台词"}</span>
+                  <span>{isOriginalAudio ? t["editor.step5.preview.originalScript"] : t["editor.step5.preview.narrationScript"]}</span>
                   <div className="flex items-center gap-2">
                     {previewMatch.appliedSpeedFactor && previewMatch.appliedSpeedFactor !== 1 && !isOriginalAudio && (
-                      <span className="text-accent-rose">变速 {previewMatch.appliedSpeedFactor.toFixed(2)}x</span>
+                      <span className="text-accent-rose">{t["editor.step5.preview.speed"].replace("{factor}", previewMatch.appliedSpeedFactor.toFixed(2))}</span>
                     )}
                     {previewMatch.text && (
                       <button onClick={() => handleCopyText(previewMatch.text, previewMatch.id)}
-                        className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-accent rounded transition-all cursor-pointer" title="复制文案">
+                        className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-accent rounded transition-all cursor-pointer" title={t["editor.step5.copy.title"]}>
                         {copiedId === previewMatch.id ? <Check size={11} /> : <Copy size={11} />}
-                        {copiedId === previewMatch.id ? "已复制" : "复制"}
+                        {copiedId === previewMatch.id ? t["editor.step5.copy.copied"] : t["editor.step5.copy.action"]}
                       </button>
                     )}
                   </div>
                 </div>
-                <p className="text-[13px] leading-relaxed text-foreground whitespace-pre-wrap">{previewMatch.text || "（无台词内容）"}</p>
+                <p className="text-[13px] leading-relaxed text-foreground whitespace-pre-wrap">{previewMatch.text || t["editor.step5.preview.noText"]}</p>
               </div>
             </div>
           </div>

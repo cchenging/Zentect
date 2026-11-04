@@ -45,9 +45,6 @@ vi.mock('../../lexicon/LexiconFilter', () => ({
         matches: [],
       };
     }
-    getAudioSafeText(cleanText: string) {
-      return cleanText;
-    }
   },
 }));
 
@@ -79,6 +76,11 @@ vi.mock('../../prompts/constraints', () => ({
 import {
   ScriptGenStrategy,
   dedupeAdjacentParagraphs,
+  formatWrittenRecap,
+  buildWrittenRecapBlock,
+  buildSemanticDedupReviewPrompt,
+  applySemanticDedupRewrites,
+  isSentenceFinished,
   dedupeDuplicateOriginalSegments,
   originalWindowSec,
   verifyOutlineGrounding,
@@ -501,6 +503,13 @@ describe('ScriptGenStrategy - 阶段A 剧情理解（剧情驱动解说）', () 
     // 符合度审校为 call1：0 温、max_tokens 1500（判分稳定可复现）
     expect(mockChat.mock.calls[1][2]).toBe(0.0);
     expect(mockChat.mock.calls[1][3]).toEqual({ max_tokens: 1500, response_format: { type: 'json_object' } });
+  });
+
+  it('阶段A 系统提示要求章节概要单调推进、禁止同一事件跨章换措辞重复', async () => {
+    await (strategy as any).performTask(buildInput(), buildContext(), '/tmp/cache', vi.fn());
+    const outlineSystem = mockChat.mock.calls[0][0][0].content as string;
+    expect(outlineSystem).toContain('章节推进（防跨章重复）');
+    expect(outlineSystem).toContain('换措辞重复描述同一拍');
   });
 
   it('阶段A 成功时，阶段B 的 systemPrompt 应注入【全局剧情大纲】', async () => {
@@ -1072,6 +1081,181 @@ describe('ScriptGenStrategy - 相邻重复段落去重（dedupeAdjacentParagraph
     ];
     const { keptIndexes } = dedupeAdjacentParagraphs(input as any);
     expect(keptIndexes).toEqual([0, 1]);
+  });
+});
+
+// ========== ✂️ 句子完结判定（单一真源，覆盖两阶段脏数据误判） ==========
+
+describe('ScriptGenStrategy - 句子完结判定（单一真源）', () => {
+  it('句号/叹号/问号收尾视为完结', () => {
+    expect(isSentenceFinished('她推开门。')).toBe(true);
+    expect(isSentenceFinished('别碰它！')).toBe(true);
+    expect(isSentenceFinished('他到底想干什么？')).toBe(true);
+    expect(isSentenceFinished('他到底想干什么?!')).toBe(true);
+  });
+
+  it('中文省略号与连续英文点属于合法悬置收尾（不再误判半截句）', () => {
+    expect(isSentenceFinished('我的东西被人用过，就不会再要了……')).toBe(true);
+    expect(isSentenceFinished('我的东西被人用过，就不会再要了...')).toBe(true);
+    expect(isSentenceFinished('他愣住了…')).toBe(true);
+  });
+
+  it('收尾引号/括号不影响完结判定', () => {
+    expect(isSentenceFinished('她只说了一句：「我的东西被人用过，就不会再要了……。」')).toBe(true);
+    expect(isSentenceFinished('她说「滚！」')).toBe(true);
+    expect(isSentenceFinished('他叹了口气（无奈）。')).toBe(true);
+  });
+
+  it('以逗号/汉字悬空收尾仍判半截句', () => {
+    expect(isSentenceFinished('他站在门口，')).toBe(false);
+    expect(isSentenceFinished('这句话，像一盆冷水，浇在')).toBe(false);
+    expect(isSentenceFinished('传承未断，可崔国明的脚步，却')).toBe(false);
+  });
+
+  it('空文本返回 false（空段由下游按占位处理，不参与判定）', () => {
+    expect(isSentenceFinished('')).toBe(false);
+    expect(isSentenceFinished('   ')).toBe(false);
+    expect(isSentenceFinished(undefined as any)).toBe(false);
+  });
+});
+
+// ========== 🔁 跨章语义重复防线（已写文案回引） ==========
+// 背景：只回引「上一章剧情概要」挡不住换措辞复述（实测同一支口红的「发现→震惊」在相邻两章各写一遍）。
+// 口径：把上一章实际定稿文案（解说段）回引给下一章 prompt 查重，并明令禁止逐字复用与换措辞复述。
+
+describe('ScriptGenStrategy - 跨章语义重复防线（已写文案回引）', () => {
+  it('formatWrittenRecap 只拼接解说段，跳过原声段与空文本', () => {
+    const recap = formatWrittenRecap([
+      { text: '第一句。' },
+      { text: '', keepOriginalAudio: true },
+      { text: '「你给我站住。」', keepOriginalAudio: true },
+      { text: '第二句。' },
+    ]);
+    expect(recap).toBe('第一句。第二句。');
+  });
+
+  it('formatWrittenRecap 超上限时从末尾截取，优先保留最近文案', () => {
+    const recap = formatWrittenRecap([
+      { text: '甲句。' },
+      { text: '乙句。' },
+      { text: '丙句。' },
+      { text: '丁句。' },
+    ], 6);
+    expect(recap).toBe('丙句。丁句。');
+    expect(recap.length).toBeLessThanOrEqual(6);
+  });
+
+  it('formatWrittenRecap 非法入参/零上限时返回空串（不注入、不报错）', () => {
+    expect(formatWrittenRecap(undefined as any)).toBe('');
+    expect(formatWrittenRecap([{ text: '甲句。' }], 0)).toBe('');
+  });
+
+  it('buildWrittenRecapBlock 无回引内容时不注入（首章/单阶段行为不变）', () => {
+    expect(buildWrittenRecapBlock('')).toBe('');
+    expect(buildWrittenRecapBlock('   ')).toBe('');
+  });
+
+  it('回引块同时禁止逐字复用与换措辞复述，并允许补充新信息', () => {
+    const block = buildWrittenRecapBlock('回家后，用过的口红让她僵住。');
+    expect(block).toContain('【已写文案');
+    expect(block).toContain('回家后，用过的口红让她僵住。');
+    expect(block).toContain('不得换措辞复述');
+    expect(block).toContain('不得把「发现→震惊」「质问→不承认」这类节拍再写一遍');
+    expect(block).toContain('只能补充');
+  });
+});
+
+// ========== 🔍 全片语义查重复核（改写后出现的重复节拍） ==========
+// 背景：字符级去重与相邻章回引挡不住「隔 1~2 章换措辞再讲同一拍」；
+// 口径：全片段落一次性交给模型复核，只允许改写【后出现】的那一段，且校验完整句/不超长/不制造新重复。
+
+describe('ScriptGenStrategy - 全片语义查重复核', () => {
+  it('复核 prompt 只列出解说段（原声段不参与），并明确只改后出现的一段', () => {
+    const prompt = buildSemanticDedupReviewPrompt([
+      { id: 'seg_1', text: '她推开门。' },
+      { id: 'seg_2', text: '「你回来了。」', keepOriginalAudio: true },
+      { id: 'seg_3', text: '口红被人用过，她不要了。' },
+      { id: 'seg_4', text: '' },
+    ]);
+    expect(prompt).toContain('seg_1｜她推开门。');
+    expect(prompt).toContain('seg_3｜口红被人用过，她不要了。');
+    expect(prompt).not.toContain('「你回来了。」');
+    expect(prompt).not.toContain('seg_4｜');
+    expect(prompt).toContain('只允许改写【后出现】的那一段');
+  });
+
+  it('无可复核解说段时返回空串（不发起无意义调用）', () => {
+    expect(buildSemanticDedupReviewPrompt([])).toBe('');
+    expect(
+      buildSemanticDedupReviewPrompt([{ id: 'seg_1', text: '「你回来了。」', keepOriginalAudio: true }]),
+    ).toBe('');
+  });
+
+  it('合法改写只替换目标段文本，段数/顺序/原声标记不变', () => {
+    const paragraphs = [
+      { id: 'seg_1', text: '她发现口红被人用过。' },
+      { id: 'seg_2', text: '「你回来了。」', keepOriginalAudio: true },
+      { id: 'seg_3', text: '口红被人用过，她不要了。' },
+    ];
+    const result = applySemanticDedupRewrites(paragraphs, [
+      { laterId: 'seg_3', rewrittenText: '她把口红丢进垃圾桶。', reason: '与 seg_1 重复' },
+    ]);
+    expect(result.applied).toEqual(['seg_3']);
+    expect(result.rejected).toEqual([]);
+    expect(result.paragraphs.map((p) => p.id)).toEqual(['seg_1', 'seg_2', 'seg_3']);
+    expect(result.paragraphs[0].text).toBe('她发现口红被人用过。');
+    expect(result.paragraphs[1].keepOriginalAudio).toBe(true);
+    expect(result.paragraphs[2].text).toBe('她把口红丢进垃圾桶。');
+  });
+
+  it('非完整句/超长/与现有段落逐字相同的改写一律拒绝并保留原文', () => {
+    const paragraphs = [
+      { id: 'seg_1', text: '焦旭点破渣男套路。' },
+      { id: 'seg_2', text: '焦旭拆穿了这套路。' },
+    ];
+    const result = applySemanticDedupRewrites(paragraphs, [
+      { laterId: 'seg_2', rewrittenText: '他又把旧账翻了出来，' }, // 半截句
+      { laterId: 'seg_2', rewrittenText: '焦旭当众撕下了他的伪装并逼他交代。' }, // 超长
+      { laterId: 'seg_2', rewrittenText: '焦旭点破渣男套路。' }, // 与 seg_1 逐字相同
+      { laterId: 'seg_2', rewrittenText: '焦旭拆穿了这套路。' }, // 与原文相同
+    ]);
+    expect(result.applied).toEqual([]);
+    expect(result.rejected.map((r) => r.reason).join('|')).toContain('不是完整句');
+    expect(result.rejected.map((r) => r.reason).join('|')).toContain('改写超长');
+    expect(result.rejected.map((r) => r.reason).join('|')).toContain('逐字重复');
+    expect(result.rejected.map((r) => r.reason).join('|')).toContain('与原文相同');
+    expect(result.paragraphs[1].text).toBe('焦旭拆穿了这套路。');
+  });
+
+  it('模型把 earlier/later 写反时拒绝改写（只允许动后出现的那一段）', () => {
+    const paragraphs = [
+      { id: 'seg_1', text: '她发现口红被人用过。' },
+      { id: 'seg_2', text: '口红被人用过，她不要了。' },
+    ];
+    const reversed = applySemanticDedupRewrites(paragraphs, [
+      { earlierId: 'seg_2', laterId: 'seg_1', rewrittenText: '她盯着镜子里的自己。' },
+    ]);
+    expect(reversed.applied).toEqual([]);
+    expect(reversed.rejected[0].reason).toContain('not-later');
+    expect(reversed.paragraphs[0].text).toBe('她发现口红被人用过。');
+  });
+
+  it('原声段/不存在编号不可改写，重复指令只生效一次', () => {
+    const paragraphs = [
+      { id: 'seg_1', text: '「你回来了。」', keepOriginalAudio: true },
+      { id: 'seg_2', text: '她发现口红被人用过。' },
+      { id: 'seg_3', text: '口红被人用过，她不要了。' },
+    ];
+    const result = applySemanticDedupRewrites(paragraphs, [
+      { laterId: 'seg_1', rewrittenText: '她转身离开。' },
+      { laterId: 'seg_99', rewrittenText: '她从没想过会是这样。' },
+      { laterId: 'seg_3', rewrittenText: '她把口红丢进垃圾桶。' },
+      { laterId: 'seg_3', rewrittenText: '她再也不想看见那支口红。' },
+    ]);
+    expect(result.applied).toEqual(['seg_3']);
+    expect(result.paragraphs[0].text).toBe('「你回来了。」');
+    expect(result.rejected.map((r) => r.reason).join('|')).toContain('不是可改写的解说段');
+    expect(result.rejected.map((r) => r.reason).join('|')).toContain('重复的改写指令');
   });
 });
 

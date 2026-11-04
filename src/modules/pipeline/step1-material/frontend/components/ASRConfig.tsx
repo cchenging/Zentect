@@ -5,6 +5,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Cpu, Target, Languages, Loader2 } from 'lucide-react';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
+// P1 · ASR 配置变更后重置 whisper 子任务并失效下游
+import { invalidateStep1SubSteps } from '@modules/editor/shell/utils/invalidateDownstreamSteps';
 import { API } from '@renderer/api';
 // 下拉美化：shadcn Select（Radix，定制外观，替代系统原生白底 select 弹层）
 import {
@@ -123,14 +125,19 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
   const commitHotwords = () => {
     if (isRunning) return;
     const list = hotwordsText.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean);
+    // 仅当热词真的变化时才失效（blur 无改动不应清空已有识别结果）
+    const unchanged = list.join('\u0000') === (whisper.hotwords || []).join('\u0000');
+    if (unchanged) return;
     updateExtractionConfig({ whisper: { ...whisper, hotwords: list } });
+    invalidateStep1SubSteps(['whisper'], 2);
   };
 
   /** 切换引擎：同时联动语言（中文→Paraformer + zh，多语言→Faster-Whisper + en） */
   const handleEngineChange = (engine: EngineValue) => {
-    if (isRunning) return;
+    if (isRunning || engine === currentEngine) return;
     const language: LanguageValue = engine === 'faster-whisper' ? 'en' : 'zh';
     updateExtractionConfig({ whisper: { ...whisper, engine, language } });
+    invalidateStep1SubSteps(['whisper'], 2);
   };
 
   /** 🎬 方案B：切换识别语言（auto/中/日/韩/粤/英）。
@@ -138,14 +145,17 @@ export const ASRConfig: React.FC<ASRConfigProps> = ({ isRunning }) => {
   const handleLanguageChange = (value: string) => {
     if (isRunning) return;
     const lang = value as LanguageValue;
+    if (lang === currentLanguage) return;
     const engine: EngineValue = (currentEngine === 'paraformer' && lang !== 'zh') ? 'faster-whisper' : currentEngine;
     updateExtractionConfig({ whisper: { ...whisper, engine, language: lang } });
+    invalidateStep1SubSteps(['whisper'], 2);
   };
 
   /** 切换 faster-whisper 模型大小 */
   const handleModelSizeChange = (value: string) => {
-    if (isRunning) return;
+    if (isRunning || value === storedModelSize) return;
     updateExtractionConfig({ whisper: { ...whisper, modelSize: value } });
+    invalidateStep1SubSteps(['whisper'], 2);
   };
 
   const activeHint = ENGINE_OPTIONS.find((o) => o.value === currentEngine)?.hint || '';

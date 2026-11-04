@@ -19,6 +19,8 @@ import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
 import { persistProjectSnapshot } from '../../utils/persistSnapshot';
+import { invalidateDownstreamSteps } from '../../utils/invalidateDownstreamSteps';
+import { capturePipelineDataSnapshot, restorePipelineDataSnapshot } from '../../utils/pipelineDataSnapshot';
 
 export enum PipelineMode {
   STEP = 'step',
@@ -57,16 +59,36 @@ export const buildMappers = (): PipelineResultMappers => ({
   setMatchDiagnostics: useStep5Store.getState().setMatchDiagnostics,
 });
 
+/** 模块级中止标记：abortPipeline 可能由任意组件实例调用，executeStep 在另一实例里需要感知 */
+let abortRequested = false;
+
 export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
   const pipelineStore = usePipelineStore;
 
   const abortPipeline = useCallback(async () => {
+    // ⚠️ 模块级标记：abortPipeline 与 executeStep 可能来自不同组件实例，
+    //   需要让正在等待 runPipeline 的调用方知道「这是用户中止，不是执行失败」
+    abortRequested = true;
     try { await window.api.ipc.invoke(IPC_CHANNELS.ENGINE_ABORT_PIPELINE); } catch {}
     try { await API.engine.abortPipeline(); } catch {}
-    pipelineStore.getState().setPipelineRunning(false);
+    // 等待期间用户可能已重新启动：新一轮 executeStep 会把标记复位，此时不要清掉新状态
+    if (!abortRequested) return;
+    const state = pipelineStore.getState();
+    // 🛑 中止不是失败：把残留 running 态统一收尾为 idle，等用户重跑
+    (['frames', 'audio', 'whisper', 'faces'] as const).forEach((key) => {
+      if (state.subStepStatuses[key] === 'running') {
+        state.setSubStepStatus(key, 'idle');
+        state.setSubStepProgress(key, 0);
+      }
+    });
+    state.stepStatuses.forEach((status, i) => {
+      if (status === 'running') state.setStepStatus(i + 1, 'idle');
+    });
+    state.resetPipeline();
   }, []);
 
   const resetAll = useCallback(() => {
+    abortRequested = false;
     pipelineStore.getState().resetPipeline();
     pipelineStore.getState().resetAllStepStatuses?.();
     AppNotifier.success('前端状态已强制重置！');
@@ -76,6 +98,7 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
     const ps = pipelineStore.getState();
     const projectState = useProjectStore.getState();
     if (!projectState.projectId) return;
+    abortRequested = false;
 
     // 🔧 修复：步骤2-5已完成的跳过逻辑
     // 仅在【自动流水线自动前进】时（forceRun=false），已完成步骤才直接跳到下一步避免重复执行。
@@ -96,12 +119,9 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
     ps.resetPipeline();
     ps.setStepStatus(step, 'running');
     ps.setPipelineRunning(true);
-    // 🔧 step3 重新生成前清空旧文案：与 Container.handleRegenerate 保持一致，
-    //   避免旧文案残留显示、生成失败时被误认为有效结果（符合"错就错"原则）。
-    if (step === 3) {
-      useStep3Store.getState().setScriptParagraphs([]);
-    }
     editorLogger.trackStep(step, 'start', { projectId: projectState.projectId });
+    // 🛡️ P2：先快照上一次可用结果，失败时恢复（失败不能抹掉用户已完成的成片数据）
+    const dataSnapshot = capturePipelineDataSnapshot();
 
     try {
       const activeMedia = projectState.mediaItems?.[0];
@@ -137,6 +157,10 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
           throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, '未找到媒体文件路径');
         }
       }
+
+      // 🛑 P0：进入实际执行前级联失效下游结果与完成标记。
+      //   否则自动流水线会因下游「completed」直接跳过，导出「新文案 + 旧配音 + 旧匹配」错片。
+      invalidateDownstreamSteps(step);
 
       const sequence = STEP_SEQUENCES[step];
       if (!sequence) {
@@ -221,6 +245,12 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
         sequence: enrichedSequence,
         sourceMedia: activeMedia?.filePath || '',
       });
+      // 🛑 用户已中止：后端可能返回被截断的结果，绝不能当成成功写入 / 标记完成
+      if (abortRequested) {
+        ps.setStepStatus(step, 'idle');
+        ps.setPipelineRunning(false);
+        return;
+      }
       if (result) {
         mapPipelineResultToState(result?.data || result, buildMappers());
       }
@@ -246,9 +276,17 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
       }
       ps.setPipelineRunning(false);
     } catch (err: any) {
+      // 🛑 用户中止导致的 reject 不是失败：静默收尾，不弹错误条
+      if (abortRequested) {
+        ps.setStepStatus(step, 'idle');
+        ps.setPipelineRunning(false);
+        return;
+      }
       ps.setStepStatus(step, 'failed');
       ps.setPipelineError(err?.message || '步骤执行失败');
       ps.setPipelineRunning(false);
+      // 🛡️ P2：把执行前快照的下游结果放回（数据回来了，但完成标记不回，用户需重跑失败步骤）
+      restorePipelineDataSnapshot(dataSnapshot);
     }
   }, []);
 

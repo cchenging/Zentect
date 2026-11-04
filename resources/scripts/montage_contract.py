@@ -1083,35 +1083,6 @@ def assemble_result(patch: dict, strict: bool = True) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
-# 锁1 守卫（G 域 §10.2.8 动作3：从 build_context 沉入契约，单一权威）
-# ---------------------------------------------------------------------------
-def clamp_ref_frame(query: dict) -> dict:
-    """锁1 幻觉守卫（B 域 §10.2.3 动作2）：仅对 refFrameTimeMs 做物理合法性校准。
-
-    - 越界守卫：0 ≤ refFrameTimeMs ≤ sourceDurationMs，越界判幻觉置 0（走无锚章节降级）。
-    - 片头幻觉守卫（补丁4）：refFrameTimeMs 落入已裁片头 [0, trimStartMs) 判幻觉 += trimStartMs
-      （步骤3 在 source 坐标里选帧，trimStart 前的帧属刚被裁掉的序场残影）。
-
-    返回修正后的 query 副本；越界置 0 时同时清空 refFrameSource（无锚）。
-    不改 sourceRefTimeMs（那仍是段锚）；锁1 只校准真实参考帧坐标。
-    """
-    _q = dict(query)
-    _ref = float(_q.get('refFrameTimeMs') or 0)
-    if _ref > 0:
-        _src_dur = float(_q.get('sourceDurationMs') or 0)
-        if _src_dur > 0 and _ref > _src_dur:
-            # 越界判幻觉：明确置 0，走无锚章节降级，绝不静默封顶拉回。
-            _q['refFrameTimeMs'] = 0.0
-            _q['refFrameSource'] = ''
-        else:
-            _trim = float(_q.get('trimStartMs') or 0)
-            if _trim > 0 and _ref < _trim:
-                # 片头幻觉（补丁4）：落入已裁序场残影区，前移 trimStart 回真实物理起点。
-                _q['refFrameTimeMs'] = float(_trim)
-    return _q
-
-
 # ===========================================================================
 # 工具：字段缺省装配（显式声明，非兜底掩盖）
 # ===========================================================================

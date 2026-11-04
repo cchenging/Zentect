@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 import { useStore } from '@renderer/store/useStore';
 import { useStep3Store } from '@modules/pipeline/stores/useStep3Store';
+import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
 import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
 import { formatDurationStandard } from '@renderer/utils/timeUtils';
 import { AppNotifier } from '@renderer/core/AppNotifier';
@@ -36,6 +37,8 @@ export const ExportModal: React.FC = () => {
   const [videoFps, setVideoFps] = useState<'30' | '60'>('30');
   const [previewMode, setPreviewMode] = useState(false);
   const [subtitleMode, setSubtitleMode] = useState<'none' | 'burn' | 'file' | 'both'>('both');
+  /** 🎬 字幕敏感词打码（导出期生效，不影响配音）：高危词替换为「哔——」，设置项持久化复用上次选择 */
+  const [subtitleMask, setSubtitleMask] = useState(false);
   const [audioFormat, setAudioFormat] = useState('mp3');
   /** 完成后打开：'none'=不打开 / 'folder'=打开文件夹 / 'player'=用系统播放器播放成片 */
   const [afterOpen, setAfterOpen] = useState<'none' | 'folder' | 'player'>('none');
@@ -44,6 +47,20 @@ export const ExportModal: React.FC = () => {
   /** 🛡️ 未匹配段拦截：装配层发现"有配音无画面切片"段时抛错，此处弹二次确认让用户选「忽略并继续」 */
   const [skipUnmatchedOpen, setSkipUnmatchedOpen] = useState(false);
   const [skipBlockMessage, setSkipBlockMessage] = useState('');
+  /** 🛡️ 未确认匹配拦截：导出前提示「仍有 N 段未确认」，由用户决定是否继续 */
+  const [unconfirmedOpen, setUnconfirmedOpen] = useState(false);
+  const [unconfirmedCount, setUnconfirmedCount] = useState(0);
+
+  useEffect(() => {
+    API.system.getSetting<boolean>('subtitleMask', false)
+      .then((v) => setSubtitleMask(v === true))
+      .catch(() => {});
+  }, []);
+
+  const toggleSubtitleMask = (on: boolean) => {
+    setSubtitleMask(on);
+    API.system.setSetting('subtitleMask', on).catch(() => {});
+  };
 
   const { coverUrl, currentDuration, exactResolutionStr, estimatedSizeMB } = useMemo(() => {
     if (!open) return { coverUrl: '', currentDuration: 0, exactResolutionStr: '1920x1080', estimatedSizeMB: '0.0 MB' };
@@ -168,7 +185,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       .join('\n\n');
   };
 
-  const executeExport = async (skipUnmatched = false) => {
+  const executeExport = async (skipUnmatched = false, skipUnconfirmed = false) => {
     if (!exportVideo && !exportJianying && !exportAudio && !exportSubtitle && !exportTxt) {
       AppNotifier.warn('请勾选输出管线');
       return;
@@ -197,6 +214,19 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         selectedShotIds = [selectedShot.id];
       }
 
+      // 🛡️ P1：未确认匹配不静默导出。步骤5 的「已确认」不能只是装饰标签——
+      //   只要本次导出包含画面（视频/剪映/音频），且项目里还有未确认的匹配段，就先二次确认。
+      //   注：AI 模式下导出装配读的是 matchResults（不是弹窗里的 shots 快照），故以 matchResults 为准。
+      if (!skipUnconfirmed && (exportVideo || exportJianying || exportAudio)) {
+        const pending = useStep5Store.getState().matchResults.filter((m) => !m.confirmed);
+        if (pending.length > 0) {
+          setUnconfirmedCount(pending.length);
+          setUnconfirmedOpen(true);
+          setIsExporting(false);
+          return;
+        }
+      }
+
       if (isAiExport && scopedShots.find((s) => s.aiText && !s.audioPath))
         throw new Error('存在未配音台词，拒绝渲染。');
       const [exactWidth, exactHeight] = exactResolutionStr.split('x').map(Number);
@@ -208,6 +238,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         fps: Number(videoFps),
         preview: previewMode,
         subtitleMode,
+        subtitleMask,
         exactWidth,
         exactHeight,
         shots: JSON.parse(JSON.stringify(scopedShots)),
@@ -300,7 +331,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   const continueExportIgnoringUnmatched = async () => {
     setSkipUnmatchedOpen(false);
     setSkipBlockMessage('');
-    await executeExport(true);
+    await executeExport(true, true);
+  };
+
+  /** 二次确认后：用户已知晓未确认匹配仍要继续导出 */
+  const continueExportWithUnconfirmed = async () => {
+    setUnconfirmedOpen(false);
+    await executeExport(false, true);
   };
 
   const dialogOpenChange = (next: boolean) => {
@@ -442,6 +479,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         <SelectItem value="burn">{t.export.subtitle_burn}</SelectItem>
                         <SelectItem value="file">{t.export.subtitle_file}</SelectItem>
                         <SelectItem value="both">{t.export.subtitle_both}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-center">
+                    <span className="text-muted-foreground text-caption w-14 shrink-0">字幕打码</span>
+                    <Select value={subtitleMask ? 'on' : 'off'} onValueChange={(v) => toggleSubtitleMask(v === 'on')}>
+                      <SelectTrigger className="w-[160px] h-7 text-caption"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="off">关闭（原文）</SelectItem>
+                        <SelectItem value="on">开启（高危词→哔——）</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -618,6 +665,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                   </Button>
                   <Button size="sm" onClick={continueExportIgnoringUnmatched} className="h-8 shadow-sm">
                     忽略未匹配段并继续
+                  </Button>
+                </div>
+              </DialogPrimitive.Content>
+            </DialogPrimitive.Portal>
+          </DialogPrimitive.Root>
+        )}
+        {/* 🛡️ 未确认匹配二次确认：未确认 ≠ 匹配错误，但必须让用户明确知晓后再导出 */}
+        {unconfirmedOpen && (
+          <DialogPrimitive.Root open onOpenChange={(o) => { if (!o) setUnconfirmedOpen(false); }}>
+            <DialogPrimitive.Portal>
+              <DialogPrimitive.Overlay className="fixed inset-0 z-[200] bg-black/70" />
+              <DialogPrimitive.Content className="fixed left-[50%] top-[50%] z-[200] w-[460px] translate-x-[-50%] translate-y-[-50%] bg-background border border-border rounded-lg shadow-xl p-5 flex flex-col gap-4 outline-none">
+                <DialogPrimitive.Title className="m-0 text-body font-semibold text-foreground">
+                  仍有未确认的镜头匹配
+                </DialogPrimitive.Title>
+                <div className="text-[13px] leading-relaxed text-muted-foreground">
+                  本次导出的片段中有 <span className="text-foreground font-semibold">{unconfirmedCount}</span> 段尚未在步骤5 确认。
+                  未确认只代表没有人工核对，不代表一定错配。
+                  {'\n\n'}建议返回步骤5 快速过一遍；也可以直接继续导出。
+                </div>
+                <div className="flex justify-end gap-3">
+                  <Button variant="outline" size="sm" onClick={() => setUnconfirmedOpen(false)} className="h-8">
+                    {t.common.cancel}
+                  </Button>
+                  <Button size="sm" onClick={continueExportWithUnconfirmed} className="h-8 shadow-sm">
+                    仍然导出
                   </Button>
                 </div>
               </DialogPrimitive.Content>

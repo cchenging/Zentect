@@ -202,15 +202,10 @@ def merge_orders_into_queries(
 
 
 def resolve_source_ref_time(query: dict, seg_by_id: Dict[int, dict]) -> dict:
-    """解析剧情锚点 sourceRefTimeMs（补丁9）并执行锁1 幻觉守卫（B域 §10.2.3 动作2）。
+    """解析剧情锚点 sourceRefTimeMs（补丁9）。
 
-    两步：
-      ① 锚点解析：query 显式有效 sourceRefTimeMs 直用；否则若 sourceSceneId 非空，
-         取 segments[sourceSceneId].startMs 查表转译；两者皆无保留 0。
-      ② 锁1 校验（🚫 2026-10-31 锚点退役后输入恒为 0，此处已退化为 no-op）：
-         - 越界守卫：0 ≤ refFrameTimeMs ≤ sourceDurationMs，越界判幻觉置 0。
-         - 片头幻觉守卫（补丁4）：refFrameTimeMs 落入已裁片头 [0, trimStartMs) 判幻觉 += trimStartMs。
-      锁1 不改 sourceRefTimeMs（那仍是段锚）；refFrame 相关分支仅作为老请求体兼容保留。
+    锚点解析：query 显式有效 sourceRefTimeMs 直用；否则若 sourceSceneId 非空，
+    取 segments[sourceSceneId].startMs 查表转译；两者皆无保留 0。
 
     Args:
         query: 脚本句（合并工单后）。
@@ -230,9 +225,6 @@ def resolve_source_ref_time(query: dict, seg_by_id: Dict[int, dict]) -> dict:
             if seg is not None:
                 _q['sourceRefTimeMs'] = float(seg.get('startMs') or 0)
 
-    # --- ② 锁1 校验（G 域 §10.2.8 动作3：权威已沉入契约 clamp_ref_frame，此处只委托，不重复实现）---
-    from montage_contract import clamp_ref_frame
-    _q = clamp_ref_frame(_q)
     return _q
 
 

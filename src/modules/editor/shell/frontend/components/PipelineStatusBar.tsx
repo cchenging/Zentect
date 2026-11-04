@@ -5,7 +5,7 @@ import React from 'react';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { AlertTriangle } from 'lucide-react';
 import { Progress } from '@renderer/components/shared';
-import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
+import { usePipelineOrchestrator } from '../hooks/usePipelineOrchestrator';
 
 /**
  * 节点 → 剧组人设话术映射（产品"虚拟电影剧组"心智：让状态栏读出"各司其职"的生动感）
@@ -32,11 +32,11 @@ export const PipelineStatusBar: React.FC = () => {
   const pipelineNode = usePipelineStore((s) => s.pipelineNode);
   const pipelineError = usePipelineStore((s) => s.pipelineError);
   const resetPipeline = usePipelineStore((s) => s.resetPipeline);
-  const setPipelineRunning = usePipelineStore((s) => s.setPipelineRunning);
+  const { abortPipeline } = usePipelineOrchestrator();
 
+  /** 中止统一走编排器：停后端 + 把所有 running 态收尾为 idle（不弹失败条） */
   const handleAbort = async () => {
-    try { await window.api.ipc.invoke(IPC_CHANNELS.ENGINE_ABORT_PIPELINE); } catch {}
-    setPipelineRunning(false);
+    await abortPipeline();
   };
 
   /** 人设话术：命中 ROLE_NARRATION 用剧词，否则回退原始节点名（守"错就错"，不吞技术态） */

@@ -3,6 +3,8 @@
 import React from 'react';
 import { Cpu, Gauge, Zap } from 'lucide-react';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
+// P1 · 音频配置变更后重置 audio/whisper 子任务并失效下游
+import { invalidateStep1SubSteps } from '@modules/editor/shell/utils/invalidateDownstreamSteps';
 import type { AudioConfig } from '@modules/pipeline/stores/useStep1Store';
 
 interface AudioSeparationConfigProps {
@@ -66,10 +68,12 @@ export const AudioSeparationConfig: React.FC<AudioSeparationConfigProps> = ({ is
 
   /** 切换策略：UI 单选 → store 双字段映射 */
   const handleStrategyChange = (strategy: StrategyValue) => {
-    if (isRunning) return;
+    if (isRunning || strategy === currentStrategy) return;
     updateExtractionConfig({
       audio: { ...audio, ...strategyToConfig(strategy) },
     });
+    // 分离策略变化 ⇒ 音频需重分离，ASR 输入随之变化 ⇒ 步骤3 及以后作废
+    invalidateStep1SubSteps(['audio', 'whisper'], 2);
   };
 
   const activeHint = STRATEGY_OPTIONS.find((o) => o.value === currentStrategy)?.hint || '';

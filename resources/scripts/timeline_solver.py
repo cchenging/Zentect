@@ -212,14 +212,6 @@ class KMMatchQuery(BaseModel):
     Node 侧 VI 绝对优先锁定（R2-2）、正文仅在 VI 无情绪词时兜底并取转折终点状态；
     daemon 侧非空时**替换 query.emotion** 作为 emotion_sim 的 query 侧输入（复用既有 EMOTION_CATEGORIES/EMOTION_COMPAT 冲突抑制，R2-4）。"""
     moodIntent: str = ''
-    """🚫 已退役（2026-10-31）：参考帧锚点三字段。锚点由"文案↔帧释义字面重合"选出、
-    段落与母块又是几何均分摊派，无真实时间依据；Node 不再写入，daemon 不再消费。
-    字段仅保留以兼容老请求体（恒为 0/空，_query_window 不再据此定窗）。"""
-    refFrameTimeMs: float = 0
-    """@deprecated 同 refFrameTimeMs"""
-    refFrameDesc: str = ''
-    """@deprecated 同 refFrameTimeMs"""
-    refFrameSource: str = ''
     """📗 步骤1 ③ 句尾静音气口毫秒（原声段磁吸，补丁2/7 消费；None=无 ASR 气口数据，规则卡中性放行不造假）。"""
     silenceGapMs: Optional[float] = None
     """📗 补丁20（ISSUE-7）：原声段 ASR 台词边界（源坐标；Node 侧按「原声时间窗 ↔ ASR 行」
