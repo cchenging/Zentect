@@ -270,6 +270,8 @@ export class ProjectRepository {
       'videoChunks', 'storyboardMode',
       // 🔧 步骤5 匹配数据：以 metadata（步骤5 完成时持久化）为准，不让 canvas_data 瞬态快照覆盖
       'matchResults', 'activeBgm', 'beatTimestamps', 'deepRecommendation',
+      // 🔧 产物版本元数据：以 metadata 为准，canvas_data 不携带该字段
+      'artifactStamps',
     ]);
     for (const [key, val] of Object.entries(canvasObj)) {
       if (CANVAS_SKIP_KEYS.has(key)) continue;
@@ -451,6 +453,10 @@ export class ProjectRepository {
       }
       if (data.ttsEngine) metadata.ttsEngine = data.ttsEngine;
       if (data.ttsVoiceId) metadata.ttsVoiceId = data.ttsVoiceId;
+      /** 步骤4 合成语速（0.5~2.0）：独立键，避免与步骤3 文案基准语速 speechRate 相互覆盖 */
+      if (typeof data.ttsSpeechRate === 'number' && data.ttsSpeechRate > 0) {
+        metadata.ttsSpeechRate = data.ttsSpeechRate;
+      }
       /** 💥 持久化步骤5镜头匹配数据，确保重进项目后匹配结果/切片池/BGM 节拍不丢失 */
       if (data.matchResults && Array.isArray(data.matchResults) && data.matchResults.length > 0) {
         metadata.matchResults = ProjectRepository.sanitizeMatchResultsForPersist(data.matchResults);
@@ -458,11 +464,27 @@ export class ProjectRepository {
       if (data.videoChunks && Array.isArray(data.videoChunks) && data.videoChunks.length > 0) {
         metadata.videoChunks = data.videoChunks;
       }
-      if (data.activeBgm && typeof data.activeBgm === 'object' && data.activeBgm.id) {
+      if (data.activeBgm === null) {
+        // 显式删除 BGM：必须写 null，否则「非空才覆盖」会让旧 BGM 复活并污染步骤5 输入指纹
+        metadata.activeBgm = null;
+      } else if (data.activeBgm && typeof data.activeBgm === 'object' && data.activeBgm.id) {
         metadata.activeBgm = data.activeBgm;
       }
       if (data.beatTimestamps && Array.isArray(data.beatTimestamps) && data.beatTimestamps.length > 0) {
         metadata.beatTimestamps = data.beatTimestamps;
+      }
+      /**
+       * 产物版本元数据（artifactStamps）：按产物键合并，避免主进程直写（只带步骤5 stamp）
+       * 覆盖掉渲染层其它步骤的 rev。阶段2 起渲染层会整包写入，此处合并不影响最终态。
+       */
+      if (data.artifactStamps && typeof data.artifactStamps === 'object') {
+        const existing = metadata.artifactStamps && typeof metadata.artifactStamps === 'object'
+          ? metadata.artifactStamps
+          : {};
+        metadata.artifactStamps = {
+          revs: { ...(existing.revs || {}), ...(data.artifactStamps.revs || {}) },
+          stamps: { ...(existing.stamps || {}), ...(data.artifactStamps.stamps || {}) },
+        };
       }
       /** 💥 持久化步骤5 AI 深度 BGM 推荐结果，确保重进项目后推荐不丢失 */
       if (data.deepRecommendation && typeof data.deepRecommendation === 'object'

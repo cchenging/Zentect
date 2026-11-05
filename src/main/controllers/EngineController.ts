@@ -26,6 +26,7 @@ import { VideoChunkRepository } from '../database/repositories/VideoChunkReposit
 import { SliceSearchService, SliceSearchRequest } from '../engine/search/SliceSearchService';
 import { JobScheduler } from '../core/JobScheduler';
 import { AiRuntimeManager } from '../core/AiRuntimeManager';
+import { KEY_VERSION } from '../../modules/editor/shell/utils/pipelineArtifactMeta';
 import * as path from 'path';
 import type { PipelinePayload } from '../../shared/types';
 
@@ -690,6 +691,17 @@ export class EngineController {
           continue;
         }
         const payload: any = { matchResults };
+        /**
+         * 主进程直写是「未验证写入」：只标 source=backend / valid=false，
+         * 让导出与自动流转不会把这份兜底数据当成渲染层确认过的有效产物。
+         * 渲染层 persistProjectSnapshot 成功后会用 renderer 有效 stamp 覆盖。
+         */
+        payload.artifactStamps = {
+          stamps: {
+            // rev=1 而非 0：rev=0 会被有效性判定视作「无产物」而放行，这里必须显式标为未验证
+            '5': { rev: 1, fromKey: '', keyVersion: KEY_VERSION, valid: false, source: 'backend' },
+          },
+        };
         if (Array.isArray((nodeResult as any).videoChunks) && (nodeResult as any).videoChunks.length > 0) {
           payload.videoChunks = (nodeResult as any).videoChunks;
         }

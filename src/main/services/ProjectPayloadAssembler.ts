@@ -237,12 +237,16 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
     ttsResults: Array.isArray(rawData.ttsResults) ? rawData.ttsResults : [],
     ttsEngine: rawData.ttsEngine,
     ttsVoiceId: rawData.ttsVoiceId,
+    /** 步骤4 合成语速（0.5~2.0）：与步骤3 的 speechRate（字/秒）是两个独立字段 */
+    ttsSpeechRate: typeof rawData.ttsSpeechRate === 'number' ? rawData.ttsSpeechRate : 1.0,
     videoChunks: Array.isArray(rawData.videoChunks) ? rawData.videoChunks : [],
     // 步骤5 匹配结果 + BGM 节拍（metadata 持久化，重启恢复）
     matchResults: Array.isArray(rawData.matchResults) ? rawData.matchResults : [],
     activeBgm: rawData.activeBgm || null,
     beatTimestamps: Array.isArray(rawData.beatTimestamps) ? rawData.beatTimestamps : [],
     deepRecommendation: rawData.deepRecommendation || null,
+    /** 产物版本元数据：原样回传，由渲染层 normalizeArtifactMeta 清洗/补 legacy */
+    artifactStamps: rawData.artifactStamps ?? null,
     // Canvas
     canvasData: rawData.canvasData,
     // 分镜模式('original' | 'ai'):存于 metadata,需回传给前端 hydrate 恢复

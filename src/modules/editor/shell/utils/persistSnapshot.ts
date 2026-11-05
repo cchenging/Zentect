@@ -62,6 +62,8 @@ export async function persistProjectSnapshot(projectId: string): Promise<void> {
       subStepTimings: ps.subStepTimings,
       stepStatuses: ps.stepStatuses,
       stepCompleted: ps.stepCompleted,
+      /** 产物版本元数据（rev/fromKey/valid）：与产物数据同批落盘，避免崩溃后版本落后于数据 */
+      artifactStamps: ps.artifactMeta,
       currentStep: navState.currentStep,
       extractionConfig: step1State.extractionConfig,
       vlmFrames: step2Final.vlmFrames,
@@ -72,6 +74,8 @@ export async function persistProjectSnapshot(projectId: string): Promise<void> {
       ttsResults: step4Final.ttsResults,
       ttsEngine: step4Final.ttsEngine,
       ttsVoiceId: step4Final.ttsVoiceId,
+      /** 步骤4 合成语速：必须落盘，否则重开项目后输入指纹漂移、下游误判过期 */
+      ttsSpeechRate: step4Final.speechRate,
       /** 步骤5 数据持久化：匹配结果/切片池/BGM 节拍，重启后从 metadata 恢复 */
       matchResults: step5Final.matchResults,
       videoChunks: step5Final.videoChunks,

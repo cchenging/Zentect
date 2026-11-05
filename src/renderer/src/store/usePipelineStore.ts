@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import type { StepStatus } from '../../../shared/types/entities/editor';
 import type { PipelineParams, ExtractionConfig } from '../../../shared/types/entities/editor';
+import { createEmptyArtifactMeta, type ArtifactMeta } from '@modules/editor/shell/utils/pipelineArtifactMeta';
 
 const INITIAL_STEP_STATUSES: StepStatus[] = ['idle', 'idle', 'idle', 'idle', 'idle'];
 const INITIAL_SUB_STEP_STATUSES: Record<string, StepStatus> = {
@@ -53,6 +54,10 @@ export interface PipelineStore {
   // 参数配置
   pipelineParams: PipelineParams;
   extractionConfig: ExtractionConfig | null;
+
+  /** 产物版本元数据（阶段1 仅内存态；阶段2 接入持久化） */
+  artifactMeta: ArtifactMeta;
+  setArtifactMeta: (meta: ArtifactMeta) => void;
 
   // Actions — 编辑器状态
   setHydrationStatus: (status: PipelineStore['hydrationStatus']) => void;
@@ -116,6 +121,9 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
     targetDurationSec: 0,
   },
   extractionConfig: null,
+
+  artifactMeta: createEmptyArtifactMeta(),
+  setArtifactMeta: (meta) => set({ artifactMeta: meta }),
 
   setStepStatus: (step, status) =>
     set((s) => {
@@ -204,5 +212,6 @@ export const usePipelineStore = create<PipelineStore>()((set) => ({
     targetDurationSec: 0,
   },
     extractionConfig: null,
+    artifactMeta: createEmptyArtifactMeta(),
   }),
 }));

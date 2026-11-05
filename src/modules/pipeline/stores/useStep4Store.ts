@@ -16,12 +16,15 @@ export interface Step4Store {
   ttsVoiceId: string;
   ttsProgress: number;
   ttsResults: TtsResult[];
+  /** TTS 合成语速倍率（0.5~2.0）：必须持久化，否则重开项目后输入指纹漂移 */
+  speechRate: number;
 
   // TTS 操作
   setTtsEngine: (engine: string) => void;
   setTtsVoiceId: (voiceId: string) => void;
   setTtsProgress: (progress: number) => void;
   setTtsResults: (results: TtsResult[]) => void;
+  setSpeechRate: (rate: number) => void;
 
   /** 重置步骤4状态 */
   reset: () => void;
@@ -32,16 +35,19 @@ export const useStep4Store = create<Step4Store>()((set) => ({
   ttsVoiceId: '',
   ttsProgress: 0,
   ttsResults: [],
+  speechRate: 1.0,
 
   setTtsEngine: (engine) => set({ ttsEngine: engine, ttsVoiceId: '' }),
   setTtsVoiceId: (voiceId) => set({ ttsVoiceId: voiceId }),
   setTtsProgress: (progress) => set({ ttsProgress: progress }),
   setTtsResults: (results) => set({ ttsResults: results }),
+  setSpeechRate: (rate) => set({ speechRate: rate }),
 
   reset: () => set({
     ttsEngine: 'edge',
     ttsVoiceId: '',
     ttsProgress: 0,
     ttsResults: [],
+    speechRate: 1.0,
   }),
 }));

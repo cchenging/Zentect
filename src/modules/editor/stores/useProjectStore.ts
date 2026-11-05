@@ -19,6 +19,7 @@ import { useStep3Store, DEFAULT_SPEECH_RATE } from '../../pipeline/stores/useSte
 import { useStep4Store } from '../../pipeline/stores/useStep4Store';
 import { useStep5Store } from '../../pipeline/stores/useStep5Store';
 import { useEditorNavStore } from './useEditorNavStore';
+import { normalizeArtifactMeta } from '../shell/utils/pipelineArtifactMeta';
 
 /**
  * 🛑 根因级修复：framePaths 契约守门员
@@ -695,6 +696,12 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       }
     }
 
+    /** 🎫 产物版本元数据：旧项目没有 artifactStamps 时，已完成的步骤补 legacy stamp
+     *  （可查看/导出但不自动流转，避免把历史产物乐观认证为有效）。 */
+    if (typeof ps.setArtifactMeta === 'function') {
+      ps.setArtifactMeta(normalizeArtifactMeta(d.artifactStamps, stepCompleted));
+    }
+
     for (let i = 1; i <= 5; i++) {
       if (typeof ps.setStepStatus === 'function') ps.setStepStatus(i, (stepStatuses[i - 1] as any) || 'idle');
       if (typeof ps.setStepCompleted === 'function') ps.setStepCompleted(i, !!stepCompleted[i - 1]);
@@ -796,6 +803,11 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     // 不设 '' 是为了避免「UI 显示无引擎但合成 fallback 到设置默认引擎」的显示/执行不一致
     if (typeof s4.setTtsEngine === 'function') s4.setTtsEngine((d.ttsEngine as string) || 'edge');
     if (typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((d.ttsVoiceId as string) || '');
+    // 步骤4 合成语速：旧项目无此字段时回退 1.0，保证输入指纹跨会话稳定
+    if (typeof s4.setSpeechRate === 'function') {
+      const restoredRate = Number(d.ttsSpeechRate);
+      s4.setSpeechRate(Number.isFinite(restoredRate) && restoredRate > 0 ? restoredRate : 1.0);
+    }
 
     // ── Step5Store ──
     const s5 = useStep5Store.getState();
