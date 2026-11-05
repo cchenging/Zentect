@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zentect 原型 · 变更影响预览</title>
+  <link rel="stylesheet" href="./assets/proto.css" />
+  <style>
+    .adv-group { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; border: 1px solid var(--border-default); background: rgba(255,255,255,.02); }
+    .adv-group + .adv-group { margin-top: 10px; }
+    .adv-title { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 700; color: var(--muted-strong); }
+    .adv-title .badge { font-weight: 600; }
+    .adv-body { display: flex; flex-direction: column; gap: 9px; }
+    .impact-list { display: flex; flex-direction: column; border: 1px solid var(--border-default); border-radius: 10px; overflow: hidden; }
+    .impact-row { display: grid; grid-template-columns: 22px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.045); }
+    .impact-row:last-child { border-bottom: 0; }
+    .impact-name { font-size: 12px; font-weight: 600; }
+    .impact-desc { font-size: 11px; color: var(--muted); margin-top: 1px; }
+    .estimate { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; border-radius: 10px; background: rgba(99,102,241,.08); border: 1px solid rgba(99,102,241,.24); }
+    .estimate b { font-size: 15px; color: #c7d2fe; }
+    .range { width: 100%; accent-color: #6366f1; }
+    .demo-dim { filter: saturate(.9); }
+  </style>
+</head>
+<body>
+  <div class="shell demo-dim">
+    <header class="topbar">
+      <a class="back-link" href="./index.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+        原型总览
+      </a>
+      <div class="top-divider"></div>
+      <div class="brand"><div class="brand-mark">Z</div><div>ZENTECT<small>PROTOTYPE</small></div></div>
+      <div class="top-divider"></div>
+      <div class="project-title">旅行Vlog · 杭州三日</div>
+      <span class="save-state"><i></i>已保存</span>
+      <div class="top-spacer"></div>
+      <div class="segmented"><button class="seg active">手动</button><button class="seg">自动</button></div>
+      <span class="badge badge-green badge-dot">步骤 1 已完成</span>
+      <div class="avatar">林</div>
+    </header>
+
+    <div class="editor">
+      <aside class="panel">
+        <div class="panel-head">
+          <div class="step-indicator nums">
+            <div class="step-node active" title="素材助理"><span class="num">1</span></div>
+            <div class="step-line"></div>
+            <div class="step-node" title="看片员"><span class="num">2</span></div>
+            <div class="step-line"></div>
+            <div class="step-node" title="首席编剧"><span class="num">3</span></div>
+            <div class="step-line"></div>
+            <div class="step-node" title="专业播音"><span class="num">4</span></div>
+            <div class="step-line"></div>
+            <div class="step-node" title="剪辑大师"><span class="num">5</span></div>
+          </div>
+          <div class="step-caption">步骤 <span class="of">1 / 5</span> · <strong>素材助理</strong> · 有未应用的高级修改</div>
+        </div>
+        <div class="panel-body">
+          <div class="card card-pad">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="badge badge-accent">口播解说</span>
+                <span class="tiny muted">当前配方</span>
+              </div>
+              <span class="badge">已调整</span>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:10px;">
+              <span class="chip"><strong>3 分钟</strong></span>
+              <span class="chip"><strong>9:16</strong></span>
+              <span class="chip"><strong>小美</strong></span>
+            </div>
+          </div>
+
+          <div class="substep open">
+            <div class="substep-head">
+              <span class="status completed">✓</span>
+              <div>
+                <div class="substep-title">台词识别</div>
+                <div class="substep-meta">模型已改为 medium · 待重新生成</div>
+              </div>
+              <span class="chev">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+              </span>
+            </div>
+            <div class="substep-body">
+              <div class="alert alert-warm">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+                <div>模型变更后，台词识别及其下游需要重新处理。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="alert alert-accent" style="margin-top:2px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            <div>只有高级参数变化时才会出现影响预览；日常的配方与核心选项不会打扰你。</div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="canvas">
+        <div class="stage-top">
+          <div class="badge badge-warm badge-dot">有未应用的修改</div>
+          <div class="badge">步骤 1</div>
+        </div>
+        <div class="stage-card">
+          <div class="thumb big"><span class="play"></span></div>
+          <div class="stage-meta"><span>旅行Vlog_杭州原片.mp4</span><span>高级设置已打开</span></div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="overlay show" id="overlay"></div>
+
+  <!-- 高级设置抽屉 -->
+  <aside class="drawer show" id="advanced-drawer" style="width:440px;">
+    <header class="drawer-head">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div style="font-size:15px;font-weight:700;">高级设置</div>
+          <span class="badge badge-purple">专家模式</span>
+        </div>
+        <div class="tiny muted" style="margin-top:3px;">这些参数会直接影响处理结果与耗时，修改后会先预览影响范围。</div>
+      </div>
+      <button class="icon-btn" data-drawer-close="#advanced-drawer" title="关闭">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </header>
+
+    <div class="drawer-body">
+      <div class="alert alert-warm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+        <div>不确定时请保持推荐值。错误的技术参数会让识别准确率下降，且需要更长的重跑时间。</div>
+      </div>
+
+      <div class="adv-group">
+        <div class="adv-title"><span>台词识别</span><span class="badge badge-accent">已修改</span></div>
+        <div class="adv-body">
+          <div class="field">
+            <label class="field-label"><span>识别引擎</span></label>
+            <select class="select">
+              <option>faster-whisper（推荐）</option>
+              <option>paraformer</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label"><span>模型大小</span><span class="tiny muted">原本 large-v3</span></label>
+            <select class="select" style="border-color:rgba(99,102,241,.55);">
+              <option>large-v3（最准，最慢）</option>
+              <option selected>medium（平衡）</option>
+              <option>small（最快）</option>
+            </select>
+            <div class="field-hint">medium 比 large-v3 快约 40%，口音较重时可能漏字。</div>
+          </div>
+          <div class="field">
+            <label class="field-label"><span>识别语言</span></label>
+            <select class="select"><option>中文（自动检测）</option><option>英语</option></select>
+          </div>
+          <div class="field">
+            <label class="field-label"><span>领域热词</span></label>
+            <input class="input" placeholder="例如：杭州、西湖、龙井" />
+          </div>
+        </div>
+      </div>
+
+      <div class="adv-group">
+        <div class="adv-title"><span>画面切片</span></div>
+        <div class="adv-body">
+          <div class="field">
+            <label class="field-label"><span>抽帧方式</span></label>
+            <select class="select"><option>场景变化检测（推荐）</option><option>固定间隔</option></select>
+          </div>
+          <div class="field">
+            <label class="field-label"><span>场景变化阈值</span><span class="tiny muted">0.32</span></label>
+            <input class="range" type="range" min="0" max="1" step="0.01" value="0.32" />
+            <div class="field-hint">阈值越低，切出的镜头越多；过高可能漏掉快速转场。</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="adv-group">
+        <div class="adv-title"><span>人声分离</span></div>
+        <div class="adv-body">
+          <div class="field">
+            <label class="field-label"><span>分离模式</span></label>
+            <div class="segmented" style="width:100%;">
+              <button class="seg" style="flex:1;">快速</button>
+              <button class="seg active" style="flex:1;">标准</button>
+              <button class="seg" style="flex:1;">精细</button>
+            </div>
+            <div class="field-hint">精细模式对音乐、风声环境更稳，但会更慢。</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="adv-group">
+        <div class="adv-title"><span>画面理解</span></div>
+        <div class="adv-body">
+          <div class="field">
+            <label class="field-label"><span>描述详细度</span></label>
+            <div class="segmented" style="width:100%;">
+              <button class="seg" style="flex:1;">简</button>
+              <button class="seg active" style="flex:1;">标准</button>
+              <button class="seg" style="flex:1;">详</button>
+            </div>
+            <div class="field-hint">详细度越高，首席编剧越容易写出具体画面，但描述耗时更长。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <footer class="drawer-foot">
+      <div class="btn-row between">
+        <button class="btn btn-sm btn-ghost" data-toast="已恢复全部推荐值">恢复推荐值</button>
+        <div class="btn-row">
+          <button class="btn btn-sm" data-modal-close="#impact-modal">取消</button>
+          <button class="btn btn-sm btn-primary" data-modal-open="#impact-modal">应用修改</button>
+        </div>
+      </div>
+    </footer>
+  </aside>
+
+  <!-- 影响预览确认 -->
+  <div class="modal show" id="impact-modal">
+    <header class="modal-head">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div style="font-size:16px;font-weight:700;">这次修改会影响 4 个步骤</div>
+        <span class="badge badge-accent">影响预览</span>
+      </div>
+      <div class="tiny muted" style="margin-top:4px;">台词识别模型从 large-v3 改为 medium。应用后会立即失效相关产物，但不会马上开始重跑。</div>
+    </header>
+
+    <div class="modal-body">
+      <div class="alert alert-accent">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+        <div><span class="mono">large-v3 → medium</span><br />已完成的 128 个镜头与人物标注会继续复用。</div>
+      </div>
+
+      <div class="impact-list">
+        <div class="impact-row">
+          <span class="status pending">1</span>
+          <div><div class="impact-name">素材助理 · 台词识别</div><div class="impact-desc">重新识别 42 句台词</div></div>
+          <span class="badge badge-warm">将重跑</span>
+        </div>
+        <div class="impact-row">
+          <span class="status completed">✓</span>
+          <div><div class="impact-name">看片员</div><div class="impact-desc">只依赖画面切片与人物识别</div></div>
+          <span class="badge badge-green">不受影响</span>
+        </div>
+        <div class="impact-row">
+          <span class="status pending">3</span>
+          <div><div class="impact-name">首席编剧</div><div class="impact-desc">根据新台词重新生成 5 段文案</div></div>
+          <span class="badge badge-warm">将重跑</span>
+        </div>
+        <div class="impact-row">
+          <span class="status pending">4</span>
+          <div><div class="impact-name">专业播音</div><div class="impact-desc">重新合成 5 段配音</div></div>
+          <span class="badge badge-warm">将重跑</span>
+        </div>
+        <div class="impact-row">
+          <span class="status pending">5</span>
+          <div><div class="impact-name">剪辑大师</div><div class="impact-desc">按新文案重新匹配镜头</div></div>
+          <span class="badge badge-warm">将重跑</span>
+        </div>
+      </div>
+
+      <div class="estimate">
+        <div>
+          <div class="tiny muted">预计增加</div>
+          <div style="margin-top:2px;"><b>6~8 分钟</b></div>
+        </div>
+        <div class="tiny muted" style="text-align:right; max-width:200px; line-height:1.5;">模型更小会更快，但重新生成文案与配音仍是主要耗时。</div>
+      </div>
+    </div>
+
+    <footer class="modal-foot">
+      <button class="btn" data-modal-close="#impact-modal">取消</button>
+      <button class="btn btn-primary" data-modal-close="#impact-modal" data-toast="已应用修改：4 个步骤已标记为需要更新">应用并更新</button>
+    </footer>
+  </div>
+
+  <script src="./assets/proto.js"></script>
+</body>
+</html>

@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>对话式 · 08 失败与修复</title>
+  <link rel="stylesheet" href="../assets/proto.css" />
+  <link rel="stylesheet" href="../assets/chat.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="back-link" href="./06-tasks.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        回到任务中心
+      </a>
+      <div class="top-divider"></div>
+      <div class="project-title">口播合集_02</div>
+      <div class="top-spacer"></div>
+      <span class="badge badge-rose">失败 · 剪辑大师</span>
+      <div class="avatar">陈</div>
+    </header>
+
+    <main class="page" style="max-width:860px;">
+      <div class="page-head">
+        <div>
+          <h1 class="page-title" style="font-size:20px;">失败之后，不该从头再来</h1>
+          <p class="page-sub">前 4 步产物都有效，只需要让剪辑这一步重新跑。对话负责解释原因、给出可选修法，不替用户做决定。</p>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:center;">
+        <div class="chat-stream narrow" style="gap:16px;">
+          <div class="msg user">
+            <div class="msg-avatar me">陈</div>
+            <div class="msg-body">
+              <div class="msg-name">我</div>
+              <div class="bubble">这个怎么失败了？要重新跑一遍吗？</div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="msg-avatar ai">Z</div>
+            <div class="msg-body">
+              <div class="msg-name"><b>制片人</b><span>· 刚刚</span></div>
+              <div class="bubble">不用。失败发生在<span class="em">剪辑大师</span>，前面的素材、看片、编剧、配音都成功了，可以继续用。</div>
+
+              <div class="artifact rose">
+                <div class="artifact-head">
+                  <span class="status failed">×</span>
+                  <span class="artifact-title">剪辑大师 · 失败</span>
+                  <span class="artifact-side badge badge-rose">不是模型问题</span>
+                </div>
+                <div class="artifact-body">
+                  <div class="diff-row"><span class="diff-key">原因</span><span class="diff-val">素材可用时长不足：需要 3 分 00 秒，实际只有 2 分 26 秒</span></div>
+                  <div class="diff-row"><span class="diff-key">已尝试</span><span class="diff-val">自动放慢 1 段、循环 2 段空镜，仍差 8 秒</span></div>
+                  <div class="diff-row"><span class="diff-key">未受影响</span><span class="diff-val">素材助理 / 看片员 / 首席编剧 / 专业播音 均为有效产物</span></div>
+                  <div class="diff-row"><span class="diff-key">已花费</span><span class="diff-val">8 分 06 秒 · 前 4 步结果不会浪费</span></div>
+                </div>
+                <div class="artifact-foot">
+                  <span class="hint">日志已保存，可复制给技术支持</span>
+                  <div class="btn-row">
+                    <button class="btn btn-sm" data-toast="查看完整日志（原型演示）">查看日志</button>
+                    <button class="btn btn-sm btn-ghost" data-toast="关闭任务（产物保留）">关闭任务</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="msg-avatar ai">Z</div>
+            <div class="msg-body">
+              <div class="msg-name"><b>制片人</b><span>· 刚刚</span></div>
+              <div class="bubble">有三个修法。第一个最省时间，也不会改变你想表达的内容。</div>
+
+              <div class="artifact warm">
+                <div class="artifact-head">
+                  <span class="status paused">!</span>
+                  <span class="artifact-title">选择修复方式</span>
+                  <span class="artifact-side tiny muted">只影响第 5 步</span>
+                </div>
+                <div class="artifact-body">
+                  <div class="fix-option selected">
+                    <span class="fo-num">1</span>
+                    <div style="flex:1;">
+                      <div class="fo-t">补 12 秒空镜 <span class="badge badge-accent">推荐</span></div>
+                      <div class="fo-m">保留全部文案，自动放慢 1 段、补 2 段空镜。只重跑剪辑大师，画面节奏变化最小。</div>
+                    </div>
+                    <span class="fo-side">+2 分钟</span>
+                  </div>
+                  <div class="fix-option">
+                    <span class="fo-num">2</span>
+                    <div style="flex:1;">
+                      <div class="fo-t">缩短文案到 2 分 26 秒</div>
+                      <div class="fo-m">删掉收尾段并压缩第 4 段。会重跑首席编剧、专业播音和剪辑大师。</div>
+                    </div>
+                    <span class="fo-side">+4 分钟</span>
+                  </div>
+                  <div class="fix-option">
+                    <span class="fo-num">3</span>
+                    <div style="flex:1;">
+                      <div class="fo-t">补充素材</div>
+                      <div class="fo-m">你再上传 1 段可用画面，素材助理会重新识别这段，只重跑剪辑大师。</div>
+                    </div>
+                    <span class="fo-side">取决于素材</span>
+                  </div>
+                </div>
+                <div class="artifact-foot">
+                  <span class="hint">方案 1 不改变文案，配音与字幕继续复用</span>
+                  <button class="btn btn-sm btn-primary" data-toast="开始修复：只重跑剪辑大师（原型演示）">执行方案 1</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="msg-avatar ai">Z</div>
+            <div class="msg-body">
+              <div class="msg-name"><b>制片人</b><span>· 1 分钟前</span></div>
+              <div class="bubble">正在补空镜并重剪。只跑剪辑大师，配音不会重新生成。</div>
+              <div class="artifact">
+                <div class="artifact-head">
+                  <span class="status running">·</span>
+                  <span class="artifact-title">剪辑大师 · 重跑中</span>
+                  <span class="artifact-side tiny muted">步骤 5 / 5</span>
+                </div>
+                <div class="artifact-body">
+                  <div class="progress"><i style="width:64%"></i></div>
+                  <div class="flow" style="margin-top:2px;">
+                    <span class="flow-node safe">素材助理 v2</span>
+                    <span class="flow-node safe">看片员 v2</span>
+                    <span class="flow-node safe">首席编剧 v2</span>
+                    <span class="flow-node safe">专业播音 v2</span>
+                    <span class="flow-node affected">剪辑大师 64%</span>
+                  </div>
+                </div>
+                <div class="artifact-foot">
+                  <span class="hint">已用 42 秒 · 预计还需 1 分钟</span>
+                  <a class="btn btn-sm btn-ghost" href="./06-tasks.html">回到任务</a>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="msg-avatar ai">Z</div>
+            <div class="msg-body">
+              <div class="msg-name"><b>制片人</b><span>· 刚刚</span></div>
+              <div class="bubble">修好了，成片 3 分 00 秒，画面没有明显变慢。可以直接导出，也可以先看一遍。</div>
+
+              <div class="artifact green">
+                <div class="artifact-head">
+                  <span class="status completed">✓</span>
+                  <span class="artifact-title">修复完成</span>
+                  <span class="artifact-side badge badge-green">03:00 · 9:16</span>
+                </div>
+                <div class="artifact-body">
+                  <div class="impact-stats">
+                    <div class="stat"><b>1 步</b><span>实际重跑</span></div>
+                    <div class="stat"><b>4 步</b><span>直接复用</span></div>
+                    <div class="stat"><b>1 分 48 秒</b><span>修复用时</span></div>
+                    <div class="stat"><b>0</b><span>文案改动</span></div>
+                  </div>
+                </div>
+                <div class="artifact-foot">
+                  <span class="hint">比从头重跑省了约 7 分钟</span>
+                  <div class="btn-row">
+                    <button class="btn btn-sm" data-toast="播放成片（原型演示）">看一遍</button>
+                    <a class="btn btn-sm btn-primary" href="./05-export.html">导出</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="note" style="margin-top:22px;">
+        <strong>失败处理原则：</strong>先判断失败发生在哪一步、上游是否有效，再给修复选项。
+        对话不自动替用户改文案或删段落，也不把“重试”做成唯一的按钮。
+      </div>
+    </main>
+  </div>
+  <script src="../assets/proto.js"></script>
+</body>
+</html>

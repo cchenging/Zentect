@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>对话式 · 07 动作卡与影响预览</title>
+  <link rel="stylesheet" href="../assets/proto.css" />
+  <link rel="stylesheet" href="../assets/chat.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="back-link" href="./02-workspace.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+        回到对话
+      </a>
+      <div class="top-divider"></div>
+      <div class="project-title">杭州旅行 vlog</div>
+      <div class="top-spacer"></div>
+      <span class="badge badge-accent">动作卡 · 交互说明</span>
+      <div class="avatar">陈</div>
+    </header>
+
+    <main class="page" style="max-width:900px;">
+      <div class="page-head">
+        <div>
+          <h1 class="page-title">对话不是直接执行</h1>
+          <p class="page-sub">每次用户说一句模糊的话，系统只产出结构化动作建议 + 影响预览。用户点“应用”之后才真正写参数、跑管线。</p>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:center;">
+        <div class="chat-stream narrow" style="gap:16px;">
+          <div class="msg user">
+            <div class="msg-avatar me">陈</div>
+            <div class="msg-body">
+              <div class="msg-name">我</div>
+              <div class="bubble">再快一点，现在有点拖。</div>
+            </div>
+          </div>
+
+          <div class="msg">
+            <div class="msg-avatar ai">Z</div>
+            <div class="msg-body">
+              <div class="msg-name"><b>制片人</b><span>· 刚刚</span></div>
+              <div class="bubble">“快一点”有两种做法。一种是换配方，镜头更碎、节奏更紧；一种是不动配方，只把语速提上去。两种代价不一样。</div>
+
+              <div class="artifact accent">
+                <div class="artifact-head">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="color:#c7d2fe;"><path d="M13 2L3 14h9l-1 8 10-12h-9z"/></svg>
+                  <span class="artifact-title">方案 A · 换配方</span>
+                  <span class="artifact-side badge badge-accent">推荐</span>
+                </div>
+                <div class="artifact-body">
+                  <div class="diff-row"><span class="diff-key">配方</span><span class="diff-val"><span class="from">旅行 Vlog</span><span class="arrow">→</span><span class="to">快节奏混剪</span></span></div>
+                  <div class="diff-row"><span class="diff-key">镜头密度</span><span class="diff-val"><span class="from">标准</span><span class="arrow">→</span><span class="to warm">多</span></span></div>
+                  <div class="diff-row"><span class="diff-key">段落语气</span><span class="diff-val"><span class="from">轻松</span><span class="arrow">→</span><span class="to warm">轻快</span></span></div>
+                  <div class="flow" style="margin-top:2px;">
+                    <span class="flow-node safe">素材助理 有效</span>
+                    <span class="flow-node safe">看片员 有效</span>
+                    <span class="flow-node affected">首席编剧</span>
+                    <span class="flow-node affected">专业播音</span>
+                    <span class="flow-node affected">剪辑大师</span>
+                  </div>
+                  <div class="impact-stats">
+                    <div class="stat"><b>3</b><span>步需要重跑</span></div>
+                    <div class="stat"><b>2</b><span>步可以复用</span></div>
+                    <div class="stat"><b>+2~3 分钟</b><span>预计耗时</span></div>
+                  </div>
+                </div>
+                <div class="artifact-foot">
+                  <span class="hint">素材不重识别，只重写和重剪</span>
+                  <div class="btn-row">
+                    <button class="btn btn-sm" data-toast="展开影响清单（下方已展开）">看影响清单</button>
+                    <button class="btn btn-sm btn-primary" data-toast="已应用方案 A（原型演示）">应用方案 A</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="artifact">
+                <div class="artifact-head">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--muted);"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                  <span class="artifact-title">方案 B · 只改语速</span>
+                  <span class="artifact-side badge">改动最小</span>
+                </div>
+                <div class="artifact-body">
+                  <div class="diff-row"><span class="diff-key">配音语速</span><span class="diff-val"><span class="from">1.0x</span><span class="arrow">→</span><span class="to">1.15x</span></span></div>
+                  <div class="diff-row"><span class="diff-key">配方</span><span class="diff-val">不变 · 旅行 Vlog</span></div>
+                  <div class="flow" style="margin-top:2px;">
+                    <span class="flow-node safe">素材助理 有效</span>
+                    <span class="flow-node safe">看片员 有效</span>
+                    <span class="flow-node safe">首席编剧 有效</span>
+                    <span class="flow-node affected">专业播音</span>
+                    <span class="flow-node affected">剪辑大师</span>
+                  </div>
+                </div>
+                <div class="artifact-foot">
+                  <span class="hint">画面节奏不变，只是话变快了</span>
+                  <button class="btn btn-sm" data-toast="已应用方案 B（原型演示）">应用方案 B</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="day-divider">你点了方案 A 之后</div>
+
+          <div class="msg">
+            <div class="msg-avatar ai">Z</div>
+            <div class="msg-body">
+              <div class="msg-name"><b>制片人</b><span>· 3 分 41 秒前</span></div>
+              <div class="bubble">换好了。只重跑了编剧、配音、剪辑三步，素材和画面理解都沿用了上一次的结果。</div>
+
+              <div class="artifact green">
+                <div class="artifact-head">
+                  <span class="status completed">✓</span>
+                  <span class="artifact-title">已执行 · 方案 A</span>
+                  <span class="artifact-side badge badge-green">产物已更新</span>
+                </div>
+                <div class="artifact-body">
+                  <div class="impact-stats">
+                    <div class="stat"><b>3 步</b><span>实际重跑</span></div>
+                    <div class="stat"><b>2 步</b><span>直接复用</span></div>
+                    <div class="stat"><b>03:41</b><span>实际用时</span></div>
+                    <div class="stat"><b>v3</b><span>产物版本</span></div>
+                  </div>
+                  <div class="flow">
+                    <span class="flow-node safe">素材助理 v2</span>
+                    <span class="flow-node safe">看片员 v2</span>
+                    <span class="flow-node done">首席编剧 v3</span>
+                    <span class="flow-node done">专业播音 v3</span>
+                    <span class="flow-node done">剪辑大师 v3</span>
+                  </div>
+                </div>
+                <div class="artifact-foot">
+                  <span class="hint">可撤回，撤回后回到 v2，不丢旧产物</span>
+                  <div class="btn-row">
+                    <button class="btn btn-sm btn-ghost" data-toast="撤回 v3（原型演示）">撤回</button>
+                    <a class="btn btn-sm" href="./05-export.html">看成片</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="artifact" style="margin-top:2px;">
+            <div class="artifact-head">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="color:#c7d2fe;"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+              <span class="artifact-title">影响清单（展开态）</span>
+              <span class="artifact-side tiny muted">为什么是这 3 步</span>
+            </div>
+            <div class="artifact-body">
+              <div class="run-step">
+                <span class="status completed" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">✓</span>
+                <div><div class="rs-name">素材助理 · 不重跑</div><div class="rs-meta">输入仍是同一批素材，抽帧 / 台词 / 人物结果继续有效</div></div>
+                <span class="rs-side">复用</span>
+              </div>
+              <div class="run-step">
+                <span class="status completed" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">✓</span>
+                <div><div class="rs-name">看片员 · 不重跑</div><div class="rs-meta">画面理解只依赖素材，配方里的镜头密度只影响剪辑选段</div></div>
+                <span class="rs-side">复用</span>
+              </div>
+              <div class="run-step">
+                <span class="status running" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">·</span>
+                <div><div class="rs-name">首席编剧 · 重跑</div><div class="rs-meta">段落语气与节奏要求变了，需要重写 5 段</div></div>
+                <span class="rs-side">约 50 秒</span>
+              </div>
+              <div class="run-step">
+                <span class="status running" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">·</span>
+                <div><div class="rs-name">专业播音 · 重跑</div><div class="rs-meta">文案变了，配音与字幕必须重新生成</div></div>
+                <span class="rs-side">约 1 分 20 秒</span>
+              </div>
+              <div class="run-step">
+                <span class="status running" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">·</span>
+                <div><div class="rs-name">剪辑大师 · 重跑</div><div class="rs-meta">镜头密度从标准提到多，选段与转场全部重算</div></div>
+                <span class="rs-side">约 1 分 30 秒</span>
+              </div>
+            </div>
+            <div class="artifact-foot">
+              <span class="hint">总预计 2 分 20 秒 ~ 3 分 10 秒 · 与应用前提示一致</span>
+              <span class="tiny muted">影响由依赖图计算，不是模型猜的</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-cards" style="margin-top:26px;grid-template-columns:repeat(3,1fr);">
+        <div class="card card-pad">
+          <div class="card-title">模型只出动作</div>
+          <div class="card-sub" style="margin-top:6px;">模型输出受 schema 约束的动作对象：改哪个参数、改到什么值。它不直接调用生成，也不写数据库。</div>
+        </div>
+        <div class="card card-pad">
+          <div class="card-title">执行必须确认</div>
+          <div class="card-sub" style="margin-top:6px;">凡是会跑管线的动作，都要经过一张 diff 卡。用户看到改什么、影响哪几步、要多久，才点应用。</div>
+        </div>
+        <div class="card card-pad">
+          <div class="card-title">动作白名单</div>
+          <div class="card-sub" style="margin-top:6px;">先只开放换配方、改核心选项、重跑某步、导出四类。其余能力等语料验证后再放。</div>
+        </div>
+      </div>
+
+      <div class="note" style="margin-top:16px;">
+        <strong>关键取舍：</strong>对话不做“边聊边改画布”。所有对话结论都会写回项目配置，
+        所以关掉窗口、换台机器、重新打开，都能复现同一版结果。聊天记录只是解释，不是真相。
+      </div>
+    </main>
+  </div>
+  <script src="../assets/proto.js"></script>
+</body>
+</html>

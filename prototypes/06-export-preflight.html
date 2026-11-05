@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zentect 原型 · 导出前检查</title>
+  <link rel="stylesheet" href="./assets/proto.css" />
+  <style>
+    .export-modal { width: 588px; }
+    .step-check { display: grid; grid-template-columns: 20px minmax(0,1fr) auto; gap: 10px; align-items: start; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.045); }
+    .step-check:last-child { border-bottom: 0; }
+    .step-check .name { font-size: 12px; font-weight: 600; }
+    .step-check .desc { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.45; }
+    .export-option { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--border-default); border-radius: 10px; cursor: pointer; }
+    .export-option.selected { border-color: rgba(99,102,241,.5); background: rgba(99,102,241,.08); }
+    .export-option .radio { width: 14px; height: 14px; border-radius: 50%; border: 1px solid rgba(255,255,255,.3); margin-top: 2px; display: grid; place-items: center; }
+    .export-option.selected .radio { border-color: #6366f1; }
+    .export-option.selected .radio::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #6366f1; }
+    .export-option .t { font-size: 12px; font-weight: 600; }
+    .export-option .d { font-size: 11px; color: var(--muted); margin-top: 2px; line-height: 1.5; }
+    .state-panel { display: none; }
+    .state-panel.active { display: block; }
+    .reward-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 12px; border-radius: 10px; background: rgba(34,197,94,.06); border: 1px solid rgba(34,197,94,.24); }
+  </style>
+</head>
+<body>
+  <div class="shell" style="filter:saturate(.92);">
+    <header class="topbar">
+      <a class="back-link" href="./index.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+        原型总览
+      </a>
+      <div class="top-divider"></div>
+      <div class="brand"><div class="brand-mark">Z</div><div>ZENTECT<small>PROTOTYPE</small></div></div>
+      <div class="top-divider"></div>
+      <div class="project-title">旅行Vlog · 杭州三日</div>
+      <div class="top-spacer"></div>
+      <span class="badge badge-warm badge-dot">3 项待更新</span>
+      <div class="avatar">林</div>
+    </header>
+
+    <div class="editor">
+      <aside class="panel">
+        <div class="panel-head">
+          <div class="step-indicator nums">
+            <div class="step-node done" title="素材助理"><span class="num">1</span></div>
+            <div class="step-line"></div>
+            <div class="step-node active" title="看片员"><span class="num">2</span></div>
+            <div class="step-line"></div>
+            <div class="step-node" title="首席编剧"><span class="num">3</span></div>
+            <div class="step-line"></div>
+            <div class="step-node" title="专业播音"><span class="num">4</span></div>
+            <div class="step-line"></div>
+            <div class="step-node" title="剪辑大师"><span class="num">5</span></div>
+          </div>
+          <div class="step-caption">步骤 <span class="of">2 / 5</span> · <strong>看片员</strong> 需要重新描述画面</div>
+        </div>
+        <div class="panel-body">
+          <div class="alert alert-warm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+            <div>你调整了「关键帧密度：标准 → 多」。下游产物需要更新后才能导出一致的结果。</div>
+          </div>
+          <div class="card card-pad">
+            <div class="section-label">变更记录</div>
+            <div class="small muted" style="margin-top:8px; line-height:1.6;">关键帧密度 标准 → 多<br />影响：看片员、首席编剧、专业播音、剪辑大师</div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="canvas">
+        <div class="stage-card">
+          <div class="thumb big"><span class="play"></span></div>
+          <div class="stage-meta"><span>旅行Vlog_杭州原片.mp4</span><span>旧版成片预览</span></div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div class="overlay show" id="overlay"></div>
+
+  <div class="modal show export-modal" id="export-modal">
+    <header class="modal-head">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <div style="font-size:16px;font-weight:700;">导出前检查</div>
+        <span class="badge badge-rose" id="export-state-badge">已阻断</span>
+      </div>
+      <div class="tiny muted" style="margin-top:4px;">导出前会核对五步产物是否与当前配置一致，避免把旧数据当成新成片。</div>
+    </header>
+
+    <div class="modal-body">
+      <!-- 阻断态 -->
+      <div class="state-panel active" id="state-blocked">
+        <div class="alert alert-rose">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+          <div><span style="font-weight:600;">4 个步骤还未更新。</span><br />当前导出会使用旧版画面切片与文案，结果可能与你的修改不一致。</div>
+        </div>
+
+        <div class="card card-pad" style="margin-top:12px; padding-top:6px; padding-bottom:6px;">
+          <div class="step-check">
+            <span class="status completed">✓</span>
+            <div><div class="name">素材助理 · 关键帧提取</div><div class="desc">已按「多」重新提取 · 186 帧</div></div>
+            <span class="badge badge-green">已更新</span>
+          </div>
+          <div class="step-check">
+            <span class="status paused">!</span>
+            <div><div class="name">看片员</div><div class="desc">依赖的画面切片已变化，需要重新描述 186 个镜头</div></div>
+            <span class="badge badge-warm">未更新</span>
+          </div>
+          <div class="step-check">
+            <span class="status paused">!</span>
+            <div><div class="name">首席编剧</div><div class="desc">基于旧画面描述生成，需要重新写文案</div></div>
+            <span class="badge badge-warm">未更新</span>
+          </div>
+          <div class="step-check">
+            <span class="status paused">!</span>
+            <div><div class="name">专业播音</div><div class="desc">文案若变化，需要重新合成配音</div></div>
+            <span class="badge badge-warm">未更新</span>
+          </div>
+          <div class="step-check">
+            <span class="status paused">!</span>
+            <div><div class="name">剪辑大师</div><div class="desc">镜头数量与文案均已变化，需要重新匹配</div></div>
+            <span class="badge badge-warm">未更新</span>
+          </div>
+        </div>
+
+        <div class="btn-row between" style="margin-top:12px;">
+          <div class="tiny muted">预计更新耗时 8~11 分钟</div>
+          <a class="btn btn-sm btn-ghost" href="./04-impact-preview.html">查看影响范围</a>
+        </div>
+      </div>
+
+      <!-- 修复态 -->
+      <div class="state-panel" id="state-ready">
+        <div class="reward-row">
+          <div style="display:flex;align-items:center;gap:9px;">
+            <span class="status completed">✓</span>
+            <div>
+              <div style="font-size:12px;font-weight:700;">所有步骤已更新</div>
+              <div class="tiny muted" style="margin-top:2px;">产物与当前配置一致，可以导出。</div>
+            </div>
+          </div>
+          <span class="badge badge-green">可导出</span>
+        </div>
+
+        <div class="card card-pad" style="margin-top:12px; padding-top:6px; padding-bottom:6px;">
+          <div class="step-check">
+            <span class="status completed">✓</span>
+            <div><div class="name">素材助理</div><div class="desc">关键帧 186 · 台词 42 句 · 人物 2 人</div></div>
+            <span class="badge badge-green">已更新</span>
+          </div>
+          <div class="step-check">
+            <span class="status completed">✓</span>
+            <div><div class="name">看片员</div><div class="desc">186 个镜头已完成描述</div></div>
+            <span class="badge badge-green">已更新</span>
+          </div>
+          <div class="step-check">
+            <span class="status completed">✓</span>
+            <div><div class="name">首席编剧</div><div class="desc">5 段 · 628 字</div></div>
+            <span class="badge badge-green">已更新</span>
+          </div>
+          <div class="step-check">
+            <span class="status completed">✓</span>
+            <div><div class="name">专业播音</div><div class="desc">5 段配音 · 总时长 2:54</div></div>
+            <span class="badge badge-green">已更新</span>
+          </div>
+          <div class="step-check">
+            <span class="status completed">✓</span>
+            <div><div class="name">剪辑大师</div><div class="desc">成片已重新匹配 · 2:54</div></div>
+            <span class="badge badge-green">已更新</span>
+          </div>
+        </div>
+
+        <div class="section-label" style="margin-top:14px;">导出格式</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+          <div class="export-option selected" data-export-option>
+            <span class="radio"></span>
+            <div>
+              <div class="t">MP4 视频</div>
+              <div class="d">直接生成成片文件，1080 × 1920 · 29.97 fps · 约 420 MB</div>
+            </div>
+            <span class="badge" style="margin-left:auto;">推荐</span>
+          </div>
+          <div class="export-option" data-export-option>
+            <span class="radio"></span>
+            <div>
+              <div class="t">剪映草稿</div>
+              <div class="d">导出可继续编辑的工程文件，保留字幕与镜头结构</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <footer class="modal-foot" id="export-foot-blocked">
+      <button class="btn" data-modal-close="#export-modal">取消</button>
+      <button class="btn btn-primary" id="btn-fix" data-toast="原型演示：仅重跑过期步骤">一键更新过期产物</button>
+    </footer>
+
+    <footer class="modal-foot" id="export-foot-ready" style="display:none;">
+      <button class="btn" data-modal-close="#export-modal">取消</button>
+      <button class="btn btn-primary" data-toast="原型演示：开始导出">导出成片</button>
+    </footer>
+  </div>
+
+  <script src="./assets/proto.js"></script>
+  <script>
+    (function () {
+      var blocked = document.getElementById("state-blocked");
+      var ready = document.getElementById("state-ready");
+      var badge = document.getElementById("export-state-badge");
+      var footBlocked = document.getElementById("export-foot-blocked");
+      var footReady = document.getElementById("export-foot-ready");
+      var fix = document.getElementById("btn-fix");
+      if (fix) {
+        fix.addEventListener("click", function () {
+          blocked.classList.remove("active");
+          ready.classList.add("active");
+          badge.textContent = "可导出";
+          badge.className = "badge badge-green";
+          footBlocked.style.display = "none";
+          footReady.style.display = "flex";
+        });
+      }
+      document.querySelectorAll("[data-export-option]").forEach(function (el) {
+        el.addEventListener("click", function () {
+          document.querySelectorAll("[data-export-option]").forEach(function (x) { x.classList.remove("selected"); });
+          el.classList.add("selected");
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

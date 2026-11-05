@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zentect 原型 · 任务中心</title>
+  <link rel="stylesheet" href="./assets/proto.css" />
+  <style>
+    .side-block { display: flex; flex-direction: column; gap: 10px; }
+    .mini-step { display: grid; grid-template-columns: 20px minmax(0,1fr) auto; gap: 9px; align-items: center; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.045); }
+    .mini-step:last-child { border-bottom: 0; }
+    .mini-step .name { font-size: 12px; font-weight: 600; }
+    .mini-step .meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
+    .mini-step .side { font-size: 11px; color: var(--muted); }
+    .task-drawer { width: 408px; }
+    .task-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 10px 0 4px; }
+    .task-summary b { font-size: 16px; color: #c7d2fe; }
+    .task-summary span { font-size: 11px; color: var(--muted); }
+    .tabbar { display: flex; gap: 2px; padding: 3px; background: var(--bg-secondary); border-radius: 9px; border: 1px solid var(--border-default); }
+    .tabbar [data-tab] { flex: 1; border: 0; background: transparent; color: var(--muted); padding: 6px 8px; border-radius: 7px; font-size: 12px; }
+    .tabbar [data-tab].active { background: rgba(99,102,241,.18); color: #c7d2fe; box-shadow: inset 0 0 0 1px rgba(99,102,241,.32); }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .pill { right: 432px; }
+    .pill .mini-progress { width: 72px; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <a class="back-link" href="./index.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M11 6l-6 6 6 6"/></svg>
+        原型总览
+      </a>
+      <div class="top-divider"></div>
+      <div class="brand"><div class="brand-mark">Z</div><div>ZENTECT<small>PROTOTYPE</small></div></div>
+      <div class="top-divider"></div>
+      <div class="project-title">旅行Vlog · 杭州三日</div>
+      <span class="save-state"><i></i>已保存</span>
+      <div class="top-spacer"></div>
+      <div class="segmented">
+        <button class="seg">手动</button>
+        <button class="seg active">自动</button>
+      </div>
+      <span class="badge badge-accent badge-dot">生成中</span>
+      <div class="avatar">林</div>
+    </header>
+
+    <div class="editor">
+      <aside class="panel">
+        <div class="panel-head">
+          <div class="step-indicator nums">
+            <div class="step-node done" title="素材助理"><span class="num">1</span></div>
+            <div class="step-line"></div>
+            <div class="step-node done" title="看片员"><span class="num">2</span></div>
+            <div class="step-line"></div>
+            <div class="step-node active" title="首席编剧"><span class="num">3</span></div>
+            <div class="step-line"></div>
+            <div class="step-node" title="专业播音"><span class="num">4</span></div>
+            <div class="step-line"></div>
+            <div class="step-node" title="剪辑大师"><span class="num">5</span></div>
+          </div>
+          <div class="step-caption">步骤 <span class="of">3 / 5</span> · <strong>首席编剧</strong> 正在生成文案</div>
+        </div>
+
+        <div class="panel-body">
+          <div class="section-label">当前项目</div>
+          <div class="card card-pad">
+            <div style="display:flex; gap:12px; align-items:center;">
+              <div class="thumb video" style="width:112px;"><span class="play"></span></div>
+              <div style="min-width:0; flex:1;">
+                <div style="font-size:13px;font-weight:700;" class="truncate">旅行Vlog_杭州原片.mp4</div>
+                <div class="tiny muted" style="margin-top:4px;">03:42 · 1080p · 2.1 GB</div>
+                <div style="display:flex;gap:5px;margin-top:7px;">
+                  <span class="badge badge-green badge-dot">素材已就绪</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-label" style="margin-top:4px;">五步流水线</div>
+          <div class="card card-pad" style="padding-top:4px;padding-bottom:4px;">
+            <div class="mini-step">
+              <span class="status completed">✓</span>
+              <div><div class="name">素材助理</div><div class="meta">4 个子任务已完成</div></div>
+              <span class="side">2m 18s</span>
+            </div>
+            <div class="mini-step">
+              <span class="status completed">✓</span>
+              <div><div class="name">看片员</div><div class="meta">128 个镜头已描述</div></div>
+              <span class="side">1m 42s</span>
+            </div>
+            <div class="mini-step" style="border-bottom:0;">
+              <span class="status running">•</span>
+              <div><div class="name">首席编剧</div><div class="meta">第 3 / 5 段 · 612 字</div></div>
+              <span class="side" style="color:#a5b4fc;">68%</span>
+            </div>
+            <div class="progress thin" style="margin:0 2px 4px 29px;"><i style="width:68%"></i></div>
+
+            <div class="mini-step">
+              <span class="status pending">·</span>
+              <div><div class="name">专业播音</div><div class="meta">等待首席编剧完成</div></div>
+              <span class="side">待执行</span>
+            </div>
+            <div class="mini-step">
+              <span class="status pending">·</span>
+              <div><div class="name">剪辑大师</div><div class="meta">等待配音完成</div></div>
+              <span class="side">待执行</span>
+            </div>
+          </div>
+
+          <div class="alert alert-accent">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            <div>自动模式已开启。首席编剧与专业播音完成后会暂停，等你确认再继续。</div>
+          </div>
+
+          <button class="btn btn-block" data-drawer-open="#task-drawer" data-toast="任务中心已展开">查看任务详情</button>
+        </div>
+      </aside>
+
+      <main class="canvas">
+        <div class="stage-top">
+          <div class="badge badge-accent badge-dot">自动模式 · 3 / 5</div>
+          <div class="badge">预计剩余 06:40</div>
+        </div>
+
+        <div class="stage-card">
+          <div class="thumb big"><span class="play"></span></div>
+          <div class="stage-meta">
+            <span>旅行Vlog_杭州原片.mp4</span>
+            <span>1080p · 29.97 fps</span>
+          </div>
+        </div>
+
+        <div class="stage-bottom">
+          <div class="chip"><strong>首席编剧</strong> 正在写第 3 段</div>
+          <div class="chip">已用 4m 02s</div>
+        </div>
+
+        <div class="timeline" style="position:absolute;left:0;right:0;bottom:0;">
+          <div class="tiny muted mono">00:00</div>
+          <div class="ruler">
+            <div class="clips">
+              <div class="clip" style="flex:2.2;"></div>
+              <div class="clip" style="flex:1.4;"></div>
+              <div class="clip" style="flex:2.8;"></div>
+              <div class="clip" style="flex:1.2;"></div>
+            </div>
+          </div>
+          <div class="tiny muted mono">03:42</div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- 悬浮胶囊 -->
+  <div class="pill" data-drawer-open="#task-drawer">
+    <span class="status running">•</span>
+    <div>
+      <div class="pill-text">生成中 3/5</div>
+      <div class="pill-eta">预计剩余 06:40</div>
+    </div>
+    <div class="progress mini-progress"><i style="width:62%"></i></div>
+    <span class="badge badge-accent">任务</span>
+  </div>
+
+  <!-- 任务中心抽屉 -->
+  <aside class="drawer task-drawer show" id="task-drawer">
+    <header class="drawer-head">
+      <div>
+        <div style="font-size:15px;font-weight:700;">任务中心</div>
+        <div class="tiny muted" style="margin-top:3px;">所有生成任务都在这里，切换步骤也不会中断。</div>
+      </div>
+      <button class="icon-btn" data-drawer-close="#task-drawer" title="收起">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </header>
+
+    <div class="drawer-body" data-tab-group>
+      <div class="tabbar">
+        <button data-tab="current" class="active">当前任务</button>
+        <button data-tab="recent">最近任务</button>
+      </div>
+
+      <section class="tab-panel active" data-tab-panel="current">
+        <div class="task-item" style="margin-top:2px;">
+          <div class="task-head">
+            <span class="badge badge-accent">口播解说</span>
+            <span class="task-name">旅行Vlog · 杭州三日</span>
+            <span class="badge badge-green" style="margin-left:auto;">运行中</span>
+          </div>
+          <div class="task-summary">
+            <div><b>62%</b> <span style="margin-left:4px;">整体进度</span></div>
+            <div style="text-align:right;"><b>06:40</b><span style="display:block;">预计剩余</span></div>
+          </div>
+          <div class="progress"><i style="width:62%"></i></div>
+
+          <div style="margin-top:14px;">
+            <div class="task-step">
+              <span class="status completed">✓</span>
+              <div>
+                <div class="task-step-name">素材助理</div>
+                <div class="task-step-meta">关键帧 128 · 人声已分离 · 台词 42 句 · 人物 2 人</div>
+              </div>
+              <div class="task-step-side">2m 18s</div>
+            </div>
+
+            <div class="task-step">
+              <span class="status completed">✓</span>
+              <div>
+                <div class="task-step-name">看片员</div>
+                <div class="task-step-meta">128 个镜头已完成画面描述，人物一致性已校验</div>
+              </div>
+              <div class="task-step-side">1m 42s</div>
+            </div>
+
+            <div class="task-step">
+              <span class="status running">•</span>
+              <div>
+                <div class="task-step-name">首席编剧 <span class="badge badge-accent" style="margin-left:4px;">当前</span></div>
+                <div class="task-step-meta">正在生成第 3 / 5 段 · 612 字</div>
+                <div class="progress thin" style="margin-top:6px;"><i style="width:68%"></i></div>
+              </div>
+              <div class="task-step-side" style="color:#a5b4fc;">68%</div>
+            </div>
+
+            <div class="task-step">
+              <span class="status pending">·</span>
+              <div>
+                <div class="task-step-name">专业播音</div>
+                <div class="task-step-meta">等待首席编剧完成，预计 5 段配音</div>
+              </div>
+              <div class="task-step-side">待执行</div>
+            </div>
+
+            <div class="task-step">
+              <span class="status pending">·</span>
+              <div>
+                <div class="task-step-name">剪辑大师</div>
+                <div class="task-step-meta">等待配音完成，预计匹配 42 个镜头</div>
+              </div>
+              <div class="task-step-side">待执行</div>
+            </div>
+          </div>
+
+          <div class="alert alert-accent" style="margin-top:12px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+            <div>在检查点暂停时，已完成的产物会保留。你可以先改文案，再继续配音。</div>
+          </div>
+
+          <div class="btn-row between" style="margin-top:12px;">
+            <button class="btn btn-sm" data-toast="原型演示：暂停任务">暂停生成</button>
+            <button class="btn btn-sm btn-ghost" data-toast="原型演示：切换到手动模式">转手动调整</button>
+          </div>
+        </div>
+
+        <div class="alert" style="margin-top:12px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--accent-cyan);"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
+          <div class="muted">任务在后台继续运行。你可以切换步骤查看其它内容，进度不会丢失。</div>
+        </div>
+      </section>
+
+      <section class="tab-panel" data-tab-panel="recent">
+        <div class="task-item" style="margin-top:2px; border-color:rgba(225,29,72,.28);">
+          <div class="task-head">
+            <span class="badge badge-purple">影视解说</span>
+            <span class="task-name">产品测评_0318</span>
+            <span class="badge badge-rose" style="margin-left:auto;">失败</span>
+          </div>
+          <div class="task-step-meta" style="margin-top:6px;">昨天 21:06 · 运行到「剪辑大师」</div>
+          <div class="alert alert-rose" style="margin-top:10px;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h16.9a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
+            <div>
+              <div style="font-weight:600;">素材时长不足</div>
+              <div style="margin-top:2px;">文案需要 42 个镜头，当前素材只匹配到 31 个。建议增加素材或缩短成片时长。</div>
+            </div>
+          </div>
+          <div class="btn-row" style="margin-top:10px;">
+            <button class="btn btn-sm btn-subtle" data-toast="原型演示：只重跑剪辑大师">重试此步</button>
+            <button class="btn btn-sm btn-ghost" data-toast="原型演示：打开日志">查看日志</button>
+          </div>
+        </div>
+
+        <div class="task-item">
+          <div class="task-head">
+            <span class="badge badge-accent">口播解说</span>
+            <span class="task-name">开箱视频_0317</span>
+            <span class="badge badge-green" style="margin-left:auto;">已完成</span>
+          </div>
+          <div class="task-step-meta" style="margin-top:6px;">昨天 18:22 · 总耗时 9m 12s · 已导出 MP4</div>
+          <div class="btn-row" style="margin-top:10px;">
+            <button class="btn btn-sm btn-ghost" data-toast="原型演示：打开成片">查看成片</button>
+            <button class="btn btn-sm btn-ghost" data-toast="原型演示：复用配置">复用配置</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <footer class="drawer-foot">
+      <button class="btn btn-sm btn-block btn-ghost" data-toast="原型演示：打开完整任务历史">查看全部任务历史</button>
+    </footer>
+  </aside>
+
+  <script src="./assets/proto.js"></script>
+</body>
+</html>

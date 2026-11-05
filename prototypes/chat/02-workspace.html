@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>对话式 · 02 对话工作台</title>
+  <link rel="stylesheet" href="../assets/proto.css" />
+  <link rel="stylesheet" href="../assets/chat.css" />
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">Z</div>
+        <div>ZENTECT<small>CONVERSATIONAL</small></div>
+      </div>
+      <div class="top-divider"></div>
+      <div class="project-title">杭州旅行 vlog</div>
+      <span class="save-state"><i></i>已保存</span>
+      <div class="top-spacer"></div>
+      <nav class="mode-toggle">
+        <button class="active">对话</button>
+        <button onclick="location.href='./03-materials.html'">工作区</button>
+      </nav>
+      <a class="btn btn-sm btn-ghost" href="./06-tasks.html">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        任务 1
+      </a>
+      <div class="avatar">陈</div>
+    </header>
+
+    <div class="chat-layout">
+      <div class="chat-main">
+        <div class="chat-scroll">
+          <div class="chat-stream">
+            <div class="day-divider">今天 14:20</div>
+
+            <div class="msg user">
+              <div class="msg-avatar me">陈</div>
+              <div class="msg-body">
+                <div class="msg-name">我</div>
+                <div class="bubble">把这段杭州旅行素材剪成 3 分钟竖屏 vlog，节奏轻快一点，配温柔女声，字幕要有。</div>
+              </div>
+            </div>
+
+            <div class="msg">
+              <div class="msg-avatar ai">Z</div>
+              <div class="msg-body">
+                <div class="msg-name"><b>制片人</b><span>· 刚刚</span></div>
+                <div class="bubble">
+                  明白。我按 <span class="em">旅行 Vlog</span> 配方来安排：3 分钟、9:16、温柔女声、字幕开启。
+                  素材共 4 段，总长 18 分 42 秒，足够剪到 3 分钟。
+                </div>
+
+                <div class="artifact accent">
+                  <div class="artifact-head">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="color:#c7d2fe;"><path d="M4 5h16v14H4zM8 3v4M16 3v4"/></svg>
+                    <span class="artifact-title">制作方案</span>
+                    <span class="artifact-side badge badge-accent">旅行 Vlog · v1</span>
+                  </div>
+                  <div class="artifact-body">
+                    <div class="flow">
+                      <span class="flow-node">素材助理</span>
+                      <span class="flow-arrow">→</span>
+                      <span class="flow-node">看片员</span>
+                      <span class="flow-arrow">→</span>
+                      <span class="flow-node">首席编剧</span>
+                      <span class="flow-arrow">→</span>
+                      <span class="flow-node">专业播音</span>
+                      <span class="flow-arrow">→</span>
+                      <span class="flow-node">剪辑大师</span>
+                    </div>
+                    <div class="diff-row"><span class="diff-key">时长</span><span class="diff-val">3 分 00 秒</span></div>
+                    <div class="diff-row"><span class="diff-key">画幅</span><span class="diff-val">9:16 · 1080 × 1920</span></div>
+                    <div class="diff-row"><span class="diff-key">音色</span><span class="diff-val">小美 · 温柔女声</span></div>
+                    <div class="diff-row"><span class="diff-key">字幕</span><span class="diff-val">开启 · 中文</span></div>
+                    <div class="diff-row"><span class="diff-key">检查点</span><span class="diff-val">脚本完成后暂停一次</span></div>
+                  </div>
+                  <div class="artifact-foot">
+                    <span class="hint">预计 8~12 分钟 · 主要耗时在画面理解</span>
+                    <div class="btn-row">
+                      <button class="btn btn-sm" data-toast="打开配方与核心选项（原型未展开）">调整方案</button>
+                      <button class="btn btn-sm btn-primary" data-toast="已开始生成">开始生成</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="msg">
+              <div class="msg-avatar ai">Z</div>
+              <div class="msg-body">
+                <div class="msg-name"><b>制片人</b><span>· 2 分钟前</span></div>
+                <div class="bubble">已开始。前两步先跑，大约 4 分钟后给你看脚本。你可以继续待着，也可以去做别的，好了我会在这里说。</div>
+
+                <div class="artifact">
+                  <div class="artifact-head">
+                    <span class="status running" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">·</span>
+                    <span class="artifact-title">生成中 · 3 / 5</span>
+                    <span class="artifact-side tiny muted">已用 03:12 · 预计剩余 06:40</span>
+                  </div>
+                  <div class="artifact-body">
+                    <div class="progress"><i style="width:56%"></i></div>
+                    <div class="run-step" style="margin-top:4px;">
+                      <span class="status completed">✓</span>
+                      <div><div class="rs-name">素材助理</div><div class="rs-meta">4 个子步骤全部完成 · 128 帧 / 1,284 字 / 3 人</div></div>
+                      <span class="rs-side">1 分 46 秒</span>
+                    </div>
+                    <div class="run-sub">
+                      <span class="ok">关键帧 ✓</span><span class="ok">音频分离 ✓</span><span class="ok">台词识别 ✓</span><span class="ok">人物识别 ✓</span>
+                    </div>
+                    <div class="run-step">
+                      <span class="status completed">✓</span>
+                      <div><div class="rs-name">看片员</div><div class="rs-meta">已生成 24 条画面描述 · 选出 9 个可用镜头段</div></div>
+                      <span class="rs-side">1 分 26 秒</span>
+                    </div>
+                    <div class="run-step">
+                      <span class="status running">·</span>
+                      <div><div class="rs-name">首席编剧</div><div class="rs-meta">正在写第 4 段 / 共 5 段 · 已用 1 分 12 秒</div></div>
+                      <span class="rs-side">68%</span>
+                    </div>
+                    <div class="run-step">
+                      <span class="status pending">·</span>
+                      <div><div class="rs-name">专业播音</div><div class="rs-meta">等待首席编剧完成</div></div>
+                      <span class="rs-side">待执行</span>
+                    </div>
+                    <div class="run-step">
+                      <span class="status pending">·</span>
+                      <div><div class="rs-name">剪辑大师</div><div class="rs-meta">等待专业播音完成</div></div>
+                      <span class="rs-side">待执行</span>
+                    </div>
+                  </div>
+                  <div class="artifact-foot">
+                    <span class="hint">后台运行中，关闭窗口不会中断</span>
+                    <a class="btn btn-sm" href="./06-tasks.html">查看任务</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="msg">
+              <div class="msg-avatar ai">Z</div>
+              <div class="msg-body">
+                <div class="msg-name"><b>制片人</b><span>· 刚刚</span></div>
+                <div class="bubble">脚本写好了：5 段，约 1 分 52 秒。这里是自动模式设的检查点，你可以先听一遍再配音。</div>
+
+                <div class="artifact warm">
+                  <div class="artifact-head">
+                    <span class="status paused">!</span>
+                    <span class="artifact-title">检查点 · 脚本确认</span>
+                    <span class="artifact-side badge badge-warm">已暂停</span>
+                  </div>
+                  <div class="artifact-body">
+                    <div class="bubble" style="background:rgba(255,255,255,.025);border-color:rgba(255,255,255,.06);font-size:12px;color:var(--muted-strong);">
+                      “西湖边风有点大，但光线正好。我们从北山街开始，一路走到断桥……”
+                    </div>
+                    <div class="impact-stats">
+                      <div class="stat"><b>5</b><span>段落</span></div>
+                      <div class="stat"><b>486</b><span>字数</span></div>
+                      <div class="stat"><b>01:52</b><span>预计时长</span></div>
+                      <div class="stat"><b>轻松</b><span>整体语气</span></div>
+                    </div>
+                  </div>
+                  <div class="artifact-foot">
+                    <span class="hint">改文案只会重跑编剧之后的两步，配音不用重跑</span>
+                    <div class="btn-row">
+                      <a class="btn btn-sm" href="./04-script-voice.html">试听脚本</a>
+                      <button class="btn btn-sm btn-primary" data-toast="继续配音（原型演示）">直接配音</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="msg user">
+              <div class="msg-avatar me">陈</div>
+              <div class="msg-body">
+                <div class="msg-name">我</div>
+                <div class="bubble">第二段太书面了，口语一点，别像旅游宣传片。</div>
+              </div>
+            </div>
+
+            <div class="msg">
+              <div class="msg-avatar ai">Z</div>
+              <div class="msg-body">
+                <div class="msg-name"><b>制片人</b><span>· 刚刚</span></div>
+                <div class="bubble">改了第 2 段，第 3 段的过渡句也顺手调顺了。只动文案，<span class="em">不会重新识别素材</span>，配音和剪辑会重跑。</div>
+
+                <div class="artifact">
+                  <div class="artifact-head">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" style="color:#c7d2fe;"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+                    <span class="artifact-title">本次修改 · 2 处</span>
+                    <span class="artifact-side badge badge-green">已应用</span>
+                  </div>
+                  <div class="artifact-body">
+                    <div class="diff-row">
+                      <span class="diff-key">第 2 段</span>
+                      <span class="diff-val"><span class="from">沿湖而行，尽览湖光山色</span><span class="arrow">→</span><span class="to">沿着湖走一圈，风景是真好看</span></span>
+                    </div>
+                    <div class="diff-row">
+                      <span class="diff-key">第 3 段</span>
+                      <span class="diff-val"><span class="from">此处可稍作停留</span><span class="arrow">→</span><span class="to">这儿可以停一下，拍两张</span></span>
+                    </div>
+                    <div class="flow" style="margin-top:2px;">
+                      <span class="flow-node safe">看片员 不受影响</span>
+                      <span class="flow-node affected">首席编剧 重跑</span>
+                      <span class="flow-node affected">专业播音 重跑</span>
+                      <span class="flow-node affected">剪辑大师 重跑</span>
+                    </div>
+                  </div>
+                  <div class="artifact-foot">
+                    <span class="hint">预计增加 1 分 20 秒</span>
+                    <a class="btn btn-sm" href="./04-script-voice.html">看脚本</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="msg">
+              <div class="msg-avatar ai">Z</div>
+              <div class="msg-body">
+                <div class="msg-name"><b>制片人</b><span>· 正在重写第 2 段</span></div>
+                <div class="bubble" style="display:inline-flex;align-items:center;gap:10px;">
+                  <span class="typing"><i></i><i></i><i></i></span>
+                  <span class="tiny muted">只改文案，不会碰素材</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer-wrap">
+          <div class="quick-chips">
+            <button class="chip" data-toast="已记录偏好：再快一点">再快一点</button>
+            <button class="chip" data-toast="将提示更换音色">换成男声</button>
+            <button class="chip" data-toast="字幕样式调整（原型未展开）">字幕大一点</button>
+            <a class="chip" href="./04-script-voice.html">看时间线</a>
+          </div>
+          <div class="composer">
+            <textarea rows="2" placeholder="继续说，或者让我改点什么…"></textarea>
+            <div class="composer-bar">
+              <button class="icon-btn" style="width:28px;height:28px;" data-toast="附加上下文：素材 / 台词 / 某一版脚本">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              </button>
+              <span class="model"><i></i>云端 · 本次 3 次调用</span>
+              <button class="send" data-toast="发送（原型演示）" title="发送">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="composer-foot">对话会写回项目配置，关掉窗口后仍可复现</div>
+        </div>
+      </div>
+
+      <aside class="rail">
+        <div class="rail-sec">
+          <div class="section-label"><span>当前项目</span><a class="tiny" href="./05-export.html">导出</a></div>
+          <div class="rail-proj">
+            <div class="thumb mid"><span class="play"></span></div>
+            <div>
+              <div class="t">杭州旅行 vlog</div>
+              <div class="m">03:00 · 9:16 · 1080p</div>
+              <div class="m">4 段素材 · 18:42</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="rail-sec">
+          <div class="section-label"><span>产物状态</span><span class="tiny muted">版本 v2</span></div>
+          <div class="rail-row"><span class="status completed" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">✓</span><span class="k">素材助理</span><span class="v">有效</span></div>
+          <div class="rail-row"><span class="status completed" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">✓</span><span class="k">看片员</span><span class="v">有效</span></div>
+          <div class="rail-row"><span class="status running" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">·</span><span class="k">首席编剧</span><span class="v">重写中</span></div>
+          <div class="rail-row"><span class="status pending" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">·</span><span class="k">专业播音</span><span class="v">待重跑</span></div>
+          <div class="rail-row"><span class="status pending" style="width:16px;height:16px;flex:0 0 16px;font-size:9px;">·</span><span class="k">剪辑大师</span><span class="v">待重跑</span></div>
+        </div>
+
+        <div class="rail-sec">
+          <div class="section-label"><span>正在使用</span></div>
+          <div class="rail-row"><span class="k">配方</span><span class="v">旅行 Vlog · v1</span></div>
+          <div class="rail-row"><span class="k">音色</span><span class="v">小美 · 温柔女声</span></div>
+          <div class="rail-row"><span class="k">模型</span><span class="v">云端 · 快速</span></div>
+          <div class="rail-row"><span class="k">检查点</span><span class="v">脚本后暂停</span></div>
+        </div>
+
+        <div class="rail-sec">
+          <div class="section-label"><span>快捷入口</span></div>
+          <a class="btn btn-sm btn-block" href="./03-materials.html">打开素材与识别结果</a>
+          <a class="btn btn-sm btn-block" href="./04-script-voice.html">打开脚本与配音</a>
+          <a class="btn btn-sm btn-block" href="./06-tasks.html">打开任务中心</a>
+        </div>
+
+        <div class="alert" style="margin-top:auto;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM12 8v5M12 16h.01"/></svg>
+          <span>对话是入口，不是唯一入口。任何一步都可以直接进工作区改。</span>
+        </div>
+      </aside>
+    </div>
+  </div>
+  <script src="../assets/proto.js"></script>
+</body>
+</html>
