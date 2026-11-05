@@ -83,6 +83,50 @@ function buildAudioPath(
 }
 
 /**
+ * 导出前产物门禁（设计 3.6）：主进程侧再校验一次「步骤5可导出」。
+ * 三重条件：步骤5状态 completed + 版本戳 valid !== false + 来源非 backend。
+ * 旧项目缺失元数据 / legacy 戳：只警告放行（无法追溯，不阻断历史工程）。
+ * 明确的未完成 / 已过期 / 后端直写未验证：抛错阻断，避免「新上游 + 旧下游」错片。
+ */
+function assertExportArtifactGate(projectData: any): void {
+  const statuses = projectData?.stepStatuses;
+  const stamp = projectData?.artifactStamps?.stamps?.['5'];
+
+  if (Array.isArray(statuses) && statuses.length >= 5) {
+    const step5Status = statuses[4];
+    if (typeof step5Status === 'string' && step5Status !== 'completed') {
+      throw new AppError(
+        ErrorCode.SYS_INVALID_INPUT,
+        `导出已阻断：步骤5状态为「${step5Status}」，请先在步骤5重跑匹配`,
+      );
+    }
+  } else {
+    console.warn('[导出装配] 缺少 stepStatuses（旧项目），无法校验步骤5完成状态，按兼容策略放行');
+  }
+
+  if (!stamp) {
+    console.warn('[导出装配] 缺少步骤5产物版本戳（旧项目），按兼容策略放行');
+    return;
+  }
+  if (stamp.source === 'legacy') {
+    console.warn('[导出装配] 步骤5产物版本戳为 legacy（旧项目），按兼容策略放行');
+    return;
+  }
+  if (stamp.source === 'backend') {
+    throw new AppError(
+      ErrorCode.SYS_INVALID_INPUT,
+      '导出已阻断：步骤5产物为后端直写、尚未经前端确认，请在前端重跑步骤5',
+    );
+  }
+  if (stamp.valid === false) {
+    throw new AppError(
+      ErrorCode.SYS_INVALID_INPUT,
+      '导出已阻断：步骤5产物已过期（上游已变更），请重跑步骤5后再导出',
+    );
+  }
+}
+
+/**
  * 统一装配：读 DB → 镜头装配 → BGM 装配 → 字幕样式读取 → exportRange 过滤。
  * 全流程 fail-fast：DB 无项目 / 源视频缺失 / 选中片段 0 命中 / 镜头时间窗无效 均直接抛错。
  *
@@ -114,6 +158,9 @@ export function assembleExportProjectSync(
   if (!projectData) {
     throw new AppError(ErrorCode.DB_RECORD_NOT_FOUND, `装配失败：项目数据不存在，projectId=${projectId}`);
   }
+
+  // 1.5 导出前产物门禁（设计 3.6）：步骤5 completed + 版本有效 + 非后端直写
+  assertExportArtifactGate(projectData);
 
   // 2. 源视频路径（mediaItems[0].filePath）：空 → fail-fast
   const mediaItems: any[] = Array.isArray(projectData.mediaItems) ? projectData.mediaItems : [];

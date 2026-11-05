@@ -1,26 +1,28 @@
 // Module: editor/shell/hooks/usePipelineOrchestrator
 // 原 editor/hooks/usePipelineOrchestrator.ts — 已迁移
 // S2: useEditorStore → 各本地 Store
+//
+// 阶段3：步骤2~5 的执行流程已收敛到 pipelineStepRunner.runStep，
+// 本文件只保留「自动前进 / 中止 / 步骤1 子任务链 / 快捷执行」等编排职责。
 
 import { useCallback } from 'react';
 import { AppNotifier } from '@renderer/core/AppNotifier';
 import { IPC_CHANNELS } from '@modules/infra/ipc/IpcConstants';
 import { API } from '@renderer/api';
-import { STEP_SEQUENCES } from '../../utils/pipelineConstants';
-import { mapPipelineResultToState, type PipelineResultMappers } from './usePipelineResultMapper';
-import { editorLogger } from '@renderer/core/logger/EditorLogger';
-import { AppError, ErrorCode } from '@modules/infra/error/AppError';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
-import { useStep2Store } from '@modules/pipeline/stores/useStep2Store';
 import { useStep3Store } from '@modules/pipeline/stores/useStep3Store';
-import { useStep4Store } from '@modules/pipeline/stores/useStep4Store';
-import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
 import { useProjectStore } from '@modules/editor/stores/useProjectStore';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
-import { persistProjectSnapshot } from '../../utils/persistSnapshot';
-import { invalidateDownstreamSteps } from '../../utils/invalidateDownstreamSteps';
-import { capturePipelineDataSnapshot, restorePipelineDataSnapshot } from '../../utils/pipelineDataSnapshot';
+import { beginStepRun, failStepRun, isStepArtifactValid } from '../../utils/pipelineArtifactState';
+import { substepArtifactKey, type Step1SubStep } from '../../utils/pipelineArtifactMeta';
+import {
+  runStep,
+  markActiveRunAborted,
+  isActiveRunToken,
+  releaseActiveRunToken,
+  resetRunTokens,
+} from '../../utils/pipelineStepRunner';
 
 export enum PipelineMode {
   STEP = 'step',
@@ -43,36 +45,17 @@ interface PipelineOrchestratorResult {
   resetAll: () => void;
 }
 
-/** 构建 mapPipelineResultToState 所需的 Setter 桥接对象 */
-export const buildMappers = (): PipelineResultMappers => ({
-  setAudioSeparated: useStep1Store.getState().setAudioSeparated,
-  setAsrLines: useStep1Store.getState().setAsrLines,
-  setFrameCount: useStep1Store.getState().setFrameCount,
-  setExtractedData: useProjectStore.getState().setExtractedData,
-  setVlmFrames: useStep2Store.getState().setVlmFrames,
-  setScriptParagraphs: useStep3Store.getState().setScriptParagraphs,
-  setTtsResults: useStep4Store.getState().setTtsResults,
-  setTtsProgress: useStep4Store.getState().setTtsProgress,
-  setMatchResults: useStep5Store.getState().setMatchResults,
-  setVideoChunks: useStep5Store.getState().setVideoChunks,
-  setBeatTimestamps: useStep5Store.getState().setBeatTimestamps,
-  setMatchDiagnostics: useStep5Store.getState().setMatchDiagnostics,
-});
-
-/** 模块级中止标记：abortPipeline 可能由任意组件实例调用，executeStep 在另一实例里需要感知 */
-let abortRequested = false;
-
 export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
   const pipelineStore = usePipelineStore;
 
   const abortPipeline = useCallback(async () => {
-    // ⚠️ 模块级标记：abortPipeline 与 executeStep 可能来自不同组件实例，
-    //   需要让正在等待 runPipeline 的调用方知道「这是用户中止，不是执行失败」
-    abortRequested = true;
+    // ⚠️ 中止针对「当前这次执行」：用 token 标记，而不是全局布尔，
+    //   避免新一轮执行把旧任务的标记清掉后，旧请求继续写库。
+    const targetRun = markActiveRunAborted();
     try { await window.api.ipc.invoke(IPC_CHANNELS.ENGINE_ABORT_PIPELINE); } catch {}
     try { await API.engine.abortPipeline(); } catch {}
-    // 等待期间用户可能已重新启动：新一轮 executeStep 会把标记复位，此时不要清掉新状态
-    if (!abortRequested) return;
+    // 等待期间用户可能已重新启动：当前 token 已变，不要清掉新一轮的状态
+    if (!targetRun || !isActiveRunToken(targetRun)) return;
     const state = pipelineStore.getState();
     // 🛑 中止不是失败：把残留 running 态统一收尾为 idle，等用户重跑
     (['frames', 'audio', 'whisper', 'faces'] as const).forEach((key) => {
@@ -85,208 +68,22 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
       if (status === 'running') state.setStepStatus(i + 1, 'idle');
     });
     state.resetPipeline();
+    releaseActiveRunToken();
   }, []);
 
   const resetAll = useCallback(() => {
-    abortRequested = false;
+    resetRunTokens();
     pipelineStore.getState().resetPipeline();
     pipelineStore.getState().resetAllStepStatuses?.();
     AppNotifier.success('前端状态已强制重置！');
   }, []);
 
   const executeStep = useCallback(async (step: number, forceRun = false) => {
-    const ps = pipelineStore.getState();
-    const projectState = useProjectStore.getState();
-    if (!projectState.projectId) return;
-    abortRequested = false;
-
-    // 🔧 修复：步骤2-5已完成的跳过逻辑
-    // 仅在【自动流水线自动前进】时（forceRun=false），已完成步骤才直接跳到下一步避免重复执行。
-    // 旧版 bug：用户主动点击"启动"（forceRun=true）时若处于自动模式，本分支会直接跳到下一步，
-    //           导致"没有重新生成"（用户期望重跑自己选中的步骤，却被强行跳走）。
-    // 现在：用户主动启动 → 强制重新执行；自动前进 → 已完成步骤跳过。
-    const currentStepStatus = ps.stepStatuses[step - 1];
-    const isAutoMode = useEditorNavStore.getState().isAutoMode;
-    if (!forceRun && isAutoMode && currentStepStatus === 'completed' && step < 5) {
-      AppNotifier.info(`步骤${step}已完成，跳转至下一步`);
+    const result = await runStep(step, { force: forceRun });
+    // 自动模式：本步成功后继续推进到下一步（跳过/失败/中止不递进）
+    if (result.status === 'completed' && useEditorNavStore.getState().isAutoMode && step < 5) {
       useEditorNavStore.getState().setCurrentStep(step + 1);
-      return;
-    }
-
-    // 🔧 修复：先清理上次管线的进度/错误瞬态，再设置 running 状态
-    // 旧版 bug：resetPipeline() 在 setPipelineRunning(true) 之后调用，
-    //          内部 set({ pipelineRunning: false }) 把刚设的 true 覆盖回 false
-    ps.resetPipeline();
-    ps.setStepStatus(step, 'running');
-    ps.setPipelineRunning(true);
-    editorLogger.trackStep(step, 'start', { projectId: projectState.projectId });
-    // 🛡️ P2：先快照上一次可用结果，失败时恢复（失败不能抹掉用户已完成的成片数据）
-    const dataSnapshot = capturePipelineDataSnapshot();
-
-    try {
-      const activeMedia = projectState.mediaItems?.[0];
-
-      // 🔧 修复：step2 不再走 AI_VISION_SINGLE（人脸检测端点），统一走 STEP_SEQUENCES → VisionExtractStrategy
-      // 仅保留 step2 前置校验：必须有 step1 抽出的关键帧 + 媒体文件路径
-      if (step === 2) {
-        // 🛑 修复「步骤2 失败后重试被误报『请先完成步骤1』」：
-        //   步骤2 失败时上游可能把 extractedData.framePaths 清空（帧回写为空结果的 bug），
-        //   导致这里拦死整条管线。先从媒体素材自带的 frames 自愈，真正无帧才阻断。
-        let existingFrames = projectState.extractedData?.framePaths || [];
-        if (existingFrames.length === 0) {
-          const fromMedia = (projectState.mediaItems || [])
-            .flatMap((m: any) => (Array.isArray(m?.frames) ? m.frames : []))
-            .map((f: any) => (typeof f === 'string' ? f : (f?.path ?? f?.filePath ?? f?.url ?? f?.thumbnail ?? '')))
-            .filter((p: any) => typeof p === 'string' && p.trim().length > 0);
-          if (fromMedia.length > 0) {
-            useProjectStore.getState().setExtractedData({
-              framePaths: fromMedia,
-              frameCount: fromMedia.length,
-            });
-            existingFrames = fromMedia;
-            AppNotifier.info(`已从素材缓存恢复 ${fromMedia.length} 张关键帧，继续执行画面描述`);
-          }
-        }
-        if (existingFrames.length === 0) {
-          ps.setStepStatus(step, 'idle');
-          ps.setPipelineRunning(false);
-          AppNotifier.warning('关键帧列表为空，请先在步骤1「素材分析」完成抽帧，再执行画面描述');
-          return;
-        }
-        if (!activeMedia?.filePath) {
-          throw new AppError(ErrorCode.FS_FILE_NOT_FOUND, '未找到媒体文件路径');
-        }
-      }
-
-      // 🛑 P0：进入实际执行前级联失效下游结果与完成标记。
-      //   否则自动流水线会因下游「completed」直接跳过，导出「新文案 + 旧配音 + 旧匹配」错片。
-      invalidateDownstreamSteps(step);
-
-      const sequence = STEP_SEQUENCES[step];
-      if (!sequence) {
-        AppNotifier.error(`步骤 ${step} 未配置管线节点`);
-        return;
-      }
-      const step2State = useStep2Store.getState();
-      const step3State = useStep3Store.getState();
-      const step4State = useStep4Store.getState();
-      const step5State = useStep5Store.getState();
-
-      const enrichedSequence = sequence.map(node => ({
-        ...node,
-        params: {
-          ...(node.params || {}),
-          mediaPath: activeMedia?.filePath || '',
-          mediaId: activeMedia?.id || '',
-          // step2 注入 framePaths（复用 step1 已抽关键帧，避免重新抽帧）+ projectId + audioResult（ASR 台词对齐）
-          // P2: 注入 matrixMode（用户在步骤1选择的视觉分析模式，传递给步骤2动态拼图）
-          // 🎭 注入 roles：让 step2 VLM 描述时使用人物名称（来自 step1 人脸识别结果）
-          ...(step === 2 ? {
-            framePaths: projectState.extractedData?.framePaths || [],
-            // 🎬 帧真实时间戳（源坐标，与 framePaths 顺序对齐）：step2 用真实时间轴匹配 ASR 台词，
-            //   替代旧版 estimatedInterval 估算（fi × 平均间隔），修复 vlmFrames.asrText 系统性错位
-            frameTimeMs: projectState.extractedData?.frameTimeMs || [],
-            projectId: projectState.projectId,
-            matrixMode: useStep1Store.getState().extractionConfig?.frames?.matrixMode || 'auto',
-            audioResult: {
-              lines: useStep1Store.getState().asrLines || [],
-            },
-            roles: projectState.roles || [],
-          } : {}),
-          ...(step === 3 ? {
-            scriptStyle: step3State.scriptStyle || '爆款短视频',
-            speechRate: step3State.speechRate || 4.5,
-            pipelineParams: step3State.pipelineParams,
-            visionResult: {
-              sceneDescriptions: step2State.vlmFrames
-                ?.map((f: any) => f.description || '')
-                .filter(Boolean)
-                .join('\n') || '',
-              // 🎭 P0 修复：透传 vlmFrames 完整数据（含 downstream 结构化字段），
-              // 让 ScriptGenStrategy 可消费 downstreamContext.shots 优化路径
-              frames: step2State.vlmFrames || [],
-            },
-            audioResult: {
-              lines: useStep1Store.getState().asrLines || [],
-            },
-            // 🎭 P0 修复：注入 roles 人物角色列表，让 step3 生成解说时使用统一人物名称
-            // 数据源用 projectState.roles（hydrate 后的统一来源，含用户手动改名后的最新值）
-            roles: projectState.roles || [],
-          } : {}),
-          ...(step === 4 ? {
-            ttsEngine: step4State.ttsEngine || 'edge',
-            ttsVoiceId: step4State.ttsVoiceId || '',
-            voiceId: step4State.ttsVoiceId || '',
-            scriptShots: step3State.scriptParagraphs || [],
-          } : {}),
-          ...(step === 5 ? {
-            scriptShots: step3State.scriptParagraphs || [],
-            visionResult: {
-              sceneDescriptions: step2State.vlmFrames
-                ?.map((f: any) => f.description || '')
-                .filter(Boolean)
-                .join('\n') || '',
-              frames: step2State.vlmFrames || [],
-            },
-            ttsDurations: step4State.ttsResults || [],
-            bgmInfo: step5State.activeBgm ? {
-              id: step5State.activeBgm.id,
-              filePath: step5State.activeBgm.filePath,
-            } : null,
-            // 🎬 方向3（跨项目切片污染纵深防御）：注入本项目已保存的切片池（step5State.videoChunks
-            //  由项目快照 hydrate，来自本项目 metadata.videoChunks），步骤5 优先复用本项目自己的切片，
-            //  避免匹配池回退到 daemon 跨项目缓存（PROJECT_MATERIAL_POOL）导致引用他项目切片。
-            videoChunks: step5State.videoChunks || [],
-          } : {}),
-        },
-      }));
-      const result = await API.engine.runPipeline({
-        projectId: projectState.projectId,
-        sequence: enrichedSequence,
-        sourceMedia: activeMedia?.filePath || '',
-      });
-      // 🛑 用户已中止：后端可能返回被截断的结果，绝不能当成成功写入 / 标记完成
-      if (abortRequested) {
-        ps.setStepStatus(step, 'idle');
-        ps.setPipelineRunning(false);
-        return;
-      }
-      if (result) {
-        mapPipelineResultToState(result?.data || result, buildMappers());
-      }
-
-      ps.setStepCompleted(step, true);
-      ps.setStepStatus(step, 'completed');
-      editorLogger.trackStep(step, 'complete');
-
-      const currentProjectState = useProjectStore.getState();
-      if (currentProjectState.projectId) {
-        try {
-          // ✅ 统一走公共落盘入口，与步骤4/5独立流程保持一致
-          await persistProjectSnapshot(currentProjectState.projectId);
-        } catch (saveErr) {
-          console.error('[管线编排器] 步骤完工落盘失败:', saveErr);
-        }
-      }
-
-      if (useEditorNavStore.getState().isAutoMode && step < 5) {
-        useEditorNavStore.getState().setCurrentStep(step + 1);
-        await executeStep(step + 1);
-        return;
-      }
-      ps.setPipelineRunning(false);
-    } catch (err: any) {
-      // 🛑 用户中止导致的 reject 不是失败：静默收尾，不弹错误条
-      if (abortRequested) {
-        ps.setStepStatus(step, 'idle');
-        ps.setPipelineRunning(false);
-        return;
-      }
-      ps.setStepStatus(step, 'failed');
-      ps.setPipelineError(err?.message || '步骤执行失败');
-      ps.setPipelineRunning(false);
-      // 🛡️ P2：把执行前快照的下游结果放回（数据回来了，但完成标记不回，用户需重跑失败步骤）
-      restorePipelineDataSnapshot(dataSnapshot);
+      await executeStep(step + 1);
     }
   }, []);
 
@@ -309,22 +106,23 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
         ps.setPipelineRunning(false);
         return;
       }
-      // 🔧 修复重复执行：只将未完成（非 completed）的启用子步骤设为 running
-      // 旧版 bug：不检查当前 subStepStatuses，直接把所有启用子步骤设为 running
-      //          → 已 completed 的抽帧/音频/ASR/人脸全部重新跑一遍，浪费时间且覆盖成功状态
+      // 🔧 修复重复执行：只将「未完成或产物已过期」的启用子步骤设为 running
+      // 阶段5：完成态不足以跳过——配置变更会让子步骤产物变为 stale，必须重跑该子步骤；
+      //       禁用的子步骤不参与（不产出也不阻断步骤1完成）。
       const currentSubStatuses = ps.subStepStatuses;
-      const enabledKeys = ['frames', 'audio', 'whisper', 'faces'] as const;
-      const keysToRun: string[] = [];
+      const enabledKeys: Step1SubStep[] = ['frames', 'audio', 'whisper', 'faces'];
+      const keysToRun: Step1SubStep[] = [];
       enabledKeys.forEach(key => {
-        if (!config[key]?.enabled) return;
-        const alreadyCompleted = currentSubStatuses[key] === 'completed';
+        if (config[key]?.enabled === false) return;
+        const alreadyCompleted = currentSubStatuses[key] === 'completed'
+          && isStepArtifactValid(substepArtifactKey(key));
         if (!alreadyCompleted) {
           ps.setSubStepStatus(key, 'running');
           ps.setSubStepStarted(key);
           keysToRun.push(key);
         }
       });
-      // 如果所有子步骤都已完成，直接标记 step1 完成，不发请求
+      // 如果所有启用子步骤都已完成且产物有效，直接标记 step1 完成，不发请求
       if (keysToRun.length === 0) {
         ps.setStepCompleted(1, true);
         ps.setStepStatus(1, 'completed');
@@ -336,11 +134,16 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
         }
         return;
       }
-      console.log('[Step1 增量执行] 需执行子步骤:', keysToRun, '已跳过(completed):',
-        enabledKeys.filter(k => config[k]?.enabled && currentSubStatuses[k] === 'completed'));
+      console.log('[Step1 增量执行] 需执行子步骤:', keysToRun, '已跳过(有效):',
+        enabledKeys.filter(k => config[k]?.enabled && !keysToRun.includes(k)));
       ps.setStepStatus(1, 'running');
       ps.setPipelineRunning(true);
       ps.setPipelineProgress(0, '准备中');
+
+      // 🎫 阶段5：每个即将执行的子步骤各自冻结输入指纹（并失效其下游链）。
+      for (const key of keysToRun) {
+        await beginStepRun(substepArtifactKey(key));
+      }
 
       try {
         await API.media.process(projectId, activeMedia, {
@@ -360,10 +163,10 @@ export const usePipelineOrchestrator = (): PipelineOrchestratorResult => {
         AppNotifier.info('素材提取任务已加入队列');
       } catch (err: any) {
         // 🔧 修复状态覆盖：只重置本次要执行的子步骤（keysToRun），不能碰已 completed 的子步骤
-        // 旧版 bug：enabledKeys.forEach 把所有启用的子步骤都设回 idle → 之前已完成的抽帧/音频/人脸状态被清空
-        keysToRun.forEach(key => {
+        for (const key of keysToRun) {
+          await failStepRun(substepArtifactKey(key));
           ps.setSubStepStatus(key, 'idle');
-        });
+        }
         ps.setStepStatus(1, 'failed');
         ps.setPipelineError(err?.message || '素材提取启动失败');
         ps.setPipelineRunning(false);

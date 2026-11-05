@@ -6,22 +6,12 @@ import React, { useCallback, useEffect, useRef } from "react";
 import type { PipelineParams } from "../../../../shared/types/entities/editor";
 import { useStep3Store } from "../../stores/useStep3Store";
 import { useStep2Store } from "../../stores/useStep2Store";
-import { useStep1Store } from "../../stores/useStep1Store";
 import { usePipelineStore } from "@renderer/store/usePipelineStore";
 import { useProjectStore } from "@modules/editor/stores/useProjectStore";
 import { API } from "@renderer/api";
-import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/usePipelineResultMapper";
-import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
-import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
-import { diffParagraphs, applyDiffUpdate } from "@modules/editor/shell/utils/scriptDiffTree";
-import { persistProjectSnapshot } from "@modules/editor/shell/utils/persistSnapshot";
-import { invalidateDownstreamSteps } from "@modules/editor/shell/utils/invalidateDownstreamSteps";
+import { runStep } from "@modules/editor/shell/utils/pipelineStepRunner";
+import { touchArtifact } from "@modules/editor/shell/utils/pipelineArtifactState";
 import { StepScriptGenerationView } from "./View";
-import { breakLongParagraphs } from "./breakLongParagraphs";
-// 🎯 匹配单位开关（renderer 侧只读；读不到 process.env 时按 legacy 兜底，主进程为权威来源）
-import { resolveScriptMatchUnitMode } from "../../../../shared/utils/scriptMatchUnit";
-// 判别联合契约唯一净化入口：renderer「重新生成」路径的段落同样必须过 Normalizer
-import { normalizeScriptParagraph } from "../../../../shared/utils/normalizeScriptParagraph";
 
 export const StepScriptGeneration: React.FC = () => {
   const scriptParagraphs = useStep3Store((s) => s.scriptParagraphs);
@@ -39,136 +29,42 @@ export const StepScriptGeneration: React.FC = () => {
   // P2：运行态只看步骤3 自己，避免步骤2/4/5 运行时本步按钮也误显示「生成中」
   const step3Running = usePipelineStore((s) => s.stepStatuses[2] === 'running');
 
+  /** 🎫 阶段4：段落文案/情绪手工编辑 = 产物3 被人工修订；防抖后 touchArtifact('3')，
+   *  rev3+1 并让步骤4/5 自动过期（语音与匹配必须重跑）。 */
+  const touchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingTouchRef = useRef(false);
+  const flushParagraphTouch = useCallback(() => {
+    if (!pendingTouchRef.current) return;
+    pendingTouchRef.current = false;
+    void touchArtifact('3');
+  }, []);
+  const scheduleParagraphTouch = useCallback(() => {
+    pendingTouchRef.current = true;
+    if (touchTimerRef.current) clearTimeout(touchTimerRef.current);
+    touchTimerRef.current = setTimeout(() => {
+      touchTimerRef.current = null;
+      flushParagraphTouch();
+    }, 800);
+  }, [flushParagraphTouch]);
+
+  const handleUpdateParagraph = useCallback(
+    (...args: Parameters<typeof updateScriptParagraph>) => {
+      updateScriptParagraph(...args);
+      scheduleParagraphTouch();
+    },
+    [updateScriptParagraph, scheduleParagraphTouch],
+  );
+
   const updateParagraphEmotion = useCallback((paragraphId: string, emotion: string) => {
     const step3State = useStep3Store.getState();
     setScriptParagraphs(step3State.scriptParagraphs.map((p) => (p.id === paragraphId ? { ...p, emotion } : p)));
-  }, [setScriptParagraphs]);
+    scheduleParagraphTouch();
+  }, [setScriptParagraphs, scheduleParagraphTouch]);
 
   const handleRegenerate = useCallback(async () => {
-    const projectState = useProjectStore.getState();
-    const step3State = useStep3Store.getState();
-    const step2State = useStep2Store.getState();
-    const pipelineState = usePipelineStore.getState();
-
-    if (!projectState.projectId) return;
-    // 🔧 修复：resetPipeline 必须在 setPipelineRunning(true) 之前调用
-    // 旧版 bug：resetPipeline 内部 set({ pipelineRunning: false }) 把刚设的 true 覆盖回 false
-    pipelineState.resetPipeline();
-    pipelineState.setStepStatus(3, "running");
-    pipelineState.setPipelineRunning(true);
-    // 🔧 重新生成前先清空旧文案：避免旧文案残留显示；
-    //    🛡️ P2：失败时恢复旧文案（旧文案本已持久化，失败不该抹掉用户已有内容）。
-    const previousParagraphs = step3State.scriptParagraphs;
-    setScriptParagraphs([]);
-    // 🛑 P0：文案重生成 → 旧配音/旧匹配作废（新文案例与旧配音时长不一致，继续沿用会产出错片）
-    invalidateDownstreamSteps(3);
-    try {
-      const sequence = STEP_SEQUENCES[3].map((node: any) => ({
-        ...node,
-        params: {
-          ...(node.params || {}),
-          mediaPath: projectState.mediaItems?.[0]?.filePath || "",
-          scriptStyle: step3State.scriptStyle || "爆款短视频",
-          speechRate: step3State.speechRate || 4.5,
-          pipelineParams: step3State.pipelineParams,
-          visionResult: {
-            sceneDescriptions: step2State.vlmFrames?.map((f: any) => f.description || "").filter(Boolean).join("\n") || "",
-            // 🎭 P0 修复：透传 vlmFrames 完整数据（含 downstream 结构化字段），与 executeStep 保持一致的参数注入
-            frames: step2State.vlmFrames || [],
-          },
-          // 🎭 P0 修复：注入 audioResult（ASR 台词）与 roles（统一人物名），与 executeStep 保持一致
-          audioResult: {
-            lines: useStep1Store.getState().asrLines || [],
-          },
-          roles: projectState.roles || [],
-        },
-      }));
-      const result = await API.engine.runPipeline({
-        projectId: projectState.projectId,
-        sequence,
-        sourceMedia: projectState.mediaItems?.[0]?.filePath || "",
-      });
-      if (result) {
-        const rawData = result?.data || result;
-        const nodeResult = rawData["script-1"] || rawData["script"] || rawData;
-        if (nodeResult) {
-          /** ✅ 身份键统一：段落主键 id 出生处(ScriptGenStrategy)为 seg_N；异常/历史路径可能缺 id，
-           *  一旦为空，下游 breakLongParagraphs 会回落到 `para_${idx}` 兜底，多批次拼接即撞号
-           *  → React「two children with same key」→ 段落重复/漏渲染（实测 2026-10-08 20:26 日志）。
-           *  此处做最终防线：缺 id 者用 rawParagraphs 下标兜底，保证主键全局唯一。 */
-          const rawSource = nodeResult.paragraphs || nodeResult.shots || [];
-          const missingIdCount = rawSource.filter((p: any) => !p?.id).length;
-          if (missingIdCount > 0) {
-            console.warn(`[步骤3] 段落主键 id 缺失 ${missingIdCount}/${rawSource.length} 个，已用 seg_{idx} 兜底（请核查后端 ScriptGenStrategy 为何未输出 id）`);
-          }
-          const rawParagraphs = rawSource.map((p: any, idx: number) => {
-            return {
-              id: p.id || `seg_${idx}`,
-              text: p.text || p.content || p.narration || "",
-              shotId: p.shotId,
-              duration: p.duration,
-              emotion: p.emotion || "",
-              /** 🎭 P1 角色组合匹配：透传步骤3 生成的角色名单，供爆破切分器子句继承 */
-              characters: Array.isArray(p.characters) ? p.characters
-                : (Array.isArray(p.anchoredCharacters) ? p.anchoredCharacters : undefined),
-              /** 🎯 P3 画面意图：透传步骤3 生成的画面意图描述，供爆破切分器子句继承 */
-              visualIntent: p.visualIntent || "",
-              /** 🎯 P3 时间轴锚定：透传对应 chunk 的时间起点/时长（ms），供步骤5 锚定切片 */
-              startMs: p.startMs,
-              durationMs: p.durationMs,
-              /** 🎯 匹配单位：透传步骤3 断句器写入的「完整句」id（sentence 档才有，legacy 档为 undefined） */
-              matchUnitId: p.matchUnitId,
-              /** 🎙️ 原声保留段判别信息透传：缺失时 Normalizer 会把原声段误判为解说段，
-               *  写后显示成带引号的普通文案且无「原声保留」标签（须重进才恢复）。 */
-              type: p.type,
-              keepOriginalAudio: p.keepOriginalAudio === true,
-              audioSource: p.audioSource,
-              /** 原始顺序号：非原声段断句后与原声段按此合并，保持与生成顺序一致 */
-              __order: idx,
-            };
-          });
-          // 🎙️ 分离原声段：原声段整段保留（断句会破坏原台词定位），仅解说段走断句器，再按 __order 合并
-          const originalAudioPara = rawParagraphs.filter(
-            (p: any) => p.type === 'original_audio' || p.keepOriginalAudio || p.audioSource,
-          );
-          const narrationOnlyPara = rawParagraphs.filter(
-            (p: any) => !(p.type === 'original_audio' || p.keepOriginalAudio || p.audioSource),
-          );
-          const mergedPara = [...breakLongParagraphs(narrationOnlyPara, { matchUnit: resolveScriptMatchUnitMode() }), ...originalAudioPara]
-            .sort((a: any, b: any) => (a.__order ?? 0) - (b.__order ?? 0));
-          // 爆破切分器拆分超长段落后，统一过 Normalizer 净化为判别联合契约
-          // （补齐 type / 毫秒时间轴，editing 布尔由 Normalizer narration 分支透传保留）
-          const newParagraphs = mergedPara.map(
-            (p) => normalizeScriptParagraph({ ...p, editing: false })
-          );
-          const diffs = diffParagraphs(step3State.scriptParagraphs, newParagraphs);
-          setScriptParagraphs(applyDiffUpdate(step3State.scriptParagraphs, diffs));
-        } else {
-          mapPipelineResultToState(rawData, buildMappers());
-        }
-      }
-      pipelineState.setStepCompleted(3, true);
-      pipelineState.setStepStatus(3, "completed");
-
-      // 🔧 重新生成后持久化：统一走落盘入口，确保空的下游结果（ttsResults/matchResults/videoChunks）
-      //   与回退后的 stepStatuses/stepCompleted 一并写入 DB，避免重开项目后旧下游数据复活。
-      const finalProjectState = useProjectStore.getState();
-      if (finalProjectState.projectId) {
-        try {
-          await persistProjectSnapshot(finalProjectState.projectId);
-        } catch (saveErr) {
-          console.error("[步骤3] 重新生成后落盘失败:", saveErr);
-        }
-      }
-    } catch (err: any) {
-      pipelineState.setStepStatus(3, "failed");
-      pipelineState.setPipelineError(err?.message || "文案生成失败");
-      // 🛡️ P2：失败恢复上一次文案——一次失败不应抹掉用户已有内容（DB 也未写入新结果）
-      if (previousParagraphs.length > 0) setScriptParagraphs(previousParagraphs);
-    } finally {
-      pipelineState.setPipelineRunning(false);
-    }
-  }, [setScriptParagraphs]);
+    // 统一执行入口：清空/快照/失效/执行/后处理/版本提交全部由 runner 负责
+    await runStep(3, { force: true });
+  }, []);
 
   const handleMatchVision = useCallback((_paragraphId: string) => {
     // delegated to bidirectionalMatcher utility if available
@@ -213,13 +109,18 @@ export const StepScriptGeneration: React.FC = () => {
     setScriptStyle(style);
     scheduleSave();
   }, [setScriptStyle, scheduleSave]);
-  // 组件卸载时清理未触发的防抖定时器，避免泄漏
+  // 组件卸载时清理未触发的防抖定时器，避免泄漏；段落编辑的版本提交需在卸载前冲刷
   useEffect(() => () => {
     if (saveTimerRef.current) {
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
-  }, []);
+    if (touchTimerRef.current) {
+      clearTimeout(touchTimerRef.current);
+      touchTimerRef.current = null;
+    }
+    flushParagraphTouch();
+  }, [flushParagraphTouch]);
 
   return (
     <StepScriptGenerationView
@@ -233,7 +134,7 @@ export const StepScriptGeneration: React.FC = () => {
       onSetSpeechRate={handleSetSpeechRate}
       onSetScriptStyle={handleSetScriptStyle}
       onSetPipelineParams={handleSetPipelineParams}
-      onUpdateParagraph={updateScriptParagraph}
+      onUpdateParagraph={handleUpdateParagraph}
       onUpdateParagraphEmotion={updateParagraphEmotion}
       onSetScriptParagraphs={setScriptParagraphs}
       onRegenerate={handleRegenerate}

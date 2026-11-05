@@ -9,6 +9,8 @@ import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { API } from '@renderer/api';
 import { v4 as uuidv4 } from 'uuid';
+import { commitArtifacts, failStepRun, hasPendingStepRun } from '../../utils/pipelineArtifactState';
+import { substepArtifactKey, type Step1SubStep } from '../../utils/pipelineArtifactMeta';
 
 function formatSeconds(seconds: number): string {
   if (!seconds && seconds !== 0) return '00:00';
@@ -42,16 +44,19 @@ function normalizeFrameTimes(raw: unknown): number[] | undefined {
 
 /**
  * 根据子任务状态推导步骤1总状态
- * - 全 completed → 'completed' + stepCompleted=true
- * - 任一 failed → 'failed' + stepCompleted=false
+ * - 启用子任务全 completed → 'completed' + stepCompleted=true
+ * - 任一启用子任务 failed → 'failed' + stepCompleted=false
  * - 部分完成无失败 → 'idle' + stepCompleted=false（用户应手动重试未完成子任务）
  * - 全 idle → 'idle' + stepCompleted=false
  */
-function deriveStep1Status(subStepStatuses: Record<string, string>): {
+function deriveStep1Status(
+  subStepStatuses: Record<string, string>,
+  enabledSubSteps: readonly Step1SubStep[]
+): {
   stepStatus: 'completed' | 'failed' | 'idle';
   stepCompleted: boolean;
 } {
-  const step1Values = STEP1_SUBSTEPS
+  const step1Values = enabledSubSteps
     .map(k => subStepStatuses[k])
     .filter(v => v !== undefined && v !== null);
 
@@ -59,7 +64,7 @@ function deriveStep1Status(subStepStatuses: Record<string, string>): {
     return { stepStatus: 'idle', stepCompleted: false };
   }
   const hasFailed = step1Values.some(v => v === 'failed');
-  const allCompleted = step1Values.length === STEP1_SUBSTEPS.length
+  const allCompleted = step1Values.length === enabledSubSteps.length
     && step1Values.every(v => v === 'completed');
 
   if (allCompleted) return { stepStatus: 'completed', stepCompleted: true };
@@ -88,27 +93,40 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
       // 重新取最新状态：上方 pipelineState 是注册时的快照，需用最新值做降级判断
       const latestPipeline = usePipelineStore.getState();
       // 记录子步骤结束时间（仅在状态从 running → completed/failed 时）
-      const finishSubStep = (key: string, hasData: boolean) => {
+      // 🎫 阶段5：以「本次是否有执行凭证（pending handle）」判断该子步骤是否属于本轮执行，
+      // 避免增量/重试未执行的子步骤被旧产物误认证；进度事件可能已提前把状态置为 completed，
+      // 因此不能只看 prev === 'running'。
+      const finishSubStep = async (key: Step1SubStep, hasData: boolean) => {
+        const artifactKey = substepArtifactKey(key);
+        const pending = hasPendingStepRun(artifactKey);
         const prev = latestPipeline.subStepStatuses[key];
-        if (prev === 'running') {
-          pipelineState.setSubStepFinished(key);
+        if (!pending && prev !== 'running') return;
+        if (prev === 'running') pipelineState.setSubStepFinished(key);
+        pipelineState.setSubStepStatus(key, hasData ? 'completed' : 'failed');
+        if (hasData && pending) {
+          await commitArtifacts(artifactKey);
+        } else if (!hasData && pending) {
+          await failStepRun(artifactKey);
         }
-        pipelineState.setSubStepStatus(key, hasData ? 'completed' : (prev === 'running' ? 'failed' : prev));
       };
-      finishSubStep('frames', hasFrames);
-      finishSubStep('audio', hasAudio);
-      finishSubStep('whisper', hasAsrLines);
-      finishSubStep('faces', hasRoles);
+      await finishSubStep('frames', hasFrames);
+      await finishSubStep('audio', hasAudio);
+      await finishSubStep('whisper', hasAsrLines);
+      await finishSubStep('faces', hasRoles);
 
       /** 💥 关键修复：根据子任务结果推导 step1 总状态，替代旧版无条件 setStepStatus(1, 'completed')
        *  旧版 bug：faces/whisper 失败时 stepStatuses[0] 仍被置为 completed，与 subStepStatuses 不一致
-       *  导致用户重进项目看到"步骤1已完成"但实际有子任务失败，无法重试 */
+       *  导致用户重进项目看到"步骤1已完成"但实际有子任务失败，无法重试
+       *  阶段5：只统计启用的子步骤（禁用的子步骤不产出也不阻断） */
       const freshPipeline = usePipelineStore.getState();
-      const derived = deriveStep1Status(freshPipeline.subStepStatuses);
+      const step1Config = useStep1Store.getState().extractionConfig;
+      const enabledSubSteps = STEP1_SUBSTEPS.filter(k => step1Config?.[k]?.enabled !== false);
+      const derived = deriveStep1Status(freshPipeline.subStepStatuses, enabledSubSteps);
       pipelineState.setStepCompleted(1, derived.stepCompleted);
       pipelineState.setStepStatus(1, derived.stepStatus);
       console.log('[Step1 状态推导]', {
         subStepStatuses: freshPipeline.subStepStatuses,
+        enabledSubSteps,
         derived,
       });
 
@@ -299,6 +317,8 @@ export const useExtractionHandler = (onAutoContinue?: (nextStep: number) => Prom
             storyboardMode: latestProjectState.storyboardMode,
             extractionConfig: useStep1Store.getState().extractionConfig,
             vlmFrames: useStep2Store.getState().vlmFrames,
+            // 🎫 产物版本：步骤1 的 commit/fail 只改内存，必须随本批数据一起落盘
+            artifactStamps: freshPipelineState.artifactMeta,
           });
         } catch (e) {
           // 🔧 修复 R6：不再静默吞掉异常，便于排查 DB 写入失败

@@ -18,6 +18,7 @@ import { Play, ChevronRight, RefreshCcw } from 'lucide-react';
 import { Badge, StatusIcon } from '@renderer/components/shared';
 import { StepIndicator } from '@renderer/components/shared/StepIndicator';
 import { AppNotifier } from '@renderer/core/AppNotifier';
+import { useArtifactEvaluations } from '../hooks/useArtifactEvaluations';
 
 interface StepPanelProps {
   onStart: () => void;
@@ -34,6 +35,11 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
   const hydrationStatus = useStore((s) => s.hydrationStatus);
   const setCurrentStep = useEditorNavStore((s) => s.setCurrentStep);
   const setIsAutoMode = useEditorNavStore((s) => s.setIsAutoMode);
+  /** 🎫 阶段4：产物有效性（stale/unverified/legacy），用于导航与状态提示 */
+  const artifactEvaluations = useArtifactEvaluations();
+  const currentArtifactState = artifactEvaluations[currentStep - 1]?.state;
+  const currentArtifactExpired = stepStatuses[currentStep - 1] === 'completed'
+    && (currentArtifactState === 'stale' || currentArtifactState === 'unverified');
 
   const handleStepClick = (targetStep: number) => {
     if (targetStep < 1 || targetStep > STEPS.length) return;
@@ -78,7 +84,7 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
     <div className="flex-1 flex flex-col min-w-[400px] glass-card overflow-hidden" style={{ borderRadius: '0 12px 12px 0' }}>
       <div className="flex items-center justify-between px-5 py-2.5 border-b border-border/30 shrink-0">
         <div className="flex items-center gap-0">
-          <StepIndicator currentStep={currentStep} steps={STEPS.map(s => ({ id: String(s.key), label: s.label, icon: s.icon }))} stepStatuses={stepStatuses as any} stepCompleted={stepCompleted as any} onStepClick={handleStepClick} />
+          <StepIndicator currentStep={currentStep} steps={STEPS.map(s => ({ id: String(s.key), label: s.label, icon: s.icon }))} stepStatuses={stepStatuses as any} stepCompleted={stepCompleted as any} artifactStates={artifactEvaluations.map(a => a.state)} onStepClick={handleStepClick} />
         </div>
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-0.5 bg-bg-secondary rounded-lg p-[3px]">
@@ -143,7 +149,12 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
       <div className="flex items-center justify-between px-4 py-2.5 border-t border-border/30 shrink-0 bg-bg-secondary/50">
         <span className="text-[13px] text-muted-foreground">
           步骤 {currentStep}/5 · {STEPS[currentStep - 1]?.label ?? '未知'}
-          {stepStatuses[currentStep - 1] === 'completed' && <Badge variant="success" className="ml-1">已完成</Badge>}
+          {stepStatuses[currentStep - 1] === 'completed' && !currentArtifactExpired && <Badge variant="success" className="ml-1">已完成</Badge>}
+          {currentArtifactExpired && (
+            <Badge variant="warning" className="ml-1">
+              {currentArtifactState === 'stale' ? '已过期，需重跑' : '未验证，需重跑'}
+            </Badge>
+          )}
           {stepStatuses[currentStep - 1] === 'failed' && <Badge variant="danger" className="ml-1">失败</Badge>}
           {stepStatuses[currentStep - 1] === 'idle' && <Badge variant="default" className="ml-1">等待管线执行</Badge>}
         </span>

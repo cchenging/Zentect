@@ -10,6 +10,8 @@ import { usePipelineStore } from "@renderer/store/usePipelineStore";
 import { usePipelineOrchestrator } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
 import { API } from "@renderer/api";
 import { AppNotifier } from "@renderer/core/AppNotifier";
+import { beginStepRun, failStepRun, markArtifactsStale } from "@modules/editor/shell/utils/pipelineArtifactState";
+import { substepArtifactKey, type Step1SubStep } from "@modules/editor/shell/utils/pipelineArtifactMeta";
 import type { Step1Config } from "../types";
 import { StepMaterialAnalysisView } from "./View";
 
@@ -102,6 +104,10 @@ export const StepMaterialAnalysis: React.FC = () => {
 
       pipelineState.setPipelineRunning?.(true);
 
+      // 🎫 子步骤重试只冻结/失效该子步骤对应的产物链
+      const retryArtifactKey = substepArtifactKey(stepKey as Step1SubStep);
+      await beginStepRun(retryArtifactKey);
+
       try {
         // 🔧 关键修复：使用 API.media.process 走 JobScheduler 路径（有DB回写+前端通知），
         // 而不是直接调用 ENGINE_RUN_PIPELINE（直接调用不会回写DB也不会通知前端更新状态）
@@ -109,6 +115,7 @@ export const StepMaterialAnalysis: React.FC = () => {
         AppNotifier.info(`正在重新${stepKey === 'frames' ? '提取关键帧' : stepKey === 'audio' ? '分离音频' : stepKey === 'whisper' ? '识别台词' : '识别人物'}...`);
       } catch (err: any) {
         console.error('[RetrySubStep] 失败:', err);
+        await failStepRun(retryArtifactKey);
         setSubStepStatus(stepKey, "failed");
         pipelineState.setPipelineRunning?.(false);
         AppNotifier.error(`重试失败: ${err?.message || '未知错误'}`);
@@ -150,10 +157,23 @@ export const StepMaterialAnalysis: React.FC = () => {
     if (persistAsrLinesTimer.current) clearTimeout(persistAsrLinesTimer.current);
     persistAsrLinesTimer.current = setTimeout(() => {
       const pid = useProjectStore.getState().projectId;
-      if (!pid || !Array.isArray(lines) || lines.length === 0) return;
-      API.project.saveData(pid, { asrLines: lines }).catch((e) => {
-        console.warn('[Step1] 台词订正落库失败:', e);
-      });
+      if (!pid) return;
+      if (Array.isArray(lines) && lines.length > 0) {
+        API.project.saveData(pid, { asrLines: lines }).catch((e) => {
+          console.warn('[Step1] 台词订正落库失败:', e);
+        });
+      }
+      // 🎫 阶段4：ASR 改字/删行不重算步骤1产物，但台词是步骤3/4/5的输入 → 标记下游过期
+      void markArtifactsStale(['3', '4', '5']);
+    }, 800);
+  }, []);
+
+  /** 🎫 阶段4：角色改名/合并/删除同属步骤3/4/5的输入变更，防抖标记下游过期 */
+  const roleStaleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleRoleInputStale = useCallback(() => {
+    if (roleStaleTimer.current) clearTimeout(roleStaleTimer.current);
+    roleStaleTimer.current = setTimeout(() => {
+      void markArtifactsStale(['3', '4', '5']);
     }, 800);
   }, []);
 
@@ -166,6 +186,26 @@ export const StepMaterialAnalysis: React.FC = () => {
     removeAsrLine(idx);
     persistAsrLines(useStep1Store.getState().asrLines);
   }, [removeAsrLine, persistAsrLines]);
+
+  const handleUpdateRole = useCallback((...args: Parameters<typeof updateRole>) => {
+    updateRole(...args);
+    scheduleRoleInputStale();
+  }, [updateRole, scheduleRoleInputStale]);
+
+  const handleMergeRoles = useCallback((...args: Parameters<typeof mergeRoles>) => {
+    mergeRoles(...args);
+    scheduleRoleInputStale();
+  }, [mergeRoles, scheduleRoleInputStale]);
+
+  const handleUnmergeRole = useCallback((...args: Parameters<typeof unmergeRole>) => {
+    unmergeRole(...args);
+    scheduleRoleInputStale();
+  }, [unmergeRole, scheduleRoleInputStale]);
+
+  const handleDeleteRole = useCallback((...args: Parameters<typeof deleteRole>) => {
+    deleteRole(...args);
+    scheduleRoleInputStale();
+  }, [deleteRole, scheduleRoleInputStale]);
 
   return (
     <StepMaterialAnalysisView
@@ -185,10 +225,10 @@ export const StepMaterialAnalysis: React.FC = () => {
       onSetAsrLines={setAsrLines}
       onSetCurrentTime={seekTo}
       onSetActivePlaySource={setActivePlaySource}
-      onUpdateRole={updateRole}
-      onMergeRoles={mergeRoles}
-      onUnmergeRole={unmergeRole}
-      onDeleteRole={deleteRole}
+      onUpdateRole={handleUpdateRole}
+      onMergeRoles={handleMergeRoles}
+      onUnmergeRole={handleUnmergeRole}
+      onDeleteRole={handleDeleteRole}
       onSetSubStepStatus={setSubStepStatus}
       onRetrySubStep={handleRetrySubStep}
       onAbortSubStep={handleAbortSubStep}

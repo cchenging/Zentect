@@ -17,6 +17,8 @@ interface StepIndicatorProps {
   steps: Step[];
   stepStatuses?: Array<'idle' | 'running' | 'completed' | 'failed'> | Record<string, string>;
   stepCompleted?: boolean[] | Record<string, boolean>;
+  /** 🎫 阶段4：各步骤产物有效性（stale/unverified/legacy），仅用于过期提示，不阻断用户操作 */
+  artifactStates?: string[];
   onStepClick?: (step: number) => void;
 }
 
@@ -31,6 +33,7 @@ export const StepIndicator: React.FC<StepIndicatorProps> = ({
   steps,
   stepStatuses,
   stepCompleted,
+  artifactStates,
   onStepClick,
 }) => {
   /** 安全取步骤状态：兼容数组和对象两种格式 */
@@ -65,14 +68,30 @@ export const StepIndicator: React.FC<StepIndicatorProps> = ({
         const isActive = stepId === currentStep;
         const isDone = status === 'completed' || isCompleted(i);
         const isRunning = status === 'running';
-        const colorClass = isActive ? 'text-accent' : isDone ? 'text-accent-green' : isRunning ? 'text-primary' : 'text-muted-foreground';
-        const bgClass = isActive ? 'bg-accent text-white' : isDone ? 'bg-accent-green/20 text-accent-green' : isRunning ? 'bg-primary/20' : 'bg-muted text-muted-foreground';
+        /** 🎫 阶段4：已完成但产物过期/未验证 → 用警示图标与暖色提示（不改变可点击行为） */
+        const artifactState = Array.isArray(artifactStates) ? artifactStates[i] : undefined;
+        const isArtifactExpired = isDone && (artifactState === 'stale' || artifactState === 'unverified');
+        const expiredTitle = artifactState === 'stale'
+          ? '上游已变更，产物已过期，需重跑该步骤'
+          : artifactState === 'unverified'
+            ? '产物版本未验证（执行中断或后端直写），需重跑该步骤'
+            : undefined;
+        const colorClass = isActive
+          ? 'text-accent'
+          : isArtifactExpired
+            ? 'text-amber-500'
+            : isDone ? 'text-accent-green' : isRunning ? 'text-primary' : 'text-muted-foreground';
+        const bgClass = isActive
+          ? 'bg-accent text-white'
+          : isArtifactExpired
+            ? 'bg-amber-500/20 text-amber-500'
+            : isDone ? 'bg-accent-green/20 text-accent-green' : isRunning ? 'bg-primary/20' : 'bg-muted text-muted-foreground';
         return (
           <div key={step.id} className="flex items-center">
-            <button onClick={() => onStepClick?.(stepId)}
+            <button onClick={() => onStepClick?.(stepId)} title={expiredTitle}
               className={`flex items-center gap-1.5 cursor-pointer outline-none ${colorClass}`}>
               <div className={`w-[22px] h-[22px] rounded-md flex items-center justify-center text-[12px] font-bold ${bgClass}`}>
-                {isDone ? <StatusIcon status="completed" size={12} /> : isRunning ? <StatusIcon status="running" size={12} /> : step.icon ? <step.icon size={13} className={colorClass} /> : <>{step.badge ?? stepId}</>}
+                {isArtifactExpired ? <StatusIcon status="warning" size={12} /> : isDone ? <StatusIcon status="completed" size={12} /> : isRunning ? <StatusIcon status="running" size={12} /> : step.icon ? <step.icon size={13} className={colorClass} /> : <>{step.badge ?? stepId}</>}
               </div>
               <span className="text-[12px] font-medium hidden xl:inline">{step.label}</span>
             </button>

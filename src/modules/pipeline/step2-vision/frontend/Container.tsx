@@ -8,7 +8,7 @@ import { useStep1Store } from "../../stores/useStep1Store";
 import { usePipelineStore } from "@renderer/store/usePipelineStore";
 import { useEditorNavStore } from "@modules/editor/stores/useEditorNavStore";
 import { useProjectStore } from "@modules/editor/stores/useProjectStore";
-import { invalidateDownstreamSteps } from "@modules/editor/shell/utils/invalidateDownstreamSteps";
+import { touchArtifact } from "@modules/editor/shell/utils/pipelineArtifactState";
 import { StepVisionDescriptionView } from "./View";
 
 export const StepVisionDescription: React.FC = () => {
@@ -30,8 +30,9 @@ export const StepVisionDescription: React.FC = () => {
     updateExtractionConfig({
       frames: { ...currentFrames, matrixMode: mode },
     });
-    // 矩阵模式变化 ⇒ 画面描述需重算，步骤3 及以后一并作废
-    invalidateDownstreamSteps(1);
+    // 🎫 阶段4：不再手写失效。matrixMode 已进入步骤2输入指纹，
+    //   切换后步骤2版本自动变为「已过期」，自动流水线不会跳过、导出被阻断；
+    //   步骤3-5 在步骤2重跑(rev2+1)后同步过期，无需在此清空下游数据。
   }, [updateExtractionConfig, step2Running, matrixMode]);
 
   const handleGoToStep1 = React.useCallback(() => {
@@ -41,10 +42,40 @@ export const StepVisionDescription: React.FC = () => {
     }
   }, [setCurrentStep]);
 
+  /**
+   * 🎫 阶段4：画面描述手工编辑 = 产物2 被人工修订。
+   * 防抖后 touchArtifact('2')：rev2+1、认证为当前输入下的有效产物，并让步骤3/4/5 自动过期。
+   * 防抖避免逐字写库；卸载时立即冲刷，防止最后一笔编辑丢失版本信息。
+   */
+  const touchTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingTouch = React.useRef(false);
+  const flushTouch = React.useCallback(() => {
+    if (!pendingTouch.current) return;
+    pendingTouch.current = false;
+    void touchArtifact('2');
+  }, []);
+  React.useEffect(() => () => {
+    if (touchTimer.current) clearTimeout(touchTimer.current);
+    flushTouch();
+  }, [flushTouch]);
+
+  const handleUpdateDescription = React.useCallback(
+    (...args: Parameters<typeof updateVlmDescription>) => {
+      updateVlmDescription(...args);
+      pendingTouch.current = true;
+      if (touchTimer.current) clearTimeout(touchTimer.current);
+      touchTimer.current = setTimeout(() => {
+        touchTimer.current = null;
+        flushTouch();
+      }, 800);
+    },
+    [updateVlmDescription, flushTouch],
+  );
+
   return (
     <StepVisionDescriptionView
       vlmFrames={vlmFrames}
-      onUpdateDescription={updateVlmDescription}
+      onUpdateDescription={handleUpdateDescription}
       onSetEditing={setVlmEditing}
       onGoToStep1={handleGoToStep1}
       matrixMode={matrixMode}

@@ -5,14 +5,10 @@
 import React, { useState, useCallback, useRef } from "react";
 import { useStep4Store } from "../../stores/useStep4Store";
 import { useStep3Store } from "../../stores/useStep3Store";
-import { usePipelineStore } from "@renderer/store/usePipelineStore";
 import { useProjectStore } from "@modules/editor/stores/useProjectStore";
 import { API } from "@renderer/api";
-import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/usePipelineResultMapper";
-import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
-import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
-import { persistProjectSnapshot } from "@modules/editor/shell/utils/persistSnapshot";
-import { invalidateDownstreamSteps } from "@modules/editor/shell/utils/invalidateDownstreamSteps";
+import { runStep } from "@modules/editor/shell/utils/pipelineStepRunner";
+import { touchArtifact, markArtifactsStale } from "@modules/editor/shell/utils/pipelineArtifactState";
 import { AppNotifier } from "@renderer/core/AppNotifier";
 import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { StepTTSSynthesisView } from "./View";
@@ -55,7 +51,9 @@ export const StepTTSSynthesis: React.FC = () => {
 
   const scriptParagraphs = useStep3Store((s) => s.scriptParagraphs);
 
-  const [speechRate, setSpeechRate] = useState(1.0);
+  // 语速持久化在 useStep4Store（local state 会导致重开项目后输入指纹漂移）
+  const speechRate = useStep4Store((s) => s.speechRate);
+  const setSpeechRate = useStep4Store((s) => s.setSpeechRate);
   const [playingIdx, setPlayingIdx] = useState<number | null>(null);
   const [isSynthesizing, setIsSynthesizing] = useState(false);
   const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
@@ -290,61 +288,14 @@ export const StepTTSSynthesis: React.FC = () => {
 
   const handleSynthesize = useCallback(async () => {
     const step3State = useStep3Store.getState();
-    const step4State = useStep4Store.getState();
-    const projectState = useProjectStore.getState();
-    const pipelineState = usePipelineStore.getState();
-
     if (!step3State.scriptParagraphs?.length) { AppNotifier.warning("请先完成步骤3（解说文案）"); return; }
     console.log('[步骤4诊断] scriptParagraphs 数量=', step3State.scriptParagraphs.length, '首个=', JSON.stringify(step3State.scriptParagraphs[0]));
     setIsSynthesizing(true);
-    // 合成前主动清空历史 TTS 结果与进度，避免残留旧数据（含试听/上次失败产物）被误匹配播放
-    // 🛡️ P2：先留一份旧配音，合成失败时恢复（失败不抹掉上一次可用成片）
-    const previousTtsResults = useStep4Store.getState().ttsResults;
-    useStep4Store.getState().setTtsResults([]);
-    useStep4Store.getState().setTtsProgress(0);
-    // 🛑 P0：配音重合成后，步骤5 的匹配时间窗/变速因子按旧配音时长计算，必须作废重跑
-    invalidateDownstreamSteps(4);
-    // 🔧 修复：resetPipeline 必须在 setPipelineRunning(true) 之前调用
-    pipelineState.resetPipeline();
-    pipelineState.setStepStatus(4, "running");
-    pipelineState.setPipelineRunning(true);
     try {
-      const sequence = STEP_SEQUENCES[4].map((node: any) => ({
-        ...node,
-        params: {
-          ...(node.params || {}),
-          ttsEngine: step4State.ttsEngine || "edge",
-          voiceId: step4State.ttsVoiceId || "",
-          speechRate: speechRate,  // 语速倍率(0.5~2.0)，传给后端 TTS 引擎
-          mediaPath: projectState.mediaItems?.[0]?.filePath || "",
-          scriptShots: step3State.scriptParagraphs || [],
-        }
-      }));
-      const result = await API.engine.runPipeline({
-        projectId: projectState.projectId,
-        sequence,
-        sourceMedia: projectState.mediaItems?.[0]?.filePath || "",
-      });
-      if (result) mapPipelineResultToState(result?.data || result, buildMappers());
-      pipelineState.setStepCompleted(4, true);
-      pipelineState.setStepStatus(4, "completed");
-      // 💥 根因修复：步骤4独立流程完成时统一落盘，否则 SQLite 步骤状态不更新，
-      //   重开项目步骤4回退为 idle，导致无法进入步骤5
-      if (projectState.projectId) {
-        try {
-          await persistProjectSnapshot(projectState.projectId);
-        } catch (saveErr) {
-          console.error("[步骤4] 配音合成落盘失败:", saveErr);
-        }
-      }
-    } catch (err: any) {
-      pipelineState.setStepStatus(4, "failed");
-      pipelineState.setPipelineError(err?.message || "配音合成失败");
-      // 🛡️ P2：恢复旧配音（状态仍为 failed，需重跑；仅保留数据供回退/对照）
-      if (previousTtsResults.length > 0) useStep4Store.getState().setTtsResults(previousTtsResults);
-    }
-    finally {
-      pipelineState.setPipelineRunning(false);
+      // 统一执行入口：清空/快照/失效/执行/映射/版本提交/落盘全部由 runner 负责
+      // 语速以 useStep4Store.speechRate 为准（入口可传 uiOverrides 覆盖）
+      await runStep(4, { force: true });
+    } finally {
       setIsSynthesizing(false);
     }
   }, []);
@@ -373,7 +324,7 @@ export const StepTTSSynthesis: React.FC = () => {
         id: shotId,
         text: p.text,
         voiceId: step4State.ttsVoiceId || undefined,
-        speechRate,
+        speechRate: step4State.speechRate ?? 1.0,
         provider: step4State.ttsEngine || 'edge',
       });
       const audioPath = result?.audioPath || '';
@@ -395,6 +346,13 @@ export const StepTTSSynthesis: React.FC = () => {
       const next = idxIn >= 0 ? cur.map((r: any, i: number) => (i === idxIn ? entry : r)) : [...cur, entry];
       useStep4Store.getState().setTtsResults(next);
       if (!audioPath) AppNotifier.error(`第 ${idx + 1} 段合成失败: ${result?.error || ''}`);
+      if (audioPath) {
+        // 🎫 阶段4：单段配音成功 = 产物4 被人工修订（rev4+1，步骤5 自动过期）
+        void touchArtifact('4');
+      } else {
+        // 合成失败：不能认证为有效产物，只把步骤4/5 标为过期等待重跑
+        void markArtifactsStale(['4', '5']);
+      }
     } catch (err: any) {
       // 错就错：失败必须标记进结果列表，不让用户误以为成功
       const cur = useStep4Store.getState().ttsResults || [];
@@ -403,6 +361,7 @@ export const StepTTSSynthesis: React.FC = () => {
       const next = idxIn >= 0 ? cur.map((r: any, i: number) => (i === idxIn ? entry : r)) : [...cur, entry];
       useStep4Store.getState().setTtsResults(next);
       AppNotifier.error(`第 ${idx + 1} 段合成失败: ${err?.message || ''}`);
+      void markArtifactsStale(['4', '5']);
     } finally {
       setSingleSynthIdx(null);
     }

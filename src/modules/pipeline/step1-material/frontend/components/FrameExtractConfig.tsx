@@ -5,8 +5,6 @@
 import React from 'react';
 import { Sparkles, Clock, Layers, AlertTriangle } from 'lucide-react';
 import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
-// P1 · 配置变更后重置受影响子任务并失效下游（否则「启动」会跳过已完成子任务）
-import { invalidateStep1SubSteps } from '@modules/editor/shell/utils/invalidateDownstreamSteps';
 // P0 · 抽帧契约唯一真源（normalize + preset 配置）
 import {
   normalizeFrameStrategy,
@@ -134,11 +132,6 @@ export const FrameExtractConfig: React.FC<FrameExtractConfigProps> = ({ isRunnin
         sceneThreshold: nextThreshold,
       },
     });
-
-    // 仅当模式/密度真的变化时才失效（重复点击同一选项不应清空已有结果）
-    const modeChanged = patch.mode !== undefined && patch.mode !== strategy;
-    const densityChanged = nextPreset !== undefined && nextPreset !== densityPreset;
-    if (modeChanged || densityChanged) invalidateStep1SubSteps(['frames'], 1);
   };
 
   return (

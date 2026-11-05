@@ -3,7 +3,7 @@
 // 否则自动流水线会因下游「completed」直接跳过，产出「新文案 + 旧配音 + 旧匹配」的错片。
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { invalidateDownstreamSteps, invalidateStep1SubSteps } from '../invalidateDownstreamSteps';
+import { invalidateDownstreamSteps } from '../invalidateDownstreamSteps';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useStep2Store } from '@modules/pipeline/stores/useStep2Store';
 import { useStep3Store } from '@modules/pipeline/stores/useStep3Store';
@@ -57,40 +57,6 @@ describe('invalidateDownstreamSteps', () => {
     // 步骤1 自身不受影响
     expect(stepStatuses[0]).toBe('completed');
     expect(stepCompleted[0]).toBe(true);
-  });
-
-  it('步骤1 音频配置变更：只重置 audio/whisper，保留 vlmFrames 与步骤2', () => {
-    const pipeline = usePipelineStore.getState();
-    pipeline.setSubStepStatus('frames', 'completed');
-    pipeline.setSubStepStatus('audio', 'completed');
-    pipeline.setSubStepStatus('whisper', 'completed');
-    pipeline.setSubStepStatus('faces', 'completed');
-
-    invalidateStep1SubSteps(['audio', 'whisper'], 2);
-
-    const ps = usePipelineStore.getState();
-    expect(ps.subStepStatuses.frames).toBe('completed');
-    expect(ps.subStepStatuses.faces).toBe('completed');
-    expect(ps.subStepStatuses.audio).toBe('idle');
-    expect(ps.subStepStatuses.whisper).toBe('idle');
-    // 步骤2 只看画面，保留 vlmFrames；步骤3 及以后作废
-    expect(useStep2Store.getState().vlmFrames).toHaveLength(1);
-    expect(useStep3Store.getState().scriptParagraphs).toHaveLength(0);
-    expect(useStep4Store.getState().ttsResults).toHaveLength(0);
-    expect(ps.stepStatuses[1]).toBe('completed');
-    expect(ps.stepStatuses[2]).toBe('idle');
-  });
-
-  it('步骤1 抽帧配置变更：重置 frames 且清空 vlmFrames 及其下游', () => {
-    invalidateStep1SubSteps(['frames'], 1);
-
-    const ps = usePipelineStore.getState();
-    expect(ps.subStepStatuses.frames).toBe('idle');
-    expect(ps.subStepProgresses.frames).toBe(0);
-    expect(useStep2Store.getState().vlmFrames).toHaveLength(0);
-    expect(useStep3Store.getState().scriptParagraphs).toHaveLength(0);
-    expect(ps.stepStatuses[0]).toBe('idle');
-    expect(ps.stepCompleted[0]).toBe(false);
   });
 
   it('step=3 清空 ttsResults / matchResults / videoChunks / 诊断，且 4、5 回退为 idle', () => {

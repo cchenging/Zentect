@@ -14,6 +14,7 @@ import { useI18n } from '@renderer/store/useI18n';
 import { API } from '@renderer/api';
 import { AppIcon } from '@renderer/components/app-icon';
 import { ExportCheckbox } from './ExportCheckbox';
+import { evaluateProjectArtifacts } from '@modules/editor/shell/utils/pipelineArtifactState';
 
 export const ExportModal: React.FC = () => {
   const { t } = useI18n();
@@ -50,6 +51,9 @@ export const ExportModal: React.FC = () => {
   /** 🛡️ 未确认匹配拦截：导出前提示「仍有 N 段未确认」，由用户决定是否继续 */
   const [unconfirmedOpen, setUnconfirmedOpen] = useState(false);
   const [unconfirmedCount, setUnconfirmedCount] = useState(0);
+  /** 🎫 产物版本过期拦截（阶段4：硬门禁，不再允许忽略继续） */
+  const [staleOpen, setStaleOpen] = useState(false);
+  const [staleWarnings, setStaleWarnings] = useState<string[]>([]);
 
   useEffect(() => {
     API.system.getSetting<boolean>('subtitleMask', false)
@@ -185,7 +189,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       .join('\n\n');
   };
 
-  const executeExport = async (skipUnmatched = false, skipUnconfirmed = false) => {
+  const executeExport = async (
+    skipUnmatched = false,
+    skipUnconfirmed = false,
+  ) => {
     if (!exportVideo && !exportJianying && !exportAudio && !exportSubtitle && !exportTxt) {
       AppNotifier.warn('请勾选输出管线');
       return;
@@ -212,6 +219,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         }
         scopedShots = [selectedShot];
         selectedShotIds = [selectedShot.id];
+      }
+
+      // 🎫 阶段4：产物版本过期硬阻断（视频/音频/剪映）。
+      //   过期产物拼进成片会产生「新文案 + 旧配音/旧画面」的错片，因此不再提供「仍然导出」；
+      //   TXT / 纯字幕不依赖渲染产物，不受此门禁限制。
+      if (exportVideo || exportJianying || exportAudio) {
+        const blocking = evaluateProjectArtifacts().filter((a) => a.exportBlocked);
+        if (blocking.length > 0) {
+          console.warn(
+            '[导出] 产物版本拦截:',
+            blocking.map((a) => `step${a.key}=${a.state}`).join(', '),
+          );
+          setStaleWarnings(blocking.map((a) => `步骤${a.key}（${a.state === 'stale' ? '已过期' : '未验证'}）`));
+          setStaleOpen(true);
+          setIsExporting(false);
+          return;
+        }
       }
 
       // 🛡️ P1：未确认匹配不静默导出。步骤5 的「已确认」不能只是装饰标签——
@@ -665,6 +689,28 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                   </Button>
                   <Button size="sm" onClick={continueExportIgnoringUnmatched} className="h-8 shadow-sm">
                     忽略未匹配段并继续
+                  </Button>
+                </div>
+              </DialogPrimitive.Content>
+            </DialogPrimitive.Portal>
+          </DialogPrimitive.Root>
+        )}
+        {/* 🎫 产物版本过期拦截：阶段4 硬门禁，只能返回重跑，不能忽略继续 */}
+        {staleOpen && (
+          <DialogPrimitive.Root open onOpenChange={(o) => { if (!o) setStaleOpen(false); }}>
+            <DialogPrimitive.Portal>
+              <DialogPrimitive.Overlay className="fixed inset-0 z-[200] bg-black/70" />
+              <DialogPrimitive.Content className="fixed left-[50%] top-[50%] z-[200] w-[460px] translate-x-[-50%] translate-y-[-50%] bg-background border border-border rounded-lg shadow-xl p-5 flex flex-col gap-4 outline-none">
+                <DialogPrimitive.Title className="m-0 text-body font-semibold text-foreground">
+                  部分产物已过期，已阻断导出
+                </DialogPrimitive.Title>
+                <div className="text-[13px] leading-relaxed text-muted-foreground">
+                  以下产物在上游改动后尚未重新执行：{staleWarnings.join('、')}。
+                  {'\n\n'}直接导出会得到「新文案 + 旧配音/旧画面」的不一致成片，因此本次视频/音频/剪映导出已被阻断。请先重跑对应步骤后再导出。
+                </div>
+                <div className="flex justify-end gap-3">
+                  <Button size="sm" onClick={() => setStaleOpen(false)} className="h-8 shadow-sm">
+                    返回重跑
                   </Button>
                 </div>
               </DialogPrimitive.Content>

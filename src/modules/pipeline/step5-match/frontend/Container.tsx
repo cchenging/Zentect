@@ -4,17 +4,15 @@
 
 import React, { useCallback, useMemo } from "react";
 import { useStep5Store } from "../../stores/useStep5Store";
-import { useStep1Store } from "../../stores/useStep1Store";
 import { useStep2Store } from "../../stores/useStep2Store";
 import { useStep3Store } from "../../stores/useStep3Store";
 import { useStep4Store } from "../../stores/useStep4Store";
 import { usePipelineStore } from "@renderer/store/usePipelineStore";
 import { useProjectStore } from "@modules/editor/stores/useProjectStore";
 import { API } from "@renderer/api";
-import { mapPipelineResultToState } from "@modules/editor/shell/frontend/hooks/usePipelineResultMapper";
-import { buildMappers } from "@modules/editor/shell/frontend/hooks/usePipelineOrchestrator";
-import { STEP_SEQUENCES } from "@modules/editor/shell/utils/pipelineConstants";
 import { persistProjectSnapshot } from "@modules/editor/shell/utils/persistSnapshot";
+import { runStep } from "@modules/editor/shell/utils/pipelineStepRunner";
+import { touchArtifact } from "@modules/editor/shell/utils/pipelineArtifactState";
 import { AppNotifier } from "@renderer/core/AppNotifier";
 import { StepShotMatchingView } from "./View";
 
@@ -76,13 +74,16 @@ export const StepShotMatching: React.FC = () => {
     persistProjectSnapshot(pid).catch((e) => console.error("[步骤5] 手动改动落盘失败:", e));
   }, []);
 
-  /** 确认匹配后同样立即落盘（store.confirmMatch 只改内存态） */
-  const handleConfirm = useCallback((shotId: string) => {
+  /** 确认匹配后同样立即落盘（store.confirmMatch 只改内存态）
+   *  🎫 阶段4：确认/替换/重排都是对产物5 的人工修订，先 touchArtifact('5') 再落盘，
+   *  保证版本戳随快照一起持久化（步骤5 无下游，rev5+1 用于导出前校验）。 */
+  const handleConfirm = useCallback(async (shotId: string) => {
     confirmMatch(shotId);
+    await touchArtifact('5');
     persistStep5Now();
   }, [confirmMatch, persistStep5Now]);
 
-  const handleReplace = useCallback((shotId: string, chunkItem: any) => {
+  const handleReplace = useCallback(async (shotId: string, chunkItem: any) => {
     const coverPath = chunkItem.coverPath || chunkItem.filePath || chunkItem.thumbnail;
     const step5State = useStep5Store.getState();
     step5State.replaceMatch(shotId, chunkItem.id);
@@ -93,99 +94,20 @@ export const StepShotMatching: React.FC = () => {
         : m
     );
     setMatchResults(updated);
+    await touchArtifact('5');
+    persistStep5Now();
+  }, [setMatchResults, persistStep5Now]);
+
+  /** 🎫 阶段4：镜头顺序人工调整 = 产物5 修订 */
+  const handleReorder = useCallback(async (results: any[]) => {
+    setMatchResults(results);
+    await touchArtifact('5');
     persistStep5Now();
   }, [setMatchResults, persistStep5Now]);
 
   const handleRematch = useCallback(async () => {
-    const projectState = useProjectStore.getState();
-    const pipelineState = usePipelineStore.getState();
-    const step1State = useStep1Store.getState();
-    const step2State = useStep2Store.getState();
-    const step3State = useStep3Store.getState();
-    const step4State = useStep4Store.getState();
-    const step5State = useStep5Store.getState();
-
-    if (!projectState.projectId) return;
-    /** 🔒 K2 锚定冻结：重匹配前快照用户手动锁定(iUserLocked)的切片，结果返回后原样恢复，
-     *  使手调工作不被全局 Beam 重算冲垮；未锁定的节点照常参与全新匹配。 */
-    const lockedSnapshot = new Map(
-      step5State.matchResults
-        .filter((m: any) => m.isUserLocked)
-        .map((m: any) => [m.id, m])
-    );
-    pipelineState.resetPipeline();
-    pipelineState.setStepStatus(5, "running");
-    pipelineState.setPipelineRunning(true);
-    /** 🔧 新匹配开始：清空上一次匹配诊断（避免旧 warning 残留，等新结果返回再写入）；
-     *  🛡️ P2：先留旧诊断，匹配失败时恢复 */
-    const previousDiagnostics = step5State.matchDiagnostics;
-    step5State.setMatchDiagnostics(null);
-    try {
-      const sequence = STEP_SEQUENCES[5];
-      const enriched = sequence.map((node: any) => ({
-        ...node,
-        params: {
-          ...(node.params || {}),
-          mediaPath: projectState.mediaItems?.[0]?.filePath || "",
-          /** 🎬 素材 id 必传（2026-09-04）：OP/ED 裁剪配置按素材 id 存于 projects.extraction_config.mediaTrim.perMedia，
-           *  缺 mediaId → resolveForMedia 解析不到 trim → needTrim=false → 方向3 直接复用历史"全片含片头"切片池，
-           *  导致片头/出品帧始终进匹配与导出（"改了没变"的根因）。补齐后走正剧(body)切片。 */
-          mediaId: projectState.mediaItems?.[0]?.id || (projectState.mediaItems?.[0] as any)?.assetId || "",
-          /** 🎬 切片池复用（方向3）：回传本店已保存的本项目切片池（step5State.videoChunks ← 上次步骤5 结果），
-           *  后端 SemanticAnalyzeStrategy 优先复用免重切；漏传会导致 ownPool 为空 → 依赖 DB 缓存
-           *  （旧缓存 key 不兼容时强制重切片 80s+，极端环境失败即"匹配不到任何切片"）。 */
-          videoChunks: step5State.videoChunks || [],
-          scriptShots: step3State.scriptParagraphs || [],
-          ttsDurations: step4State.ttsResults || [],
-          /** ASR 原声时间轴：原声段落（keepOriginalAudio）按原声文本定位原片时间段 */
-          asrLines: step1State.asrLines || [],
-          /** 步骤2 逐帧 VLM 描述（带时间戳）：**整帧原样透传，禁止在本层裁剪字段**。
-           *  步骤5 需按时间轴把帧聚合到切片（description/emotion/shotType/运镜/场景/剧作冲突/美术氛围…），
-           *  这些结构化字段全部位于 `frame.downstream` 内；旧实现只挑出 4 个字段重组成无 downstream 的对象，
-           *  导致后端 665 帧"带 downstream=0"、7 个结构化字段在切片级静默归零（已实测确认的结构断层）。
-           *  形状与 usePipelineOrchestrator 单步执行步骤5 的 payload 完全同构（同一契约，避免两条入口分叉）。 */
-          visionResult: {
-            sceneDescriptions: step2State.vlmFrames
-              ?.map((f: any) => f.description || '')
-              .filter(Boolean)
-              .join('\n') || '',
-            frames: step2State.vlmFrames || [],
-          },
-          bgmInfo: step5State.activeBgm ?? null,
-        },
-      }));
-      const result = await API.engine.runPipeline({
-        projectId: projectState.projectId,
-        sequence: enriched,
-        sourceMedia: projectState.mediaItems?.[0]?.filePath || "",
-      });
-      if (result) mapPipelineResultToState(result?.data || result, buildMappers());
-      /** 🔒 K2 锚定冻结恢复：全局重算结果里，被锁定节点按快照原样还原（含所选切片/裁点/变速/确认态），
-       *  其余节点保留新匹配结果——既有锚点不可变更，只让非锁定段吸收差异。 */
-      if (lockedSnapshot.size > 0) {
-        const cur = useStep5Store.getState().matchResults;
-        const restored = cur.map((m: any) => (lockedSnapshot.has(m.id) ? { ...lockedSnapshot.get(m.id) } : m));
-        useStep5Store.getState().setMatchResults(restored);
-      }
-      pipelineState.setStepCompleted(5, true);
-      pipelineState.setStepStatus(5, "completed");
-      // 💥 根因修复：步骤5独立流程完成时统一落盘，否则匹配结果/切片池/步骤状态
-      //   不写入 SQLite，重开项目步骤5状态丢失
-      if (projectState.projectId) {
-        try {
-          await persistProjectSnapshot(projectState.projectId);
-        } catch (saveErr) {
-          console.error("[步骤5] 镜头匹配落盘失败:", saveErr);
-        }
-      }
-    } catch (err: any) {
-      pipelineState.setStepStatus(5, "failed");
-      pipelineState.setPipelineError(err?.message || "匹配失败");
-      // 🛡️ P2：恢复旧诊断（matchResults/videoChunks 本次未清空，仍然可用）
-      useStep5Store.getState().setMatchDiagnostics(previousDiagnostics);
-    } finally {
-      pipelineState.setPipelineRunning(false);
-    }
+    // 统一执行入口：K2 锁定快照/诊断清空/失效/asrLines/BGM/版本提交/落盘全部由 runner 负责
+    await runStep(5, { force: true });
   }, []);
 
   /** 🔧 2026-09-05：清空当前视频切片缓存（SQLite video_chunk_parts/video_chunks + 前端复用池），
@@ -225,9 +147,18 @@ export const StepShotMatching: React.FC = () => {
   }, [handleRematch]);
 
   /** 移除 BGM，并重匹配回退到无 BGM 模式 */
-  const handleRemoveBgm = useCallback(() => {
+  const handleRemoveBgm = useCallback(async () => {
     useStep5Store.getState().setActiveBgm(null);
-    handleRematch();
+    // 🛑 显式落盘 null：仓库对 BGM 是「非空才覆盖」，仅置内存会导致重开项目后旧 BGM 复活
+    const projectId = useProjectStore.getState().projectId;
+    if (projectId) {
+      try {
+        await persistProjectSnapshot(projectId);
+      } catch (saveErr) {
+        console.error("[步骤5] 删除 BGM 落盘失败:", saveErr);
+      }
+    }
+    await handleRematch();
   }, [handleRematch]);
 
   /** 上传本地音乐文件为 BGM：弹系统文件选择框 → 构造 BgmInfo → 沿用 handleSetBgm */
@@ -262,7 +193,7 @@ export const StepShotMatching: React.FC = () => {
       onReplace={handleReplace}
       onRematch={handleRematch}
       onClearCacheAndRematch={handleClearCacheAndRematch}
-      onReorder={setMatchResults}
+      onReorder={handleReorder}
     />
   );
 };
