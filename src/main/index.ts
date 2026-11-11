@@ -89,6 +89,35 @@ let currentView = 'home'
 let homeSize = { width: 1280, height: 800 }
 let editorSize: { width: number, height: number } | null = null
 
+// — 窗口尺寸记忆：落在 userData/window-state.json，不依赖数据库（点火早期即可读）
+const windowStatePath = () => path.join(app.getPath('userData'), 'window-state.json')
+
+function readWindowState(): { home?: { width: number; height: number }; editor?: { width: number; height: number } } {
+  try {
+    return JSON.parse(fs.readFileSync(windowStatePath(), 'utf-8'))
+  } catch {
+    return {}
+  }
+}
+
+function writeWindowState(): void {
+  try {
+    fs.mkdirSync(path.dirname(windowStatePath()), { recursive: true })
+    fs.writeFileSync(windowStatePath(), JSON.stringify({ home: homeSize, editor: editorSize }, null, 2), 'utf-8')
+  } catch {
+    // 写失败不阻塞启动/退出
+  }
+}
+
+// — 屏幕分辨率可能变化：还原尺寸时按当前工作区夹取，并保证不低于最小尺寸
+function clampToWorkArea(size: { width: number; height: number }): { width: number; height: number } {
+  const wa = screen.getPrimaryDisplay().workAreaSize
+  return {
+    width: Math.min(Math.max(size.width, 1180), wa.width),
+    height: Math.min(Math.max(size.height, 680), wa.height)
+  }
+}
+
 /**
  * — 工业级规范：AppBootstrap (应用生命周期中央司令部)
  * 绝对控制软件的启动顺序与安全停机
@@ -315,11 +344,19 @@ class AppBootstrap {
   // 🖥️ 3. UI 窗口生命周期
   // ==========================================
   private static createWindow(): void {
+    // 桌面软件按工作区夹取，避免 1366×768 / 125% 缩放的小屏上窗口跑出屏幕
+    const workArea = screen.getPrimaryDisplay().workAreaSize
+    const stored = readWindowState()
+    // 还原上次尺寸（按当前工作区重新夹取），无记录时用 1280×800 的默认值
+    homeSize = stored.home
+      ? clampToWorkArea(stored.home)
+      : { width: Math.min(1280, workArea.width), height: Math.min(800, workArea.height) }
+    editorSize = stored.editor ? clampToWorkArea(stored.editor) : null
     this.mainWindow = new BrowserWindow({
       width: homeSize.width,
       height: homeSize.height,
-      minWidth: 1280,
-      minHeight: 750,
+      minWidth: Math.min(1180, workArea.width),
+      minHeight: Math.min(680, workArea.height),
       center: true,
       show: false,
       title: 'Zentect',
@@ -336,6 +373,16 @@ class AppBootstrap {
         contextIsolation: true,
         nodeIntegration: false,
       }
+    })
+
+    // — 关闭前记住当前视图尺寸，下次启动沿用它（最大化时保留非最大化尺寸）
+    this.mainWindow.on('close', () => {
+      const win = this.mainWindow
+      if (!win || win.isMaximized()) return
+      const [w, h] = win.getSize()
+      if (currentView === 'home') homeSize = { width: w, height: h }
+      else if (currentView === 'editor') editorSize = { width: w, height: h }
+      writeWindowState()
     })
 
     // 防御性编程：万一前端崩溃没发信号，保底超时后强制显影
@@ -424,24 +471,25 @@ class AppBootstrap {
         const [w, h] = win.getSize()
         if (currentView === 'home') homeSize = { width: w, height: h }
         else if (currentView === 'editor') editorSize = { width: w, height: h }
+        writeWindowState()
       }
 
       currentView = targetView
 
       if (targetView === 'home') {
-        win.setMinimumSize(1280, 750)
+        win.setMinimumSize(Math.min(1180, workArea.width), Math.min(680, workArea.height))
         if (!isMaximized) {
           win.setBounds({ width: homeSize.width, height: homeSize.height }, true)
           win.center()
         }
       } else if (targetView === 'editor') {
-        // — 按照你的代码宪法：编辑器最小宽度 1180
-        win.setMinimumSize(1280, 750)
+        // — 编辑器最小宽度 1180（配合 1180 断点），最小高度 680 与 720 起始尺寸不冲突
+        win.setMinimumSize(Math.min(1180, workArea.width), Math.min(680, workArea.height))
         
         if (!isMaximized) {
-          // — 标准化检测：如果 stored 数据（editorSize）不存在、或宽度小于 1180、或高度小于 720
-          // 则初始化为标准 HD 尺寸 (1280x720)，这是剪映等主流软件的黄金起始尺寸
-          const isInvalidSize = !editorSize || editorSize.width < 1180 || editorSize.height < 720
+          // — 无上次记录、或记录尺寸低于下限时，回落到标准 HD 尺寸 (1280×720)
+          // 这是剪映等主流编辑器常用的起始尺寸；有记录则沿用用户上次调好的尺寸
+          const isInvalidSize = !editorSize || editorSize.width < 1180 || editorSize.height < 680
           
           if (isInvalidSize) {
             editorSize = { 
