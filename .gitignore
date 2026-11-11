@@ -161,6 +161,9 @@ check_logs.ps1
 src/test/_template_*.json
 src/test/test_*.py
 
+# Trae 分享产物（HTML 预览打包目录，非工程产物）
+.trae-html-share-packages/
+
 # temp / 编辑器临时文件
 /temp/
 *.tmp
