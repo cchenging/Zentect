@@ -14,7 +14,7 @@ import { StepVisionDescription } from '@modules/pipeline/step2-vision/frontend/C
 import { StepScriptGeneration } from '@modules/pipeline/step3-script/frontend/Container';
 import { StepTTSSynthesis } from '@modules/pipeline/step4-tts/frontend/Container';
 import { StepShotMatching } from '@modules/pipeline/step5-match/frontend/Container';
-import { Play, ChevronRight, RefreshCcw } from 'lucide-react';
+import { Play, ChevronRight, RefreshCcw, Sparkles } from 'lucide-react';
 import { Badge, StatusIcon } from '@renderer/components/shared';
 import { StepIndicator } from '@renderer/components/shared/StepIndicator';
 import { AppNotifier } from '@renderer/core/AppNotifier';
@@ -23,9 +23,11 @@ import { useArtifactEvaluations } from '../hooks/useArtifactEvaluations';
 interface StepPanelProps {
   onStart: () => void;
   onNextStep: () => void;
+  /** 重新打开一键成片浮层 */
+  onOpenWizard?: () => void;
 }
 
-export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => {
+export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep, onOpenWizard }) => {
   const navigate = useNavigate();
   const currentStep = useEditorNavStore((s) => s.currentStep);
   const isAutoMode = useEditorNavStore((s) => s.isAutoMode);
@@ -87,6 +89,13 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep }) => 
           <StepIndicator currentStep={currentStep} steps={STEPS.map(s => ({ id: String(s.key), label: s.label, icon: s.icon }))} stepStatuses={stepStatuses as any} stepCompleted={stepCompleted as any} artifactStates={artifactEvaluations.map(a => a.state)} onStepClick={handleStepClick} />
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={onOpenWizard}
+            className="flex items-center gap-1 h-7 px-2.5 rounded-lg border border-border/50 text-[11px] text-muted-foreground hover:text-accent hover:border-accent/40 transition-colors cursor-pointer outline-none"
+            title="重新打开一键成片"
+          >
+            <Sparkles size={12} /> 一键成片
+          </button>
           <div className="flex items-center gap-0.5 bg-bg-secondary rounded-lg p-[3px]">
             <Badge
               variant={!isAutoMode ? 'accent' : 'default'}

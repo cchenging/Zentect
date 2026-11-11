@@ -6,6 +6,7 @@
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
+import { useStore } from '@renderer/store/useStore';
 import { Music, Image, Check } from 'lucide-react';
 import { usePlayerStore } from './stores/usePlayerStore';
 import { useProjectStore } from './stores/useProjectStore';
@@ -23,6 +24,7 @@ import { useStepRunner } from '@modules/editor/shell';
 import { usePipelineOrchestrator } from '@modules/editor/shell';
 import { useMediaUpdatedListener } from '@modules/editor/shell';
 import { StepPanel } from '@modules/editor/shell';
+import { OneClickWizard } from '@modules/editor/shell';
 import PreviewMonitor from '@modules/editor/preview';
 /** 🎬 分镜单面板（editor left「分镜单」tab，展示 S2 ShotSpec 工单） */
 import StoryboardPanel from '@modules/editor/storyboard/frontend/components/StoryboardPanel';
@@ -32,6 +34,12 @@ import { formatTime } from '@modules/editor/preview';
 
 export default function Editor() {
   const { id } = useParams();
+
+  /** 一键成片浮层：新项目（无素材）进入编辑器时自动打开 */
+  const projectName = useProjectStore((s) => s.projectName) || '未命名项目';
+  const hydrationStatus = useStore((s) => s.hydrationStatus);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const wizardAutoOpened = useRef(false);
 
   /** 编辑器核心 Hooks */
   useEditorHydration(id);
@@ -156,6 +164,13 @@ export default function Editor() {
 
   /** 缓存过滤结果，避免每次渲染重复过滤 */
   const videoCount = useMemo(() => mediaItems.filter((m: any) => m.type === 'video').length, [mediaItems]);
+
+  /** 仅在新项目（无视频、非回看）首次装载完成时自动弹出一次，避免打断已有项目 */
+  useEffect(() => {
+    if (wizardAutoOpened.current || hydrationStatus !== 'READY') return;
+    wizardAutoOpened.current = true;
+    if (videoCount === 0) setWizardOpen(true);
+  }, [hydrationStatus, videoCount]);
   const audioCount = useMemo(() => mediaItems.filter((m: any) => m.type === 'audio').length, [mediaItems]);
   /** 视频切片池：优先从 Store 的 videoChunks 取，回退到 mediaItems 过滤 */
   const chunkItems = useMemo(() => {
@@ -409,8 +424,17 @@ export default function Editor() {
         </div>
 
         {/* 右侧区域：步骤导航面板 */}
-        <StepPanel onStart={handleStart} onNextStep={handleNextStep} />
+        <StepPanel onStart={handleStart} onNextStep={handleNextStep} onOpenWizard={() => setWizardOpen(true)} />
       </div>
+
+      <OneClickWizard
+        open={wizardOpen}
+        projectName={projectName}
+        mediaItems={mediaItems as any}
+        onImport={handleVideoImport}
+        onClose={() => setWizardOpen(false)}
+        onStart={handleStart}
+      />
     </div>
   );
 }

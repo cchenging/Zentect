@@ -1,18 +1,20 @@
 // 📁 路径：src/modules/settings/frontend/index.tsx
 // 设置页 - V3 设计系统风格
 import React, { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { FolderOpen, Server, Download, Heart } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { FolderOpen, Server, Download, Heart, User } from 'lucide-react';
 import { useSettingsManager } from './hooks/useSettingsManager';
 import { AITab } from './components/AITab';
 import { GeneralTab } from './components/GeneralTab';
 import { ModelTab } from './components/ModelTab';
 import { HealthPage } from './components/HealthPage';
+import { AccountTab } from './components/AccountTab';
 import { API } from '@renderer/api';
 import { WindowControls } from '@renderer/components/window-controls';
 
 export const Settings: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const {
     config, activeTab, setActiveTab, updateConfig,
     testAIConnection, testTTS, isTesting, modelPool,
@@ -22,6 +24,11 @@ export const Settings: React.FC = () => {
   useEffect(() => {
     API.system.resizeWindow(1280, 800).catch(console.error);
   }, []);
+
+  // 侧栏用户卡等入口通过 ?tab=account 直达账户页
+  useEffect(() => {
+    if (new URLSearchParams(location.search).get('tab') === 'account') setActiveTab('account');
+  }, [location.search, setActiveTab]);
 
   if (!config) {
     return <div className="w-screen h-screen bg-bg-deep flex items-center justify-center text-muted-foreground">加载配置中...</div>;
@@ -33,6 +40,7 @@ export const Settings: React.FC = () => {
     { id: 'ai', label: 'AI 服务', icon: Server, color: 'text-accent-cyan' },
     { id: 'models', label: '模型管理', icon: Download, color: 'text-accent-purple' },
     { id: 'health', label: '健康检查', icon: Heart, color: 'text-accent-green' },
+    { id: 'account', label: '账户', icon: User, color: 'text-accent' },
   ] as const;
 
   return (
@@ -91,6 +99,7 @@ export const Settings: React.FC = () => {
           )}
           {activeTab === 'models' && <ModelTab />}
           {activeTab === 'health' && <HealthPage />}
+          {activeTab === 'account' && <AccountTab />}
         </div>
       </div>
     </div>

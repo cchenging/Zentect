@@ -4,6 +4,7 @@ import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Home, Crown, LogOut, LogIn, PanelLeftClose, PanelLeftOpen, Users, Film } from 'lucide-react';
 import { AppIcon } from '../../components/app-icon';
+import { BrandMark } from '../../components/brand-mark';
 import { useI18n } from '../../store/useI18n';
 import { useUserStore } from '../../store/useUserStore';
 import { useEditorStore } from '../../store/useStore';
@@ -40,11 +41,11 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ className = "" }) => {
     <aside className={`${className} flex flex-col bg-card select-none z-20`}>
       {/* 品牌区：与标题栏齐平 */}
       <div className={`${UI_CONFIG.TOPBAR_HEIGHT_CLASS} flex items-center px-4 shrink-0 gap-3 border-b border-border/50 bg-bg-deep/50 [-webkit-app-region:drag]`}>
-        <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-accent to-accent-purple flex items-center justify-center text-white font-bold text-[12px] shadow-md shadow-accent/20 [-webkit-app-region:no-drag] animate-breathe">
-          Z
+        <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-accent to-accent-purple flex items-center justify-center text-white shadow-md shadow-accent/20 [-webkit-app-region:no-drag] animate-breathe">
+          <BrandMark className="w-[62%] h-[62%]" />
         </div>
         {!isSidebarExpanded && (
-          <span className="font-bold text-sm tracking-wide text-foreground [-webkit-app-region:no-drag] flex-1">Zentect</span>
+          <span className="font-semibold text-[14px] uppercase tracking-[0.08em] text-foreground [-webkit-app-region:no-drag] flex-1">Zentect</span>
         )}
         {/* 收起/展开按钮 */}
         <button
@@ -85,7 +86,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ className = "" }) => {
       <div className="p-3 mb-2 [-webkit-app-region:no-drag]">
         <div
           className="glass-card-sm p-3 flex flex-col gap-3 cursor-pointer group relative overflow-hidden"
-          onClick={() => { if (isLoggedIn) navigate('/user-settings'); else openAuthModal('login'); }}
+          onClick={() => { if (isLoggedIn) navigate('/settings?tab=account'); else openAuthModal('login'); }}
         >
           {/* 悬停渐变背景 */}
           <div className="absolute inset-0 bg-gradient-to-br from-accent/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />

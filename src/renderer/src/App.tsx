@@ -25,7 +25,6 @@ import { HomeContainer } from '@modules/home';
 import { GlobalCharactersContainer } from '@modules/global-characters';
 import { ShowsContainer } from '@modules/shows';
 const Editor = React.lazy(() => import('@modules/editor'));
-const UserSettingsPage = React.lazy(() => import('@modules/user-settings'));
 const SettingsPage = React.lazy(() => import('@modules/settings/frontend').then(m => ({ default: m.Settings })));
 
 function App() {
@@ -157,7 +156,6 @@ function App() {
             <Route path="/editor/new" element={<Editor />} />
 
             <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/user-settings" element={<UserSettingsPage />} />
           </Routes>
         </Suspense>
       </HashRouter>

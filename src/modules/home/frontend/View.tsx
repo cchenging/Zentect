@@ -1,6 +1,6 @@
 // Home 模块 — 纯 View 组件（不访问 Store / API / Hooks）
 import React from 'react';
-import { Play, Search, LayoutGrid, List, FolderOpen, Upload } from 'lucide-react';
+import { Play, Search, LayoutGrid, List, FolderOpen } from 'lucide-react';
 import type { ProjectRecord } from '../types';
 import { ProjectCard } from './components/ProjectCard';
 import { RenameModal } from './components/RenameModal';
@@ -15,13 +15,10 @@ export interface HomeViewProps {
   searchText: string;
   onSearchChange: (text: string) => void;
   onCreateProject: () => void;
-  onImportWorkflow: () => void;
-  isImporting: boolean;
   onProjectClick: (id: string, type?: string) => void;
   onRenameClick: (proj: ProjectRecord) => void;
   onDuplicateProject: (id: string) => void;
   onDeleteClick: (id: string, name: string) => void;
-  onExportClick: (id: string, name: string) => void;
   renameVisible: boolean;
   currentEditProj: ProjectRecord | null;
   onRenameClose: () => void;
@@ -48,8 +45,8 @@ export interface HomeViewProps {
 export const HomeView: React.FC<HomeViewProps> = ({
   loading,
   filteredProjects, searchText, onSearchChange,
-  onCreateProject, onImportWorkflow, isImporting,
-  onProjectClick, onRenameClick, onDuplicateProject, onDeleteClick, onExportClick,
+  onCreateProject,
+  onProjectClick, onRenameClick, onDuplicateProject, onDeleteClick,
   renameVisible, currentEditProj, onRenameClose, onRenameConfirm,
   deleteVisible, currentDeleteProj, onDeleteClose, onDeleteConfirm,
   viewMode, onViewModeChange, searchOpen, onToggleSearch, formatDate,
@@ -73,15 +70,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
                 >
                   <Play size={22} fill="currentColor" />
                   开始创作
-                </button>
-                <button
-                  onClick={onImportWorkflow}
-                  disabled={isImporting}
-                  className="h-[60px] px-7 rounded-2xl border border-border/50 bg-bg-secondary/50 text-foreground text-sm font-semibold flex items-center gap-2 hover:border-accent/40 hover:bg-bg-secondary transition-all cursor-pointer outline-none disabled:opacity-50"
-                  title="导入本地工作流文件（.json）"
-                >
-                  <Upload size={19} />
-                  {isImporting ? '导入中...' : '导入工作流'}
                 </button>
               </div>
               <span className="text-[13px] text-muted-foreground">点击创建新项目，进入创作工作台</span>
@@ -175,7 +163,6 @@ export const HomeView: React.FC<HomeViewProps> = ({
                     onRename={onRenameClick}
                     onDuplicate={onDuplicateProject}
                     onDelete={onDeleteClick}
-                    onExport={onExportClick}
                     onBindShow={onBindShowClick}
                   />
                 ))}

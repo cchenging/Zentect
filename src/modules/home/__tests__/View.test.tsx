@@ -70,13 +70,10 @@ const defaultProps = {
   searchText: '',
   onSearchChange: vi.fn(),
   onCreateProject: vi.fn(),
-  onImportWorkflow: vi.fn(),
-  isImporting: false,
   onProjectClick: vi.fn(),
   onRenameClick: vi.fn(),
   onDuplicateProject: vi.fn(),
   onDeleteClick: vi.fn(),
-  onExportClick: vi.fn(),
   renameVisible: false,
   currentEditProj: null as any,
   onRenameClose: vi.fn(),
@@ -123,9 +120,9 @@ describe('HomeView', () => {
       expect(screen.getByText('开始创作')).toBeDefined();
     });
 
-    it('应显示"导入工作流"按钮', () => {
+    it('不应显示"导入工作流"按钮', () => {
       renderView();
-      expect(screen.getByText('导入工作流')).toBeDefined();
+      expect(screen.queryByText('导入工作流')).toBeNull();
     });
 
     it('应显示"我的项目"标题', () => {
@@ -239,22 +236,9 @@ describe('HomeView', () => {
       expect(onCreateProject).toHaveBeenCalledTimes(1);
     });
 
-    it('点击"导入工作流"应调用 onImportWorkflow', () => {
-      const onImportWorkflow = vi.fn();
-      renderView({ onImportWorkflow });
-      fireEvent.click(screen.getByText('导入工作流'));
-      expect(onImportWorkflow).toHaveBeenCalledTimes(1);
-    });
-
-    it('isImporting=true 时导入按钮应显示"导入中..."', () => {
-      renderView({ isImporting: true });
-      expect(screen.getByText('导入中...')).toBeDefined();
-    });
-
-    it('isImporting=true 时导入按钮应禁用', () => {
-      renderView({ isImporting: true });
-      const btn = screen.getByText('导入中...');
-      expect((btn as HTMLButtonElement).disabled).toBe(true);
+    it('不再提供"导入工作流"入口', () => {
+      renderView({});
+      expect(screen.queryByText('导入工作流')).toBeNull();
     });
   });
 

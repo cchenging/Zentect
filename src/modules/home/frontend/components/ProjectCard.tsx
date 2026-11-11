@@ -14,7 +14,6 @@ interface ProjectCardProps {
   onRename: (proj: ProjectRecord) => void;
   onDuplicate: (id: string) => void;
   onDelete: (id: string, name: string) => void;
-  onExport: (id: string, name: string) => void;
   /** 🎬 P3-3 关联剧集回调 */
   onBindShow: (proj: ProjectRecord) => void;
 }
@@ -64,7 +63,7 @@ const formatBytes = (bytes?: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
 
-export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRename, onDuplicate, onDelete, onExport, onBindShow }) => {
+export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRename, onDuplicate, onDelete, onBindShow }) => {
   const { t } = useI18n();
   const [imgError, setImgError] = useState(false);
   const [isLoaded, setIsLoaded] = useState(false);
@@ -152,11 +151,6 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRe
                 {t.common?.duplicate || t.common?.copy || '创建副本'}
               </DropdownMenuItem>
               
-              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onExport?.(project.id, project.name); }} className="text-xs gap-2.5 py-2 cursor-pointer rounded-md">
-                <AppIcon name="Download" size={13} className="text-muted-foreground" />
-                导出备份
-              </DropdownMenuItem>
-
               {/* 🎬 P3-3 关联剧集 */}
               <DropdownMenuItem onClick={(e) => { e.stopPropagation(); onBindShow(project); }} className="text-xs gap-2.5 py-2 cursor-pointer rounded-md">
                 <Film size={13} className="text-muted-foreground" />

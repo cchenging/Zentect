@@ -4,6 +4,7 @@ export type { EditorShellInput, EditorShellOutput, StepInfo, MediaTab } from './
 
 export { TopBar } from './frontend/components/TopBar';
 export { StepPanel } from './frontend/components/StepPanel';
+export { OneClickWizard } from './frontend/components/OneClickWizard';
 export { PipelineStatusBar } from './frontend/components/PipelineStatusBar';
 export { PropertyBar } from './frontend/components/PropertyBar';
 

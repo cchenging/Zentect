@@ -3,11 +3,9 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { HomeView } from './View';
 import { useProjectManager } from './hooks/useProjectManager';
-import { useWorkflowImport } from './hooks/useWorkflowImport';
 import type { ProjectRecord } from '../types';
 import { API } from '@renderer/api';
 import { FrontendLogger } from '@renderer/utils/logger';
-import { AppNotifier } from '@renderer/core/AppNotifier';
 import { useEditorStore } from '@renderer/store/useStore';
 import { particlePresets, SKIN_DEFAULT_PARTICLE, resolveColors } from '@renderer/components/particles';
 import type { ParticlePreset } from '@renderer/components/particles/types';
@@ -19,8 +17,6 @@ export const HomeContainer: React.FC = () => {
     filteredProjects, loading, searchText, setSearchText,
     createProject, deleteProject, renameProject, duplicateProject, refresh: refreshProjects
   } = useProjectManager();
-
-  const { importWorkflow, isImporting } = useWorkflowImport();
 
   const [renameVisible, setRenameVisible] = useState(false);
   const [currentEditProj, setCurrentEditProj] = useState<ProjectRecord | null>(null);
@@ -89,16 +85,6 @@ export const HomeContainer: React.FC = () => {
     setDeleteVisible(true);
   }, []);
 
-  const handleExportClick = useCallback(async (id: string, name: string) => {
-    try {
-      const filePath = await API.project.exportProject(id);
-      AppNotifier.success(`项目「${name}」已导出备份`);
-      FrontendLogger.info('HomeManager', `Project exported: ${name}`, '', { filePath });
-    } catch (err: any) {
-      AppNotifier.error(err.message || '导出失败');
-    }
-  }, []);
-
   /** 🎬 P3-3 打开关联剧集对话框 */
   const handleBindShowClick = useCallback((proj: ProjectRecord) => {
     setCurrentBindShowProj(proj);
@@ -137,13 +123,10 @@ export const HomeContainer: React.FC = () => {
       searchText={searchText}
       onSearchChange={setSearchText}
       onCreateProject={handleCreateProject}
-      onImportWorkflow={importWorkflow}
-      isImporting={isImporting}
       onProjectClick={handleProjectClick}
       onRenameClick={handleRenameClick}
       onDuplicateProject={duplicateProject}
       onDeleteClick={handleDeleteClick}
-      onExportClick={handleExportClick}
       renameVisible={renameVisible}
       currentEditProj={currentEditProj}
       onRenameClose={() => setRenameVisible(false)}

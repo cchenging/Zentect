@@ -50,7 +50,7 @@ const parseModels = (val: any, defaultModels: string[]) => {
  */
 export const useSettingsManager = () => {
   const [config, setConfig] = useState<any>(null);
-  const [activeTab, setActiveTab] = useState<'general' | 'ai' | 'export' | 'models' | 'health'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'ai' | 'export' | 'models' | 'health' | 'account'>('general');
   const [isTesting, setIsTesting] = useState(false);
   const [modelPool, setModelPool] = useState<string[]>([]);
   const [apiProfiles, setApiProfiles] = useState<any[]>([]);

@@ -65,7 +65,6 @@ export const IPC_CHANNELS = {
   PROJECT_INSTANTIATE: 'project:instantiate',
   PROJECT_SAVE_CANVAS: 'project:save-canvas',
   PROJECT_UPDATE_SCRIPT_DELTA: 'project:update-script-delta',
-  PROJECT_EXPORT: 'project:export',
 
   // --- 草稿自动保存 ---
   DRAFT_SHADOW_SAVE: 'draft:shadow-save',

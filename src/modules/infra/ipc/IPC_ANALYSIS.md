@@ -158,7 +158,6 @@ SystemController → ApiProfileController → ProjectController → MediaControl
 | `PROJECT_INSTANTIATE` | `project:instantiate` | invoke | ProjectController | API.project.instantiate |
 | `PROJECT_SAVE_CANVAS` | `project:save-canvas` | invoke | ProjectController | API.project.saveCanvas |
 | `PROJECT_UPDATE_SCRIPT_DELTA` | `project:update-script-delta` | invoke | ProjectController | API.project.updateScriptDelta |
-| `PROJECT_EXPORT` | `project:export` | invoke | ProjectController | API.project.exportProject |
 
 ### 2.5 草稿自动保存
 

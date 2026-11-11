@@ -439,48 +439,4 @@ export class ProjectService {
      
      return { success: true, projectId: projectData.id, name: projectData.name };
   }
-
-  /**
-   * 导出项目备份
-   * 将项目数据导出为 JSON 备份文件，保存到用户指定的目录
-   * @param id 项目 ID
-   * @returns 备份文件路径
-   */
-  public async exportProject(id: string): Promise<string> {
-    // 🔧 修复 TS2339：ProjectRepository 实际方法名是 findById
-    const project = await this.repo.findById(id);
-    if (!project) {
-      throw new AppError(ErrorCode.DATABASE_ERROR, `项目不存在: ${id}`);
-    }
-
-    const projectData = await this.loadData(id);
-
-    const exportData = {
-      project: {
-        id: project.id,
-        name: project.name,
-        type: project.type,
-        created_at: project.created_at,
-        updated_at: project.updated_at,
-      },
-      data: projectData,
-      exportedAt: new Date().toISOString(),
-      version: '1.0.0',
-    };
-
-    // 🔧 修复 TS2551：方法名实际是 getExportRootPath（不是 getExportPath）
-    const exportDir = PathManager.getExportRootPath();
-    await fs.mkdir(exportDir, { recursive: true });
-
-    const safeName = project.name.replace(/[<>:"/\\|?*]/g, '_');
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const exportFileName = `${safeName}_${timestamp}.zentect.json`;
-    const exportFilePath = path.join(exportDir, exportFileName);
-
-    await fs.writeFile(exportFilePath, JSON.stringify(exportData, null, 2), 'utf-8');
-
-    AppLogger.info(LOG_TAGS.PROJECT, `项目 ${project.name} 导出成功: ${exportFilePath}`);
-
-    return exportFilePath;
-  }
 }

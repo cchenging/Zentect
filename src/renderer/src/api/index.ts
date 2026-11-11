@@ -221,8 +221,6 @@ export const API = {
     duplicate: (id: string) => invokeSafe(IPC_CHANNELS.PROJECT_DUPLICATE, id),
     instantiate: (payload: any) => invokeSafe(IPC_CHANNELS.PROJECT_INSTANTIATE, payload),
     import: async () => { console.warn('[API] project.import 尚未实现 IPC 通道'); return null; },
-    /** 导出项目备份 */
-    exportProject: (id: string) => invokeSafe<string>(IPC_CHANNELS.PROJECT_EXPORT, id),
   },
 
   tasks: {
