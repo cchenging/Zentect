@@ -394,9 +394,10 @@ function tokenizeForTfidf(raw: string): string[] {
  * - `srcFile`/`srcParent`：跨镜头取料时才有值（块取自另一物理镜头 ⇒ 硬切、不参与导出层合并）；
  *   `srcParent` 在**同一父镜头内**的兄弟片链上也可能出现（只用于标记块来源，不改变父 id）。
  * - `srcChunkId`/`srcCover`/`srcDesc`：窗实际落点所属的源切片身份、封面与 VLM 描述（可能落在同父兄弟片
- *   链的后半段）。调用方据此改写 `mediaId`/`chunkData.id`/`chunkData.coverPath`/`chunkData.description`/
- *   `thumbnail`，否则卡片缩略图与身份会停在「命中切片」上，与真实画面脱节（用户实测：同单位三张缩略图
- *   完全相同；DB 探针实测 13/43 条 `thumbnail` 与 `chunkData.coverPath` 自相矛盾、描述恒停在命中切片）。
+ *   链的后半段；连续片链越界时取「与窗重叠最长」的归属片）。调用方据此改写 `mediaId`/`chunkData.id`/
+ *   `chunkData.coverPath`/`chunkData.description`/`thumbnail`，否则卡片缩略图与身份会停在「命中切片」上，
+ *   与真实画面脱节（用户实测：同单位三张缩略图完全相同；DB 探针实测 13/43 条 `thumbnail` 与
+ *   `chunkData.coverPath` 自相矛盾、描述恒停在命中切片）。
  */
 interface UnitFragmentWindow {
   startMs: number;
@@ -1714,9 +1715,12 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
             LOG_TAGS.AI_AGENT,
             `[镜头匹配] 原声段落 ${r.shotId} 定位原片 ${r.loc.videoTimelineStartMs}~${r.loc.videoTimelineEndMs}ms → 切片 ${r.loc.chunkId}`,
           );
+          /** 🔧 2026-11-10 观测口径修正：`anchored` 的定义是「本段带 ASR 锚（无论是否位移）」（见 applyCleanInoutToChunk 注释），
+           *  原先只在 shifted 分支内累加 ⇒ 只要本段没位移（多为承载切片比原声窗短、slack≤0），汇总恒显示「带锚 0」，
+           *  被误读为「ASR 锚点全部未命中」。现改为与位移与否无关地计数。 */
+          if (r.clean?.anchored) origCleanStats.anchored += 1;
           if (r.clean?.shifted) {
             origCleanStats.hit += 1;
-            if (r.clean.anchored) origCleanStats.anchored += 1;
             const _cd = r.loc.chunkData || {};
             AppLogger.info(
               LOG_TAGS.AI_AGENT,
@@ -1741,11 +1745,13 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         }
       }
       /** 🎬 补丁20（ISSUE-7）原声段净画汇总行（仅 on 档打印）：与 daemon 侧 `[clean-inout] 汇总` 同口径解读——
-       *  分母是原声段数（不是 KM 查询数），`收窄=0` 多为承载切片不比原声窗长（slack ≤ 0）。 */
+       *  分母是原声段数（不是 KM 查询数），`收窄=0` 多为承载切片不比原声窗长（slack ≤ 0）。
+       *  「带锚」是分母侧读数（带锚段数/原声段数），与是否收窄无关。 */
       if (SemanticAnalyzeStrategy.resolveCleanInoutEdgeMs() > 0) {
         AppLogger.info(LOG_TAGS.AI_AGENT,
           `[clean-inout][node-orig] 净画出入点(原声段) 段数=${originalQueries.length}`
-          + ` 收窄=${origCleanStats.hit}（带锚 ${origCleanStats.anchored}）｜开关=on｜边距=${SemanticAnalyzeStrategy.CLEAN_INOUT_EDGE_MS}ms`);
+          + ` 收窄=${origCleanStats.hit}（带锚 ${origCleanStats.anchored}/${originalQueries.length}）`
+          + `｜开关=on｜边距=${SemanticAnalyzeStrategy.CLEAN_INOUT_EDGE_MS}ms`);
       }
     }
     /** 送 KM 的查询：排除已命中原声段落，避免其干扰全局求解 */
@@ -4023,6 +4029,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
    *   上文「镜头余量」不再是**本片余量**，而是**同文件源时间连续片链（相邻间隔 ≤ 100ms）的可供给长度**
    *   （本片末 + 后继连续片）；链上每片如实登记消费（后续句不回头重放）。断链 / 无 filePath ⇒
    *   逐字节退回本片余量旧口径。动机与实测见 `allocate` 内注释。
+   * - 🏷️ 越界如实标注（2026-11-10，方案 B）：窗沿连续片链越过交叉场景边界时，卡片归属改到
+   *   「与本窗重叠最长」的片（越父带 srcParent ⇒ 导出硬切），并在 diag 计「连续片链越界跨镜」。
    *
    * @param shotLevelQueries 碎片级 query（顺序 = 文案顺序；含 shotId/matchUnitId/audioDurationMs）
    * @param matchById 匹配单位 id → KM 命中结果（含 chunkId/chunkData）
@@ -4048,8 +4056,13 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     const DEFAULT_WINDOW_MS = 3000;
 
     const out = new Map<string, UnitFragmentWindow>();
-    /** shortfall = 不变量自检计数：窗长 < 配音时长的碎片数，正常恒 0（仅整镜头兜底的短镜头可能为 1） */
-    const stats = { windows: 0, advanced: 0, shortfall: 0, reassigned: 0, fallback: 0, uncovered: 0, supplied: 0, replayBlocked: 0, stitched: 0 };
+    /** shortfall = 不变量自检计数：窗长 < 配音时长的碎片数，正常恒 0（仅整镜头兜底的短镜头可能为 1）
+     *  supplyCross/supplyCrossMs = 连续片链越界跨父（场景）的窗数与越界总毫秒；supplyOwner = 因越界把卡片归属改到后继片的窗数 */
+    const stats = {
+      windows: 0, advanced: 0, shortfall: 0, reassigned: 0, fallback: 0, uncovered: 0,
+      supplied: 0, replayBlocked: 0, stitched: 0,
+      supplyCross: 0, supplyCrossMs: 0, supplyOwner: 0,
+    };
     /** 物理镜头 → 已消费到的源时间（跨句生效、只增不减 ⇒ 起点单调不减） */
     const cursorByShot = new Map<string, number>();
     /**
@@ -4133,15 +4146,16 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
      *  时间先验改由章级时间带 / 原声 ASR 时间窗提供（后续第 4 段接入）。
      */
 
-    /** 构造子窗：srcFile 恒给（同镜头时与命中镜头同一文件）；跨镜头才带 srcParent（供导出层按硬切处理） */
-    const windowOf = (chunk: any, startMs: number, endMs: number, isCross: boolean): UnitFragmentWindow => ({
+    /** 构造子窗：srcFile 恒给（同镜头时与命中镜头同一文件）；跨镜头才带 srcParent（供导出层按硬切处理）
+     *  @param owner 卡片归属片（默认 = 入片；连续片链越界时可能是后继片，取「与本窗重叠最长」者，见 allocate） */
+    const windowOf = (owner: any, startMs: number, endMs: number, isCross: boolean): UnitFragmentWindow => ({
       startMs,
       endMs,
-      ...(chunk?.filePath ? { srcFile: String(chunk.filePath) } : {}),
-      ...(isCross ? { srcParent: String(chunk?.parentChunkId || chunk?.id || '') } : {}),
-      ...(chunk?.id ? { srcChunkId: String(chunk.id) } : {}),
-      ...(chunk?.coverPath ? { srcCover: String(chunk.coverPath) } : {}),
-      ...(chunk?.description ? { srcDesc: String(chunk.description) } : {}),
+      ...(owner?.filePath ? { srcFile: String(owner.filePath) } : {}),
+      ...(isCross ? { srcParent: String(owner?.parentChunkId || owner?.id || '') } : {}),
+      ...(owner?.id ? { srcChunkId: String(owner.id) } : {}),
+      ...(owner?.coverPath ? { srcCover: String(owner.coverPath) } : {}),
+      ...(owner?.description ? { srcDesc: String(owner.description) } : {}),
     });
 
     /** L0 归因：allocate 最近一次拒收原因（tail=镜头余量不足、supply=可供给时长不足、replay=回放闸门） */
@@ -4186,11 +4200,11 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
        * 直到够承载本句配音为止（链上每片都如实登记消费，后续句不回头重放）。
        */
       const seq = SUPPLY_ON ? contiguousChain(chunk) : [chunk];
-      const consumed: Array<{ id: string; end: number }> = [];
+      const consumed: Array<{ id: string; end: number; chunk: any }> = [];
       let cover = e0;
       const target = neededMs > EPS ? neededMs : DEFAULT_WINDOW_MS;
       for (let i = 1; i < seq.length && cover - entry < target - EPS; i += 1) {
-        consumed.push({ id: String(seq[i].id), end: Number(seq[i].endMs) });
+        consumed.push({ id: String(seq[i].id), end: Number(seq[i].endMs), chunk: seq[i] });
         cover = Number(seq[i].endMs);
       }
       const avail = cover - entry;
@@ -4218,8 +4232,31 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
         if (v > (prev === undefined ? -Infinity : prev)) cursorByShot.set(c.id, v);
       }
       if (consumed.length > 0) stats.supplied += 1;                // 本窗靠后继连续片链补齐
+      /**
+       * 🏷️ 越界如实标注（2026-11-10，方案 B）：窗沿连续片链越过本片末进入后继片时，
+       *  卡片归属按「与本窗**重叠最长**的片」判定（与跨镜拼接窗同一口径，见 stitchWin 归属注释）——
+       *  否则卡片缩略图/描述/身份停在入片，画面主体却已是后继镜头（实测 seg_27：2819ms 中
+       *  1894ms 落在 chunk_080 / scene_080，卡片仍标 chunk_079，被误读为「相邻句重复同片」）。
+       *  归属片与本片不同父 ⇒ 带 srcParent（导出层按硬切处理）；同父兄弟片 ⇒ 仅改写身份三件套。
+       *  仅标记与统计，**不改交付窗**（窗仍逐帧连续、零重叠，绝不回放）。
+       */
+      let ownerChunk = chunk;
+      let ownerMs = Math.max(0, Math.min(end, e0) - entry);
+      let crossMs = 0;
+      const entryParent = String(chunk?.parentChunkId || chunk?.id || '');
+      for (const c of consumed) {
+        const cs = Math.max(entry, Number(c.chunk?.startMs));
+        const ce = Math.min(end, Number(c.chunk?.endMs));
+        const m = ce - cs;
+        if (!(m > EPS)) continue;
+        if (String(c.chunk?.parentChunkId || c.chunk?.id || '') !== entryParent) crossMs += m;
+        if (m > ownerMs + EPS) { ownerMs = m; ownerChunk = c.chunk; }
+      }
+      if (crossMs > EPS) { stats.supplyCross += 1; stats.supplyCrossMs += Math.round(crossMs); }
+      const ownerChanged = String(ownerChunk?.id || '') !== cid;
+      if (ownerChanged) stats.supplyOwner += 1;
       if (cursor !== undefined && entry > cursor + EPS) stats.advanced += 1;
-      return windowOf(chunk, entry, end, isCross);
+      return windowOf(ownerChunk, entry, end, isCross || ownerChanged);
     };
 
     /** 跨镜拼接句的分片切分口径：sentence 档一个完整句含多碎片时，各碎片按配音时长比例把
@@ -4387,7 +4424,8 @@ export class SemanticAnalyzeStrategy extends BaseNodeStrategy {
     AppLogger.info(LOG_TAGS.AI_AGENT,
       `[镜头匹配] 🎬 P4 镜头内连续切窗：出窗碎片 ${stats.windows}/${shotLevelQueries.length}｜`
       + `顺延起窗 ${stats.advanced}｜窗长不足配音 ${stats.shortfall}｜顺延次优镜头 ${stats.reassigned}｜`
-      + `连续片链补窗 ${stats.supplied}｜回放拦下 ${stats.replayBlocked}｜跨镜拼接 ${stats.stitched}｜`
+      + `连续片链补窗 ${stats.supplied}｜连续片链越界跨镜 ${stats.supplyCross}（越界 ${stats.supplyCrossMs}ms｜改归属 ${stats.supplyOwner}）｜`
+      + `回放拦下 ${stats.replayBlocked}｜跨镜拼接 ${stats.stitched}｜`
       + `整镜头兜底 ${stats.fallback}｜无窗/未匹配 ${stats.uncovered}`);
     return out;
   }

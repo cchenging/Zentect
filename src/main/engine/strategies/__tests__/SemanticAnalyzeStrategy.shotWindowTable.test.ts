@@ -400,6 +400,62 @@ describe('buildShotWindowTable（P4 镜头内连续切窗取料）', () => {
     // 多碎片单位不透出整段 parts（避免每个碎片都重复交付同一 union）
     expect(wins.every((w) => w.stitchWholeUnit === false)).toBe(true);
   });
+
+  it('H. 连续片链越界到下一镜（场景）⇒ 归属改到重叠最长片、带 srcParent、计入越界统计', () => {
+    /** 复现 seg_27：第 2 片沿连续链取料，窗 [3000,8000] 中 2000ms 在 chunk_079、3000ms 在 chunk_080
+     *  （不同父）⇒ 卡片归属 chunk_080/scene_080，缩略图/描述与画面主体一致（此前恒标入片）。 */
+    const prev = process.env.ZENTECT_KM_SUPPLY_DUR;
+    process.env.ZENTECT_KM_SUPPLY_DUR = '1';
+    try {
+      const c79 = mkChunk('chunk_079', 'scene_079', 1000, 5000);
+      const c80 = mkChunk('chunk_080', 'scene_080', 5000, 9000);
+      const queries = [
+        { shotId: 'u1_a', matchUnitId: 'u1', audioDurationMs: 2000 },
+        { shotId: 'u1_b', matchUnitId: 'u1', audioDurationMs: 5000 },
+      ];
+      const matchById = new Map<string, any>([['u1', { chunkData: c79 }]]);
+      const chunkById = new Map<string, any>([['chunk_079', c79], ['chunk_080', c80]]);
+      const table = S.buildShotWindowTable(queries, matchById, chunkById, null, null);
+      const wins = pick(table, ['u1_a', 'u1_b']);
+      expect(wins[0]).toMatchObject({ startMs: 1000, endMs: 3000, srcChunkId: 'chunk_079' });
+      expectContiguous(wins);                                  // 严格首尾相接：不是「重复同片」
+      expect(wins[1]).toMatchObject({
+        startMs: 3000, endMs: 8000, srcChunkId: 'chunk_080', srcParent: 'scene_080', srcFile: 'a.mp4',
+      });
+      const diag = lastShotWindowDiag();
+      expect(diag).toContain('连续片链补窗 1');
+      expect(diag).toContain('连续片链越界跨镜 1');
+      expect(diag).toContain('越界 3000ms');
+      expect(diag).toContain('改归属 1');
+    } finally {
+      if (prev === undefined) delete process.env.ZENTECT_KM_SUPPLY_DUR;
+      else process.env.ZENTECT_KM_SUPPLY_DUR = prev;
+    }
+  });
+
+  it('H2. 越界只到同父兄弟片 ⇒ 归属跟随兄弟片，但不计「越界跨镜」（父未变）', () => {
+    const prev = process.env.ZENTECT_KM_SUPPLY_DUR;
+    process.env.ZENTECT_KM_SUPPLY_DUR = '1';
+    try {
+      const c79a = mkChunk('scene_079_seg0', 'scene_079', 1000, 5000);
+      const c79b = mkChunk('scene_079_seg1', 'scene_079', 5000, 9000);
+      const queries = [
+        { shotId: 'u1_a', matchUnitId: 'u1', audioDurationMs: 2000 },
+        { shotId: 'u1_b', matchUnitId: 'u1', audioDurationMs: 5000 },
+      ];
+      const matchById = new Map<string, any>([['u1', { chunkData: c79a }]]);
+      const chunkById = new Map<string, any>([['scene_079_seg0', c79a], ['scene_079_seg1', c79b]]);
+      const table = S.buildShotWindowTable(queries, matchById, chunkById, null, null);
+      const wins = pick(table, ['u1_a', 'u1_b']);
+      expect(wins[1]).toMatchObject({ startMs: 3000, endMs: 8000, srcChunkId: 'scene_079_seg1', srcParent: 'scene_079' });
+      const diag = lastShotWindowDiag();
+      expect(diag).toContain('连续片链越界跨镜 0');
+      expect(diag).toContain('改归属 1');
+    } finally {
+      if (prev === undefined) delete process.env.ZENTECT_KM_SUPPLY_DUR;
+      else process.env.ZENTECT_KM_SUPPLY_DUR = prev;
+    }
+  });
 });
 
 describe('retimeFragmentWindow（改窗三件套 / 身份三件套同源 / 变速重算 / 不可变）', () => {
