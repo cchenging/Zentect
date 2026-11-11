@@ -126,3 +126,89 @@ describe('LLMFactory G3 出站前 preflight', () => {
     expect(adapter).toBeTruthy();
   });
 });
+
+describe('LLMFactory.createForNode —— 通用管线 LLM 节点（替代硬编码空 Key）', () => {
+  beforeEach(() => {
+    for (const k of Object.keys(h.settingsStore)) delete h.settingsStore[k];
+    h.getAll.mockReset();
+    h.getActive.mockReset();
+    h.getByTaskType.mockReset();
+  });
+
+  it('节点无配置 ⇒ 回落任务权威配置（读取 settings 里的真实 Key）', () => {
+    h.getByTaskType.mockReturnValue(null);
+    h.getActive.mockReturnValue(null);
+    h.settingsStore.taskHelperModel = 'deepseek-chat';
+    h.settingsStore.deepseekKey = 'sk-deepseek-real';
+
+    const { modelName, temperature } = LLMFactory.createForNode(undefined, 'helper');
+    expect(modelName).toBe('deepseek-chat');
+    expect(temperature).toBe(0.7);
+  });
+
+  it('节点另选通道 ⇒ 用该 provider 的 Key（不是任务默认通道的 Key）', () => {
+    h.getByTaskType.mockReturnValue(null);
+    h.getActive.mockReturnValue(null);
+    h.settingsStore.taskHelperModel = 'deepseek-chat';
+    h.settingsStore.deepseekKey = 'sk-deepseek-real';
+    h.settingsStore.qwenKey = 'sk-qwen-real';
+
+    const { modelName } = LLMFactory.createForNode(
+      { provider: 'qwen', modelName: 'qwen-plus' },
+      'helper',
+    );
+    expect(modelName).toBe('qwen-plus');
+  });
+
+  it('节点另选通道但该通道 Key 为空 ⇒ 抛 AIAuthError（不再带空 Key 出站）', () => {
+    h.getByTaskType.mockReturnValue(null);
+    h.getActive.mockReturnValue(null);
+    h.settingsStore.taskHelperModel = 'deepseek-chat';
+    h.settingsStore.deepseekKey = 'sk-deepseek-real';
+    h.settingsStore.qwenKey = '';
+
+    try {
+      LLMFactory.createForNode({ provider: 'qwen', modelName: 'qwen-plus' }, 'helper');
+      expect.unreachable('应当抛 AIAuthError');
+    } catch (err) {
+      const e = err as AIAuthError;
+      expect(e).toBeInstanceOf(AIAuthError);
+      expect(e.provider).toBe('qwen');
+      expect(e.status).toBe('missing');
+    }
+  });
+
+  it("节点为 reset 写入的 'default' 哨兵 ⇒ 视同未配置，按任务配置解析", () => {
+    h.getByTaskType.mockReturnValue(null);
+    h.getActive.mockReturnValue(null);
+    h.settingsStore.taskHelperModel = 'qwen-plus';
+    h.settingsStore.qwenKey = 'sk-qwen-real';
+    // 若 'default' 被当成 provider，会去读空 openaiKey 并抛 AIAuthError
+    h.settingsStore.openaiKey = '';
+
+    const { modelName } = LLMFactory.createForNode(
+      { provider: 'default', modelName: 'default' },
+      'helper',
+    );
+    expect(modelName).toBe('qwen-plus');
+  });
+
+  it('节点通道的凭据已失效（decrypt_failed）⇒ 抛 AIAuthError', () => {
+    h.getByTaskType.mockReturnValue(null);
+    h.getActive.mockImplementation((provider: string) => (
+      provider === 'qwen' ? brokenProfile : null
+    ));
+    h.settingsStore.taskHelperModel = 'deepseek-chat';
+    h.settingsStore.deepseekKey = 'sk-deepseek-real';
+
+    try {
+      LLMFactory.createForNode({ provider: 'qwen', modelName: 'qwen-plus' }, 'helper');
+      expect.unreachable('应当抛 AIAuthError');
+    } catch (err) {
+      const e = err as AIAuthError;
+      expect(e).toBeInstanceOf(AIAuthError);
+      expect(e.status).toBe('decrypt_failed');
+      expect(e.provider).toBe('qwen');
+    }
+  });
+});

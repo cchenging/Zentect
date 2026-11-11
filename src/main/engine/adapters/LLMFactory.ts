@@ -160,6 +160,79 @@ export class LLMFactory {
     return { provider, model: modelName, baseURL, apiKey, apiKeyStatus, temperature };
   }
 
+  /** provider → settings 明文 Key 键名（与 getEffectiveConfig 的回退口径保持一致） */
+  private static readonly PROVIDER_SECRET_KEYS: Record<string, string> = {
+    doubao: 'doubaoKey',
+    volc: 'doubaoKey',
+    deepseek: 'deepseekKey',
+    qwen: 'qwenKey',
+    tencent: 'tencentKey',
+    proxy: 'openaiKey',
+  };
+
+  /** provider 的内置 baseURL（仅当节点另选了通道、又没填自定义地址时使用） */
+  private static defaultBaseURL(provider: string): string {
+    switch (provider) {
+      case 'doubao':
+      case 'volc': return 'https://ark.cn-beijing.volces.com/api/v3';
+      case 'deepseek': return 'https://api.deepseek.com/v1';
+      case 'qwen': return 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+      case 'tencent': return 'https://api.hunyuan.cloud.tencent.com/v1';
+      default: return 'https://api.openai.com/v1';
+    }
+  }
+
+  /**
+   * 按 provider 解析凭据（不看任务绑定）——供「节点显式指定了与任务默认不同的通道」时使用。
+   * ADR-004 G3：解析后立即 preflight，凭据非 ok 抛 AIAuthError。
+   */
+  static resolveProviderCredential(
+    provider: string,
+    taskLabel: AITaskType,
+  ): { apiKey: string; apiKeyStatus: CredentialStatus } {
+    const settings = new SettingsRepository();
+    const oldKey = this.PROVIDER_SECRET_KEYS[provider] ?? 'openaiKey';
+    const { key, status } = this.resolveApiKey(provider, settings, oldKey, taskLabel);
+    assertOutboundCredential({ provider, taskLabel, apiKey: key, status });
+    return { apiKey: key, apiKeyStatus: status };
+  }
+
+  /**
+   * 为通用管线节点（`pipeline_model_config`）构造 adapter —— 替代过去 `create(provider, '', baseUrl)` 的硬编码空 Key。
+   *
+   * 合并口径：节点显式配置优先（`provider/modelName/customBaseUrl`），未配置则回落到该任务的权威配置
+   * （`getEffectiveConfig`，绑定表 → settings 路由）。`'default'` 是 resetPipelineNodeModel 写入的
+   * 「跟随系统设置」哨兵，视同未配置。
+   */
+  static createForNode(
+    node: { provider?: string; modelName?: string; customBaseUrl?: string } | null | undefined,
+    taskType: AITaskType,
+  ): FactoryResult {
+    const eff = this.getEffectiveConfig(taskType);
+    const nodeProvider = node?.provider && node.provider !== 'default' ? node.provider : '';
+    const nodeModel = node?.modelName && node.modelName !== 'default' ? node.modelName : '';
+
+    const provider = nodeProvider || eff.provider;
+    const modelName = nodeModel || eff.model;
+    const baseURL = node?.customBaseUrl
+      || (provider === eff.provider ? eff.baseURL : this.defaultBaseURL(provider));
+
+    const credential: { apiKey: string; apiKeyStatus: CredentialStatus } = provider === eff.provider
+      ? { apiKey: eff.apiKey, apiKeyStatus: eff.apiKeyStatus ?? 'ok' }
+      : this.resolveProviderCredential(provider, taskType);
+
+    // ADR-004 G3：出站前 preflight（节点另选通道时尤其关键——那条路径不会经过 getEffectiveConfig 的断言）
+    assertOutboundCredential({
+      provider,
+      taskLabel: taskType,
+      apiKey: credential.apiKey,
+      status: credential.apiKeyStatus,
+    });
+
+    const adapter = this.create(provider, credential.apiKey, baseURL);
+    return { adapter, modelName, temperature: eff.temperature };
+  }
+
   static createAdapter(taskType: AITaskType): FactoryResult {
     // 复用权威配置解析，单一数据源
     const config = this.getEffectiveConfig(taskType);

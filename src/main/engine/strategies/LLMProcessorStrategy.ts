@@ -3,6 +3,7 @@ import { PipelineTask } from '../../../shared/types';
 import { LLMFactory } from '../adapters/LLMFactory';
 import { AppLogger } from '../../core/AppLogger';
 import { LOG_TAGS } from '@modules/infra/logger/LogConstants';
+import { AIAuthError } from '../../../shared/utils/credentialFormat';
 
 export class LLMProcessorStrategy extends BaseNodeStrategy {
   readonly nodeType = 'llm-processor';
@@ -13,9 +14,6 @@ export class LLMProcessorStrategy extends BaseNodeStrategy {
     _cacheDir: string,
     onProgress: (p: number, s: string) => void
   ): Promise<any> {
-    const model = task.params?.model || context.modelConfig?.modelName || 'deepseek-chat';
-    const provider = context.modelConfig?.provider || 'deepseek';
-    const baseUrl = context.modelConfig?.customBaseUrl;
     const systemPrompt = task.params?.systemPrompt || '你是一个有用的AI助手';
     const temperature = task.params?.temperature ?? 0.7;
 
@@ -26,14 +24,17 @@ export class LLMProcessorStrategy extends BaseNodeStrategy {
 
     const userPrompt = task.params?.inputMapping || '请根据以上数据进行分析处理。';
 
-    onProgress(5, `正在呼叫 ${model} 模型...`);
-
     try {
-      const adapter = LLMFactory.create(provider as any, '', baseUrl || '');
+      // ADR-004 G3：凭据由工厂统一解析（节点配置 → 任务权威配置），不再硬编码空 Key
+      const { adapter, modelName } = LLMFactory.createForNode(context.modelConfig, 'helper');
+      const model = task.params?.model || modelName;
+
+      onProgress(5, `正在呼叫 ${model} 模型...`);
+
       const response = await adapter.chat([
         { role: 'system', content: systemPrompt },
         { role: 'user', content: `上游数据:\n${upstreamContent}\n\n${userPrompt}` },
-      ], 'llm-model', temperature);
+      ], model, temperature);
 
       onProgress(100, 'LLM 处理完成');
       return {
@@ -43,6 +44,7 @@ export class LLMProcessorStrategy extends BaseNodeStrategy {
       };
     } catch (e: any) {
       AppLogger.error(LOG_TAGS.AI_AGENT, 'LLM Processor 调用失败', e);
+      if (e instanceof AIAuthError) throw e; // 保留类型，ExceptionHub 才能归类为 AI_AUTH_FAILED
       throw new Error(`LLM 处理异常: ${e.message}`);
     }
   }
