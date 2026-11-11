@@ -1,0 +1,2708 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>编辑器 · 左参数 / 右视图</title>
+  <link rel="icon" type="image/png" href="./assets/app-icon.png" />
+  <link rel="stylesheet" href="./assets/app.css" />
+  <style>
+    /* ============================================================
+       编辑器 v3：左栏只改参数，右栏只出产物
+       预览常驻 + 视图切换（预览 / ①素材 / ②画面描述 / ③脚本 / ④配音 / ⑤镜头匹配）
+       ============================================================ */
+    body[data-editor-v2] .ed-panel { width: 30%; min-width: 320px; }
+    body[data-editor-v2] .ed-canvas { min-width: 0; }
+    body[data-editor-v2] .ind-line { width: 10px; }
+
+    /* ---------- 左栏：步骤点 + 当前步骤标题 ---------- */
+    .ind { cursor: pointer; }
+    .ind-node {
+      width: 22px;
+      height: 22px;
+      transition: border-color var(--dur-fast) var(--ease),
+                  background var(--dur-fast) var(--ease),
+                  color var(--dur-fast) var(--ease);
+    }
+    .ind:hover .ind-node { border-color: rgba(255,255,255,.4); }
+    .ind.check .ind-node { border-color: rgba(240,180,41,.45); color: var(--accent-warm); background: rgba(240,180,41,.12); }
+    .ind.ready .ind-node { border-color: rgba(74,222,128,.45); color: var(--accent-green); background: rgba(74,222,128,.1); }
+    .ind.run .ind-node { border-color: rgba(237,237,237,.45); color: var(--accent-cyan); background: rgba(237,237,237,.12); }
+    /* 当前步骤优先于运行态：选中圆点必须最亮、带光环 */
+    .ind.cur .ind-node {
+      border-color: rgba(237,237,237,.7);
+      background: rgba(237,237,237,.2);
+      color: var(--accent-fg);
+      box-shadow: 0 0 0 3px rgba(237,237,237,.16);
+    }
+    .ind.cur:hover .ind-node { border-color: rgba(237,237,237,.85); }
+
+    .cfg-title-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255,255,255,.05);
+    }
+    .cfg-title { font-size: 14px; font-weight: 600; line-height: 1.3; }
+    .cfg-sub { margin-top: 3px; font-size: 12px; line-height: 1.5; color: var(--muted-fg); }
+
+    /* ---------- 左栏：参数滚动区 ---------- */
+    .panel-scroll { padding: 12px 14px 8px; }
+    .stepcfg { display: none; }
+    .stepcfg.on { display: block; }
+
+    /* ---------- 左栏：底部操作 ---------- */
+    .cfg-foot {
+      flex: none;
+      padding: 10px 14px 12px;
+      border-top: 1px solid rgba(255,255,255,.07);
+      background: var(--card);
+    }
+    .cfg-impact {
+      display: none;
+      margin-bottom: 8px;
+      padding: 7px 9px;
+      border: 1px solid rgba(240,180,41,.3);
+      border-radius: 8px;
+      background: rgba(240,180,41,.08);
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--accent-warm);
+    }
+    .cfg-impact.on { display: block; }
+    .cfg-actions { display: flex; gap: 8px; justify-content: space-between; }
+    .cfg-actions .btn { flex: none; justify-content: center; height: 30px; padding: 0 16px; }
+
+    /* ---------- 右栏：视图 chips ---------- */
+    .cv-views {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      padding: 7px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.05);
+      overflow-x: auto;
+    }
+    .cv-views::-webkit-scrollbar { height: 0; }
+    .view-chip {
+      height: 26px;
+      padding: 0 10px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border-radius: var(--radius-md);
+      border: 1px solid transparent;
+      /* 常态即 600，避免选中加粗导致 chips 横向抖动 */
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted-fg);
+      white-space: nowrap;
+      transition: color var(--dur-fast) var(--ease),
+                  background var(--dur-fast) var(--ease),
+                  border-color var(--dur-fast) var(--ease);
+    }
+    .view-chip:hover { color: var(--foreground); background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.1); }
+    .view-chip.on {
+      color: var(--accent-fg);
+      background: rgba(237,237,237,.16);
+      border-color: rgba(237,237,237,.32);
+    }
+    .view-chip .vc-dot { width: 5px; height: 5px; border-radius: 50%; background: rgba(255,255,255,.22); flex: none; }
+    .view-chip.on .vc-dot { background: var(--accent); box-shadow: 0 0 0 3px rgba(237,237,237,.12); }
+    /* 步骤序号：让 tab 与管线步骤一一对应（预览不编号 = 全局监看） */
+    .view-chip .vc-no {
+      font-style: normal;
+      width: 14px; height: 14px;
+      border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 10px; line-height: 1;
+      color: var(--muted-fg);
+      background: rgba(255,255,255,.1);
+      flex: none;
+    }
+    .view-chip.on .vc-no { color: var(--accent-fg); background: rgba(237,237,237,.26); }
+
+    /* ---------- 右栏：运行状态条 ---------- */
+    .cv-state {
+      flex: none;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 14px;
+      border-bottom: 1px solid rgba(255,255,255,.05);
+      font-size: 13px;
+      color: var(--muted-fg);
+    }
+    .cv-state b { color: var(--foreground); font-weight: 600; }
+    .cv-state .bar-mini {
+      width: 96px;
+      height: 3px;
+      border-radius: 4px;
+      background: rgba(255,255,255,.08);
+      overflow: hidden;
+      flex: none;
+    }
+    .cv-state .bar-mini i { display: block; height: 100%; border-radius: 4px; background: var(--accent); transition: width .3s ease; }
+
+    /* ---------- 右栏：视图容器 ---------- */
+    .cv-pane { display: none; flex: 1; min-height: 0; flex-direction: column; }
+    .cv-pane.on { display: flex; }
+    body[data-editor-v2] .cv-frame { width: min(100%, calc((100vh - 460px) * 16 / 9)); }
+    body[data-editor-v2] .st-frames { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+
+    /* ---------- 复用步骤页的产物控件 ---------- */
+    .st-card {
+      margin-bottom: 7px;
+      padding: 9px;
+      border: 1px solid rgba(255,255,255,.075);
+      border-radius: var(--radius-xl);
+      background: rgba(255,255,255,.028);
+    }
+    .st-card:last-child { margin-bottom: 0; }
+    .st-card-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
+    .st-card-head b { font-size: 13px; font-weight: 600; }
+    .st-card-head .badge { flex: none; white-space: nowrap; }
+    /* 左栏参数卡：手风琴（点标题行折叠，同一组只展开一张） */
+    .panel-scroll .stepcfg > .st-card > .st-card-head { cursor: pointer; user-select: none; }
+    /* 折叠箭头是伪元素、也是 flex 项：把标题后的余量全推给箭头侧，徽标/数值才能贴右成一列 */
+    .panel-scroll .stepcfg > .st-card > .st-card-head > b { margin-right: auto; }
+    .panel-scroll .stepcfg > .st-card > .st-card-head::after {
+      content: '';
+      width: 6px; height: 6px;
+      flex: none;
+      margin: -3px 2px 0 0;
+      border-right: 1.5px solid var(--muted-fg);
+      border-bottom: 1.5px solid var(--muted-fg);
+      transform: rotate(45deg);
+      transition: transform var(--dur-fast) var(--ease);
+    }
+    .panel-scroll .stepcfg > .st-card.collapsed > .st-card-head::after {
+      margin-top: 0;
+      transform: rotate(-45deg);
+    }
+    .panel-scroll .stepcfg > .st-card.collapsed > *:not(.st-card-head) { display: none; }
+    .st-label { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin: 7px 0 4px; font-size: 12px; color: var(--muted-fg); }
+    .st-label b { font-weight: 600; color: var(--foreground); }
+    /* 提示条：细左边线 + 两行封顶（完整文案悬停 title 可见），替代灰底小方块 */
+    .st-hint {
+      margin-top: 6px;
+      padding-left: 8px;
+      border-left: 2px solid rgba(255,255,255,.1);
+      font-size: 11px;
+      line-height: 1.55;
+      color: var(--muted-fg);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .st-hint.warn { border-left-color: rgba(240,180,90,.5); color: rgba(240,190,120,.85); }
+    .st-mono { font-family: ui-monospace, monospace; }
+
+    /* ---------- OP/ED 双柄裁剪滑轨 ---------- */
+    .oped { margin-top: 6px; }
+    .oped-codes { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted-fg); }
+    .oped-code { display: inline-flex; align-items: center; gap: 5px; }
+    .oped-code b { font-family: ui-monospace, monospace; font-weight: 500; color: var(--foreground); letter-spacing: .2px; font-variant-numeric: tabular-nums; }
+    .oped-track { position: relative; height: 22px; margin: 8px 0 6px; cursor: pointer; touch-action: none; user-select: none; }
+    .oped-rail, .oped-cut, .oped-keep { position: absolute; top: 50%; transform: translateY(-50%); height: 6px; border-radius: 999px; pointer-events: none; }
+    .oped-rail { left: 0; right: 0; background: rgba(255,255,255,.06); box-shadow: inset 0 1px 0 rgba(0,0,0,.35); }
+    .oped-cut { background: repeating-linear-gradient(-45deg, rgba(255,255,255,.17) 0 1px, transparent 1px 4px); }
+    .oped-cut.l { border-radius: 999px 0 0 999px; }
+    .oped-cut.r { border-radius: 0 999px 999px 0; }
+    .oped-keep {
+      border-radius: 999px;
+      background: linear-gradient(90deg, rgba(237,237,237,.62), rgba(237,237,237,.92));
+      box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 1px 5px rgba(0,0,0,.35);
+    }
+    .oped-handle {
+      position: absolute; top: 50%; width: 14px; height: 14px; margin-left: -7px;
+      transform: translateY(-50%);
+      border-radius: 50%;
+      border: 2px solid var(--card);
+      box-shadow: 0 1px 4px rgba(0,0,0,.45);
+      cursor: grab;
+      transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+    }
+    .oped-handle::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: rgba(0,0,0,.2); }
+    .oped-handle.op { background: var(--accent-green); }
+    .oped-handle.ed { background: var(--accent-warm); }
+    .oped-handle:hover { transform: translateY(-50%) scale(1.18); }
+    .oped-handle:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(255,255,255,.22), 0 1px 4px rgba(0,0,0,.45); }
+    .oped-handle.drag {
+      cursor: grabbing;
+      transform: translateY(-50%) scale(1.28);
+      box-shadow: 0 0 0 4px rgba(255,255,255,.08), 0 2px 8px rgba(0,0,0,.5);
+    }
+    .oped-foot { display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+    .oped-foot .st-act { height: 22px; padding: 0 7px; }
+
+    .st-opts { display: grid; gap: 5px; }
+    .st-opts.c2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .st-opts.c3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .st-opt {
+      min-height: 44px;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: var(--radius-lg);
+      background: rgba(255,255,255,.02);
+      color: var(--muted-fg);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.25;
+      text-align: center;
+      transition: border-color var(--dur-fast) var(--ease),
+                  background var(--dur-fast) var(--ease),
+                  color var(--dur-fast) var(--ease);
+    }
+    /* 选项瓦片此前没有任何悬浮反馈，和已选态一样“死” */
+    .st-opt:hover { border-color: rgba(255,255,255,.2); background: rgba(255,255,255,.045); color: var(--foreground); }
+    .st-opt small { font-size: 11px; font-weight: 400; opacity: .62; }
+    .st-opt.tall { align-items: flex-start; text-align: left; padding: 8px; min-height: 46px; }
+    .st-opt.tight { min-height: 30px; }
+    .st-opt.on { border-color: rgba(237,237,237,.55); background: rgba(237,237,237,.16); color: var(--accent-fg); }
+    .st-opt.on:hover { border-color: rgba(237,237,237,.68); background: rgba(237,237,237,.19); }
+    .st-opt.on small { opacity: .82; }
+
+    .st-seg { display: flex; gap: 3px; padding: 3px; border: 1px solid rgba(255,255,255,.05); border-radius: var(--radius-lg); background: var(--bg-secondary); }
+    .st-seg button {
+      flex: 1; min-width: 0; height: 26px; padding: 0 4px;
+      border-radius: var(--radius-sm);
+      font-size: 12px; color: var(--muted-fg);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    }
+    .st-seg button:hover:not(.on) { background: rgba(255,255,255,.05); color: var(--foreground); }
+    .st-seg button.on { background: rgba(237,237,237,.2); color: var(--accent-fg); font-weight: 600; }
+
+    .st-select {
+      width: 100%; height: 30px;
+      padding: 0 8px;
+      display: flex; align-items: center; justify-content: space-between; gap: 6px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--bg-secondary);
+      font-size: 12px;
+      color: var(--foreground);
+      cursor: pointer;
+      transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+    }
+    .st-select:hover { border-color: rgba(255,255,255,.28); }
+    .st-select em { font-style: normal; color: var(--muted-fg); font-size: 11px; }
+    .st-input {
+      width: 100%; height: 30px;
+      padding: 0 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: rgba(255,255,255,.03);
+      color: var(--foreground);
+      font-size: 12px;
+      outline: none;
+      transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+    }
+    .st-input:hover { border-color: rgba(255,255,255,.24); }
+    .st-input:focus { border-color: rgba(237,237,237,.55); background: rgba(255,255,255,.045); }
+    .st-input::placeholder, .st-textarea::placeholder { color: rgba(163,163,163,.5); }
+    .st-textarea {
+      width: 100%;
+      min-height: 42px;
+      padding: 5px 7px;
+      resize: none;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: rgba(255,255,255,.03);
+      color: var(--foreground);
+      font-size: 12px;
+      line-height: 1.5;
+      outline: none;
+      transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+    }
+    .st-textarea:focus { border-color: rgba(237,237,237,.55); background: rgba(255,255,255,.045); }
+
+    .st-state {
+      display: inline-flex; align-items: center; gap: 4px;
+      height: 20px; padding: 0 7px;
+      border-radius: 999px;
+      border: 1px solid;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .st-state.run { color: var(--accent-cyan); border-color: rgba(237,237,237,.35); background: rgba(237,237,237,.12); }
+    .st-state.done { color: var(--accent-green); border-color: rgba(74,222,128,.35); background: rgba(74,222,128,.12); }
+    .st-state.check { color: var(--accent-warm); border-color: rgba(240,180,41,.38); background: rgba(240,180,41,.12); }
+    .st-state.ready { color: var(--accent-green); border-color: rgba(74,222,128,.35); background: rgba(74,222,128,.10); }
+    .st-state.fail { color: var(--accent-rose); border-color: rgba(248,113,113,.35); background: rgba(248,113,113,.12); }
+    .st-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    .st-center-head {
+      flex: none;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(255,255,255,.05);
+    }
+    .st-title { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: 600; }
+    .st-sub { margin-top: 2px; font-size: 12px; color: var(--muted-fg); }
+    /* 统计行里的数字统一走等宽 + 亮色，读成数据而不是叙述 */
+    .st-sub .n { font-family: ui-monospace, monospace; font-weight: 500; color: var(--foreground); font-variant-numeric: tabular-nums; }
+    .st-toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .st-center-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 16px; }
+    .st-progress { flex: none; height: 4px; margin: 10px 14px 0; border-radius: 999px; background: rgba(255,255,255,.06); overflow: hidden; }
+    .st-progress i { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent-cyan), var(--accent)); }
+
+    /* 关键帧网格 */
+    .st-frames { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+    .st-frame {
+      position: relative;
+      aspect-ratio: 16 / 9;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: var(--radius-lg);
+      background: #171717;
+      cursor: pointer;
+      transition: border-color var(--dur-fast) var(--ease);
+    }
+    .st-frame:hover { border-color: rgba(237,237,237,.42); }
+    .st-frame .ph {
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(120% 95% at 24% 8%, rgba(255,255,255,.30), transparent 62%),
+        linear-gradient(168deg, #565656 0%, #2E2E2E 46%, #1C1C1C 100%);
+    }
+    .st-frame.g2 .ph {
+      background:
+        radial-gradient(120% 95% at 70% 12%, rgba(255,255,255,.24), transparent 62%),
+        linear-gradient(168deg, #6A6A6A 0%, #373737 46%, #202020 100%);
+    }
+    .st-frame.g3 .ph {
+      background:
+        radial-gradient(80% 80% at 20% 78%, rgba(255,255,255,.16), transparent 66%),
+        linear-gradient(168deg, #464646 0%, #2A2A2A 48%, #1A1A1A 100%);
+    }
+    .st-frame.g4 .ph {
+      background:
+        radial-gradient(110% 90% at 82% 20%, rgba(255,255,255,.18), transparent 64%),
+        linear-gradient(168deg, #636363 0%, #363636 48%, #1F1F1F 100%);
+    }
+    .st-frame .ph::after {
+      content: ""; position: absolute; inset: 0;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.12), transparent 28%),
+        linear-gradient(180deg, transparent 60%, rgba(0,0,0,.42));
+    }
+    .st-frame .lab { position: absolute; left: 6px; top: 5px; font-size: 11px; color: rgba(255,255,255,.88); text-shadow: 0 1px 4px rgba(0,0,0,.7); }
+    .st-frame .tc {
+      position: absolute; right: 5px; bottom: 5px;
+      padding: 1px 4px;
+      border-radius: 4px;
+      background: rgba(0,0,0,.55);
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      color: rgba(255,255,255,.76);
+    }
+    .st-frame.loading .ph { animation: stPulse 1.6s ease-in-out infinite; }
+    @keyframes stPulse { 0%,100% { opacity: .62; } 50% { opacity: 1; } }
+
+    /* 画面描述列表 */
+    .st-vlm-row {
+      display: flex; gap: 10px;
+      margin-bottom: 7px;
+      padding: 9px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: var(--radius-xl);
+      background: rgba(255,255,255,.026);
+      cursor: pointer;
+    }
+    .st-vlm-row:hover { border-color: rgba(237,237,237,.35); }
+    .st-thumb {
+      width: 104px; height: 62px; flex: none;
+      position: relative;
+      overflow: hidden;
+      border-radius: 8px;
+      background:
+        radial-gradient(120% 95% at 24% 8%, rgba(255,255,255,.30), transparent 62%),
+        linear-gradient(168deg, #565656 0%, #2E2E2E 44%, #1C1C1C 100%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.16), inset 0 -16px 24px rgba(0,0,0,.45);
+      border: 1px solid rgba(255,255,255,.09);
+    }
+    .st-thumb.g2 {
+      background:
+        radial-gradient(120% 95% at 70% 12%, rgba(255,255,255,.24), transparent 62%),
+        linear-gradient(168deg, #6A6A6A 0%, #373737 46%, #202020 100%);
+    }
+    .st-thumb.g3 {
+      background:
+        radial-gradient(80% 80% at 20% 78%, rgba(255,255,255,.16), transparent 66%),
+        linear-gradient(168deg, #464646 0%, #2A2A2A 48%, #1A1A1A 100%);
+    }
+    .st-thumb.g4 {
+      background:
+        radial-gradient(110% 90% at 82% 20%, rgba(255,255,255,.18), transparent 64%),
+        linear-gradient(168deg, #636363 0%, #363636 48%, #1F1F1F 100%);
+    }
+    .st-thumb .lab { position: absolute; left: 5px; bottom: 4px; font-family: ui-monospace, monospace; font-size: 11px; color: rgba(255,255,255,.9); text-shadow: 0 1px 4px rgba(0,0,0,.75); }
+    .st-vlm-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+    .st-desc { font-size: 13px; line-height: 1.55; color: var(--foreground); }
+    .st-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--muted-fg); font-family: ui-monospace, monospace; }
+    .st-story {
+      margin-top: 4px;
+      padding: 12px;
+      border: 1px solid rgba(237,237,237,.22);
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(237,237,237,.12), rgba(237,237,237,.05), transparent);
+    }
+    .st-story-title { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 14px; font-weight: 600; color: #f5f5f5; }
+    .st-story p { font-size: 13px; line-height: 1.65; color: var(--foreground); }
+
+    /* 脚本卡片 */
+    .st-script-card {
+      margin-bottom: 7px;
+      padding: 10px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: var(--radius-xl);
+      background: rgba(255,255,255,.026);
+      cursor: pointer;
+    }
+    .st-script-card:hover { border-color: rgba(237,237,237,.35); }
+    .st-script-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+    .st-script-left { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .st-no {
+      height: 20px; padding: 0 6px;
+      display: inline-flex; align-items: center;
+      border-radius: 6px;
+      border: 1px solid rgba(237,237,237,.2);
+      background: rgba(237,237,237,.1);
+      color: var(--accent-fg);
+      font-family: ui-monospace, monospace;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .st-textarea.card { min-height: 50px; max-height: 72px; padding: 0; border: none; background: transparent; font-size: 13px; line-height: 1.62; }
+    .st-locked {
+      padding: 7px 8px;
+      border: 1px solid rgba(255,255,255,.06);
+      border-radius: 8px;
+      background: rgba(237,237,237,.06);
+    }
+    .st-locked .lbl { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted-fg); }
+    .st-locked .txt { margin-top: 3px; font-size: 13px; font-style: italic; color: var(--muted-fg); }
+    .st-script-foot {
+      display: flex; align-items: center; justify-content: space-between; gap: 8px;
+      margin-top: 6px; padding-top: 6px;
+      border-top: 1px solid rgba(255,255,255,.05);
+      font-size: 12px;
+      color: var(--muted-fg);
+    }
+    .st-link { color: var(--muted-fg); display: inline-flex; align-items: center; gap: 4px; }
+    .st-link:hover { color: var(--accent-fg); }
+    .st-regen {
+      display: flex;
+      width: max-content;
+      height: 34px;
+      margin: 8px 0 0 auto;
+      padding: 0 18px;
+      align-items: center; justify-content: center; gap: 6px;
+      border: 1px solid rgba(237,237,237,.3);
+      border-radius: 12px;
+      background: rgba(237,237,237,.1);
+      color: var(--accent-fg);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    /* 配音列表 */
+    .st-tts-row {
+      display: flex; align-items: center; gap: 9px;
+      margin-bottom: 6px;
+      padding: 8px 10px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: var(--radius-xl);
+      background: rgba(255,255,255,.026);
+      cursor: pointer;
+    }
+    .st-tts-row:hover { border-color: rgba(237,237,237,.35); }
+    .st-tts-row.synthing { border-color: rgba(237,237,237,.28); background: rgba(237,237,237,.05); }
+    .st-tts-main { flex: 1; min-width: 0; }
+    .st-tts-top { display: flex; align-items: center; gap: 6px; }
+    .st-tts-text { margin-top: 2px; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--foreground); }
+    .st-tts-actions { display: flex; align-items: center; gap: 5px; flex: none; }
+    .st-icon-btn {
+      width: 26px; height: 26px; display: grid; place-items: center;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.03);
+      color: var(--muted-fg);
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+    }
+    .st-icon-btn svg { width: 12px; height: 12px; }
+    .st-icon-btn:hover { color: var(--accent-fg); border-color: rgba(237,237,237,.3); background: rgba(237,237,237,.12); }
+    .st-icon-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(237,237,237,.25); }
+    .st-pulses { display: inline-flex; gap: 2px; margin-left: 2px; }
+    .st-pulses i { width: 3px; height: 3px; border-radius: 50%; background: var(--accent-cyan); animation: stPulse 1.2s infinite; }
+    .st-pulses i:nth-child(2) { animation-delay: .15s; }
+    .st-pulses i:nth-child(3) { animation-delay: .3s; }
+
+    /* 镜头匹配卡 */
+    .st-match {
+      display: flex; gap: 9px;
+      margin-bottom: 7px;
+      padding: 9px;
+      border: 1px solid rgba(255,255,255,.07);
+      border-left: 4px solid var(--accent-green);
+      border-radius: var(--radius-lg);
+      background: rgba(255,255,255,.026);
+      cursor: pointer;
+      transition: border-color var(--dur-fast) var(--ease);
+    }
+    /* hover 只提其余三边，保留 warn / danger 的左侧语义色 */
+    .st-match:hover { border-color: rgba(237,237,237,.3); }
+    .st-match.warn { border-left-color: var(--accent-warm); }
+    .st-match.danger { border-left-color: var(--accent-rose); }
+    .st-match.warn:hover { border-left-color: var(--accent-warm); }
+    .st-match.danger:hover { border-left-color: var(--accent-rose); }
+    .st-match-idx { width: 18px; flex: none; display: grid; place-items: center; font-family: ui-monospace, monospace; font-size: 13px; color: var(--muted-fg); }
+    .st-match-thumb {
+      width: 120px; height: 74px; flex: none;
+      position: relative;
+      overflow: hidden;
+      border-radius: 8px;
+      background:
+        radial-gradient(120% 95% at 24% 8%, rgba(255,255,255,.30), transparent 62%),
+        linear-gradient(168deg, #565656 0%, #2E2E2E 44%, #1C1C1C 100%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.16), inset 0 -16px 24px rgba(0,0,0,.45);
+      border: 1px solid rgba(255,255,255,.09);
+    }
+    .st-match-thumb.g2 {
+      background:
+        radial-gradient(120% 95% at 70% 12%, rgba(255,255,255,.24), transparent 62%),
+        linear-gradient(168deg, #6A6A6A 0%, #373737 46%, #202020 100%);
+    }
+    .st-match-thumb.g4 {
+      background:
+        radial-gradient(110% 90% at 82% 20%, rgba(255,255,255,.18), transparent 64%),
+        linear-gradient(168deg, #636363 0%, #363636 48%, #1F1F1F 100%);
+    }
+    .st-match-thumb .dur { position: absolute; right: 4px; bottom: 4px; padding: 0 4px; border-radius: 4px; background: rgba(0,0,0,.7); color: #fff; font-family: ui-monospace, monospace; font-size: 11px; }
+    .st-match-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+    .st-match-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .st-match-title { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; font-size: 13px; font-weight: 500; }
+    .st-match-meta { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted-fg); }
+    .st-chip { padding: 1px 5px; border-radius: 4px; background: rgba(255,255,255,.05); color: var(--muted-fg); font-size: 11px; white-space: nowrap; }
+    .st-chip.rose { background: rgba(248,113,113,.14); color: var(--accent-rose); }
+    .st-match-actions { display: flex; align-items: center; gap: 5px; margin-top: auto; }
+    .st-act {
+      height: 26px; padding: 0 8px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      background: rgba(237,237,237,.15);
+      color: var(--accent-fg);
+      border: 1px solid transparent;
+      font-weight: 500;
+      display: inline-flex; align-items: center; gap: 3px;
+      white-space: nowrap;
+      transition: filter var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    }
+    .st-act:hover { filter: none; background: rgba(237,237,237,.26); }
+    .st-act:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(237,237,237,.25); }
+    .st-act.green { background: rgba(74,222,128,.18); color: var(--accent-green); border-color: rgba(74,222,128,.3); }
+    .st-act.green:hover { filter: none; background: rgba(74,222,128,.28); }
+    .st-act.plain { background: var(--bg-secondary); color: var(--muted-fg); border-color: rgba(255,255,255,.08); }
+    .st-act.plain:hover { filter: none; background: rgba(255,255,255,.1); color: var(--foreground); }
+    /* 小号操作钮（卡内定位/预览等）与右对齐动作钮（避免撑满整行） */
+    .st-act.sm { height: 22px; padding: 0 7px; font-size: 11px; }
+    .st-act.right { display: flex; width: max-content; margin: 6px 0 0 auto; }
+    .st-act-ic { width: 10px; height: 10px; flex: none; }
+
+    /* BGM 面板 */
+    .st-bgm-stat { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 5px 0; font-size: 11px; color: var(--muted-fg); }
+    /* 卡片头备注 / 行内控件组 / 三档配比图例：收敛散落的内联样式 */
+    .st-note { flex: none; font-size: 11px; color: var(--muted-fg); white-space: nowrap; }
+    .st-val { flex: none; font-family: ui-monospace, monospace; font-size: 12px; color: var(--accent-fg); font-variant-numeric: tabular-nums; }
+    .st-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+    .st-row .unit { flex: none; font-size: 12px; color: var(--muted-fg); }
+    .st-row .st-input { flex: 1 1 auto; width: auto; min-width: 0; }
+    .st-row .st-input.narrow { flex: none; width: 88px; }
+    .st-row .st-act { flex: none; }
+    .st-row input[type="range"] { flex: 1; min-width: 0; accent-color: #ededed; }
+    .st-ratio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 3px; padding: 0 4px; margin-top: 4px; font-size: 11px; color: var(--muted-fg); text-align: center; }
+    .st-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 5px; }
+    .st-tab {
+      padding: 2px 6px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: var(--radius-sm);
+      font-size: 11px;
+      color: var(--muted-fg);
+      cursor: pointer;
+      transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+    }
+    .st-tab:hover { color: var(--foreground); border-color: rgba(255,255,255,.2); }
+    .st-tab.on { border-color: rgba(237,237,237,.45); background: rgba(237,237,237,.18); color: var(--accent-fg); }
+
+    /* 待确认标注 */
+    .st-todo {
+      display: inline-flex; align-items: center; gap: 3px;
+      padding: 0 5px;
+      border: 1px dashed rgba(240,180,41,.38);
+      border-radius: 4px;
+      font-size: 11px;
+      color: var(--accent-warm);
+      white-space: nowrap;
+    }
+
+    /* ---------- 可拖分栏 ---------- */
+    .ed-split {
+      flex: none;
+      width: 8px;
+      margin: 0 -4px;
+      position: relative;
+      z-index: 5;
+      cursor: col-resize;
+      touch-action: none;
+    }
+    .ed-split::after {
+      content: "";
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 2px; height: 34px;
+      border-radius: 4px;
+      background: rgba(255,255,255,.06);
+      transition: background .15s ease, height .15s ease;
+    }
+    .ed-split:hover::after,
+    .ed-split.on::after { background: rgba(237,237,237,.36); height: 54px; }
+    body.ed-resizing { cursor: col-resize; user-select: none; }
+    body.ed-resizing .ed-split::after { background: rgba(237,237,237,.5); }
+
+    /* ---------- 预览：媒体标签（视频 / 音频 / 视频切片 / 关键帧 / 分镜单） ---------- */
+    .cv-mtabs { display: flex; align-items: center; gap: 2px; flex: none; }
+    .cv-mtab {
+      height: 24px;
+      padding: 0 9px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted-fg);
+      white-space: nowrap;
+      transition: color var(--dur-fast) var(--ease),
+                  background var(--dur-fast) var(--ease);
+    }
+    .cv-mtab:hover { color: var(--foreground); background: rgba(255,255,255,.06); }
+    .cv-mtab.on { color: var(--accent-fg); background: rgba(237,237,237,.16); }
+
+    .cv-mrow {
+      flex: none;
+      height: 86px;
+      display: flex;
+      gap: 8px;
+      padding: 8px 14px;
+      border-top: 1px solid rgba(255,255,255,.05);
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+    .cv-mrow::-webkit-scrollbar { height: 4px; }
+    .cv-mrow::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 4px; }
+    .cv-mgroup { display: none; gap: 8px; flex: none; }
+    .cv-mgroup.on { display: flex; }
+
+    /* ---------- 素材视图：步骤① 四类产物（关键帧 / 音频 / 台词 / 人物） ---------- */
+    .mat-tabs { display: flex; align-items: center; gap: 2px; margin-bottom: 10px; }
+    .mat-tab {
+      height: 26px;
+      padding: 0 10px;
+      display: inline-flex;
+      align-items: center;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted-fg);
+      white-space: nowrap;
+      transition: color var(--dur-fast) var(--ease),
+                  background var(--dur-fast) var(--ease),
+                  border-color var(--dur-fast) var(--ease);
+    }
+    .mat-tab:hover { color: var(--foreground); background: rgba(255,255,255,.06); }
+    .mat-tab.on {
+      color: var(--accent-fg);
+      background: rgba(237,237,237,.14);
+      border-color: rgba(237,237,237,.26);
+    }
+    .mat-tab .mat-count {
+      font-style: normal;
+      margin-left: 5px;
+      font-size: 11px;
+      color: var(--muted-fg);
+    }
+    .mat-tab.on .mat-count { color: var(--accent-fg); opacity: .8; }
+    .mat-group { display: none; }
+    .mat-group.on { display: block; }
+    .mat-list { display: flex; flex-direction: column; gap: 8px; }
+    .mat-list.row { flex-direction: row; flex-wrap: wrap; }
+
+    .cv-mitem {
+      position: relative;
+      flex: none;
+      width: 124px;
+      height: 70px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(255,255,255,.07);
+      background: #171717;
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+    }
+    .cv-mitem:hover { border-color: rgba(237,237,237,.42); }
+    .cv-mitem.on {
+      border-color: rgba(237,237,237,.62);
+      box-shadow: 0 0 0 1px rgba(237,237,237,.3) inset;
+    }
+
+    /* 定位后大屏时间码闪一下，明确「跳到了这里」 */
+    @keyframes cvTimeJump {
+      0% { color: #fff; text-shadow: 0 0 14px rgba(255,255,255,.95); }
+      100% { color: rgba(255,255,255,.88); text-shadow: 0 1px 3px rgba(0,0,0,.75); }
+    }
+    .cv-time.jump { animation: cvTimeJump .55s ease-out; }
+    .cv-bar .pline i { transition: width .3s ease; }
+    .cv-mitem .ph {
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(120% 95% at 24% 8%, rgba(255,255,255,.30), transparent 62%),
+        linear-gradient(168deg, #565656 0%, #2E2E2E 46%, #1C1C1C 100%);
+    }
+    .cv-mitem.g2 .ph {
+      background:
+        radial-gradient(120% 95% at 70% 12%, rgba(255,255,255,.24), transparent 62%),
+        linear-gradient(168deg, #6A6A6A 0%, #373737 46%, #202020 100%);
+    }
+    .cv-mitem.g3 .ph {
+      background:
+        radial-gradient(80% 80% at 20% 78%, rgba(255,255,255,.16), transparent 66%),
+        linear-gradient(168deg, #464646 0%, #2A2A2A 48%, #1A1A1A 100%);
+    }
+    .cv-mitem.g4 .ph {
+      background:
+        radial-gradient(110% 90% at 82% 20%, rgba(255,255,255,.18), transparent 64%),
+        linear-gradient(168deg, #636363 0%, #363636 48%, #1F1F1F 100%);
+    }
+    .cv-mitem .ph::after {
+      content: ""; position: absolute; inset: 0;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.12), transparent 28%),
+        linear-gradient(180deg, transparent 60%, rgba(0,0,0,.42));
+    }
+    .cv-mitem .lab {
+      position: absolute; left: 6px; top: 5px;
+      font-size: 11px;
+      color: rgba(255,255,255,.88);
+      text-shadow: 0 1px 4px rgba(0,0,0,.7);
+    }
+    .cv-mitem .tc {
+      position: absolute; right: 5px; bottom: 5px;
+      padding: 1px 4px;
+      border-radius: 4px;
+      background: rgba(0,0,0,.55);
+      font-family: ui-monospace, monospace;
+      font-size: 11px;
+      color: rgba(255,255,255,.76);
+    }
+    .cv-mitem.board { width: 148px; }
+
+    .cv-mitem.audio {
+      width: 196px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 11px;
+      background: rgba(255,255,255,.025);
+    }
+    .au-ico {
+      flex: none;
+      width: 26px; height: 26px;
+      display: grid; place-items: center;
+      border-radius: 8px;
+      background: rgba(237,237,237,.12);
+      color: var(--accent-fg);
+      font-size: 13px;
+    }
+    .au-meta { min-width: 0; }
+    .au-meta b {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--foreground);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .au-meta span { display: block; margin-top: 2px; font-size: 11px; color: var(--muted-fg); white-space: nowrap; }
+
+    /* ============================================================
+       交互补充：按压态（hover 在前文各组件内）
+       小控件按下缩 0.97 / 图标缩 0.92；卡片按下提亮底色；
+       文字型动作下移 1px；只补 transform / filter / 底色，不改尺寸
+       ============================================================ */
+    .ind-node,
+    .view-chip,
+    .cv-mtab,
+    .st-tab,
+    .st-icon-btn,
+    .st-act,
+    .st-opt,
+    .st-select,
+    .tc-act,
+    .btn-export,
+    .icon-btn,
+    .btn,
+    .mode-seg button,
+    .st-seg button,
+    .st-regen,
+    .st-frame,
+    .cv-mitem {
+      transition: transform var(--dur-fast) var(--ease),
+                  border-color var(--dur-fast) var(--ease),
+                  background var(--dur-fast) var(--ease),
+                  color var(--dur-fast) var(--ease),
+                  filter var(--dur-fast) var(--ease);
+    }
+
+    /* 步骤点 / 图标按钮：按下回缩 */
+    .ind:active .ind-node { transform: scale(.92); }
+    .st-icon-btn:active { transform: scale(.92); }
+    .icon-btn:active { transform: scale(.92); }
+    .wc:active { background: var(--muted); }
+    .wc.close:active { background: rgba(248,113,113,.85); color: #fff; }
+
+    /* 页面切换 / 标签：按下缩一点并把选中底色压深 */
+    .view-chip:active { transform: scale(.97); }
+    .view-chip.on:active { background: rgba(237,237,237,.22); }
+    .cv-mtab:active { transform: scale(.97); }
+    .cv-mtab.on:active { background: rgba(237,237,237,.22); }
+    .st-tab:active { transform: scale(.96); background: rgba(255,255,255,.08); }
+    .mode-seg button:active:not(.on),
+    .st-seg button:active:not(.on) { transform: scale(.97); background: rgba(255,255,255,.1); }
+    .st-seg button.on:active { background: rgba(237,237,237,.28); }
+
+    /* 选项瓦片 / 可点卡片：按下给一层更亮的底 */
+    .st-opt:active { transform: scale(.985); background: rgba(255,255,255,.06); }
+    .st-opt.on:active { background: rgba(237,237,237,.22); }
+    .st-vlm-row:active,
+    .st-script-card:active,
+    .st-tts-row:active,
+    .st-match:active { background: rgba(255,255,255,.05); }
+    .st-frame:active,
+    .cv-mitem:active { filter: brightness(.9); }
+    .cv-mitem:active { box-shadow: 0 0 0 1px rgba(237,237,237,.35) inset; }
+
+    /* 下拉控件 */
+    .st-select:active { border-color: rgba(255,255,255,.34); background: var(--muted); }
+
+    /* 文字型动作：按下下移 1px，避免只有颜色变化 */
+    .st-act:active { transform: translateY(1px); filter: brightness(.94); }
+    .st-act.plain:active { filter: none; background: var(--muted); }
+    .st-link:active { color: var(--accent-fg); opacity: .8; }
+    .btn:active { transform: translateY(1px); filter: brightness(.94); }
+    .btn-primary:active { filter: brightness(.9); }
+    .btn-export:active { transform: translateY(1px); filter: brightness(.94); }
+    .tc-act:active { transform: translateY(1px); filter: brightness(.94); }
+    .pt-btn:active { transform: translateY(1px); }
+
+    /* 应用参数重新生成：此前只有静态样式，没有 hover / 按压 */
+    .st-regen:hover { border-color: rgba(237,237,237,.48); background: rgba(237,237,237,.14); }
+    .st-regen:active { transform: translateY(1px); background: rgba(237,237,237,.18); }
+
+    /* 一键成片浮层（本页自控开合） */
+    .wiz-overlay.on { display: grid; }
+  </style>
+</head>
+<body data-editor-v2>
+  <!-- 原型控制条：编辑器步骤 / 浮层 / 导出 -->
+  <div class="pt-bar">
+    <span class="pt-tag">原型</span>
+    <span class="pt-note">编辑器 · 左栏改参数，右栏看产物；预览常驻，随时切回</span>
+    <button class="pt-btn pt-step on" data-step="1"><i class="pt-n">1</i>素材助理</button>
+    <button class="pt-btn pt-step" data-step="2"><i class="pt-n">2</i>看片员</button>
+    <button class="pt-btn pt-step" data-step="3"><i class="pt-n">3</i>首席编剧</button>
+    <button class="pt-btn pt-step" data-step="4"><i class="pt-n">4</i>专业播音</button>
+    <button class="pt-btn pt-step" data-step="5"><i class="pt-n">5</i>剪辑大师</button>
+    <button class="pt-btn" data-wiz-open>一键成片浮层</button>
+    <button class="pt-btn" data-export-open>导出弹窗</button>
+    <button class="pt-btn" data-task-cycle>任务态：运行中</button>
+    <a class="pt-link" href="./home.html">首页</a>
+    <a class="pt-link" href="./characters.html">人物</a>
+    <a class="pt-link" href="./shows.html">剧集</a>
+    <a class="pt-link" href="./settings.html">设置</a>
+    <a class="pt-link" href="./notifications.html">通知</a>
+    <a class="pt-link" href="./settings.html?tab=account">账户</a>
+  </div>
+
+  <div class="win">
+    <div class="main">
+      <div class="ed-shell">
+        <!-- 编辑器 TopBar -->
+        <header class="ed-top">
+          <div class="ed-top-left">
+            <a class="logo" data-go="home" title="返回首页"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 7H17.6L6.4 17" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.4 17H17.6" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity=".6"/></svg></a>
+            <span class="ed-proj">26年11月6日</span>
+            <span class="ed-save"><i></i>已保存 15:02</span>
+          </div>
+          <div class="ed-top-right">
+            <button class="btn-export" data-export-open>导出</button>
+            <a class="icon-btn" data-go="notifications" title="通知中心"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/></svg></a>
+            <a class="icon-btn" data-go="settings" title="设置"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></a>
+            <div class="tb-divider"></div>
+            <button class="wc" title="最小化"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+            <button class="wc" title="最大化"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="2"/></svg></button>
+            <button class="wc close" title="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+          </div>
+        </header>
+
+        <div class="ed-body">
+          <!-- ================= 左栏：步骤 + 参数 ================= -->
+          <aside class="ed-panel">
+            <div class="panel-head">
+              <div class="ph-row">
+                <div class="indicator">
+                  <button class="ind cur run" data-step="1" title="素材助理 · 运行中"><span class="ind-node">1</span></button>
+                  <span class="ind-line"></span>
+                  <button class="ind done" data-step="2" title="看片员 · 已完成"><span class="ind-node">2</span></button>
+                  <span class="ind-line"></span>
+                  <button class="ind check" data-step="3" title="首席编剧 · 检查点"><span class="ind-node">3</span></button>
+                  <span class="ind-line"></span>
+                  <button class="ind run" data-step="4" title="专业播音 · 运行中"><span class="ind-node">4</span></button>
+                  <span class="ind-line"></span>
+                  <button class="ind ready" data-step="5" title="剪辑大师 · 可匹配"><span class="ind-node">5</span></button>
+                </div>
+                <div class="mode-seg">
+                  <button class="on">手动</button>
+                  <button>自动</button>
+                </div>
+              </div>
+
+              <div class="cfg-title-row">
+                <div style="min-width:0;">
+                  <div class="cfg-title" data-step-name>素材助理</div>
+                  <div class="cfg-sub" data-step-desc>关键帧提取 · 音频分离 · ASR 台词识别 · 人物识别</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="panel-scroll">
+              <!-- ---------- 步骤 1 · 素材助理 ---------- -->
+              <div class="stepcfg on" data-step="1">
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>素材</b>
+                    <span class="badge green">已导入</span>
+                  </div>
+                  <div class="mcard" style="border:none;background:transparent;padding:0;">
+                    <div style="width:56px;height:34px;flex:none;border-radius:6px;border:1px solid rgba(255,255,255,.1);background:radial-gradient(120% 95% at 24% 8%, rgba(255,255,255,.24), transparent 62%),linear-gradient(168deg,#4A4A4A 0%,#2A2A2A 48%,#1A1A1A 100%);"></div>
+                    <div class="mcard-main">
+                      <div class="mcard-name">DJI_0042.MP4</div>
+                      <div class="mcard-meta">1920×1080 · 222s</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>片头片尾裁剪（OP / ED）</b>
+                    <span class="badge green">已配置</span>
+                  </div>
+                  <div class="oped" data-duration="222" data-op="85" data-ed="44">
+                    <div class="oped-codes">
+                      <span class="oped-code"><i class="st-dot" style="background:var(--accent-green);"></i>片头 <b data-op-code>00:01:25:00</b></span>
+                      <span class="oped-code">片尾 <b data-ed-code>00:00:44:00</b><i class="st-dot" style="background:var(--accent-warm);"></i></span>
+                    </div>
+                    <div class="oped-track" data-track title="拖动两侧滑点裁剪片头片尾，松手自动保存">
+                      <div class="oped-rail"></div>
+                      <div class="oped-cut l" data-cut-l></div>
+                      <div class="oped-keep" data-keep></div>
+                      <div class="oped-cut r" data-cut-r></div>
+                      <div class="oped-handle op" data-handle="op" role="slider" tabindex="0" aria-label="片头裁剪点" aria-valuemin="0" aria-valuemax="222" aria-valuenow="85"></div>
+                      <div class="oped-handle ed" data-handle="ed" role="slider" tabindex="0" aria-label="片尾裁剪点" aria-valuemin="0" aria-valuemax="222" aria-valuenow="44"></div>
+                    </div>
+                    <div class="oped-foot">
+                      <button class="st-act plain" title="自动识别 OP/ED（P1 黑场静音启发 → P2 跨集指纹对齐）">自动识别</button>
+                      <button class="st-act plain" title="取播放器当前时间作为内容起点">取当前·片头</button>
+                      <button class="st-act plain" title="取播放器当前时间作为正剧结束点">取当前·片尾</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>关键帧提取</b>
+                    <span class="st-state run"><i class="st-dot"></i>提取中 68%</span>
+                  </div>
+                  <div class="st-opts c2">
+                    <button class="st-opt on">智能自适应<small>转场感知 + 预算封顶</small></button>
+                    <button class="st-opt">均匀抽帧<small>固定帧率，帧分布均匀</small></button>
+                  </div>
+                  <div class="st-label"><span>抽帧密度</span><span class="st-note">预算 20 张/分钟 · 最小间隔 3s</span></div>
+                  <div class="st-opts c3">
+                    <button class="st-opt">稀疏<small>省 Token · 轻量</small><small>≈12 张/分钟</small></button>
+                    <button class="st-opt on">标准<small>推荐 · 均衡</small><small>≈20 张/分钟</small></button>
+                    <button class="st-opt">高密度<small>动作捕捉 · 细节</small><small>≈35 张/分钟</small></button>
+                  </div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>音频分离</b>
+                    <span class="badge green">人声台词 + 背景音乐</span>
+                  </div>
+                  <div class="st-opts c3">
+                    <button class="st-opt on">轻量，极速<small>MDX-Net</small></button>
+                    <button class="st-opt">高保真，慢<small>Demucs</small></button>
+                    <button class="st-opt">极速<small>跳过模型，仅降采样</small></button>
+                  </div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>ASR 台词识别</b>
+                    <span class="badge green">358 句台词</span>
+                  </div>
+                  <div class="st-opts c2">
+                    <button class="st-opt on">中文<small>Paraformer</small></button>
+                    <button class="st-opt">多语言<small>Faster-Whisper</small></button>
+                  </div>
+                  <div class="st-label"><span>识别语言</span><span class="st-select" style="width:118px;">中文<em>▾</em></span></div>
+                  <div class="st-label"><span>专名热词</span></div>
+                  <textarea class="st-textarea" rows="2" placeholder="逗号或换行分隔，如：孔高，京海市"></textarea>
+                  <div class="st-hint">仅 Paraformer（中文）生效；剧名与本项目已有人物名会自动加入，此处只需补充额外专名。</div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>人物识别</b>
+                    <span class="badge green">检测到 3 个角色</span>
+                  </div>
+                  <div class="st-bgm-stat">
+                    <span class="st-chip">角色 1</span>
+                    <span class="st-chip">角色 2</span>
+                    <span class="st-chip">角色 3</span>
+                    <span class="st-todo">待确认</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ---------- 步骤 2 · 看片员 ---------- -->
+              <div class="stepcfg" data-step="2">
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>视觉分析模式</b>
+                    <span class="st-note">控制 VLM 拼图策略</span>
+                  </div>
+                  <div class="st-opts c2">
+                    <button class="st-opt on">智能自动<small>自动切换</small></button>
+                    <button class="st-opt">标准均衡<small>2x2 / 4帧</small></button>
+                    <button class="st-opt">动作捕捉<small>3x3 / 9帧</small></button>
+                    <button class="st-opt">精细单帧<small>1x1 / 独立</small></button>
+                  </div>
+                  <div class="st-hint">根据帧间隔自动选择 2x2/3x3，平衡 Token 与细节</div>
+                </div>
+                <div class="st-card">
+                  <div class="st-card-head"><b>重跑范围</b><span class="badge">按需</span></div>
+                  <div class="st-seg">
+                    <button class="on">仅未确认帧</button>
+                    <button>全部帧</button>
+                  </div>
+                  <div class="st-hint">已确认的画面描述不会被覆盖，只重跑待确认的帧</div>
+                </div>
+                <div class="st-card">
+                  <div class="st-card-head"><b>帧已分析</b><span class="badge green">已完成</span></div>
+                  <div class="st-bgm-stat">
+                    <span>42 帧已分析</span>
+                    <span>已确认 40 帧</span>
+                    <span class="st-todo">待确认</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- ---------- 步骤 3 · 首席编剧 ---------- -->
+              <div class="stepcfg" data-step="3">
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>目标成片篇幅</b>
+                    <span class="badge accent">≈ 420 字解说</span>
+                  </div>
+                  <div class="st-opts c2">
+                    <button class="st-opt on">自动<small>跟随原片时长</small></button>
+                    <button class="st-opt">180s<small>3min 快剪</small></button>
+                    <button class="st-opt">600s<small>10min 精讲·推荐</small></button>
+                    <button class="st-opt">1200s<small>20min 大片</small></button>
+                  </div>
+                  <div class="st-row">
+                    <input class="st-input narrow" type="number" placeholder="自定义" />
+                    <span class="unit">秒</span>
+                  </div>
+                  <div class="st-hint">预算 = 篇幅 × 语速 × 解说密度 × 标点停顿折损（0.85）。自动 = 跟随原片时长推导；输入非预设秒数后四档自动取消高亮，基准语速见「高级设置」。</div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>原声策略</b>
+                    <span class="badge accent">解说 70% · 原声 30%</span>
+                  </div>
+                  <div class="st-seg">
+                    <button class="on">智能保留</button>
+                    <button>纯解说</button>
+                    <button>原声主打</button>
+                  </div>
+                  <div class="st-ratio">
+                    <span>解说70%·原声30%</span><span>解说85%·原声15%</span><span>解说35%·原声65%</span>
+                  </div>
+                  <div class="st-hint">配比策略直接决定 AI 写多少字，切档即按解说密度定律统一折减全文预算。智能保留 = 重点节点解说 + 完整原声叙事（短视频推荐）；纯解说 = 高密度覆盖、适合无对白空镜；原声主打 = 名场面原声完整保留、解说缝隙点睛。</div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head"><b>解说人称</b></div>
+                  <div class="st-opts c3">
+                    <button class="st-opt on">第三人称<small>上帝视角</small></button>
+                    <button class="st-opt">第一人称<small>入戏“我”</small></button>
+                    <button class="st-opt">第二人称<small>观众互动“你”</small></button>
+                  </div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head"><b>情绪基调</b></div>
+                  <div class="st-opts c2">
+                    <button class="st-opt on">高燃热血<small>强情绪卡点</small></button>
+                    <button class="st-opt">平静客观<small>克制陈述</small></button>
+                    <button class="st-opt">细腻共情<small>情绪共鸣</small></button>
+                    <button class="st-opt">层层悬疑<small>设问·伏笔</small></button>
+                    <button class="st-opt">轻快诙谐<small>吐槽·反差</small></button>
+                  </div>
+                  <div class="st-hint">平静客观 / 细腻共情 / 高燃热血 / 层层悬疑 / 轻快诙谐。影响步骤3 写作情绪指令，并作为步骤5 BGM 选型依据</div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head"><b>文案风格</b><span class="st-note">六选一</span></div>
+                  <div class="st-opts c2">
+                    <button class="st-opt tight on">爆款短视频</button>
+                    <button class="st-opt tight">深度解说</button>
+                    <button class="st-opt tight">评述视角</button>
+                    <button class="st-opt tight">情感叙事</button>
+                    <button class="st-opt tight">悬疑推理</button>
+                    <button class="st-opt tight">硬核科普</button>
+                  </div>
+                  <div class="st-hint">风格只影响写法（词汇库 / 句式模板 / 叙事手法）；人称与情绪在上方直接选，节奏·钩子·语速在下方高级设置。</div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head"><b>高级设置</b></div>
+                  <div class="st-label"><span>叙事节奏</span></div>
+                  <div class="st-seg">
+                    <button>短句快切</button>
+                    <button class="on">长短交替</button>
+                    <button>舒缓长句</button>
+                  </div>
+                  <div class="st-hint">短句快切（单句 ≤18 字）/ 长短交替（默认，混排）/ 舒缓长句（单句 ≤40 字，适合长视频）</div>
+
+                  <div class="st-label"><span>开头钩子强度</span><span class="badge accent">0.8</span></div>
+                  <div class="st-seg">
+                    <button>低</button>
+                    <button>中</button>
+                    <button class="on">高</button>
+                  </div>
+                  <div class="st-hint">低=平铺直叙 / 中=适度设问 / 高=黄金3秒强钩（后端阈值为 0.8，用于切换钩子指令）</div>
+
+                  <div class="st-label"><span>基准语速</span></div>
+                  <div class="st-row">
+                    <input class="st-input narrow" type="number" value="5.2" step="0.1" min="2" max="8" />
+                    <span class="unit">字/秒</span>
+                    <span class="st-note">⇒ 预算约 420 字</span>
+                  </div>
+                  <div class="st-hint">基准语速（字/秒）：解说写作总预算 = 目标篇幅 × 语速 × 解说密度 × 0.85。中文字幕旁白常速约 4~5 字/秒，语速越高同样篇幅可容纳越多字</div>
+                </div>
+              </div>
+
+              <!-- ---------- 步骤 4 · 专业播音 ---------- -->
+              <div class="stepcfg" data-step="4">
+                <div class="st-card">
+                  <div class="st-card-head"><b>引擎</b><span class="badge accent">Edge TTS</span></div>
+                  <div class="st-seg">
+                    <button class="on">Edge TTS</button>
+                    <button>火山引擎</button>
+                    <button>Kokoro</button>
+                  </div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head"><b>音色选择</b></div>
+                  <div class="st-opts c2">
+                    <button class="st-opt tall on">晓晓<small>中文·女 · 试听</small></button>
+                    <button class="st-opt tall">云希<small>中文·男 · 试听</small></button>
+                    <button class="st-opt tall">云扬<small>中文·男 · 试听</small></button>
+                    <button class="st-opt tall">晓伊<small>中文·女 · 试听</small></button>
+                    <button class="st-opt tall">云健<small>中文·男 · 试听</small></button>
+                  </div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head"><b>语速调节</b><span class="st-val">1.0x</span></div>
+                  <div class="st-row">
+                    <span class="unit">0.5x</span>
+                    <input type="range" min="0.5" max="2.0" step="0.1" value="1.0" />
+                    <span class="unit">2.0x</span>
+                  </div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head"><b>TTS 配音合成</b><span class="st-state run"><i class="st-dot"></i>合成中...</span></div>
+                  <div class="st-progress" style="margin:6px 0 4px;"><i style="width:45%"></i></div>
+                  <div class="st-bgm-stat" style="margin:0;">
+                    <span>8 段成功</span>
+                  </div>
+                  <div class="st-hint">3 段为原声保留，将直接使用原片音轨，不参与 TTS 配音</div>
+                </div>
+              </div>
+
+              <!-- ---------- 步骤 5 · 剪辑大师 ---------- -->
+              <div class="stepcfg" data-step="5">
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>BGM 背景音乐</b>
+                    <span class="badge">未选择</span>
+                  </div>
+                  <div class="st-bgm-stat">
+                    <span>视频时长 03:42</span>
+                    <span>解说词 24 段</span>
+                  </div>
+                  <div class="st-hint warn">未选择 BGM，画面切换将不卡音乐节奏</div>
+                  <div class="st-hint">AI 仅输出「歌名 + 歌手 + 来源」智能清单：在音乐平台搜索下载后，通过「上传本地BGM」导入即可</div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>个性化推荐</b>
+                    <span class="st-note">（点击生成）</span>
+                  </div>
+                  <button class="st-act right">AI 深度推荐</button>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head">
+                    <b>本地曲库</b>
+                    <span class="st-note">（12 首 · 免费商用）</span>
+                  </div>
+                  <div class="st-row">
+                    <input class="st-input" placeholder="搜索曲名 / 歌手 / 情绪" />
+                    <button class="st-act plain">导入曲库</button>
+                  </div>
+                  <div class="st-tabs">
+                    <span class="st-tab on">全部</span>
+                    <span class="st-tab">中性</span>
+                    <span class="st-tab">情感</span>
+                    <span class="st-tab">悬疑</span>
+                    <span class="st-tab">史诗</span>
+                    <span class="st-tab">喜剧</span>
+                  </div>
+                  <button class="st-act right">上传本地BGM</button>
+                  <div class="st-hint">选择 BGM 后自动重匹配，镜头切换吸附鼓点避免夹帧</div>
+                  <div class="st-hint">小提示：对原视频执行「音频分离」后，可在此直接选用分离出的纯伴奏作为 BGM</div>
+                </div>
+
+                <div class="st-card">
+                  <div class="st-card-head"><b>匹配策略</b></div>
+                  <div class="st-seg">
+                    <button class="on">语义优先</button>
+                    <button>时长优先</button>
+                    <button>节奏优先</button>
+                  </div>
+                  <div class="st-hint">语义优先按画面描述与解说词匹配度排序；时长优先贴近配音时长；节奏优先吸附 BGM 鼓点</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="cfg-foot">
+              <div class="cfg-impact" data-impact></div>
+              <div class="cfg-actions">
+                <button class="btn btn-ghost btn-sm" data-task-open>任务详情</button>
+                <button class="btn btn-primary btn-sm" data-run>执行中...</button>
+                <button class="btn btn-ghost btn-sm" data-next style="display:none;">下一步</button>
+              </div>
+            </div>
+          </aside>
+
+          <!-- 可拖分栏：拖动调整左栏宽度，双击复位 -->
+          <div class="ed-split" id="edSplit" title="拖动调整左栏宽度 · 双击复位"></div>
+
+          <!-- ================= 右栏：视图切换 + 主视区 ================= -->
+          <main class="ed-canvas">
+            <div class="cv-views" title="点任意条目 → 预览定位到该时间码">
+              <button class="view-chip" data-view="preview"><span class="vc-dot"></span>预览</button>
+              <button class="view-chip" data-view="material"><em class="vc-no">1</em>素材</button>
+              <button class="view-chip" data-view="vlm"><em class="vc-no">2</em>画面描述</button>
+              <button class="view-chip" data-view="script"><em class="vc-no">3</em>脚本</button>
+              <button class="view-chip" data-view="tts"><em class="vc-no">4</em>配音</button>
+              <button class="view-chip" data-view="timeline"><em class="vc-no">5</em>镜头匹配</button>
+            </div>
+
+            <div class="cv-state task-cap is-run" data-task-cap>
+              <i class="tc-dot" data-tc-dot></i>
+              <span class="tc-body">
+                <b class="tc-title" data-tc-title>素材助理 · 关键帧提取 2/4</b>
+                <em class="tc-meta" data-tc-meta>
+                  <span>步骤 <b data-bar-idx>1</b> / 5 · <span data-bar-name>素材助理</span></span>
+                  <span class="st-state run" data-bar-state><i class="st-dot"></i>运行中</span>
+                  <span class="bar-mini"><i data-bar-prog style="width:68%"></i></span>
+                  <span data-tc-node>当前节点：关键帧提取</span>
+                </em>
+                <em class="tc-err" data-tc-err style="display:none;">Edge TTS 连接超时（30s）</em>
+              </span>
+              <div style="flex:1"></div>
+              <button class="tc-act" data-task-open><span data-tc-action>详情</span></button>
+              <button class="tc-act danger" data-task-abort>中止</button>
+            </div>
+
+            <!-- 视图 1 · 预览 -->
+            <section class="cv-pane" data-view="preview">
+              <div class="cv-stage">
+                <div class="cv-frame">
+                  <div class="cv-glow"></div>
+                  <img class="cv-media" src="https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=wide%20cinematic%20travel%20shot%20of%20Qinghai%20Lake%20turquoise%20water%20with%20distant%20mountains%20at%20golden%20hour%2C%20a%20lone%20traveler%20at%20the%20shore%2C%20no%20text&image_size=landscape_16_9" alt="" />
+                  <div class="cv-play"></div>
+                  <div class="cv-time">00:00:04.200 / 00:03:00</div>
+                  <div class="cv-bar">
+                    <span>▶</span>
+                    <div class="pline"><i></i></div>
+                    <span class="cv-bar-cur">04.2s</span>
+                    <span>♪</span>
+                    <span>⛶</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="cv-strip">
+                <div class="cv-mtabs" id="cvTabs">
+                  <button class="cv-mtab on" data-mtab="video">视频</button>
+                  <button class="cv-mtab" data-mtab="clips">视频切片</button>
+                  <button class="cv-mtab" data-mtab="boards">分镜单</button>
+                </div>
+                <div style="flex:1"></div>
+                <span class="badge accent">16:9</span>
+                <span class="chip">3 分钟</span>
+              </div>
+
+              <!-- 媒体标签内容：视频 / 视频切片 / 分镜单（关键帧与音频统一在①素材视图） -->
+              <div class="cv-mrow" id="cvMRow">
+                <div class="cv-mgroup on" data-mtab="video">
+                  <div class="cv-mitem g1" data-tc="00:00.000"><div class="ph"></div><span class="lab">片段 01</span><span class="tc">00:00.000</span></div>
+                  <div class="cv-mitem g2" data-tc="00:42.600"><div class="ph"></div><span class="lab">片段 02</span><span class="tc">00:42.600</span></div>
+                  <div class="cv-mitem g3" data-tc="01:26.200"><div class="ph"></div><span class="lab">片段 03</span><span class="tc">01:26.200</span></div>
+                  <div class="cv-mitem g4" data-tc="02:18.800"><div class="ph"></div><span class="lab">片段 04</span><span class="tc">02:18.800</span></div>
+                </div>
+
+                <div class="cv-mgroup" data-mtab="clips">
+                  <div class="cv-mitem g2" data-tc="00:00.000"><div class="ph"></div><span class="lab">切片 01</span><span class="tc">00:00.000</span></div>
+                  <div class="cv-mitem g4" data-tc="00:31.400"><div class="ph"></div><span class="lab">切片 02</span><span class="tc">00:31.400</span></div>
+                  <div class="cv-mitem g1" data-tc="01:14.900"><div class="ph"></div><span class="lab">切片 03</span><span class="tc">01:14.900</span></div>
+                  <div class="cv-mitem g3" data-tc="01:58.300"><div class="ph"></div><span class="lab">切片 04</span><span class="tc">01:58.300</span></div>
+                  <div class="cv-mitem g2" data-tc="02:26.500"><div class="ph"></div><span class="lab">切片 05</span><span class="tc">02:26.500</span></div>
+                </div>
+
+                <div class="cv-mgroup" data-mtab="boards">
+                  <div class="cv-mitem board g1" data-tc="00:00.000"><div class="ph"></div><span class="lab">镜 01 · 全景</span><span class="tc">3.2s</span></div>
+                  <div class="cv-mitem board g3" data-tc="00:03.200"><div class="ph"></div><span class="lab">镜 02 · 中景</span><span class="tc">2.6s</span></div>
+                  <div class="cv-mitem board g2" data-tc="00:05.800"><div class="ph"></div><span class="lab">镜 03 · 特写</span><span class="tc">1.8s</span></div>
+                  <div class="cv-mitem board g4" data-tc="00:07.600"><div class="ph"></div><span class="lab">镜 04 · 空镜</span><span class="tc">2.4s</span></div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 视图 2 · 素材（步骤① 的四类产物：关键帧 / 音频 / 台词 / 人物） -->
+            <section class="cv-pane" data-view="material">
+              <div class="st-center-head">
+                <div>
+                  <div class="st-title">素材分析 <span class="st-state run"><i class="st-dot"></i>运行中 · 68%</span></div>
+                </div>
+                <div class="st-toolbar">
+                  <button class="st-act plain" data-sort>按时间排序</button>
+                </div>
+              </div>
+              <div class="st-progress"><i style="width:68%"></i></div>
+              <div class="st-center-scroll">
+                <div class="mat-tabs" id="matTabs">
+                  <button class="mat-tab on" data-mat="frames">关键帧提取<em class="mat-count">12</em></button>
+                  <button class="mat-tab" data-mat="audio">音频分离<em class="mat-count">2</em></button>
+                  <button class="mat-tab" data-mat="asr">ASR 台词识别<em class="mat-count">24</em></button>
+                  <button class="mat-tab" data-mat="faces">人物识别<em class="mat-count">4</em></button>
+                </div>
+
+                <div class="mat-group on" data-mat="frames">
+                  <div class="st-hint">12 帧 · 已提取 10 帧 · 点帧可在预览中定位</div>
+                  <div class="st-frames">
+                  <div class="st-frame g1" data-tc="00:01.240"><div class="ph"></div><span class="lab">帧 01</span><span class="tc">00:01.240</span></div>
+                  <div class="st-frame g2" data-tc="00:04.680"><div class="ph"></div><span class="lab">帧 02</span><span class="tc">00:04.680</span></div>
+                  <div class="st-frame g3" data-tc="00:07.120"><div class="ph"></div><span class="lab">帧 03</span><span class="tc">00:07.120</span></div>
+                  <div class="st-frame g4" data-tc="00:09.840"><div class="ph"></div><span class="lab">帧 04</span><span class="tc">00:09.840</span></div>
+                  <div class="st-frame g2" data-tc="00:12.360"><div class="ph"></div><span class="lab">帧 05</span><span class="tc">00:12.360</span></div>
+                  <div class="st-frame g1" data-tc="00:15.200"><div class="ph"></div><span class="lab">帧 06</span><span class="tc">00:15.200</span></div>
+                  <div class="st-frame g4" data-tc="00:18.440"><div class="ph"></div><span class="lab">帧 07</span><span class="tc">00:18.440</span></div>
+                  <div class="st-frame g3" data-tc="00:21.080"><div class="ph"></div><span class="lab">帧 08</span><span class="tc">00:21.080</span></div>
+                  <div class="st-frame g1" data-tc="00:24.720"><div class="ph"></div><span class="lab">帧 09</span><span class="tc">00:24.720</span></div>
+                  <div class="st-frame g4" data-tc="00:27.160"><div class="ph"></div><span class="lab">帧 10</span><span class="tc">00:27.160</span></div>
+                  <div class="st-frame g2 loading"><div class="ph"></div><span class="lab">帧 11</span><span class="tc">--:--.---</span></div>
+                  <div class="st-frame g3 loading"><div class="ph"></div><span class="lab">帧 12</span><span class="tc">--:--.---</span></div>
+                  </div>
+                </div>
+
+                <div class="mat-group" data-mat="audio">
+                  <div class="mat-list">
+                    <div class="cv-mitem audio">
+                      <span class="au-ico">♪</span>
+                      <div class="au-meta"><b>人声台词.wav</b><span>02:58 · 24bit · 单声道 · 已分离</span></div>
+                    </div>
+                    <div class="cv-mitem audio">
+                      <span class="au-ico">♪</span>
+                      <div class="au-meta"><b>背景音乐.wav</b><span>03:00 · 44.1kHz · 立体声 · 已分离</span></div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="mat-group" data-mat="asr">
+                  <div class="mat-list">
+                    <div class="st-script-card" data-tc="00:01.240">
+                      <div class="st-script-head">
+                        <div class="st-script-left">
+                          <span class="st-no">第 01 句</span>
+                          <span class="st-mono" style="font-size: 12px;color:var(--muted-fg);">2.4s</span>
+                        </div>
+                        <span class="badge accent">已确认</span>
+                      </div>
+                      <div class="st-textarea card" style="min-height: 36px;">这家店藏在老巷子里，招牌只有一块木板。</div>
+                    </div>
+                    <div class="st-script-card" data-tc="00:04.680">
+                      <div class="st-script-head">
+                        <div class="st-script-left">
+                          <span class="st-no">第 02 句</span>
+                          <span class="st-mono" style="font-size: 12px;color:var(--muted-fg);">3.1s</span>
+                        </div>
+                        <span class="badge accent">已确认</span>
+                      </div>
+                      <div class="st-textarea card" style="min-height: 36px;">老板说，这锅汤熬了整整六个小时。</div>
+                    </div>
+                    <div class="st-script-card" data-tc="00:08.900">
+                      <div class="st-script-head">
+                        <div class="st-script-left">
+                          <span class="st-no">第 03 句</span>
+                          <span class="st-mono" style="font-size: 12px;color:var(--muted-fg);">2.8s</span>
+                        </div>
+                        <span class="badge warn">待确认</span>
+                      </div>
+                      <div class="st-textarea card" style="min-height: 36px;">嗯……你先尝尝再说。</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="mat-group" data-mat="faces">
+                  <div class="mat-list row">
+                    <div class="cv-mitem g1"><div class="ph"></div><span class="lab">小美</span><span class="tc">出现 8 次</span></div>
+                    <div class="cv-mitem g2"><div class="ph"></div><span class="lab">阿哲</span><span class="tc">出现 5 次</span></div>
+                    <div class="cv-mitem g3"><div class="ph"></div><span class="lab">晓晓</span><span class="tc">出现 3 次</span></div>
+                    <div class="cv-mitem g4"><div class="ph"></div><span class="lab">张三</span><span class="tc">出现 2 次</span></div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 视图 3 · 画面描述（步骤② 产物） -->
+            <section class="cv-pane" data-view="vlm">
+              <div class="st-center-head">
+                <div>
+                  <div class="st-title">VLM 画面描述 <span class="st-state done"><i class="st-dot"></i>已完成</span></div>
+                  <div class="st-sub">逐帧编辑和修正 · 语义流生成 · <b class="n">42</b> 帧已分析 · 已确认 <b class="n">40</b> 帧</div>
+                </div>
+              </div>
+              <div class="st-center-scroll">
+                <div class="st-vlm-row" data-tc="00:00.000">
+                  <div class="st-thumb g1"><span class="lab">帧 1</span></div>
+                  <div class="st-vlm-main">
+                    <div class="st-desc">点击添加描述</div>
+                    <div class="st-meta"><span>帧 1 · 00:00.000</span><span style="color:rgba(74,222,128,.9);">无匹配台词</span></div>
+                  </div>
+                </div>
+                <div class="st-vlm-row" data-tc="00:04.680">
+                  <div class="st-thumb g2"><span class="lab">帧 2</span></div>
+                  <div class="st-vlm-main">
+                    <div class="st-desc">点击添加描述</div>
+                    <div class="st-meta"><span>帧 2 · 00:04.680</span><span style="color:rgba(74,222,128,.9);">无匹配台词</span></div>
+                  </div>
+                </div>
+                <div class="st-vlm-row" data-tc="00:07.120">
+                  <div class="st-thumb g3"><span class="lab">帧 3</span></div>
+                  <div class="st-vlm-main">
+                    <div class="st-desc">点击添加描述</div>
+                    <div class="st-meta"><span>帧 3 · 00:07.120</span><span style="color:rgba(74,222,128,.9);">无匹配台词</span></div>
+                  </div>
+                </div>
+                <div class="st-vlm-row" data-tc="00:09.840">
+                  <div class="st-thumb g4"><span class="lab">帧 4</span></div>
+                  <div class="st-vlm-main">
+                    <div class="st-desc">点击添加描述</div>
+                    <div class="st-meta"><span>帧 4 · 00:09.840</span><span style="color:rgba(74,222,128,.9);">无匹配台词</span></div>
+                  </div>
+                </div>
+                <div class="st-vlm-row" data-tc="00:12.360">
+                  <div class="st-thumb g2"><span class="lab">帧 5</span></div>
+                  <div class="st-vlm-main">
+                    <div class="st-desc">点击添加描述</div>
+                    <div class="st-meta"><span>帧 5 · 00:12.360</span><span style="color:rgba(74,222,128,.9);">无匹配台词</span></div>
+                  </div>
+                </div>
+                <div class="st-story">
+                  <div class="st-story-title">故事脉络</div>
+                  <p><span class="st-todo">待确认</span></p>
+                </div>
+              </div>
+            </section>
+
+            <!-- 视图 4 · 脚本 -->
+            <section class="cv-pane" data-view="script">
+              <div class="st-center-head">
+                <div>
+                  <div class="st-title">解说文案流 (Script Paragraphs) <span class="st-state check"><i class="st-dot"></i>检查点</span></div>
+                  <div class="st-sub">共计 <b class="n">386</b> 字 / 预算 <b class="n">420</b> 字</div>
+                </div>
+                <div class="st-toolbar">
+                  <button class="st-act plain" data-overview>总览</button>
+                  <button class="st-act plain" data-copyall>复制全部</button>
+                </div>
+              </div>
+              <div class="st-center-scroll">
+                <div class="st-script-card" data-tc="00:06.200">
+                  <div class="st-script-head">
+                    <div class="st-script-left">
+                      <span class="st-no">第 01 段</span>
+                      <span class="st-mono" style="font-size: 12px;color:var(--muted-fg);">6.2s</span>
+                    </div>
+                    <span class="badge accent">激昂</span>
+                  </div>
+                  <textarea class="st-textarea card" placeholder="输入或修改解说词..."></textarea>
+                  <div class="st-script-foot">
+                    <span class="st-link">匹配画面帧</span>
+                    <span class="st-mono">46 字</span>
+                  </div>
+                </div>
+
+                <div class="st-script-card" data-tc="00:12.000">
+                  <div class="st-script-head">
+                    <div class="st-script-left">
+                      <span class="st-no">第 02 段</span>
+                      <span class="st-mono" style="font-size: 12px;color:var(--muted-fg);">5.8s</span>
+                    </div>
+                    <span style="font-size: 12px;color:var(--muted-fg);">无氛围标签</span>
+                  </div>
+                  <textarea class="st-textarea card" placeholder="输入或修改解说词..."></textarea>
+                  <div class="st-script-foot">
+                    <span class="st-link">匹配画面帧</span>
+                    <span class="st-mono">41 字</span>
+                  </div>
+                </div>
+
+                <div class="st-script-card" data-tc="00:17.800">
+                  <div class="st-script-head">
+                    <div class="st-script-left">
+                      <span class="st-no">第 03 段</span>
+                      <span class="badge warn">原声保留</span>
+                      <span class="st-mono" style="font-size: 12px;color:var(--muted-fg);">8.4s</span>
+                    </div>
+                    <span style="font-size: 12px;color:var(--muted-fg);">无氛围标签</span>
+                  </div>
+                  <div class="st-locked" title="原声保留段：此段保留影片原声，无需生成解说词，故锁定不可编辑">
+                    <div class="lbl">原声台词</div>
+                    <div class="txt">（保留原片声音）</div>
+                  </div>
+                  <div class="st-script-foot">
+                    <span class="st-link">匹配画面帧</span>
+                    <span class="st-mono">0 字</span>
+                  </div>
+                </div>
+
+                <div class="st-script-card" data-tc="00:26.200">
+                  <div class="st-script-head">
+                    <div class="st-script-left">
+                      <span class="st-no">第 04 段</span>
+                      <span class="st-mono" style="font-size: 12px;color:var(--muted-fg);">7.1s</span>
+                    </div>
+                    <span class="badge accent">紧张</span>
+                  </div>
+                  <textarea class="st-textarea card" placeholder="输入或修改解说词..."></textarea>
+                  <div class="st-script-foot">
+                    <span class="st-link">匹配画面帧</span>
+                    <span class="st-mono">52 字</span>
+                  </div>
+                </div>
+
+                <div class="st-script-card" data-tc="00:33.300">
+                  <div class="st-script-head">
+                    <div class="st-script-left">
+                      <span class="st-no">第 05 段</span>
+                      <span class="st-mono" style="font-size: 12px;color:var(--muted-fg);">6.6s</span>
+                    </div>
+                    <span class="badge accent">感慨</span>
+                  </div>
+                  <textarea class="st-textarea card" placeholder="输入或修改解说词..."></textarea>
+                  <div class="st-script-foot">
+                    <span class="st-link">匹配画面帧</span>
+                    <span class="st-mono">48 字</span>
+                  </div>
+                </div>
+
+                <button class="st-regen" data-regen>应用当前参数重新生成</button>
+              </div>
+            </section>
+
+            <!-- 视图 5 · 配音 -->
+            <section class="cv-pane" data-view="tts">
+              <div class="st-center-head">
+                <div>
+                  <div class="st-title">TTS 配音合成 <span class="st-state run"><i class="st-dot"></i>运行中 · 45%</span></div>
+                  <div class="st-sub"><b class="n">24</b> 段文案 · Edge TTS · 语速 <b class="n">1.0x</b></div>
+                </div>
+                <div class="st-toolbar">
+                  <button class="st-act" data-playall>全部播放</button>
+                </div>
+              </div>
+              <div class="st-progress"><i style="width:45%"></i></div>
+              <div class="st-center-scroll">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px;">
+                  <div class="st-title" style="font-size:14px;">配音列表</div>
+                  <span style="font-size: 12px;color:var(--muted-fg);">第 03 / 8</span>
+                </div>
+
+                <div class="st-tts-row" data-tc="00:05.200">
+                  <div class="st-tts-main">
+                    <div class="st-tts-top">
+                      <span class="st-mono" style="font-size: 12px;color:var(--accent-fg);">第 01 段</span>
+                      <span class="badge green">已完成</span>
+                      <span style="font-size:11px;color:var(--muted-fg);">5.2s</span>
+                    </div>
+                    <div class="st-tts-text">解说文案待确认</div>
+                  </div>
+                  <div class="st-tts-actions">
+                    <button class="st-icon-btn" data-synth title="仅配音本段"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3.5v7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8.6" cy="11" r="1.9" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M10.5 3.5 13 2.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+                    <button class="st-icon-btn" data-audition title="试听配音"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.4 3.6 12.6 8l-7.2 4.4z" fill="currentColor"/></svg></button>
+                  </div>
+                </div>
+
+                <div class="st-tts-row" data-tc="00:10.000">
+                  <div class="st-tts-main">
+                    <div class="st-tts-top">
+                      <span class="st-mono" style="font-size: 12px;color:var(--accent-fg);">第 02 段</span>
+                      <span class="badge green">已完成</span>
+                      <span style="font-size:11px;color:var(--muted-fg);">4.8s</span>
+                    </div>
+                    <div class="st-tts-text">解说文案待确认</div>
+                  </div>
+                  <div class="st-tts-actions">
+                    <button class="st-icon-btn" data-synth title="仅配音本段"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3.5v7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8.6" cy="11" r="1.9" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M10.5 3.5 13 2.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+                    <button class="st-icon-btn" data-audition title="试听配音"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.4 3.6 12.6 8l-7.2 4.4z" fill="currentColor"/></svg></button>
+                  </div>
+                </div>
+
+                <div class="st-tts-row synthing" data-tc="00:16.100">
+                  <div class="st-tts-main">
+                    <div class="st-tts-top">
+                      <span class="st-mono" style="font-size: 12px;color:var(--accent-fg);">第 03 段</span>
+                      <span class="badge accent">合成中</span>
+                      <span class="st-pulses"><i></i><i></i><i></i></span>
+                      <span style="font-size:11px;color:var(--muted-fg);">6.1s</span>
+                    </div>
+                    <div class="st-tts-text">解说文案待确认</div>
+                  </div>
+                  <div class="st-tts-actions">
+                    <button class="st-icon-btn" data-synth title="仅配音本段"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3.5v7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8.6" cy="11" r="1.9" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M10.5 3.5 13 2.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+                    <button class="st-icon-btn" data-audition title="试听配音"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.4 3.6 12.6 8l-7.2 4.4z" fill="currentColor"/></svg></button>
+                  </div>
+                </div>
+
+                <div class="st-tts-row" data-tc="00:21.700">
+                  <div class="st-tts-main">
+                    <div class="st-tts-top">
+                      <span class="st-mono" style="font-size: 12px;color:var(--accent-fg);">第 04 段</span>
+                      <span class="badge">待合成</span>
+                      <span style="font-size:11px;color:var(--muted-fg);">5.6s</span>
+                    </div>
+                    <div class="st-tts-text">解说文案待确认</div>
+                  </div>
+                  <div class="st-tts-actions">
+                    <button class="st-icon-btn" data-synth title="仅配音本段"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3.5v7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8.6" cy="11" r="1.9" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M10.5 3.5 13 2.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+                    <button class="st-icon-btn" data-audition title="试听配音"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.4 3.6 12.6 8l-7.2 4.4z" fill="currentColor"/></svg></button>
+                  </div>
+                </div>
+
+                <div class="st-tts-row" data-tc="00:30.100">
+                  <div class="st-tts-main">
+                    <div class="st-tts-top">
+                      <span class="st-mono" style="font-size: 12px;color:var(--accent-fg);">第 05 段</span>
+                      <span class="badge accent">原声保留</span>
+                      <span style="font-size:11px;color:var(--muted-fg);">8.4s</span>
+                    </div>
+                    <div class="st-tts-text">(原声保留段)</div>
+                  </div>
+                  <div class="st-tts-actions">
+                    <button class="st-icon-btn" data-audition title="试听原片原声"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.4 3.6 12.6 8l-7.2 4.4z" fill="currentColor"/></svg></button>
+                  </div>
+                </div>
+
+                <div class="st-tts-row" data-tc="00:37.100">
+                  <div class="st-tts-main">
+                    <div class="st-tts-top">
+                      <span class="st-mono" style="font-size: 12px;color:var(--accent-fg);">第 06 段</span>
+                      <span class="badge">待合成</span>
+                      <span style="font-size:11px;color:var(--muted-fg);">7.0s</span>
+                    </div>
+                    <div class="st-tts-text">解说文案待确认</div>
+                  </div>
+                  <div class="st-tts-actions">
+                    <button class="st-icon-btn" data-synth title="仅配音本段"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3.5v7.1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8.6" cy="11" r="1.9" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M10.5 3.5 13 2.9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
+                    <button class="st-icon-btn" data-audition title="试听配音"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.4 3.6 12.6 8l-7.2 4.4z" fill="currentColor"/></svg></button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- 视图 6 · 镜头匹配（步骤⑤ 产物，真源 editor.step5.title） -->
+            <section class="cv-pane" data-view="timeline">
+              <div class="st-center-head">
+                <div>
+                  <div class="st-title">镜头匹配 <span class="st-state ready"><i class="st-dot"></i>可匹配</span></div>
+                  <div class="st-sub"><b class="n">12</b> 个镜头 · 已确认 <b class="n">3/12</b></div>
+                </div>
+                <div class="st-toolbar">
+                  <button class="st-act plain" data-clear-cache>清空切片缓存</button>
+                  <button class="st-act" data-rematch>重新匹配</button>
+                </div>
+              </div>
+              <div class="st-center-scroll">
+                <div style="display:flex;align-items:center;gap:6px;font-size: 12px;color:var(--muted-fg);margin-bottom:8px;">
+                  <span>跳到第</span>
+                  <input class="st-input" placeholder="序号" style="width:56px;height:24px;text-align:center;" />
+                  <span>段</span>
+                  <button class="st-act plain sm" data-locate>定位</button>
+                  <span>共 12 段</span>
+                </div>
+
+                <div class="st-match" data-tc="00:00.000">
+                  <div class="st-match-idx">1</div>
+                  <div class="st-match-thumb g1"><span class="lab" style="position:absolute;left:5px;bottom:4px;font-family:ui-monospace,monospace;font-size: 11px;color:rgba(255,255,255,.92);text-shadow:0 1px 4px rgba(0,0,0,.75);">01</span><span class="dur">5.0s</span></div>
+                  <div class="st-match-body">
+                    <div class="st-match-top">
+                      <div class="st-match-title">（本段暂无文案）<span class="badge">已锁定</span></div>
+                      <div style="display:flex;align-items:center;gap:5px;flex:none;">
+                        <span style="font-size:11px;color:var(--muted-fg);">复制</span>
+                        <span class="badge green">92%</span>
+                      </div>
+                    </div>
+                    <div class="st-match-meta">
+                      <span class="st-chip">配音 5.2s</span>
+                      <span class="st-chip">片段 5.0s</span>
+                    </div>
+                    <div class="st-match-actions">
+                      <button class="st-act sm" data-seg-preview><svg class="st-act-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.4 3.6 12.6 8l-7.2 4.4z" fill="currentColor"/></svg>预览</button>
+                      <span style="font-size: 12px;color:var(--accent-green);display:inline-flex;align-items:center;gap:3px;">✓ 已确认</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="st-match warn" data-tc="00:05.000">
+                  <div class="st-match-idx">2</div>
+                  <div class="st-match-thumb g2"><span class="lab" style="position:absolute;left:5px;bottom:4px;font-family:ui-monospace,monospace;font-size: 11px;color:rgba(255,255,255,.92);text-shadow:0 1px 4px rgba(0,0,0,.75);">02</span><span class="dur">4.6s</span></div>
+                  <div class="st-match-body">
+                    <div class="st-match-top">
+                      <div class="st-match-title">（本段暂无文案）<span class="badge warn">原声</span><span class="badge warn">待确认</span></div>
+                      <div style="display:flex;align-items:center;gap:5px;flex:none;">
+                        <span style="font-size:11px;color:var(--muted-fg);">复制</span>
+                        <span class="badge warn">74%</span>
+                      </div>
+                    </div>
+                    <div class="st-match-meta">
+                      <span class="st-chip rose">原声轨</span>
+                      <span class="st-chip">片段 4.6s</span>
+                    </div>
+                    <div class="st-match-actions">
+                      <button class="st-act sm" data-seg-preview><svg class="st-act-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.4 3.6 12.6 8l-7.2 4.4z" fill="currentColor"/></svg>预览</button>
+                      <button class="st-act green" data-match-confirm>确认</button>
+                      <button class="st-act plain" data-replace>替换</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="st-match danger" data-tc="00:09.600">
+                  <div class="st-match-idx">3</div>
+                  <div class="st-match-thumb g4"><span class="lab" style="position:absolute;left:5px;bottom:4px;font-family:ui-monospace,monospace;font-size: 11px;color:rgba(255,255,255,.92);text-shadow:0 1px 4px rgba(0,0,0,.75);">03</span><span class="dur">6.1s</span></div>
+                  <div class="st-match-body">
+                    <div class="st-match-top">
+                      <div class="st-match-title">（本段暂无文案）<span class="badge warn">待确认</span></div>
+                      <div style="display:flex;align-items:center;gap:5px;flex:none;">
+                        <span style="font-size:11px;color:var(--muted-fg);">复制</span>
+                        <span class="badge rose">46%</span>
+                      </div>
+                    </div>
+                    <div class="st-match-meta">
+                      <span class="st-chip">配音 5.8s</span>
+                      <span class="st-chip">片段 6.1s</span>
+                    </div>
+                    <div class="st-match-actions">
+                      <button class="st-act sm" data-seg-preview><svg class="st-act-ic" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.4 3.6 12.6 8l-7.2 4.4z" fill="currentColor"/></svg>预览</button>
+                      <button class="st-act green" data-match-confirm>确认</button>
+                      <button class="st-act plain" data-replace>替换</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="st-hint">拖拽卡片可调整顺序，点击预览可同步播放画面与配音</div>
+              </div>
+            </section>
+          </main>
+        </div>
+
+        <!-- ============ 一键成片浮层 ============ -->
+        <div class="wiz-overlay" id="wizOverlay">
+          <section class="wiz-sheet" role="dialog" aria-label="一键成片">
+            <header class="sheet-head">
+              <h2 class="sheet-title">一键成片</h2>
+              <button class="icon-btn" data-wiz-close title="关闭"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+            </header>
+
+            <div class="wiz-steps">
+              <button class="wiz-step on" data-wtab="m"><em>1</em>开始创作</button>
+              <i class="wiz-line"></i>
+              <button class="wiz-step" data-wtab="r"><em>2</em>选择配方</button>
+              <i class="wiz-line"></i>
+              <button class="wiz-step" data-wtab="c"><em>3</em>开始前检查</button>
+            </div>
+
+            <div class="sheet-body">
+              <!-- 第 1 屏：初始化 -->
+              <div class="wpanel" data-wpanel="m">
+                <div class="wp-head"><b>开始创作</b><span>素材只在本地处理，不上传云端</span></div>
+
+                <div class="init-grid" style="grid-template-columns:1fr;">
+                  <div class="init-col">
+                    <div class="field-label">项目名称<span class="field-count">自动生成</span></div>
+                    <div class="name-row">26年11月6日<i>可稍后重命名</i></div>
+
+                    <div class="field-label" style="margin-top:14px;">素材<span class="field-count" data-media-count>1 个</span></div>
+                    <div class="media-grid" data-media-list>
+                      <button class="media-add" data-import-video>
+                        <span class="media-add-ico">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
+                        </span>
+                        <span class="media-add-main">导入素材</span>
+                        <span class="media-add-sub">或拖入视频</span>
+                      </button>
+
+                      <div class="media-tile" data-media="m1">
+                        <span class="media-tile-thumb"></span>
+                        <span class="media-tile-ico">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="M7 4.5v15M17 4.5v15M2.5 9.5h4.5M2.5 14.5h4.5M17 9.5h4.5M17 14.5h4.5"/></svg>
+                        </span>
+                        <span class="media-tile-ok">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                        </span>
+                        <button class="media-tile-x" data-remove title="移除"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+                        <span class="media-tile-foot">
+                          <b>DJI_0042.MP4</b>
+                          <em>1920×1080 · 222s</em>
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 第 2 屏：配方 -->
+              <div class="wpanel" data-wpanel="r" style="display:none;">
+                <div class="wp-head"><b>选择配方</b><span>配方决定文案、配音与剪辑策略</span></div>
+
+                <div class="wp-body">
+                <div class="recipe-grid" data-recipes>
+                  <div class="recipe on" data-tip="用第一人称讲清楚画面里发生了什么，适合知识、测评、旅行记录。">
+                    <span class="recipe-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                    <div class="recipe-head">
+                      <span class="recipe-ico">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3a2.5 2.5 0 0 0-2.5 2.5v6a2.5 2.5 0 0 0 5 0v-6A2.5 2.5 0 0 0 12 3Z"/><path d="M18.5 10.5v1a6.5 6.5 0 0 1-13 0v-1M12 18v3"/></svg>
+                      </span>
+                      <div style="flex:1;min-width:0;">
+                        <div class="recipe-name">口播解说</div>
+                        <div class="recipe-kind">第一人称讲述</div>
+                      </div>
+                    </div>
+                    <div class="recipe-tags"><span class="rtag">3~5 分钟</span><span class="rtag">旁白解说</span><span class="rtag">标准密度</span></div>
+                    <span class="hint-cue">?</span>
+                  </div>
+                  <div class="recipe" data-tip="按节奏点切换，保留原声与氛围，适合混剪、产品展示与旅拍。">
+                    <span class="recipe-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                    <div class="recipe-head">
+                      <span class="recipe-ico">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11M15 9v11"/></svg>
+                      </span>
+                      <div style="flex:1;min-width:0;">
+                        <div class="recipe-name">混剪卡点</div>
+                        <div class="recipe-kind">节奏优先</div>
+                      </div>
+                    </div>
+                    <div class="recipe-tags"><span class="rtag">1~2 分钟</span><span class="rtag">保留原声</span><span class="rtag">高密度</span></div>
+                    <span class="hint-cue">?</span>
+                  </div>
+                  <div class="recipe" data-tip="跟随剧情讲完整故事，适合影视、综艺二创与长叙事内容。">
+                    <span class="recipe-check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                    <div class="recipe-head">
+                      <span class="recipe-ico">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M7 5v14M17 5v14M2.5 9h4.5M2.5 15h4.5M17 9h4.5M17 15h4.5"/></svg>
+                      </span>
+                      <div style="flex:1;min-width:0;">
+                        <div class="recipe-name">影视解说</div>
+                        <div class="recipe-kind">长叙事</div>
+                      </div>
+                    </div>
+                    <div class="recipe-tags"><span class="rtag">5~8 分钟</span><span class="rtag">长文本</span><span class="rtag">段落更多</span></div>
+                    <span class="hint-cue">?</span>
+                  </div>
+                </div>
+
+                <div class="opt-block">
+                  <div class="wiz-sec"><b>核心选项</b><span>高级设置稍后可在步骤中调整</span></div>
+                  <div class="opt-grid4">
+                    <div class="opt">
+                      <label>成片时长<span class="hint" data-tip="目标成片长度，实际会按文案与语速微调。">?</span></label>
+                      <div class="seg"><button>1分</button><button class="on">3分</button><button>5分</button></div>
+                    </div>
+                    <div class="opt">
+                      <label>画面比例<span class="hint" data-tip="决定画幅比例，预览与导出都按此输出。">?</span></label>
+                      <div class="seg"><button>9:16</button><button class="on">16:9</button><button>1:1</button></div>
+                    </div>
+                    <div class="opt">
+                      <label>配音音色<span class="hint" data-tip="全片统一使用的 TTS 音色，可稍后按角色覆盖。">?</span></label>
+                      <button class="voice" data-voice>小美 · 温柔女声<span>⌄</span></button>
+                    </div>
+                    <div class="opt">
+                      <label>字幕<span class="hint" data-tip="自动识别人声台词，并烧录进画面。">?</span></label>
+                      <div class="sub-inline"><span class="switch on" role="switch" aria-checked="true"><i></i></span>自动烧录</div>
+                    </div>
+                  </div>
+                </div>
+                </div>
+              </div>
+
+              <!-- 第 3 屏：开始前检查 -->
+              <div class="wpanel" data-wpanel="c" style="display:none;">
+                <div class="wp-head"><b>开始前检查</b><span>只列出会阻断或明显拖慢生成的项目</span></div>
+
+                <div class="wp-body">
+                <div class="check-card">
+                  <div class="wiz-check">
+                    <span class="wiz-check-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                    <div class="wiz-check-main"><b>素材</b><em>已就绪 1 个视频</em></div>
+                  </div>
+                  <div class="wiz-check">
+                    <span class="wiz-check-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                    <div class="wiz-check-main"><b>配方</b><em>口播解说 · 第一人称讲述</em></div>
+                  </div>
+                  <div class="wiz-check">
+                    <span class="wiz-check-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                    <div class="wiz-check-main"><b>输出</b><em>16:9 · 3 分钟 · 自动字幕</em></div>
+                  </div>
+                  <div class="wiz-check">
+                    <span class="wiz-check-ok"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+                    <div class="wiz-check-main"><b>配音</b><em>小美 · 温柔女声</em></div>
+                  </div>
+                </div>
+
+                <div class="sum-line">
+                  <b>口播解说 · 3 分钟 · 16:9</b>
+                  <span>小美 · 温柔女声 · 自动字幕</span>
+                  <span class="sum-time">预计 8~12 分钟</span>
+                </div>
+                </div>
+              </div>
+            </div>
+
+            <footer class="sheet-foot">
+              <button class="btn btn-ghost" data-wiz-back>上一步</button>
+              <span class="foot-note">第 <b data-wiz-idx>1</b> / 3 步 · 生成会停在检查点，等你确认</span>
+              <button class="btn btn-primary" data-wiz-next>下一步：选择配方</button>
+            </footer>
+          </section>
+        </div>
+
+        <!-- 导出弹窗（对齐 ExportModal） -->
+        <div class="modal-wrap" id="exportModal">
+          <div class="modal exp" id="exportMask">
+            <div class="modal-head">
+              <b>导出控制台</b>
+              <span style="font-size:13px;color:var(--muted-fg);">AI 二创引擎</span>
+              <button class="icon-btn" data-export-close title="关闭"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+            </div>
+
+            <div class="modal-body exp-body">
+              <div class="exp-right">
+                <div class="exp-check" data-exp-toggle><span class="exp-box on">✓</span>视频导出</div>
+                <div class="exp-sub">
+                  <div class="exp-row"><span>格式</span><select class="exp-sel"><option>MP4</option><option>MOV</option></select></div>
+                  <div class="exp-row"><span>画幅</span><select class="exp-sel"><option>16:9 横屏</option><option>9:16 竖屏</option></select></div>
+                  <div class="exp-row"><span>分辨率</span><select class="exp-sel"><option>4K (极客保真)</option><option>2K (高清推流)</option><option selected>1080P (标准传输)</option><option>720P (流畅压制)</option></select></div>
+                  <div class="exp-row"><span>帧率</span><select class="exp-sel"><option>30 fps</option><option>60 fps</option></select></div>
+                  <div class="exp-row"><span>预览导出</span><select class="exp-sel"><option>标准质量</option><option>快速预览</option></select></div>
+                  <div class="exp-row"><span>字幕</span><select class="exp-sel"><option>无字幕</option><option>仅烧录</option><option>仅字幕文件</option><option selected>烧录+字幕文件</option></select></div>
+                  <div class="exp-row"><span>字幕打码</span><select class="exp-sel"><option>关闭（原文）</option><option>开启（高危词→哔——）</option></select></div>
+                </div>
+
+                <div class="exp-line"></div>
+                <div class="exp-check" data-exp-toggle><span class="exp-box"></span>剪映导出</div>
+                <div class="exp-sub">
+                  <div class="exp-row"><span>平台</span><select class="exp-sel"><option>剪映专业版 (Win/Mac)</option></select></div>
+                </div>
+
+                <div class="exp-line"></div>
+                <div class="exp-check" data-exp-toggle><span class="exp-box"></span>音频导出</div>
+                <div class="exp-sub">
+                  <div class="exp-row"><span>格式</span><select class="exp-sel"><option>MP3</option><option>WAV</option></select></div>
+                </div>
+
+                <div class="exp-line"></div>
+                <div class="exp-check" data-exp-toggle><span class="exp-box"></span>字幕文件</div>
+                <div class="exp-sub">
+                  <div class="exp-row"><span>格式</span><select class="exp-sel"><option>SRT</option><option>ASS</option></select></div>
+                </div>
+
+                <div class="exp-line"></div>
+                <div class="exp-check" data-exp-toggle><span class="exp-box"></span>解说文案 (TXT)</div>
+
+                <div class="exp-line"></div>
+                <div class="exp-row"><span>导出范围</span><select class="exp-sel"><option>全部片段</option><option>选中片段</option></select></div>
+                <div class="exp-row"><span>完成后打开</span><select class="exp-sel"><option>不打开</option><option>打开文件夹</option><option>播放成片</option></select></div>
+
+                <div class="exp-path-box">
+                  <span style="font-size:13px;color:var(--muted-fg);font-weight:600;">视频保存位置</span>
+                  <div class="exp-path">
+                    <input value="D:\Zentect\exports" readonly />
+                    <button class="btn btn-ghost btn-sm" data-change-path>更改</button>
+                  </div>
+                  <span class="exp-hint">成片将保存在此目录下的【当前工程名】文件夹中。</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="modal-foot exp-foot">
+              <div class="exp-progress" id="expProgress" hidden>
+                <span class="exp-bar"><i id="expBarFill"></i></span>
+                <b id="expPct">0%</b>
+              </div>
+              <div class="exp-foot-btns">
+                <span style="flex:1;"></span>
+                <button class="btn btn-ghost" data-export-close>取消</button>
+                <button class="btn btn-primary" data-export-run>导出</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 导出前门禁（对齐 ExportModal 的三道拦截，原型用 ?gate= 演示） -->
+        <div class="modal-wrap gate" id="expGate">
+          <div class="modal gate-dlg" id="expGateMask">
+            <div class="modal-head"><b id="gateTitle"></b></div>
+            <div class="modal-body"><div class="gate-msg" id="gateMsg"></div></div>
+            <div class="modal-foot">
+              <span style="flex:1;"></span>
+              <button class="btn btn-ghost" data-gate-cancel>取消</button>
+              <button class="btn btn-primary" data-gate-ok>继续</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 任务中心 · 右侧抽屉 -->
+  <div class="task-mask" id="taskMask"></div>
+  <aside class="task-drawer" id="taskDrawer" aria-hidden="true">
+    <div class="td-head">
+      <div class="td-title">任务详情 <span class="td-phase run" data-td-phase>运行中</span></div>
+      <button class="td-x" data-task-close title="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+
+    <div class="td-scroll">
+      <section class="td-sec">
+        <div class="td-sec-h">运行概览</div>
+        <div class="td-kv"><span>相位</span><b data-td-phase-text>运行中</b></div>
+        <div class="td-kv"><span>已用时</span><b data-td-elapsed>02:14</b></div>
+        <div class="td-kv"><span>当前节点</span><b data-td-node>关键帧提取 2/4</b></div>
+        <div class="td-kv"><span>使用模型</span><b>Qwen2.5-VL 本地 · DeepSeek 云端</b></div>
+      </section>
+
+      <section class="td-sec">
+        <div class="td-sec-h">五步状态</div>
+
+        <div class="td-step" data-ts="1">
+          <button class="td-step-row" data-ts-toggle="1" aria-expanded="true">
+            <i class="td-dot run" data-ts-dot></i>
+            <b>素材准备</b>
+            <span class="td-rev" data-ts-rev>rev 3</span>
+            <em class="td-badge st" data-ts-badge>进行中</em>
+            <span class="td-caret">▾</span>
+          </button>
+          <div class="td-subs" data-ts-subs>
+            <div class="td-sub" data-sub="frames"><i class="td-mini done"></i><span>关键帧</span><em>18.4s</em></div>
+            <div class="td-sub" data-sub="audio"><i class="td-mini done"></i><span>音频分离</span><em>12.1s</em></div>
+            <div class="td-sub" data-sub="whisper"><i class="td-mini run"></i><span>台词识别</span><em>62%</em></div>
+            <div class="td-sub" data-sub="faces"><i class="td-mini idle"></i><span>人物识别</span><em>待开始</em></div>
+          </div>
+        </div>
+
+        <div class="td-step" data-ts="2">
+          <div class="td-step-row">
+            <i class="td-dot done" data-ts-dot></i>
+            <b>看片理解</b>
+            <span class="td-rev" data-ts-rev>rev 2</span>
+            <em class="td-badge ok" data-ts-badge>已完成</em>
+          </div>
+        </div>
+        <div class="td-step" data-ts="3">
+          <div class="td-step-row">
+            <i class="td-dot done" data-ts-dot></i>
+            <b>脚本创作</b>
+            <span class="td-rev" data-ts-rev>rev 5</span>
+            <em class="td-badge ok" data-ts-badge>已完成</em>
+          </div>
+        </div>
+        <div class="td-step" data-ts="4">
+          <div class="td-step-row">
+            <i class="td-dot idle" data-ts-dot></i>
+            <b>配音合成</b>
+            <span class="td-rev" data-ts-rev>—</span>
+            <em class="td-badge none" data-ts-badge>待开始</em>
+          </div>
+        </div>
+        <div class="td-step" data-ts="5">
+          <div class="td-step-row">
+            <i class="td-dot idle" data-ts-dot></i>
+            <b>画面匹配</b>
+            <span class="td-rev" data-ts-rev>—</span>
+            <em class="td-badge none" data-ts-badge>待开始</em>
+          </div>
+        </div>
+      </section>
+
+      <section class="td-sec td-fail" data-td-fail style="display:none;">
+        <div class="td-sec-h">失败详情</div>
+        <div class="td-err">
+          配音合成失败 · 第 3 句
+          <em data-td-err>Edge TTS 连接超时（30s）</em>
+        </div>
+        <div class="td-fail-acts">
+          <button class="btn btn-primary btn-sm" data-task-retry>重试此步</button>
+          <button class="btn btn-ghost btn-sm" data-task-manual>转手动</button>
+          <button class="btn btn-ghost btn-sm" data-task-log>查看日志</button>
+        </div>
+        <pre class="td-log" data-td-log>[15:02:11] tts.synthesize · voice=xiaomei · sentence=3/8
+[15:02:11] edge-tts connect · timeout=30s
+[15:02:41] retry 1/2 · failed
+[15:02:42] task.failed · step=4 · recoverable=true</pre>
+      </section>
+
+      <section class="td-sec">
+        <div class="td-sec-h">最近运行 <em>仅本次会话</em></div>
+        <button class="td-run on" data-task-recent><span>今天 15:02</span><b>进行中 · 素材准备</b></button>
+        <button class="td-run" data-task-recent><span>今天 14:26</span><b>失败 · 配音合成 第 3 句</b></button>
+        <button class="td-run" data-task-recent><span>今天 11:08</span><b>已完成 · 05:32</b></button>
+        <button class="td-run" data-task-recent><span>昨天 20:41</span><b>已完成 · 04:58</b></button>
+        <button class="td-run" data-task-recent><span>昨天 18:03</span><b>已中止 · 02:11</b></button>
+      </section>
+    </div>
+  </aside>
+
+  <script src="./assets/nav.js"></script>
+  <script src="./assets/app.js"></script>
+  <script>
+    (function () {
+      var STEPS = {
+        1: { name: '素材助理', view: 'material', state: 'run', stateText: '运行中', desc: '关键帧提取 · 音频分离 · ASR 台词识别 · 人物识别', run: '执行中...', runDisabled: true, next: false, prog: 68 },
+        2: { name: '看片员', view: 'vlm', state: 'done', stateText: '已完成', desc: 'VLM 画面描述 · 语义提取 · 语义流生成', run: '启动', runDisabled: false, next: true, prog: 100 },
+        3: { name: '首席编剧', view: 'script', state: 'check', stateText: '检查点', desc: 'AI 脚本控制台 · 篇幅 / 声画配比 / 写法与调性', run: '应用当前参数重新生成', runDisabled: false, next: true, prog: 100 },
+        4: { name: '专业播音', view: 'tts', state: 'run', stateText: '运行中', desc: 'TTS 配音合成 · 24 段文案 · Edge TTS', run: '执行中...', runDisabled: true, next: false, prog: 45 },
+        5: { name: '剪辑大师', view: 'timeline', state: 'ready', stateText: '可匹配', desc: 'BGM 背景音乐 · 镜头匹配', run: '启动', runDisabled: false, next: false, prog: 0 }
+      };
+      var cur = 1;
+      var dirty = false;
+
+      function qs(s, r) { return (r || document).querySelector(s); }
+      function qsa(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
+      function toast(msg) { if (window.ptToast) window.ptToast(msg); }
+
+      /* ---------- 视图 ---------- */
+      function setView(v) {
+        qsa('.view-chip').forEach(function (c) { c.classList.toggle('on', c.getAttribute('data-view') === v); });
+        qsa('.cv-pane').forEach(function (p) { p.classList.toggle('on', p.getAttribute('data-view') === v); });
+      }
+
+      /* ---------- 影响提示 ---------- */
+      function hideImpact() {
+        var el = qs('[data-impact]');
+        if (el) { el.classList.remove('on'); el.textContent = ''; }
+        dirty = false;
+      }
+      function showImpact() {
+        var el = qs('[data-impact]');
+        if (!el) return;
+        var left = 5 - cur;
+        el.textContent = '参数已修改 · 重新运行「' + STEPS[cur].name + '」后生效' +
+          (left > 0 ? '，将影响后续 ' + left + ' 步' : '，仅影响本步');
+        el.classList.add('on');
+        dirty = true;
+      }
+
+      /* ---------- 步骤切换 ---------- */
+      function setStep(n, keepView) {
+        var m = STEPS[n] || STEPS[1];
+        cur = n;
+
+        qsa('.stepcfg').forEach(function (p) { p.classList.toggle('on', +p.getAttribute('data-step') === n); });
+        qsa('.ind').forEach(function (i) { i.classList.toggle('cur', +i.getAttribute('data-step') === n); });
+        qsa('.pt-step').forEach(function (b) { b.classList.toggle('on', +b.getAttribute('data-step') === n); });
+
+        var nm = qs('[data-step-name]'); if (nm) nm.textContent = m.name;
+        var ds = qs('[data-step-desc]'); if (ds) ds.textContent = m.desc;
+
+        var st = qs('[data-step-state]');
+        if (st) { st.className = 'st-state ' + m.state; st.innerHTML = '<i class="st-dot"></i>' + m.stateText; }
+
+        var run = qs('[data-run]');
+        if (run) { run.textContent = m.run; run.disabled = !!m.runDisabled; }
+        var next = qs('[data-next]');
+        if (next) next.style.display = m.next ? '' : 'none';
+
+        var bi = qs('[data-bar-idx]'); if (bi) bi.textContent = String(n);
+        var bn = qs('[data-bar-name]'); if (bn) bn.textContent = m.name;
+        var bs = qs('[data-bar-state]');
+        if (bs) { bs.className = 'st-state ' + m.state; bs.innerHTML = '<i class="st-dot"></i>' + m.stateText; }
+        var bp = qs('[data-bar-prog]');
+        if (bp) bp.style.width = m.prog + '%';
+
+        if (!keepView) setView(m.view);
+        hideImpact();
+
+        try {
+          var u = new URL(location.href);
+          u.searchParams.set('step', String(n));
+          history.replaceState(null, '', u.toString());
+        } catch (e) { /* ignore */ }
+      }
+
+      /* ---------- 定位：点条目 → 预览跳时间码 ---------- */
+      function locate(tc, el) {
+        setView('preview');
+        var parts = String(tc).split(':');
+        var sec = (parseFloat(parts[0]) || 0) * 60 + (parseFloat(parts[1]) || 0);
+        var pct = Math.max(2, Math.min(97, (sec / 180) * 100));
+        var t = qs('.cv-time');
+        if (t) {
+          t.textContent = '00:' + tc + ' / 00:03:00';
+          t.classList.remove('jump');
+          void t.offsetWidth;
+          t.classList.add('jump');
+        }
+        var prog = qs('.cv-bar .pline i');
+        if (prog) prog.style.width = pct + '%';
+        var cur = qs('.cv-bar-cur');
+        if (cur) cur.textContent = sec.toFixed(1) + 's';
+        qsa('.cv-mitem.on').forEach(function (n) { n.classList.remove('on'); });
+        if (el && el.classList.contains('cv-mitem')) el.classList.add('on');
+        toast('已定位到 ' + tc);
+      }
+
+      /* ---------- 事件 ---------- */
+      qsa('.ind').forEach(function (b) {
+        b.addEventListener('click', function () { setStep(+b.getAttribute('data-step')); });
+      });
+      qsa('.pt-step').forEach(function (b) {
+        b.addEventListener('click', function () { setStep(+b.getAttribute('data-step')); });
+      });
+      qsa('.view-chip').forEach(function (b) {
+        b.addEventListener('click', function () { setView(b.getAttribute('data-view')); });
+      });
+
+      /* ---------- 预览：媒体标签切换 ---------- */
+      var mtabs = qsa('.cv-mtab');
+      function setMTab(k) {
+        mtabs.forEach(function (t) { t.classList.toggle('on', t.getAttribute('data-mtab') === k); });
+        qsa('.cv-mgroup').forEach(function (g) { g.classList.toggle('on', g.getAttribute('data-mtab') === k); });
+      }
+      mtabs.forEach(function (t) {
+        t.addEventListener('click', function () { setMTab(t.getAttribute('data-mtab')); });
+      });
+
+      /* ---------- 素材视图：四类产物切换（与预览媒体标签相互隔离） ---------- */
+      var matTabs = qsa('#matTabs .mat-tab');
+      matTabs.forEach(function (t) {
+        t.addEventListener('click', function () {
+          var k = t.getAttribute('data-mat');
+          matTabs.forEach(function (x) { x.classList.toggle('on', x === t); });
+          qsa('.mat-group').forEach(function (g) { g.classList.toggle('on', g.getAttribute('data-mat') === k); });
+        });
+      });
+
+      /* ---------- 左栏参数卡：手风琴（默认只展开第一张，点标题行切换） ---------- */
+      qsa('.panel-scroll .stepcfg').forEach(function (cfg) {
+        var cards = qsa(':scope > .st-card', cfg);
+        cards.forEach(function (c, i) {
+          c.classList.toggle('collapsed', i > 0);
+          var head = qs('.st-card-head', c);
+          if (!head) return;
+          head.addEventListener('click', function () {
+            var opening = c.classList.contains('collapsed');
+            cards.forEach(function (x) { x.classList.add('collapsed'); });
+            if (opening) c.classList.remove('collapsed');
+          });
+        });
+      });
+
+      /* 提示条：视觉两行封顶，完整文案放 title 供悬停查看 */
+      qsa('.st-hint').forEach(function (h) { if (!h.title) h.title = h.textContent.trim(); });
+
+      /* ---------- 可拖分栏（初始 30%，拖拽 20%–60%，对齐真源 useResizablePanel） ---------- */
+      var split = qs('#edSplit');
+      var panel = qs('.ed-panel');
+      var PANEL_PCT = 30;
+      if (split && panel) {
+        var dragging = false, startX = 0, startW = 0;
+        function applyPct(px) {
+          var bodyW = qs('.ed-body').getBoundingClientRect().width;
+          var pct = Math.max(20, Math.min(60, (px / bodyW) * 100));
+          panel.style.width = pct + '%';
+        }
+        split.addEventListener('mousedown', function (e) {
+          e.preventDefault();
+          dragging = true;
+          startX = e.clientX;
+          startW = panel.getBoundingClientRect().width;
+          document.body.classList.add('ed-resizing');
+          split.classList.add('on');
+        });
+        window.addEventListener('mousemove', function (e) {
+          if (!dragging) return;
+          applyPct(startW + (e.clientX - startX));
+        });
+        window.addEventListener('mouseup', function () {
+          if (!dragging) return;
+          dragging = false;
+          document.body.classList.remove('ed-resizing');
+          split.classList.remove('on');
+        });
+        split.addEventListener('dblclick', function () { panel.style.width = PANEL_PCT + '%'; });
+      }
+
+      /* ---------- OP/ED 双柄裁剪滑轨（拖滑点改裁剪量，松手视为保存） ---------- */
+      qsa('.oped').forEach(function (root) {
+        var dur = parseFloat(root.getAttribute('data-duration')) || 0;
+        if (!dur) return;
+        var op = parseFloat(root.getAttribute('data-op')) || 0;
+        var ed = parseFloat(root.getAttribute('data-ed')) || 0;
+        var track = qs('[data-track]', root);
+        var hOp = qs('[data-handle="op"]', root);
+        var hEd = qs('[data-handle="ed"]', root);
+        var keep = qs('[data-keep]', root);
+        var cutL = qs('[data-cut-l]', root);
+        var cutR = qs('[data-cut-r]', root);
+        var codeOp = qs('[data-op-code]', root);
+        var codeEd = qs('[data-ed-code]', root);
+        var MIN_KEEP = 0.5;
+        var FPS = 30;
+        function tc(sec) {
+          var t = Math.max(0, sec);
+          var h = Math.floor(t / 3600);
+          var m = Math.floor((t % 3600) / 60);
+          var s = Math.floor(t % 60);
+          var f = Math.floor((t % 1) * FPS);
+          function p(n) { return (n < 10 ? '0' : '') + n; }
+          return p(h) + ':' + p(m) + ':' + p(s) + ':' + p(f);
+        }
+        function paint() {
+          var l = Math.max(0, Math.min(100, (op / dur) * 100));
+          var r = Math.max(0, Math.min(100, ((dur - ed) / dur) * 100));
+          hOp.style.left = l + '%';
+          hEd.style.left = r + '%';
+          cutL.style.width = l + '%';
+          keep.style.left = l + '%';
+          keep.style.width = Math.max(0, r - l) + '%';
+          cutR.style.left = r + '%';
+          cutR.style.width = Math.max(0, 100 - r) + '%';
+          codeOp.textContent = tc(op);
+          codeEd.textContent = tc(ed);
+          hOp.setAttribute('aria-valuenow', String(Math.round(op)));
+          hEd.setAttribute('aria-valuenow', String(Math.round(ed)));
+        }
+        function secAt(x) {
+          var rect = track.getBoundingClientRect();
+          if (!rect.width) return 0;
+          return Math.min(1, Math.max(0, (x - rect.left) / rect.width)) * dur;
+        }
+        var dragging = null;
+        function apply(kind, sec) {
+          if (kind === 'op') op = Math.max(0, Math.min(sec, dur - ed - MIN_KEEP));
+          else ed = Math.max(0, Math.min(dur - sec, dur - op - MIN_KEEP));
+          paint();
+        }
+        function begin(kind, e) {
+          e.preventDefault();
+          dragging = kind;
+          (kind === 'op' ? hOp : hEd).classList.add('drag');
+          apply(kind, secAt(e.clientX));
+        }
+        hOp.addEventListener('pointerdown', function (e) { begin('op', e); });
+        hEd.addEventListener('pointerdown', function (e) { begin('ed', e); });
+        track.addEventListener('pointerdown', function (e) {
+          if (e.target === hOp || e.target === hEd) return;
+          var sec = secAt(e.clientX);
+          begin(Math.abs(sec - op) <= Math.abs(sec - (dur - ed)) ? 'op' : 'ed', e);
+        });
+        window.addEventListener('pointermove', function (e) { if (dragging) apply(dragging, secAt(e.clientX)); });
+        window.addEventListener('pointerup', function () {
+          if (!dragging) return;
+          (dragging === 'op' ? hOp : hEd).classList.remove('drag');
+          dragging = null;
+          toast('已保存片头 ' + tc(op) + ' · 片尾 ' + tc(ed));
+        });
+        paint();
+      });
+
+      /* 参数改动：单选项互斥 + 出影响提示 */
+      qsa('.stepcfg').forEach(function (cfg) {
+        cfg.addEventListener('click', function (e) {
+          var opt = e.target.closest('.st-opt');
+          if (opt) {
+            qsa('.st-opt', opt.parentNode).forEach(function (x) { x.classList.remove('on'); });
+            opt.classList.add('on');
+            showImpact();
+            return;
+          }
+          var segBtn = e.target.closest('.st-seg button');
+          if (segBtn) {
+            qsa('button', segBtn.parentNode).forEach(function (x) { x.classList.remove('on'); });
+            segBtn.classList.add('on');
+            showImpact();
+            return;
+          }
+          var tab = e.target.closest('.st-tab');
+          if (tab) {
+            qsa('.st-tab', tab.parentNode).forEach(function (x) { x.classList.remove('on'); });
+            tab.classList.add('on');
+            showImpact();
+          }
+        });
+      });
+
+      /* 点条目 → 预览定位 */
+      qsa('[data-tc]').forEach(function (el) {
+        el.addEventListener('click', function (e) {
+          if (e.target.closest('button, textarea, input, .st-icon-btn, .st-act')) return;
+          locate(el.getAttribute('data-tc'), el);
+        });
+      });
+
+      var run = qs('[data-run]');
+      if (run) {
+        run.addEventListener('click', function () {
+          if (run.disabled) return;
+          if (dirty) { hideImpact(); toast('已应用当前参数，正在重新运行「' + STEPS[cur].name + '」'); }
+          else toast('原型未接入：运行「' + STEPS[cur].name + '」');
+        });
+      }
+      var next = qs('[data-next]');
+      if (next) {
+        next.addEventListener('click', function () {
+          if (cur < 5) setStep(cur + 1);
+        });
+      }
+
+      /* ---------- 一键成片浮层 ---------- */
+      var wiz = qs('#wizOverlay');
+      qsa('[data-wiz-open]').forEach(function (b) {
+        b.addEventListener('click', function () { wiz.classList.add('on'); });
+      });
+      qsa('[data-wiz-close]').forEach(function (b) {
+        b.addEventListener('click', function () { wiz.classList.remove('on'); });
+      });
+      if (wiz) {
+        wiz.addEventListener('click', function (e) { if (e.target === wiz) wiz.classList.remove('on'); });
+      }
+
+      var WIZ = ['m', 'r', 'c'];
+      var WIZ_NEXT = ['下一步：选择配方', '下一步：开始前检查', '开始生成'];
+      var wizIdx = 0;
+
+      function wizGo(i) {
+        wizIdx = Math.max(0, Math.min(WIZ.length - 1, i));
+        var key = WIZ[wizIdx];
+        qsa('.wiz-step').forEach(function (s) {
+          var k = s.getAttribute('data-wtab');
+          s.classList.toggle('on', k === key);
+          s.classList.toggle('done', WIZ.indexOf(k) < wizIdx);
+        });
+        qsa('[data-wpanel]').forEach(function (p) {
+          p.style.display = p.getAttribute('data-wpanel') === key ? '' : 'none';
+        });
+        var idx = qs('[data-wiz-idx]'); if (idx) idx.textContent = String(wizIdx + 1);
+        var nx = qs('[data-wiz-next]'); if (nx) nx.textContent = WIZ_NEXT[wizIdx];
+        var bk = qs('[data-wiz-back]'); if (bk) bk.style.display = wizIdx === 0 ? 'none' : '';
+      }
+
+      qsa('.wiz-step').forEach(function (s) {
+        s.addEventListener('click', function () { wizGo(WIZ.indexOf(s.getAttribute('data-wtab'))); });
+      });
+      qsa('[data-wiz-next]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          if (wizIdx === 2) { wiz.classList.remove('on'); setStep(1); toast('已开始生成，停在检查点等你确认'); }
+          else wizGo(wizIdx + 1);
+        });
+      });
+      qsa('[data-wiz-back]').forEach(function (b) {
+        b.addEventListener('click', function () { wizGo(wizIdx - 1); });
+      });
+
+      /* ---------- 导出弹窗 ---------- */
+      var modal = qs('#exportModal');
+      qsa('[data-export-open]').forEach(function (b) {
+        b.addEventListener('click', function () { modal.classList.add('on'); });
+      });
+
+      /* 导出中：显示进度条、按钮禁用、文案换成渲染中（对齐 ExportModal isExporting） */
+      var exporting = false;
+      var runBtn = qs('[data-export-run]');
+      var prog = qs('#expProgress');
+      var barFill = qs('#expBarFill');
+      var pctText = qs('#expPct');
+      var btnLabel = runBtn ? runBtn.textContent : '导出';
+      var RUNNING_LABEL = '执行渲染管线...';
+
+      function setExporting(on) {
+        exporting = on;
+        if (prog) prog.hidden = !on;
+        qsa('[data-export-close], [data-export-run]').forEach(function (b) { b.disabled = on; });
+        if (runBtn) runBtn.textContent = on ? RUNNING_LABEL : btnLabel;
+      }
+
+      /* 导出前门禁：?gate=unmatched|stale|unconfirmed 演示真源三道拦截 */
+      var GATE_DEFS = {
+        unmatched: {
+          title: '存在未匹配到画面的段落',
+          msg: '第 2 段「开场白」、第 7 段「产品特写」有配音但未匹配到画面。\n\n勾选继续将跳过这些段落的配音与字幕（不出现在成片里）；不忽略则请返回步骤5 为这些段落重跑匹配。',
+          ok: '忽略未匹配段并继续',
+          canIgnore: true
+        },
+        stale: {
+          title: '部分产物已过期，已阻断导出',
+          msg: '以下产物在上游改动后尚未重新执行：配音、画面。\n\n直接导出会得到「新文案 + 旧配音/旧画面」的不一致成片，因此本次视频/音频/剪映导出已被阻断。请先重跑对应步骤后再导出。',
+          ok: '返回重跑',
+          canIgnore: false
+        },
+        unconfirmed: {
+          title: '仍有未确认的镜头匹配',
+          msg: '本次导出的片段中有 3 段尚未在步骤5 确认。未确认只代表没有人工核对，不代表一定错配。\n\n建议返回步骤5 快速过一遍；也可以直接继续导出。',
+          ok: '仍然导出',
+          canIgnore: true
+        }
+      };
+      var gateEl = qs('#expGate');
+      var gateType = new URLSearchParams(location.search).get('gate');
+      var gatePassed = false;
+
+      function startExport() {
+        setExporting(true);
+        var p = 0;
+        if (barFill) barFill.style.width = '0%';
+        if (pctText) pctText.textContent = '0%';
+        var timer = setInterval(function () {
+          p = Math.min(100, p + 7 + Math.random() * 9);
+          if (barFill) barFill.style.width = p + '%';
+          if (pctText) pctText.textContent = Math.round(p) + '%';
+          if (p >= 100) {
+            clearInterval(timer);
+            setTimeout(function () {
+              setExporting(false);
+              modal.classList.remove('on');
+              if (window.ptToast) window.ptToast('导出完成（原型演示）');
+            }, 420);
+          }
+        }, 160);
+      }
+
+      if (runBtn) {
+        runBtn.addEventListener('click', function () {
+          if (exporting) return;
+          if (!gatePassed && gateEl && GATE_DEFS[gateType]) {
+            qs('#gateTitle').textContent = GATE_DEFS[gateType].title;
+            qs('#gateMsg').textContent = GATE_DEFS[gateType].msg;
+            qs('[data-gate-ok]').textContent = GATE_DEFS[gateType].ok;
+            gateEl.classList.add('on');
+            return;
+          }
+          startExport();
+        });
+      }
+
+      if (gateEl) {
+        qs('[data-gate-cancel]').addEventListener('click', function () { gateEl.classList.remove('on'); });
+        qs('[data-gate-ok]').addEventListener('click', function () {
+          gateEl.classList.remove('on');
+          if (!GATE_DEFS[gateType].canIgnore) {
+            if (window.ptToast) window.ptToast('请先重跑过期步骤后再导出');
+            return;
+          }
+          gatePassed = true;
+          startExport();
+        });
+        qs('#expGateMask').addEventListener('click', function (e) {
+          if (e.target === this) gateEl.classList.remove('on');
+        });
+      }
+
+      qsa('[data-export-close]').forEach(function (b) {
+        b.addEventListener('click', function () { if (!exporting) modal.classList.remove('on'); });
+      });
+      var mask = qs('#exportMask');
+      if (mask) mask.addEventListener('click', function (e) { if (e.target === mask && !exporting) modal.classList.remove('on'); });
+
+      /* 导出项勾选：点标题行切换 .exp-box.on（✓ 由 CSS ::before 绘制） */
+      qsa('[data-exp-toggle]').forEach(function (row) {
+        row.addEventListener('click', function () {
+          var box = qs('.exp-box', row);
+          if (box) box.classList.toggle('on');
+        });
+      });
+
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        if (gateEl && gateEl.classList.contains('on')) { gateEl.classList.remove('on'); return; }
+        if (wiz) wiz.classList.remove('on');
+        if (!exporting && modal) modal.classList.remove('on');
+      });
+
+      /* ---------- URL 参数：?step= &view= &s=wizard|export ---------- */
+      var q = new URLSearchParams(location.search);
+      var s = parseInt(q.get('step'), 10);
+      if (!(s >= 1 && s <= 5)) s = 1;
+      setStep(s, true);
+      var v = q.get('view');
+      setView(v || STEPS[s].view);
+      var st = q.get('s');
+      if (st === 'wizard') wiz.classList.add('on');
+      if (st === 'export') modal.classList.add('on');
+      wizGo(Math.max(1, Math.min(3, parseInt(q.get('w') || '1', 10))) - 1);
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,304 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>通知中心 · 一键成片</title>
+  <link rel="icon" type="image/png" href="./assets/app-icon.png" />
+  <link rel="stylesheet" href="./assets/app.css" />
+  <style>
+    /* ===== 通知浮层（对齐 src/renderer/src/components/notification-panel） ===== */
+    body[data-notif] .main { position: relative; }
+
+    /* 遮罩：盖住标题栏以下的页面，点空白处收起 */
+    .nt-mask { position: absolute; top: 40px; left: 0; right: 0; bottom: 0; z-index: 40; display: none; }
+    .nt-mask.on { display: block; }
+
+    .nt-panel {
+      position: absolute; top: 46px; right: 175px;
+      width: 320px; max-height: 420px;
+      display: none; flex-direction: column;
+      z-index: 50; overflow: hidden;
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-xl);
+      background: rgba(20, 20, 20, 0.96);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(14px);
+    }
+    .nt-panel.on { display: flex; }
+    .nt-panel [hidden], .nt-badge[hidden] { display: none !important; }
+
+    .nt-head {
+      flex: none; display: flex; align-items: center; gap: 8px;
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    .nt-head .nt-hico { display: inline-flex; flex: none; color: var(--accent-fg); }
+    .nt-head b, .nt-unread, .nt-hbtn { white-space: nowrap; }
+    .nt-head b { flex: none; font-size: var(--fs-body); font-weight: 600; }
+    .nt-unread { flex: none; font-size: var(--fs-meta); color: var(--muted-fg); }
+    .nt-head-actions { margin-left: auto; flex: none; display: flex; align-items: center; gap: 4px; }
+    .nt-hbtn {
+      flex: none; height: 24px; padding: 0 8px;
+      display: inline-flex; align-items: center; gap: 4px;
+      border-radius: var(--radius-sm); font-size: var(--fs-meta); color: var(--muted-fg);
+      transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .nt-hbtn:hover { color: var(--foreground); background: rgba(255, 255, 255, 0.06); }
+    .nt-hbtn:active { transform: translateY(1px); background: rgba(255, 255, 255, 0.1); }
+    .nt-hbtn.clear:hover { color: var(--accent-rose); background: rgba(248, 113, 113, 0.08); }
+    .nt-hbtn.clear:active { background: rgba(248, 113, 113, 0.14); }
+    .nt-hbtn.close { width: 24px; padding: 0; justify-content: center; }
+
+    .nt-body { flex: 1; overflow-y: auto; }
+    .nt-item {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      cursor: pointer;
+      transition: background var(--dur-fast) var(--ease);
+    }
+    .nt-item:hover { background: rgba(255, 255, 255, 0.02); }
+    .nt-item:active { background: rgba(255, 255, 255, 0.045); }
+    .nt-item.unread { background: rgba(237, 237, 237, 0.035); }
+    .nt-item.unread:active { background: rgba(237, 237, 237, 0.06); }
+
+    .nt-dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 7px; flex: none; }
+    .nt-dot.info { background: var(--info); box-shadow: 0 0 7px rgba(237, 237, 237, 0.65); }
+    .nt-dot.success { background: var(--success); box-shadow: 0 0 7px rgba(74, 222, 128, 0.6); }
+    .nt-dot.warn { background: var(--warning); box-shadow: 0 0 7px rgba(240, 180, 41, 0.6); }
+    .nt-dot.error { background: var(--danger); box-shadow: 0 0 7px rgba(248, 113, 113, 0.6); }
+
+    .nt-main { flex: 1; min-width: 0; }
+    .nt-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .nt-title { font-size: var(--fs-control); font-weight: 500; color: var(--foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .nt-item.read .nt-title { color: var(--muted-fg); }
+    .nt-time { flex: none; font-size: var(--fs-micro); color: rgba(163, 163, 163, 0.6); }
+    .nt-msg {
+      margin-top: 2px; font-size: var(--fs-meta); line-height: 1.5; color: rgba(245, 245, 245, 0.8);
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+    .nt-item.read .nt-msg { color: rgba(163, 163, 163, 0.7); }
+
+    .nt-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    .nt-act {
+      height: 22px; padding: 0 10px; border-radius: var(--radius-sm);
+      font-size: var(--fs-meta); font-weight: 500; color: var(--muted-fg); background: var(--muted);
+      transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .nt-act:hover { color: var(--foreground); background: var(--bg-hover); }
+    .nt-act:active { transform: translateY(1px); background: rgba(38, 38, 38, 0.9); }
+    .nt-act.primary { color: var(--accent-fg); background: rgba(237, 237, 237, 0.12); }
+    .nt-act.primary:hover { background: rgba(237, 237, 237, 0.2); }
+    .nt-act.primary:active { background: rgba(237, 237, 237, 0.26); }
+
+    .nt-x {
+      flex: none; width: 20px; height: 20px; margin-top: 2px;
+      display: grid; place-items: center; border-radius: var(--radius-xs);
+      font-size: var(--fs-micro); color: rgba(163, 163, 163, 0.45);
+      transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .nt-x:hover { color: var(--accent-rose); background: rgba(248, 113, 113, 0.1); }
+    .nt-x:active { transform: scale(0.9); background: rgba(248, 113, 113, 0.16); }
+
+    .nt-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 48px 16px; }
+    .nt-empty .bell { color: rgba(163, 163, 163, 0.3); margin-bottom: 12px; }
+    .nt-empty b { font-size: var(--fs-control); font-weight: 400; color: var(--muted-fg); }
+    .nt-empty span { margin-top: 4px; font-size: var(--fs-meta); color: rgba(163, 163, 163, 0.6); }
+
+    /* 顶栏铃铛与未读角标 */
+    .nt-bell { position: relative; }
+    .nt-badge {
+      position: absolute; top: 4px; right: 4px;
+      min-width: 16px; height: 16px; padding: 0 4px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-pill); background: var(--accent-rose); color: #fff;
+      font-size: var(--fs-micro); font-weight: 700; line-height: 1;
+    }
+    .nt-bell.on { color: var(--foreground); background: var(--muted); }
+  </style>
+</head>
+<body data-notif>
+  <div class="pt-bar">
+    <span class="pt-tag">原型</span>
+    <span class="pt-note">通知中心 · 顶栏 320px 浮层，点铃铛开关；列表内容为运行时数据，此处为示例填充</span>
+    <a class="pt-link" href="./notifications.html">有通知</a>
+    <a class="pt-link" href="./notifications.html?state=empty">空态</a>
+    <a class="pt-link" href="./home.html">首页</a>
+    <a class="pt-link" href="./editor.html?step=1">编辑器</a>
+    <a class="pt-link" href="./characters.html">人物</a>
+    <a class="pt-link" href="./shows.html">剧集</a>
+    <a class="pt-link" href="./settings.html">设置</a>
+    <a class="pt-link" href="./settings.html?tab=account">账户</a>
+  </div>
+
+  <div class="win">
+    <aside class="sb">
+      <div class="sb-brand">
+        <div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 7H17.6L6.4 17" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.4 17H17.6" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity=".6"/></svg></div>
+        <span class="sb-name">Zentect</span>
+        <button class="icon-btn" title="收起侧边栏"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg></button>
+      </div>
+      <nav class="sb-nav">
+        <a class="sb-item" data-go="home">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+          <span>首页</span>
+        </a>
+        <a class="sb-item" data-go="characters">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9" r="2.6"/><path d="M15.5 14.6c2.2.3 3.8 1.9 4.3 4.4"/></svg>
+          <span>全局人物</span>
+        </a>
+        <a class="sb-item" data-go="shows">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 9h18M8 5v14M16 5v14"/></svg>
+          <span>剧集管理</span>
+        </a>
+      </nav>
+      <div class="sb-foot">
+        <div class="user-card">
+          <a class="user-row" data-auth="login" title="登录 / 注册">
+            <div class="avatar">U</div>
+            <div class="user-meta"><b>未登录</b><span>点击登录账号</span></div>
+          </a>
+          <button class="btn-login" data-auth="login">登录</button>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <div class="titlebar">
+        <button class="wc" title="暗色模式"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button>
+        <button class="wc nt-bell on" id="ntBell" title="通知中心">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/></svg>
+          <i class="nt-badge" id="ntBadge">2</i>
+        </button>
+        <a class="wc" data-go="settings" title="设置"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></a>
+        <div class="tb-divider"></div>
+        <button class="wc" title="最小化"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+        <button class="wc" title="最大化"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="2"/></svg></button>
+        <button class="wc close" title="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+
+      <!-- 底图：真实浮层落在任意页面上，这里用首页做背景 -->
+      <div class="content">
+        <div class="hero">
+          <div class="hero-left">
+            <div class="hero-actions">
+              <div class="btn-create">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                开始创作
+              </div>
+            </div>
+            <span class="hero-hint">点击创建新项目，进入创作工作台</span>
+          </div>
+          <div class="hero-right">
+            <div class="hero-slogan">用 AI，让创作更简单</div>
+            <div class="hero-desc">导入视频素材，AI 自动完成分析、编剧、配音、剪辑<br />你只需专注于创意决策</div>
+          </div>
+        </div>
+
+        <div class="sec-head">
+          <div class="sec-title-wrap">
+            <span class="sec-title">我的项目</span>
+            <span class="sec-count">(3)</span>
+          </div>
+        </div>
+
+        <div class="proj-grid">
+          <div class="pcard">
+            <div class="pcover">
+              <img class="pcover-img" src="https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=cinematic%20product%20shot%20of%20a%20chrome%20espresso%20machine%20on%20a%20dark%20walnut%20counter%2C%20morning%20window%20light%2C%20shallow%20depth%20of%20field%2C%20no%20text&image_size=landscape_16_9" alt="" />
+              <div class="pcover-ph">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="6" width="13" height="12" rx="2.5"/><path d="m15.5 11 6-3.5v9l-6-3.5"/></svg>
+              </div>
+            </div>
+            <div class="pinfo">
+              <div class="pname">26年11月7日</div>
+              <div class="pmeta"><span>864 MB</span><i>●</i><span>00:58</span></div>
+            </div>
+          </div>
+
+          <div class="pcard">
+            <div class="pcover">
+              <img class="pcover-img" src="https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=handheld%20documentary%20frame%20of%20a%20person%20walking%20through%20a%20spring%20park%20with%20cherry%20blossoms%2C%20soft%20daylight%2C%20film%20grain%2C%20no%20text&image_size=landscape_16_9" alt="" />
+              <div class="pcover-ph">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="6" width="13" height="12" rx="2.5"/><path d="m15.5 11 6-3.5v9l-6-3.5"/></svg>
+              </div>
+            </div>
+            <div class="pinfo">
+              <div class="pname">26年11月6日</div>
+              <div class="pmeta"><span>312 MB</span><i>●</i><span>12:40</span></div>
+            </div>
+          </div>
+
+          <div class="pcard">
+            <div class="pcover">
+              <img class="pcover-img" src="https://trae-api-cn.mchost.guru/api/ide/v1/text_to_image?prompt=moody%2035mm%20film%20still%20of%20a%20rain%20soaked%20neon%20street%20at%20night%2C%20reflections%20on%20wet%20asphalt%2C%20grain%2C%20no%20text&image_size=landscape_16_9" alt="" />
+              <div class="pcover-ph">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="6" width="13" height="12" rx="2.5"/><path d="m15.5 11 6-3.5v9l-6-3.5"/></svg>
+              </div>
+            </div>
+            <div class="pinfo">
+              <div class="pname">26年11月5日</div>
+              <div class="pmeta"><span>1.2 GB</span><i>●</i><span>03:12</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 遮罩 + 320px 通知浮层 -->
+      <div class="nt-mask" id="ntMask"></div>
+      <div class="nt-panel on" id="ntPanel">
+        <div class="nt-head">
+          <span class="nt-hico">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/></svg>
+          </span>
+          <b>通知中心</b>
+          <span class="nt-unread" id="ntUnread">2 条未读</span>
+          <div class="nt-head-actions">
+            <button class="nt-hbtn" id="ntReadAll" title="全部已读">✓ 全部已读</button>
+            <button class="nt-hbtn clear" id="ntClear" title="全部清除">清除</button>
+            <button class="nt-hbtn close" id="ntClose" title="关闭"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+          </div>
+        </div>
+        <div class="nt-body" id="ntBody">
+          <div class="nt-item unread">
+            <span class="nt-dot error"></span>
+            <div class="nt-main">
+              <div class="nt-title-row"><span class="nt-title">步骤 3/5 · 首席编剧 · 失败</span><span class="nt-time">2分钟前</span></div>
+              <p class="nt-msg">文案生成失败，可重试此步；已生成的段落不会丢失。</p>
+              <div class="nt-actions"><button class="nt-act primary" data-go="editor:step3">重试此步</button></div>
+            </div>
+            <button class="nt-x" title="删除"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+          </div>
+          <div class="nt-item read">
+            <span class="nt-dot success"></span>
+            <div class="nt-main">
+              <div class="nt-title-row"><span class="nt-title">步骤 1/5 · 素材助理 · 已完成</span><span class="nt-time">1小时前</span></div>
+              <p class="nt-msg">关键帧、音频分离与台词识别已完成。</p>
+            </div>
+            <button class="nt-x" title="删除"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+          </div>
+          <div class="nt-item read">
+            <span class="nt-dot info"></span>
+            <div class="nt-main">
+              <div class="nt-title-row"><span class="nt-title">导出完成</span><span class="nt-time">3小时前</span></div>
+              <p class="nt-msg">成片已保存到导出目录。</p>
+            </div>
+            <button class="nt-x" title="删除"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+          </div>
+
+          <div class="nt-empty" id="ntEmpty" hidden>
+            <svg class="bell" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/></svg>
+            <b>暂无通知</b>
+            <span>新通知将在此显示</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./assets/nav.js"></script>
+
+  <script src="./assets/app.js"></script>
+</body>
+</html>

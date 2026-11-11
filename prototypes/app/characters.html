@@ -1,0 +1,275 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>全局人物档案 · 一键成片</title>
+  <link rel="icon" type="image/png" href="./assets/app-icon.png" />
+  <link rel="stylesheet" href="./assets/app.css" />
+</head>
+<body data-sub>
+  <!-- 原型控制条（不属于产品界面） -->
+  <div class="pt-bar">
+    <span class="pt-tag">原型</span>
+    <span class="pt-note">全局人物 · 替代 /characters</span>
+    <a class="pt-link" href="./home.html">首页</a>
+    <a class="pt-link" href="./editor.html?step=1">编辑器</a>
+    <a class="pt-link" href="./characters.html">人物</a>
+    <a class="pt-link" href="./shows.html">剧集</a>
+    <a class="pt-link" href="./settings.html">设置</a>
+    <a class="pt-link" href="./notifications.html">通知</a>
+    <a class="pt-link" href="./settings.html?tab=account">账户</a>
+  </div>
+
+  <div class="win">
+    <!-- 左侧全高侧边栏（对齐 AppSidebar） -->
+    <aside class="sb">
+      <div class="sb-brand">
+        <div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 7H17.6L6.4 17" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.4 17H17.6" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity=".6"/></svg></div>
+        <span class="sb-name">Zentect</span>
+        <button class="icon-btn" title="收起侧边栏"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="m16 15-3-3 3-3"/></svg></button>
+      </div>
+
+      <nav class="sb-nav">
+        <a class="sb-item" data-go="home">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+          <span>首页</span>
+        </a>
+        <a class="sb-item on" data-go="characters">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9" r="2.6"/><path d="M15.5 14.6c2.2.3 3.8 1.9 4.3 4.4"/></svg>
+          <span>全局人物</span><i class="sb-dot"></i>
+        </a>
+        <a class="sb-item" data-go="shows">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 9h18M8 5v14M16 5v14"/></svg>
+          <span>剧集管理</span>
+        </a>
+      </nav>
+
+      <div class="sb-foot">
+        <div class="user-card">
+          <a class="user-row" data-auth="login" title="登录 / 注册">
+            <div class="avatar">U</div>
+            <div class="user-meta"><b>未登录</b><span>点击登录账号</span></div>
+          </a>
+          <button class="btn-login" data-auth="login">登录</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 右侧：标题栏 + 内容 -->
+    <div class="main">
+      <div class="titlebar">
+        <button class="wc" title="暗色模式"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button>
+        <a class="wc" data-go="notifications" title="通知"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/></svg></a>
+        <a class="wc" data-go="settings" title="设置"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></a>
+        <div class="tb-divider"></div>
+        <button class="wc" title="最小化"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+        <button class="wc" title="最大化"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="2"/></svg></button>
+        <button class="wc close" title="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+
+      <div class="content pg-content">
+        <!-- 页头 -->
+        <div class="pg-head">
+          <div class="pg-row">
+            <span class="pg-ic">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9" r="2.6"/><path d="M15.5 14.6c2.2.3 3.8 1.9 4.3 4.4"/></svg>
+            </span>
+            <h1 class="pg-title">全局人物档案</h1>
+            <span class="pg-count">(4)</span>
+          </div>
+          <p class="pg-sub">跨集/跨项目人物复用 — 自动匹配的全局人物列表，可编辑信息、纠正匹配、管理关联角色</p>
+        </div>
+
+        <div class="pg-body">
+          <!-- 加载骨架屏（?skeleton=1 预览；对齐真源 CharacterGridSkeleton：8 卡） -->
+          <div class="sk-grid" id="chrSkeleton" hidden>
+            <div class="sk-card"><div class="sk sk-sq"></div><div class="sk-lines"><div class="sk sk-t1 sk-w-2-3"></div><div class="sk sk-t2 sk-w-1-2"></div></div></div>
+            <div class="sk-card"><div class="sk sk-sq"></div><div class="sk-lines"><div class="sk sk-t1 sk-w-2-3"></div><div class="sk sk-t2 sk-w-1-2"></div></div></div>
+            <div class="sk-card"><div class="sk sk-sq"></div><div class="sk-lines"><div class="sk sk-t1 sk-w-2-3"></div><div class="sk sk-t2 sk-w-1-2"></div></div></div>
+            <div class="sk-card"><div class="sk sk-sq"></div><div class="sk-lines"><div class="sk sk-t1 sk-w-2-3"></div><div class="sk sk-t2 sk-w-1-2"></div></div></div>
+            <div class="sk-card"><div class="sk sk-sq"></div><div class="sk-lines"><div class="sk sk-t1 sk-w-2-3"></div><div class="sk sk-t2 sk-w-1-2"></div></div></div>
+            <div class="sk-card"><div class="sk sk-sq"></div><div class="sk-lines"><div class="sk sk-t1 sk-w-2-3"></div><div class="sk sk-t2 sk-w-1-2"></div></div></div>
+            <div class="sk-card"><div class="sk sk-sq"></div><div class="sk-lines"><div class="sk sk-t1 sk-w-2-3"></div><div class="sk sk-t2 sk-w-1-2"></div></div></div>
+            <div class="sk-card"><div class="sk sk-sq"></div><div class="sk-lines"><div class="sk sk-t1 sk-w-2-3"></div><div class="sk sk-t2 sk-w-1-2"></div></div></div>
+          </div>
+
+          <div class="chr-grid">
+            <div class="chr-card" data-open="chrDetail">
+              <div class="chr-ava"><span class="chr-initial">美</span></div>
+              <div class="chr-info">
+                <div class="chr-name">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>
+                  <span>小美</span>
+                </div>
+                <div class="chr-meta"><span>出现 6 次</span><span>·</span><span>2 个项目</span></div>
+              </div>
+            </div>
+
+            <div class="chr-card" data-open="chrDetail">
+              <div class="chr-ava"><span class="chr-initial">哲</span></div>
+              <div class="chr-info">
+                <div class="chr-name">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>
+                  <span>阿哲</span>
+                </div>
+                <div class="chr-meta"><span>出现 4 次</span><span>·</span><span>2 个项目</span></div>
+              </div>
+            </div>
+
+            <div class="chr-card" data-open="chrDetail">
+              <div class="chr-ava"><span class="chr-initial">晓</span></div>
+              <div class="chr-info">
+                <div class="chr-name">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>
+                  <span>晓晓</span>
+                </div>
+                <div class="chr-meta"><span>出现 3 次</span><span>·</span><span>1 个项目</span></div>
+              </div>
+            </div>
+
+            <div class="chr-card" data-open="chrDetail">
+              <div class="chr-ava"><span class="chr-initial">三</span></div>
+              <div class="chr-info">
+                <div class="chr-name">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 2.6 15.4 0 18M12 3c-2.6 2.6-2.6 15.4 0 18"/></svg>
+                  <span>张三</span>
+                </div>
+                <div class="chr-meta"><span>出现 2 次</span><span>·</span><span>1 个项目</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="empty" id="chrEmpty">
+            <div class="empty-ico">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="8" r="3.5"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/></svg>
+            </div>
+            <div class="empty-title">暂无全局人物</div>
+            <div class="empty-desc">处理素材时，系统会自动识别并匹配全局人物。完成第一步素材分析后，识别出的人物将自动出现在此处。</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 详情对话框 -->
+  <div class="dlg-mask" id="chrDetail">
+    <div class="dlg">
+      <div class="dlg-hd">
+        <h2>全局人物详情</h2>
+        <button class="dlg-x" data-close title="关闭"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+
+      <div class="dlg-bd">
+        <div class="chr-split">
+          <!-- 左：头像 + 编辑表单 -->
+          <div class="chr-left">
+            <div class="chr-ava-lg"><span class="chr-initial">美</span></div>
+
+            <div class="chr-form">
+              <div class="fld">
+                <label>名称</label>
+                <input class="inp" value="小美" placeholder="全局人物名" />
+              </div>
+              <div class="fld">
+                <label>代词</label>
+                <input class="inp" value="她" placeholder="他/她/它" />
+              </div>
+              <div class="fld">
+                <label>音色 ID</label>
+                <input class="inp" value="" placeholder="TTS 音色 ID（可选）" />
+              </div>
+              <div class="fld">
+                <label>描述</label>
+                <textarea class="inp" rows="3" placeholder="人物描述..."></textarea>
+              </div>
+            </div>
+
+            <div class="chr-stats">
+              <div>出现次数：<b>6</b></div>
+              <div>关联项目：<b>2</b></div>
+            </div>
+          </div>
+
+          <!-- 右：关联的本地角色 -->
+          <div class="chr-right">
+            <div class="chr-sec">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c.6-3.2 2.8-5 5.5-5s4.9 1.8 5.5 5"/><circle cx="17" cy="9" r="2.6"/><path d="M15.5 14.6c2.2.3 3.8 1.9 4.3 4.4"/></svg>
+              <h3>关联的本地角色</h3>
+              <span class="pg-count" id="chrRoleCount">(2)</span>
+            </div>
+            <p class="chr-note">以下角色已匹配到此全局人物。若匹配错误，可点击「解绑」纠正。</p>
+
+            <div class="chr-roles" id="chrRoles">
+              <div class="chr-role">
+                <div class="chr-role-ava">美</div>
+                <div class="chr-role-main">
+                  <div class="chr-role-name">小美</div>
+                  <div class="chr-role-meta">项目: 26年11月6日 · 她</div>
+                </div>
+                <button class="chr-unbind" data-unbind title="解绑此角色（纠正匹配错误）">解绑</button>
+              </div>
+              <div class="chr-role">
+                <div class="chr-role-ava">美</div>
+                <div class="chr-role-main">
+                  <div class="chr-role-name">小美</div>
+                  <div class="chr-role-meta">项目: 26年11月7日 · 她</div>
+                </div>
+                <button class="chr-unbind" data-unbind title="解绑此角色（纠正匹配错误）">解绑</button>
+              </div>
+            </div>
+            <div class="chr-roles-empty" id="chrRolesEmpty" hidden>暂无关联的本地角色</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="dlg-ft">
+        <button class="btn btn-danger" data-confirm="确定删除全局人物「小美」吗？&#10;该操作会同时解绑所有本地角色。" data-confirm-title="删除全局人物" data-confirm-ok="删除" data-confirm-danger data-confirm-close data-confirm-toast="已删除全局人物（解除 6 个角色关联）">删除全局人物</button>
+        <div class="spacer"></div>
+        <button class="btn btn-ghost" data-close>取消</button>
+        <button class="btn btn-primary" data-close data-chr-save>保存修改</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./assets/nav.js"></script>
+
+  <script src="./assets/app.js"></script>
+
+  <!-- 关联本地角色：解绑（对齐 Container.tsx handleUnbindRole）与保存反馈 -->
+  <script>
+    (function () {
+      var roles = document.getElementById('chrRoles');
+      var count = document.getElementById('chrRoleCount');
+      var empty = document.getElementById('chrRolesEmpty');
+      if (!roles || !count || !empty) return;
+
+      function syncRoles() {
+        var n = roles.querySelectorAll('.chr-role').length;
+        count.textContent = '(' + n + ')';
+        roles.hidden = n === 0;
+        empty.hidden = n !== 0;
+      }
+
+      roles.addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-unbind]');
+        if (!btn) return;
+        var row = btn.closest('.chr-role');
+        if (!row) return;
+        row.parentNode.removeChild(row);
+        syncRoles();
+        if (window.ptToast) window.ptToast('已解除关联');
+      });
+
+      var save = document.querySelector('[data-chr-save]');
+      if (save) {
+        save.addEventListener('click', function () {
+          if (window.ptToast) window.ptToast('全局人物信息已更新');
+        });
+      }
+
+      syncRoles();
+    })();
+  </script>
+</body>
+</html>

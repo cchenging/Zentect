@@ -1,0 +1,1818 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>设置 · 一键成片</title>
+  <link rel="icon" type="image/png" href="./assets/app-icon.png" />
+  <link rel="stylesheet" href="./assets/app.css" />
+  <style>
+    /* ============================================================
+       设置页 · 仅本页样式，类名统一 set- 前缀
+       对齐 src/modules/settings/frontend（V3 设计系统）
+       ============================================================ */
+
+    body[data-settings] { overflow: hidden; }
+
+    /* ---------- 页面骨架 ---------- */
+    .set-content { padding: 0; overflow: hidden; }
+
+    .set-shell {
+      height: 100%;
+      display: flex;
+      min-height: 0;
+      background: var(--bg-primary);
+    }
+
+    /* ---------- 左侧 Tab 导航（对齐源码 w-[220px]） ---------- */
+    .set-nav {
+      width: 220px;
+      flex: none;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 12px;
+      background: rgba(10, 10, 10, 0.55);
+      border-right: 1px solid rgba(255, 255, 255, 0.06);
+      user-select: none;
+    }
+
+    .set-tab {
+      height: 40px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      border-radius: var(--radius-xl);
+      font-size: var(--fs-control);
+      font-weight: 500;
+      color: var(--muted-fg);
+      transition: background var(--dur-base) var(--ease), color var(--dur-base) var(--ease);
+      text-align: left;
+    }
+    .set-tab:hover { background: rgba(255, 255, 255, 0.045); color: var(--foreground); }
+    .set-tab:active { background: rgba(255, 255, 255, 0.075); }
+    .set-tab.on {
+      background: rgba(237, 237, 237, 0.12);
+      color: var(--accent-fg);
+      font-weight: 600;
+      box-shadow: inset 0 0 0 1px rgba(237, 237, 237, 0.22);
+    }
+    .set-tab svg { flex: none; color: rgba(163, 163, 163, 0.6); }
+    .set-tab.on svg { color: var(--accent); }
+
+    /* ---------- 右侧内容面板（源码 p-8 / 独立滚动） ---------- */
+    .set-panel {
+      flex: 1;
+      min-width: 0;
+      overflow-y: auto;
+      padding: 28px 32px 40px;
+      background: var(--bg-primary);
+    }
+
+    .set-page { display: none; max-width: 996px; }
+    .set-page.on { display: block; animation: setFade var(--dur-base) var(--ease); }
+    .set-page[data-page="model"] { max-width: 1100px; }
+    .set-page[data-page="health"] { max-width: 900px; }
+    .acct-gap { margin-top: 16px; }
+    .acct-tight { margin-bottom: 4px; }
+
+    @keyframes setFade {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: none; }
+    }
+
+    /* ---------- 卡片与区块 ---------- */
+    .set-card {
+      background: var(--card);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: var(--radius-2xl);
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .set-card:last-child { margin-bottom: 0; }
+
+    .set-card-title { font-size: var(--fs-body); font-weight: 600; color: var(--foreground); }
+    .set-card-sub { font-size: var(--fs-meta); color: var(--muted-fg); margin-top: 2px; }
+    .set-card-head { margin-bottom: 16px; }
+
+    .set-sec-head { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; }
+    .set-sec-head h3 { font-size: var(--fs-section); font-weight: 600; letter-spacing: 0.01em; }
+    .set-sec-head .set-sec-desc { font-size: var(--fs-meta); color: var(--muted-fg); margin-left: 2px; }
+    .set-sec-head.split { justify-content: space-between; }
+
+    /* ---------- 通用 · 存储路径 ---------- */
+    .set-paths { display: flex; flex-direction: column; gap: 16px; }
+
+    .set-row { display: flex; align-items: center; gap: 16px; }
+    .set-row-label { width: 160px; flex: none; }
+    .set-row-label b { display: block; font-size: var(--fs-meta); font-weight: 500; color: var(--foreground); line-height: 1.4; }
+    .set-row-label span { display: block; font-size: var(--fs-meta); line-height: 1.5; color: var(--muted-fg); margin-top: 2px; }
+
+    .set-row-ctl { flex: 1; min-width: 0; display: flex; gap: 8px; }
+
+    .set-input {
+      flex: 1;
+      min-width: 0;
+      height: 32px;
+      padding: 0 10px;
+      border-radius: var(--radius-md);
+      background: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--foreground);
+      font-size: var(--fs-meta);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      outline: none;
+      transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+    }
+    .set-input::placeholder { color: #6b6b6b; }
+    .set-input:hover { border-color: rgba(255, 255, 255, 0.16); }
+    .set-input:focus { border-color: rgba(237, 237, 237, 0.55); box-shadow: 0 0 0 3px rgba(237, 237, 237, 0.12); background: var(--bg-tertiary); }
+
+    .set-browse {
+      height: 32px;
+      padding: 0 12px;
+      flex: none;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.03);
+      font-size: var(--fs-meta);
+      font-weight: 500;
+      color: var(--foreground);
+      transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-browse:hover { border-color: rgba(237, 237, 237, 0.5); color: var(--accent-fg); background: rgba(255, 255, 255, 0.06); }
+    .set-browse:active { transform: translateY(1px); background: rgba(255, 255, 255, 0.09); }
+
+    /* ---------- 外观 / 性能 行 ---------- */
+    .set-prefs { display: flex; flex-direction: column; gap: 18px; }
+    .set-pref { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+    .set-pref-main { min-width: 0; }
+    .set-pref-main b { display: block; font-size: var(--fs-meta); font-weight: 500; color: var(--foreground); line-height: 1.45; }
+    .set-pref-main span { display: block; font-size: var(--fs-meta); line-height: 1.5; color: var(--muted-fg); margin-top: 2px; }
+
+    .set-seg {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      padding: 3px;
+      border-radius: var(--radius-lg);
+      background: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      flex: none;
+      max-width: 100%;
+      overflow-x: auto;
+    }
+    .set-seg::-webkit-scrollbar { height: 3px; }
+
+    .set-opt {
+      height: 28px;
+      padding: 0 12px;
+      border-radius: var(--radius-sm);
+      font-size: var(--fs-meta);
+      font-weight: 500;
+      color: var(--muted-fg);
+      white-space: nowrap;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-opt:hover { color: var(--foreground); background: rgba(255, 255, 255, 0.05); }
+    .set-opt:active { transform: scale(0.97); }
+    .set-opt.on {
+      background: linear-gradient(135deg, var(--accent), var(--accent-purple));
+      color: var(--accent-ink);
+      font-weight: 600;
+      box-shadow: none;
+    }
+    .set-opt.on.soft {
+      background: rgba(237, 237, 237, 0.15);
+      color: var(--accent-fg);
+      box-shadow: none;
+    }
+    .set-opt.on.soft:hover { background: rgba(237, 237, 237, 0.2); }
+
+    /* 开关（对齐 AITab 34×19 / HealthPage 44×24） */
+    .set-switch {
+      position: relative;
+      width: 34px;
+      height: 19px;
+      border-radius: var(--radius-pill);
+      background: rgba(255, 255, 255, 0.12);
+      flex: none;
+      transition: background var(--dur-base) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-switch::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: #fff;
+      transition: transform var(--dur-base) var(--ease);
+    }
+    .set-switch:hover { background: rgba(255, 255, 255, 0.2); }
+    .set-switch:active { transform: scale(0.96); }
+    .set-switch.on { background: var(--accent); }
+    .set-switch.on:hover { background: #ffffff; }
+    .set-switch.on::after { transform: translateX(15px); background: #111111; }
+    .set-switch.lg { width: 44px; height: 24px; }
+    .set-switch.lg::after { top: 2px; left: 2px; width: 20px; height: 20px; }
+    .set-switch.lg.on { background: var(--accent); }
+    .set-switch.lg.on::after { transform: translateX(20px); background: #111111; }
+
+    /* ---------- 危险区域 ---------- */
+    .set-danger {
+      border: 1px solid rgba(248, 113, 113, 0.25);
+      background: rgba(248, 113, 113, 0.05);
+      border-radius: var(--radius-2xl);
+      padding: 20px;
+    }
+    .set-danger-title { font-size: var(--fs-body); font-weight: 600; color: var(--accent-rose); }
+    .set-danger-sub { font-size: var(--fs-meta); color: var(--muted-fg); margin-top: 2px; margin-bottom: 16px; }
+    .set-danger-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .set-danger-row b { font-size: var(--fs-meta); font-weight: 500; }
+    .set-danger-btn {
+      height: 32px;
+      padding: 0 16px;
+      border-radius: var(--radius-md);
+      background: rgba(248, 113, 113, 0.15);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+      color: var(--accent-rose);
+      font-size: var(--fs-meta);
+      font-weight: 600;
+      transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-danger-btn:hover { background: rgba(248, 113, 113, 0.25); border-color: rgba(248, 113, 113, 0.45); }
+    .set-danger-btn:active { transform: translateY(1px); background: rgba(248, 113, 113, 0.32); }
+
+    /* ---------- AI 服务 · 供应商卡片 ---------- */
+    .set-providers { display: flex; flex-direction: column; gap: 8px; }
+    /* 空态：对齐真源 AITab 的「暂无已配置的模型」 */
+    .set-empty {
+      padding: 32px 0;
+      text-align: center;
+      font-size: var(--fs-meta);
+      color: var(--muted-fg);
+      background: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius-lg);
+    }
+
+    .set-prov {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px;
+      border-radius: var(--radius-xl);
+      background: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      transition: border-color var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+    }
+    .set-prov:hover { border-color: rgba(237, 237, 237, 0.3); }
+    .set-prov.off { opacity: 0.45; }
+    .set-prov.off:hover { opacity: 0.62; }
+
+    .set-prov-ico {
+      width: 28px;
+      height: 28px;
+      border-radius: var(--radius-md);
+      flex: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: var(--fs-meta);
+      font-weight: 700;
+      line-height: 1;
+    }
+    .set-prov-ico.doubao,
+    .set-prov-ico.deepseek,
+    .set-prov-ico.qwen,
+    .set-prov-ico.hunyuan,
+    .set-prov-ico.custom {
+      background: rgba(237, 237, 237, 0.14);
+      color: var(--accent-fg);
+    }
+
+    .set-prov-main { flex: 1; min-width: 0; }
+    .set-prov-name { display: flex; align-items: center; gap: 6px; font-size: var(--fs-body); font-weight: 500; }
+    .set-prov-name em { font-style: normal; font-size: var(--fs-meta); font-weight: 400; color: rgba(163, 163, 163, 0.7); }
+    .set-prov-meta { font-size: var(--fs-meta); color: var(--muted-fg); margin-top: 1px; }
+
+    .set-prov-act { display: flex; align-items: center; gap: 4px; flex: none; }
+    .set-icobtn {
+      width: 26px;
+      height: 26px;
+      border-radius: var(--radius-sm);
+      display: grid;
+      place-items: center;
+      font-size: var(--fs-control);
+      color: var(--muted-fg);
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-icobtn:hover { background: rgba(255, 255, 255, 0.06); color: var(--foreground); }
+    .set-icobtn:active { transform: scale(0.92); background: rgba(255, 255, 255, 0.09); }
+    .set-icobtn.danger:hover { background: rgba(248, 113, 113, 0.12); color: var(--accent-rose); }
+    .set-icobtn.danger:active { background: rgba(248, 113, 113, 0.18); }
+
+    .set-add {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 28px;
+      padding: 0 12px;
+      border-radius: var(--radius-md);
+      border: 1px dashed rgba(237, 237, 237, 0.5);
+      color: var(--accent-fg);
+      font-size: var(--fs-meta);
+      font-weight: 500;
+      transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-add:hover { background: rgba(237, 237, 237, 0.08); border-color: var(--accent); }
+    .set-add:active { transform: scale(0.97); background: rgba(237, 237, 237, 0.12); }
+
+    /* ---------- AI 服务 · 模型映射 ---------- */
+    .set-group-label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 2px 8px;
+      font-size: var(--fs-meta);
+      font-weight: 500;
+      letter-spacing: 0.06em;
+      color: var(--muted-fg);
+      text-transform: uppercase;
+    }
+    .set-group-label::after { content: ""; flex: 1; height: 1px; background: rgba(255, 255, 255, 0.07); }
+
+    .set-node-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .set-node {
+      background: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: var(--radius-lg);
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-width: 0;
+      transition: border-color var(--dur-fast) var(--ease);
+    }
+    .set-node:hover { border-color: rgba(255, 255, 255, 0.14); }
+    .set-node-top { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+    .set-node-ico {
+      width: 22px; height: 22px; flex: none;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-sm);
+      background: rgba(237, 237, 237, 0.12);
+      color: var(--accent-fg);
+      font-size: var(--fs-meta); line-height: 1;
+    }
+    .set-node-main { min-width: 0; flex: 1; }
+    .set-node-name { font-size: var(--fs-control); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .set-node-desc { font-size: var(--fs-meta); color: var(--muted-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .set-node-ctl { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .set-select {
+      flex: 1;
+      min-width: 0;
+      height: 26px;
+      padding: 0 8px;
+      border-radius: var(--radius-sm);
+      background: var(--bg-tertiary);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: var(--foreground);
+      font-size: var(--fs-meta);
+      outline: none;
+      cursor: pointer;
+      transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+    }
+    .set-select:hover { border-color: rgba(237, 237, 237, 0.4); }
+    .set-select:focus { border-color: rgba(237, 237, 237, 0.55); }
+    .set-select.empty { color: var(--muted-fg); }
+
+    .set-node-off {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px;
+      border-radius: var(--radius-lg);
+      background: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+    }
+    .set-node-off .set-node-top { flex: 1; }
+    .set-node-hint { flex: none; font-size: var(--fs-meta); font-style: italic; color: var(--muted-fg); }
+
+    /* ---------- AI 服务 · TTS ---------- */
+    .set-tts { display: flex; flex-direction: column; gap: 18px; }
+    .set-tts-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .set-tts-side { display: flex; align-items: center; gap: 10px; flex: none; }
+    .set-select-wide {
+      width: 176px;
+      height: 34px;
+      padding: 0 10px;
+      border-radius: var(--radius-md);
+      background: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--foreground);
+      font-size: var(--fs-meta);
+      outline: none;
+      cursor: pointer;
+      transition: border-color var(--dur-fast) var(--ease);
+    }
+    .set-select-wide:hover { border-color: rgba(237, 237, 237, 0.45); }
+    .set-select-wide:focus { border-color: rgba(237, 237, 237, 0.55); }
+
+    .set-trial {
+      height: 34px;
+      padding: 0 14px;
+      border-radius: var(--radius-md);
+      background: rgba(237, 237, 237, 0.1);
+      border: 1px solid rgba(237, 237, 237, 0.22);
+      color: var(--accent-fg);
+      font-size: var(--fs-meta);
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-trial:hover { background: rgba(237, 237, 237, 0.2); }
+    .set-trial:active { transform: translateY(1px); background: rgba(237, 237, 237, 0.26); }
+
+    .set-tts-note {
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      padding-top: 14px;
+    }
+    .set-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px;
+      border-radius: var(--radius-md);
+      font-size: var(--fs-meta);
+      line-height: 1.5;
+    }
+    .set-info.ok { background: rgba(74, 222, 128, 0.1); border: 1px solid rgba(74, 222, 128, 0.2); color: var(--accent-green); }
+    .set-info.cyan { background: rgba(237, 237, 237, 0.1); border: 1px solid rgba(237, 237, 237, 0.2); color: var(--accent-cyan); }
+
+    /* ---------- 模型管理 ---------- */
+    .set-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .set-toolbar-title { font-size: var(--fs-body); font-weight: 600; }
+    .set-toolbar-sub { font-size: var(--fs-meta); color: var(--muted-fg); margin-top: 1px; }
+
+    .set-rescan {
+      height: 32px;
+      padding: 0 12px;
+      border-radius: var(--radius-md);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--foreground);
+      font-size: var(--fs-meta);
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex: none;
+      transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-rescan:hover { border-color: rgba(237, 237, 237, 0.45); color: var(--accent-fg); background: rgba(255, 255, 255, 0.06); }
+    .set-rescan:active { transform: translateY(1px); background: rgba(255, 255, 255, 0.09); }
+    .set-rescan.spinning svg { animation: set-spin 0.8s linear infinite; }
+
+    .set-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+    .set-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 28px;
+      padding: 0 12px;
+      border-radius: var(--radius-pill);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--muted-fg);
+      font-size: var(--fs-meta);
+      font-weight: 500;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-chip:hover { background: rgba(255, 255, 255, 0.06); color: var(--foreground); }
+    .set-chip:active { transform: scale(0.97); }
+    .set-chip.on { background: rgba(237, 237, 237, 0.15); border-color: var(--accent); color: var(--accent-fg); }
+    .set-chip i {
+      font-style: normal;
+      min-width: 17px;
+      height: 17px;
+      padding: 0 4px;
+      border-radius: var(--radius-pill);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: var(--fs-micro);
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--muted-fg);
+    }
+    .set-chip.on i { background: rgba(237, 237, 237, 0.22); color: var(--accent-fg); }
+
+    .set-mods {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      align-items: start;
+    }
+
+    /* 分类筛选后无模块（对齐源码 ModelTab 空态） */
+    .set-mod-empty {
+      display: none;
+      padding: 48px 0;
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted-fg);
+    }
+    .set-mod-empty.on { display: block; }
+
+    .set-mod {
+      background: var(--card);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: var(--radius-xl);
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-width: 0;
+      transition: border-color var(--dur-fast) var(--ease);
+    }
+    .set-mod:hover { border-color: rgba(255, 255, 255, 0.14); }
+    .set-mod.ready { border-color: rgba(74, 222, 128, 0.22); }
+    .set-mod.ready:hover { border-color: rgba(74, 222, 128, 0.36); }
+    .set-mod.partial { border-color: rgba(240, 180, 41, 0.25); }
+    .set-mod.partial:hover { border-color: rgba(240, 180, 41, 0.4); }
+
+    .set-mod-top { display: flex; align-items: flex-start; gap: 10px; }
+    .set-mod-ico {
+      width: 30px; height: 30px; flex: none; margin-top: 1px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: var(--radius-md);
+      background: rgba(237, 237, 237, 0.12);
+      color: var(--accent-fg);
+      font-size: var(--fs-meta); line-height: 1;
+    }
+    .set-mod-main { flex: 1; min-width: 0; }
+    .set-mod-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--fs-body); font-weight: 600; }
+    .set-mod-desc { font-size: var(--fs-meta); line-height: 1.5; color: var(--muted-fg); margin-top: 2px; }
+
+    .set-mod-tag {
+      height: 18px;
+      padding: 0 6px;
+      border-radius: var(--radius-xs);
+      font-size: var(--fs-micro);
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      flex: none;
+    }
+    .set-mod-tag.builtin { background: rgba(74, 222, 128, 0.15); color: var(--accent-green); }
+    .set-mod-tag.optional { background: rgba(255, 255, 255, 0.06); color: var(--muted-fg); }
+
+    .set-mod-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: none;
+      font-size: var(--fs-meta);
+      font-weight: 500;
+      padding-top: 2px;
+    }
+    .set-mod-status.ok { color: var(--accent-green); }
+    .set-mod-status.warn { color: var(--accent-warm); }
+    .set-mod-status.none { color: var(--muted-fg); }
+
+    .set-mod-size { font-size: var(--fs-meta); color: rgba(163, 163, 163, 0.7); }
+
+    .set-mod-actions { display: flex; align-items: center; gap: 4px; }
+    .set-mini {
+      height: 26px;
+      padding: 0 9px;
+      border-radius: var(--radius-sm);
+      font-size: var(--fs-meta);
+      color: var(--muted-fg);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-mini:hover { background: rgba(255, 255, 255, 0.05); color: var(--foreground); }
+    .set-mini:active { transform: scale(0.97); }
+    .set-mini.install { border: 1px solid rgba(237, 237, 237, 0.3); color: var(--accent-fg); }
+    .set-mini.install:hover { background: rgba(237, 237, 237, 0.1); }
+    .set-mini.uninstall:hover { color: var(--accent-rose); }
+
+    .set-disk {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding-top: 10px;
+      margin-top: 14px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: var(--fs-meta);
+      color: var(--muted-fg);
+    }
+
+    /* ---------- 健康检查 ---------- */
+    .set-health-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+    .set-health-title { font-size: var(--fs-section); font-weight: 600; }
+    .set-health-sub { font-size: var(--fs-meta); color: var(--muted-fg); margin-top: 2px; }
+
+    .set-recheck {
+      height: 32px;
+      padding: 0 14px;
+      border-radius: var(--radius-md);
+      background: var(--bg-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: var(--foreground);
+      font-size: var(--fs-meta);
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex: none;
+      transition: border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-recheck:hover { border-color: rgba(237, 237, 237, 0.45); color: var(--accent-fg); background: rgba(255, 255, 255, 0.05); }
+    .set-recheck:active { transform: translateY(1px); background: rgba(255, 255, 255, 0.08); }
+    .set-recheck:disabled { opacity: 0.5; cursor: default; transform: none; }
+
+    .set-check-card {
+      background: var(--card);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: var(--radius-2xl);
+      overflow: hidden;
+      margin-bottom: 18px;
+    }
+
+    .set-check {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 20px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+    }
+    .set-check:last-child { border-bottom: none; }
+
+    .set-check-left { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .set-check-left svg { flex: none; }
+    .set-check-name { font-size: var(--fs-body); font-weight: 500; }
+    .set-check-detail { font-size: var(--fs-meta); color: var(--muted-fg); margin-top: 1px; }
+    .set-check-right { display: flex; align-items: center; gap: 12px; flex: none; }
+
+    .set-status { font-size: var(--fs-meta); font-weight: 500; }
+    .set-status.ok { color: var(--accent-green); }
+    .set-status.warn { color: var(--accent-warm); }
+    .set-status.error { color: var(--accent-rose); }
+
+    .set-install-one {
+      height: 26px;
+      padding: 0 10px;
+      border-radius: var(--radius-sm);
+      background: rgba(237, 237, 237, 0.1);
+      border: 1px solid rgba(237, 237, 237, 0.3);
+      color: var(--accent-fg);
+      font-size: var(--fs-meta);
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-install-one:hover { background: rgba(237, 237, 237, 0.2); border-color: rgba(237, 237, 237, 0.45); }
+    .set-install-one:active { transform: scale(0.97); background: rgba(237, 237, 237, 0.26); }
+    .set-install-one[hidden] { display: none !important; }
+    .set-install-one:disabled { opacity: 0.55; cursor: default; }
+    .set-install-one:disabled:active { transform: none; }
+
+    /* 一键安装进度条（对齐 SSE InstallProgress） */
+    .set-install-prog {
+      background: var(--card);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: var(--radius-2xl);
+      padding: 16px;
+      margin-bottom: 18px;
+    }
+    .set-install-prog[hidden] { display: none !important; }
+    .set-ip-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-body); font-weight: 500; }
+    .set-ip-pct { font-size: var(--fs-meta); font-weight: 400; color: var(--muted-fg); }
+    .set-ip-bar { height: 8px; margin-top: 10px; border-radius: var(--radius-pill); background: var(--bg-tertiary); overflow: hidden; }
+    .set-ip-fill { height: 100%; width: 0; border-radius: var(--radius-pill); background: var(--accent); transition: width var(--dur-slow) var(--ease); }
+    .set-ip-msg { margin-top: 8px; font-size: var(--fs-meta); color: var(--muted-fg); }
+    .set-ip-pkg { margin-left: 6px; color: var(--accent-fg); }
+
+    .set-recheck.spinning svg { animation: set-spin 0.8s linear infinite; }
+    @keyframes set-spin { to { transform: rotate(360deg); } }
+
+    .set-detail-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      font-size: var(--fs-meta);
+      color: var(--accent-fg);
+      transition: color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+    }
+    .set-detail-link:hover { color: var(--accent-cyan); }
+    .set-detail-link:active { transform: translateY(1px); }
+
+    /* GPU 卡 */
+    .set-gpu {
+      background: var(--card);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: var(--radius-2xl);
+      padding: 20px;
+      margin-bottom: 18px;
+    }
+    .set-gpu-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+    .set-gpu-head-left { display: flex; align-items: center; gap: 10px; }
+    .set-gpu-head-left svg { color: var(--accent-cyan); flex: none; }
+    .set-gpu-title { font-size: var(--fs-body); font-weight: 600; }
+    .set-gpu-sub { font-size: var(--fs-meta); color: var(--muted-fg); margin-top: 2px; }
+
+    .set-gpu-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 24px; }
+    .set-gpu-k { font-size: var(--fs-meta); color: var(--muted-fg); }
+    .set-gpu-v { font-size: var(--fs-meta); font-weight: 500; margin-top: 2px; }
+    .set-gpu-v.cyan { color: var(--accent-cyan); }
+    .set-gpu-v.green { color: var(--accent-green); }
+
+    /* 硬件卡 */
+    .set-hw-title { font-size: var(--fs-body); font-weight: 600; margin-bottom: 10px; }
+    .set-hw-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+
+    .set-hw {
+      background: var(--card);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: var(--radius-2xl);
+      padding: 14px 16px;
+    }
+    .set-hw-label { font-size: var(--fs-meta); color: var(--muted-fg); }
+    .set-hw-big { font-size: var(--fs-page); font-weight: 700; margin: 2px 0 6px; color: var(--foreground); letter-spacing: -0.01em; }
+    .set-hw-line { font-size: var(--fs-meta); color: var(--muted-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.6; }
+
+    .set-foot-hint { font-size: var(--fs-meta); color: var(--muted-fg); margin-top: 14px; padding-left: 2px; }
+
+    /* ---------- 1440 宽下的紧凑兜底 ---------- */
+    @media (max-height: 820px) {
+      .set-panel { padding-top: 20px; }
+    }
+  </style>
+</head>
+<body data-settings>
+  <!-- 原型控制条（不属于产品界面） -->
+  <div class="pt-bar">
+    <span class="pt-tag">原型</span>
+    <span class="pt-note">设置 · 通用 / AI 服务 / 模型管理 / 健康检查</span>
+    <a class="pt-link" href="./home.html">首页</a>
+    <a class="pt-link" href="./editor.html?step=1">编辑器</a>
+    <a class="pt-link" href="./characters.html">人物</a>
+    <a class="pt-link" href="./shows.html">剧集</a>
+    <a class="pt-link" href="./notifications.html">通知</a>
+    <a class="pt-link" href="./settings.html?tab=account">账户</a>
+  </div>
+
+  <div class="win">
+    <!-- 右侧：标题栏 + 内容（设置页无全局侧边栏，对齐源码 Settings 页） -->
+    <div class="main">
+      <div class="titlebar">
+        <button class="wc" title="暗色模式"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></button>
+        <a class="wc" data-go="notifications" title="通知"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7"/><path d="M10.3 20a2 2 0 0 0 3.4 0"/></svg></a>
+        <button class="wc" title="设置" data-toast="当前已在设置页"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg></button>
+        <div class="tb-divider"></div>
+        <button class="wc" title="最小化"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+        <button class="wc" title="最大化"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="5" y="5" rx="2"/></svg></button>
+        <a class="wc close" data-go="home" title="返回"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></a>
+      </div>
+
+      <div class="content set-content">
+        <div class="set-shell">
+          <!-- 设置左侧 4 Tab（对齐源码 w-[220px]） -->
+          <nav class="set-nav">
+            <button class="set-tab on" data-tab="general">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>
+              <span>通用</span>
+            </button>
+            <button class="set-tab" data-tab="ai">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7.5h.01M7 17h.01"/></svg>
+              <span>AI 服务</span>
+            </button>
+            <button class="set-tab" data-tab="model">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+              <span>模型管理</span>
+            </button>
+            <button class="set-tab" data-tab="health">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1.1L12 21l7.8-7.5 1.1-1.1a5.5 5.5 0 0 0-.1-7.8z"/></svg>
+              <span>健康检查</span>
+            </button>
+            <button class="set-tab" data-tab="account">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.7-3.6 3.8-5.6 7.5-5.6s6.8 2 7.5 5.6"/></svg>
+              <span>账户</span>
+            </button>
+          </nav>
+
+          <div class="set-panel">
+            <!-- ==================== 通用 ==================== -->
+            <section class="set-page on" data-page="general">
+              <!-- 存储路径 -->
+              <div class="set-card">
+                <div class="set-card-head">
+                  <div class="set-card-title">存储路径</div>
+                  <div class="set-card-sub">配置文件的默认保存位置</div>
+                </div>
+                <div class="set-paths">
+                  <div class="set-row">
+                    <div class="set-row-label">
+                      <b>项目存储位置</b>
+                      <span>新建项目的默认存储目录</span>
+                    </div>
+                    <div class="set-row-ctl">
+                      <input class="set-input" value="F:\Zentect\data\projects" />
+                      <button class="set-browse" data-browse>浏览</button>
+                    </div>
+                  </div>
+                  <div class="set-row">
+                    <div class="set-row-label">
+                      <b>视频导出位置</b>
+                      <span>导出成片视频的默认目录</span>
+                    </div>
+                    <div class="set-row-ctl">
+                      <input class="set-input" value="F:\Zentect\data\exports" />
+                      <button class="set-browse" data-browse>浏览</button>
+                    </div>
+                  </div>
+                  <div class="set-row">
+                    <div class="set-row-label">
+                      <b>剪映草稿位置</b>
+                      <span>导出剪映草稿工程的目录</span>
+                    </div>
+                    <div class="set-row-ctl">
+                      <input class="set-input" placeholder="留空自动检测" />
+                      <button class="set-browse" data-browse>浏览</button>
+                    </div>
+                  </div>
+                  <div class="set-row">
+                    <div class="set-row-label">
+                      <b>日志目录</b>
+                      <span>留空使用默认位置（data/logs）；改完即生效</span>
+                    </div>
+                    <div class="set-row-ctl">
+                      <input class="set-input" placeholder="默认 data/logs" />
+                      <button class="set-browse" data-browse>浏览</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 外观与语言 -->
+              <div class="set-card">
+                <div class="set-card-head">
+                  <div class="set-card-title">外观与语言</div>
+                </div>
+                <div class="set-prefs">
+                  <div class="set-pref">
+                    <div class="set-pref-main">
+                      <b>界面主题</b>
+                      <span>选择界面主题模式</span>
+                    </div>
+                    <div class="set-seg" data-set-seg>
+                      <button class="set-opt on">深色</button>
+                      <button class="set-opt">浅色</button>
+                      <button class="set-opt">跟随系统</button>
+                    </div>
+                  </div>
+                  <div class="set-pref">
+                    <div class="set-pref-main">
+                      <b>皮肤</b>
+                      <span>品牌人格与视觉语言</span>
+                    </div>
+                    <div class="set-seg" data-set-seg>
+                      <button class="set-opt on">深空</button>
+                      <button class="set-opt">极简</button>
+                      <button class="set-opt">晴白</button>
+                      <button class="set-opt">纸感</button>
+                    </div>
+                  </div>
+                  <div class="set-pref">
+                    <div class="set-pref-main">
+                      <b>界面语言</b>
+                      <span>重启应用后生效</span>
+                    </div>
+                    <div class="set-seg" data-set-seg>
+                      <button class="set-opt on soft">简体中文</button>
+                      <button class="set-opt">English</button>
+                    </div>
+                  </div>
+                  <div class="set-pref">
+                    <div class="set-pref-main">
+                      <b>粒子风格</b>
+                      <span>首页背景粒子动画效果</span>
+                    </div>
+                    <div class="set-seg" data-set-seg>
+                      <button class="set-opt on">自动</button>
+                      <button class="set-opt">蒲公英</button>
+                      <button class="set-opt">星尘</button>
+                      <button class="set-opt">微尘</button>
+                      <button class="set-opt">雪花</button>
+                      <button class="set-opt">萤火</button>
+                      <button class="set-opt">关闭</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 性能 -->
+              <div class="set-card">
+                <div class="set-card-head">
+                  <div class="set-card-title">性能</div>
+                </div>
+                <div class="set-prefs">
+                  <div class="set-pref">
+                    <div class="set-pref-main">
+                      <b>视频编解码 GPU 加速</b>
+                      <span>启用 GPU 加速视频编解码（仅影响播放器/导出，AI 推理加速请去"健康检查"页配置）</span>
+                    </div>
+                    <button class="set-switch on" data-set-switch title="开关"></button>
+                  </div>
+                  <div class="set-pref">
+                    <div class="set-pref-main">
+                      <b>自动保存间隔</b>
+                      <span>编辑器草稿自动保存频率</span>
+                    </div>
+                    <div class="set-seg" data-set-seg>
+                      <button class="set-opt">3秒</button>
+                      <button class="set-opt on soft">5秒</button>
+                      <button class="set-opt">10秒</button>
+                      <button class="set-opt">30秒</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 危险区域 -->
+              <div class="set-danger">
+                <div class="set-danger-title">危险区域</div>
+                <div class="set-danger-sub">以下操作不可逆，请谨慎操作</div>
+                <div class="set-danger-row">
+                  <b>恢复默认设置</b>
+                  <button class="set-danger-btn" data-confirm="以下操作不可逆，请谨慎操作。确定要恢复默认设置吗？" data-confirm-title="恢复默认设置" data-confirm-ok="恢复默认" data-confirm-danger data-confirm-toast="已恢复默认设置">恢复默认设置</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- ==================== AI 服务 ==================== -->
+            <section class="set-page" data-page="ai">
+              <!-- 模型配置 -->
+              <div class="set-sec-head split">
+                <div class="set-sec-head" style="margin:0;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+                  <h3>模型配置</h3>
+                </div>
+                <button class="set-add" data-model-add>
+                  <span style="font-size:14px;line-height:1;">＋</span> 添加模型
+                </button>
+              </div>
+
+              <div class="set-providers" style="margin-bottom:28px;" data-todo="待确认">
+                <div class="set-prov" data-prov="doubao">
+                  <div class="set-prov-ico doubao">方</div>
+                  <div class="set-prov-main">
+                    <div class="set-prov-name">方舟主力 <em>(火山方舟)</em></div>
+                    <div class="set-prov-meta">已选 3 / 共 5</div>
+                  </div>
+                  <div class="set-prov-act">
+                    <button class="set-switch on" data-set-switch title="启用"></button>
+                    <button class="set-icobtn" data-model-edit title="编辑"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg></button>
+                    <button class="set-icobtn danger" data-model-del title="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></button>
+                  </div>
+                </div>
+
+                <div class="set-prov" data-prov="deepseek">
+                  <div class="set-prov-ico deepseek">D</div>
+                  <div class="set-prov-main">
+                    <div class="set-prov-name">DeepSeek</div>
+                    <div class="set-prov-meta">已选 2 / 共 2</div>
+                  </div>
+                  <div class="set-prov-act">
+                    <button class="set-switch on" data-set-switch title="启用"></button>
+                    <button class="set-icobtn" data-model-edit title="编辑"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg></button>
+                    <button class="set-icobtn danger" data-model-del title="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></button>
+                  </div>
+                </div>
+
+                <div class="set-prov off" data-prov="qwen">
+                  <div class="set-prov-ico qwen">千</div>
+                  <div class="set-prov-main">
+                    <div class="set-prov-name">通义千问</div>
+                    <div class="set-prov-meta">已选 2 / 共 5</div>
+                  </div>
+                  <div class="set-prov-act">
+                    <button class="set-switch" data-set-switch title="启用"></button>
+                    <button class="set-icobtn" data-model-edit title="编辑"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg></button>
+                    <button class="set-icobtn danger" data-model-del title="删除"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg></button>
+                  </div>
+                </div>
+
+                <div class="set-empty" id="provEmpty" hidden>暂无已配置的模型</div>
+              </div>
+
+              <!-- 模型映射 -->
+              <div class="set-sec-head" style="display:block; margin-bottom:16px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-cyan)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7.5h.01M7 17h.01"/></svg>
+                  <h3>模型映射</h3>
+                </div>
+                <div class="set-sec-desc" style="margin-top:2px;">选择各功能使用的模型，变更即时保存</div>
+              </div>
+
+              <div class="set-group-label">云模型</div>
+              <div class="set-node-grid" data-todo="待确认">
+                <div class="set-node">
+                  <div class="set-node-top">
+                    <span class="set-node-ico">视</span>
+                    <div class="set-node-main">
+                      <div class="set-node-name">视觉理解</div>
+                      <div class="set-node-desc">视频画面分析与描述</div>
+                    </div>
+                  </div>
+                  <div class="set-node-ctl">
+                    <select class="set-select">
+                      <option>doubao-seed-1-6-vision-250815 (方舟主力)</option>
+                      <option>qwen3.7-max (通义千问)</option>
+                      <option>未绑定</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="set-node">
+                  <div class="set-node-top">
+                    <span class="set-node-ico">写</span>
+                    <div class="set-node-main">
+                      <div class="set-node-name">脚本生成</div>
+                      <div class="set-node-desc">生成解说文案</div>
+                    </div>
+                  </div>
+                  <div class="set-node-ctl">
+                    <select class="set-select">
+                      <option>deepseek-v4-pro (DeepSeek)</option>
+                      <option>doubao-seed-1-6-251015 (方舟主力)</option>
+                      <option>未绑定</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="set-node">
+                  <div class="set-node-top">
+                    <span class="set-node-ico">译</span>
+                    <div class="set-node-main">
+                      <div class="set-node-name">翻译</div>
+                      <div class="set-node-desc">多语言文案翻译</div>
+                    </div>
+                  </div>
+                  <div class="set-node-ctl">
+                    <select class="set-select">
+                      <option>qwen3.7-plus (通义千问)</option>
+                      <option>hunyuan-translation (腾讯混元)</option>
+                      <option>未绑定</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="set-node">
+                  <div class="set-node-top">
+                    <span class="set-node-ico">模</span>
+                    <div class="set-node-main">
+                      <div class="set-node-name">对话Agent</div>
+                      <div class="set-node-desc">辅助对话与推理</div>
+                    </div>
+                  </div>
+                  <div class="set-node-ctl">
+                    <select class="set-select empty">
+                      <option>未绑定</option>
+                      <option>deepseek-v4-pro (DeepSeek)</option>
+                      <option>doubao-seed-1-6-251015 (方舟主力)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="set-node">
+                  <div class="set-node-top">
+                    <span class="set-node-ico">对</span>
+                    <div class="set-node-main">
+                      <div class="set-node-name">聊天对话</div>
+                      <div class="set-node-desc">用户交互聊天</div>
+                    </div>
+                  </div>
+                  <div class="set-node-ctl">
+                    <select class="set-select">
+                      <option>deepseek-v4-flash (DeepSeek)</option>
+                      <option>doubao-seed-1-6-flash-250828 (方舟主力)</option>
+                      <option>未绑定</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="set-node">
+                  <div class="set-node-top">
+                    <span class="set-node-ico">人</span>
+                    <div class="set-node-main">
+                      <div class="set-node-name">情绪识别</div>
+                      <div class="set-node-desc">台词情感分析</div>
+                    </div>
+                  </div>
+                  <div class="set-node-ctl">
+                    <select class="set-select empty">
+                      <option>未绑定</option>
+                      <option>doubao-seed-1-6-251015 (方舟主力)</option>
+                      <option>deepseek-v4-pro (DeepSeek)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div class="set-group-label">本地引擎</div>
+              <div class="set-node-grid">
+                <div class="set-node">
+                  <div class="set-node-top">
+                    <span class="set-node-ico">乐</span>
+                    <div class="set-node-main">
+                      <div class="set-node-name">音频处理</div>
+                      <div class="set-node-desc">人声/伴奏分离</div>
+                    </div>
+                  </div>
+                  <div class="set-node-ctl">
+                    <select class="set-select">
+                      <option>本地轻量模型</option>
+                      <option>Demucs</option>
+                      <option>MDX-Net</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="set-node">
+                  <div class="set-node-top">
+                    <span class="set-node-ico">录</span>
+                    <div class="set-node-main">
+                      <div class="set-node-name">语音识别</div>
+                      <div class="set-node-desc">语音转文字</div>
+                    </div>
+                  </div>
+                  <div class="set-node-ctl">
+                    <select class="set-select">
+                      <option>Paraformer 中文</option>
+                      <option>Faster-Whisper 多语言</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div class="set-node-off" style="margin-bottom:28px;">
+                <div class="set-node-top">
+                  <span class="set-node-ico">合</span>
+                  <div class="set-node-main">
+                    <div class="set-node-name">语音合成</div>
+                    <div class="set-node-desc">文字转语音</div>
+                  </div>
+                </div>
+                <span class="set-node-hint">由下方语音合成配置决定</span>
+              </div>
+
+              <!-- TTS 配置 -->
+              <div class="set-sec-head">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-purple)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M10 8.5l6 3.5-6 3.5z"/></svg>
+                <h3>语音合成 (TTS)</h3>
+              </div>
+
+              <div class="set-card">
+                <div class="set-tts">
+                  <div class="set-tts-row">
+                    <div class="set-pref-main">
+                      <b>默认合成引擎</b>
+                      <span>选择 TTS 语音合成引擎</span>
+                    </div>
+                    <div class="set-tts-side">
+                      <select class="set-select-wide">
+                        <option>火山引擎 TTS (推荐)</option>
+                        <option selected>微软 Edge TTS (免费)</option>
+                        <option>Kokoro (本地推理)</option>
+                      </select>
+                      <button class="set-trial" data-trial>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                        试听
+                      </button>
+                    </div>
+                  </div>
+                  <div class="set-tts-note">
+                    <div class="set-info ok">该引擎为免费开源接口，无需额外配置任何密钥。</div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- ==================== 模型管理 ==================== -->
+            <section class="set-page" data-page="model">
+              <div class="set-toolbar">
+                <div>
+                  <div class="set-toolbar-title">本地模型</div>
+                  <div class="set-toolbar-sub">按功能模块管理 AI 模型文件 · 共 6 个模块</div>
+                </div>
+                <button class="set-rescan" data-rescan>
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M16.5 16.5 21 21"/></svg>
+                  重新扫描
+                </button>
+              </div>
+
+              <div class="set-chips">
+                <button class="set-chip on" data-cat="all"><span>全部</span> <i>6</i></button>
+                <button class="set-chip" data-cat="audio"><span>音频分离</span> <i>2</i></button>
+                <button class="set-chip" data-cat="asr"><span>语音识别</span> <i>1</i></button>
+                <button class="set-chip" data-cat="vision"><span>视觉</span> <i>2</i></button>
+                <button class="set-chip" data-cat="tts"><span>语音合成</span> <i>1</i></button>
+              </div>
+
+              <div class="set-mods">
+                <!-- MDX-Net：已就绪 -->
+                <div class="set-mod ready" data-cat="audio">
+                  <div class="set-mod-top">
+                    <div class="set-mod-ico">音</div>
+                    <div class="set-mod-main">
+                      <div class="set-mod-name">MDX-Net 音频分离 <span class="set-mod-tag builtin">必装·内置</span></div>
+                      <div class="set-mod-desc">UVR MDX-Net 人声/BGM 分离（轻量推荐，ONNX 推理）</div>
+                    </div>
+                    <div class="set-mod-status ok">✓ 已就绪</div>
+                  </div>
+                  <div class="set-mod-size">~160 MB (模型文件) + 60 MB (运行时已内置)</div>
+                  
+                  <div class="set-mod-actions">
+                    <button class="set-mini uninstall" data-uninstall>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+                      卸载
+                    </button>
+                    <button class="set-mini" data-import>导入</button>
+                  </div>
+                </div>
+
+                <!-- Demucs：未安装 -->
+                <div class="set-mod" data-cat="audio">
+                  <div class="set-mod-top">
+                    <div class="set-mod-ico">音</div>
+                    <div class="set-mod-main">
+                      <div class="set-mod-name">Demucs 音频分离（高质量） <span class="set-mod-tag optional">可选</span></div>
+                      <div class="set-mod-desc">Demucs htdemucs 4-stem 分离（高质量模式，需 PyTorch）</div>
+                    </div>
+                    <div class="set-mod-status none">✕ 未安装</div>
+                  </div>
+                  <div class="set-mod-size">~80 MB (模型) + 2.2 GB (运行时，含 torch)</div>
+                  
+                  <div class="set-mod-actions">
+                    <button class="set-mini install" data-install>⤓ 安装</button>
+                    <button class="set-mini" data-import>导入</button>
+                  </div>
+                </div>
+
+                <!-- Faster-Whisper：部分就绪 -->
+                <div class="set-mod partial" data-cat="asr">
+                  <div class="set-mod-top">
+                    <div class="set-mod-ico">声</div>
+                    <div class="set-mod-main">
+                      <div class="set-mod-name">Faster-Whisper 语音识别（多语言） <span class="set-mod-tag optional">可选</span></div>
+                      <div class="set-mod-desc">Faster-Whisper CTranslate2 多语言 ASR（large-v3 / large-v3-turbo，韩语等亚洲语言推荐 turbo）</div>
+                    </div>
+                    <div class="set-mod-status warn">部分就绪</div>
+                  </div>
+                  <div class="set-mod-size">~3 GB (large-v3) / ~1.5 GB (turbo) + 200 MB (运行时，含 ctranslate2)</div>
+                  
+                  <div class="set-mod-actions">
+                    <button class="set-mini install" data-install>⤓ 安装</button>
+                    <button class="set-mini" data-import>导入</button>
+                  </div>
+                </div>
+
+                <!-- InsightFace：已就绪 -->
+                <div class="set-mod ready" data-cat="vision">
+                  <div class="set-mod-top">
+                    <div class="set-mod-ico">视</div>
+                    <div class="set-mod-main">
+                      <div class="set-mod-name">InsightFace 人脸识别 <span class="set-mod-tag optional">可选</span></div>
+                      <div class="set-mod-desc">Buffalo L 人脸检测 + 关键点 + 性别年龄 + YunNet/SFace 备选</div>
+                    </div>
+                    <div class="set-mod-status ok">✓ 已就绪</div>
+                  </div>
+                  <div class="set-mod-size">~50 MB (模型) + 200 MB (运行时)</div>
+                  
+                  <div class="set-mod-actions">
+                    <button class="set-mini uninstall" data-uninstall>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+                      卸载
+                    </button>
+                    <button class="set-mini" data-import>导入</button>
+                  </div>
+                </div>
+
+                <!-- CLIP + BGE：已就绪 -->
+                <div class="set-mod ready" data-cat="vision">
+                  <div class="set-mod-top">
+                    <div class="set-mod-ico">语</div>
+                    <div class="set-mod-main">
+                      <div class="set-mod-name">CLIP 跨模态 + BGE 文本嵌入 <span class="set-mod-tag optional">可选</span></div>
+                      <div class="set-mod-desc">步骤2 镜头语义索引用 CLIP/Chinese-CLIP；步骤5 语义匹配用 BGE-small-zh 文本嵌入（文案↔切片描述，替代图文通道）</div>
+                    </div>
+                    <div class="set-mod-status ok">✓ 已就绪</div>
+                  </div>
+                  <div class="set-mod-size">~1.05 GB (模型) + 100 MB (运行时，含 torch)</div>
+                  
+                  <div class="set-mod-actions">
+                    <button class="set-mini uninstall" data-uninstall>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+                      卸载
+                    </button>
+                    <button class="set-mini" data-import>导入</button>
+                  </div>
+                </div>
+
+                <!-- Kokoro：未安装 -->
+                <div class="set-mod" data-cat="tts">
+                  <div class="set-mod-top">
+                    <div class="set-mod-ico">合</div>
+                    <div class="set-mod-main">
+                      <div class="set-mod-name">Kokoro 本地 TTS <span class="set-mod-tag optional">可选</span></div>
+                      <div class="set-mod-desc">Kokoro-82M 轻量本地语音合成（82M 参数，CPU 实时，音质对标大模型）</div>
+                    </div>
+                    <div class="set-mod-status none">✕ 未安装</div>
+                  </div>
+                  <div class="set-mod-size">~350 MB (模型，HF 缓存) + 30 MB (中文音色)</div>
+                  
+                  <div class="set-mod-actions">
+                    <button class="set-mini install" data-install>⤓ 安装</button>
+                    <button class="set-mini" data-import>导入</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="set-mod-empty" id="modEmpty">该分类下暂无模块</div>
+
+              <div class="set-disk">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 12h18"/><path d="M4.5 12 6 6h12l1.5 6"/><rect x="3" y="12" width="18" height="6" rx="2"/><path d="M7 15h.01"/></svg>
+                模型文件占用：6.8 GB · 3/6 个模块可用
+              </div>
+            </section>
+
+            <!-- ==================== 健康检查 ==================== -->
+            <section class="set-page" data-page="health">
+              <div class="set-health-head">
+                <div>
+                  <div class="set-health-title">系统健康检查</div>
+                  <div class="set-health-sub">检查各组件运行状态</div>
+                </div>
+                <button class="set-recheck" id="setRecheck">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.6-6.4"/><path d="M21 3v6h-6"/></svg>
+                  <span id="setRecheckLabel">重新检查</span>
+                </button>
+              </div>
+
+              <div class="set-check-card">
+                <!-- 1 数据库 -->
+                <div class="set-check">
+                  <div class="set-check-left">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+                    <div>
+                      <div class="set-check-name">数据库</div>
+                      <div class="set-check-detail">SQLite v3.51.0 · 已连接</div>
+                    </div>
+                  </div>
+                  <div class="set-check-right">
+                    <span class="set-status ok">正常</span>
+                    <button class="set-detail-link" data-health-detail="database">详情 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+                  </div>
+                </div>
+
+                <!-- 2 FFmpeg -->
+                <div class="set-check">
+                  <div class="set-check-left">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+                    <div>
+                      <div class="set-check-name">FFmpeg</div>
+                      <div class="set-check-detail">可用 · v7.1.1</div>
+                    </div>
+                  </div>
+                  <div class="set-check-right">
+                    <span class="set-status ok">正常</span>
+                    <button class="set-detail-link" data-health-detail="ffmpeg">详情 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+                  </div>
+                </div>
+
+                <!-- 3 Python -->
+                <div class="set-check">
+                  <div class="set-check-left">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+                    <div>
+                      <div class="set-check-name">Python 运行环境</div>
+                      <div class="set-check-detail">v3.11.9 · 已就绪</div>
+                    </div>
+                  </div>
+                  <div class="set-check-right">
+                    <span class="set-status ok">正常</span>
+                    <button class="set-detail-link" data-health-detail="python">详情 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+                  </div>
+                </div>
+
+                <!-- 4 AI 运行时依赖 -->
+                <div class="set-check">
+                  <div class="set-check-left">
+                    <svg id="chkRuntimeIco" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-warm)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2.5 20h19L12 3z"/><path d="M12 9v5"/><path d="M12 17.5h.01"/></svg>
+                    <div>
+                      <div class="set-check-name">AI 运行时依赖</div>
+                      <div class="set-check-detail" id="chkRuntimeDetail">24/26 个包已装</div>
+                    </div>
+                  </div>
+                  <div class="set-check-right">
+                    <span class="set-status warn" id="chkRuntimeStatus">警告</span>
+                    <button class="set-install-one" id="chkInstall">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+                      <span id="chkInstallLabel">一键安装</span>
+                    </button>
+                    <button class="set-detail-link" data-health-detail="runtime">详情 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+                  </div>
+                </div>
+
+                <!-- 5 大模型通道 -->
+                <div class="set-check">
+                  <div class="set-check-left">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+                    <div>
+                      <div class="set-check-name">大模型通道</div>
+                      <div class="set-check-detail">3/4 个通道已配置</div>
+                    </div>
+                  </div>
+                  <div class="set-check-right">
+                    <span class="set-status ok">正常</span>
+                    <button class="set-detail-link" data-health-detail="llm">详情 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+                  </div>
+                </div>
+
+                <!-- 6 TTS -->
+                <div class="set-check">
+                  <div class="set-check-left">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+                    <div>
+                      <div class="set-check-name">TTS 语音合成</div>
+                      <div class="set-check-detail">已配置 · 火山引擎 TTS</div>
+                    </div>
+                  </div>
+                  <div class="set-check-right">
+                    <span class="set-status ok">正常</span>
+                    <button class="set-detail-link" data-health-detail="tts">详情 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+                  </div>
+                </div>
+
+                <!-- 7 云端 API -->
+                <div class="set-check">
+                  <div class="set-check-left">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent-green)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+                    <div>
+                      <div class="set-check-name">云端 API</div>
+                      <div class="set-check-detail">4/6 个已配置</div>
+                    </div>
+                  </div>
+                  <div class="set-check-right">
+                    <span class="set-status ok">正常</span>
+                    <button class="set-detail-link" data-health-detail="cloud_api">详情 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg></button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 一键安装进度（对齐源码 SSE 进度条） -->
+              <div class="set-install-prog" id="installProg" hidden>
+                <div class="set-ip-head">
+                  <span>安装运行时依赖</span>
+                  <span class="set-ip-pct" id="installPct">0%</span>
+                </div>
+                <div class="set-ip-bar"><div class="set-ip-fill" id="installFill"></div></div>
+                <div class="set-ip-msg" id="installMsg">准备中…</div>
+              </div>
+
+              <!-- GPU 加速 -->
+              <div class="set-gpu">
+                <div class="set-gpu-head">
+                  <div class="set-gpu-head-left">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z"/></svg>
+                    <div>
+                      <div class="set-gpu-title">AI 运行时 GPU 加速</div>
+                      <div class="set-gpu-sub">启用 NVIDIA CUDA 加速 PyTorch 推理（CLIP/Paraformer/Demucs）</div>
+                    </div>
+                  </div>
+                  <button class="set-switch lg on" data-set-switch title="点击关闭 GPU 加速"></button>
+                </div>
+                <div class="set-gpu-grid">
+                  <div>
+                    <div class="set-gpu-k">显卡型号</div>
+                    <div class="set-gpu-v">NVIDIA GeForce RTX 4070 SUPER</div>
+                  </div>
+                  <div>
+                    <div class="set-gpu-k">显存</div>
+                    <div class="set-gpu-v">12.0 GB</div>
+                  </div>
+                  <div>
+                    <div class="set-gpu-k">torch 版本</div>
+                    <div class="set-gpu-v cyan">2.5.1+cu121</div>
+                  </div>
+                  <div>
+                    <div class="set-gpu-k">CUDA 状态</div>
+                    <div class="set-gpu-v green">可用 (CUDA 12.1)</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 硬件状态 -->
+              <div class="set-hw-title">硬件状态</div>
+              <div class="set-hw-grid">
+                <div class="set-hw">
+                  <div class="set-hw-label">CPU</div>
+                  <div class="set-hw-big">23%</div>
+                  <div class="set-hw-line">AMD Ryzen 9 7950X</div>
+                  <div class="set-hw-line">32 核</div>
+                </div>
+                <div class="set-hw">
+                  <div class="set-hw-label">内存</div>
+                  <div class="set-hw-big">41%</div>
+                  <div class="set-hw-line">总量 65536 MB</div>
+                  <div class="set-hw-line">已用 26869 MB / 空闲 38667 MB</div>
+                </div>
+                <div class="set-hw">
+                  <div class="set-hw-label">磁盘</div>
+                  <div class="set-hw-big">512 GB</div>
+                  <div class="set-hw-line">共 2048 GB</div>
+                  <div class="set-hw-line">已用 1536 GB (75%)</div>
+                </div>
+              </div>
+
+              <div class="set-foot-hint">模型文件管理请前往「模型管理」页</div>
+            </section>
+
+            <!-- ==================== 账户（原「个人设置」页合并而来） ==================== -->
+            <section class="set-page" data-page="account">
+              <div class="us-inner">
+                <div>
+                  <h2 class="us-h2">个人信息</h2>
+                  <div class="us-card-sm">
+                    <div class="us-ava-row">
+                      <div class="us-ava">
+                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 20c.7-3.6 3.8-5.6 7.5-5.6s6.8 2 7.5 5.6"/></svg>
+                      </div>
+                      <div>
+                        <div class="us-uname">admin</div>
+                        <button class="us-change" data-avatar>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 4.5-4.5L13 17l2.5-2.5L20 19"/></svg>
+                          更换头像
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="us-card-sm acct-gap">
+                    <div class="us-cardtitle">账户信息</div>
+                    <div class="us-kv"><span>用户名</span><b>admin</b></div>
+                    <div class="us-kv"><span>VIP 等级</span><b class="vip">专业版</b></div>
+                    <div class="us-kv"><span>VIP 到期</span><b>2027/6/30</b></div>
+                  </div>
+                </div>
+
+                <div>
+                  <h2 class="us-h2">安全设置</h2>
+                  <div class="us-card-sm">
+                    <div class="us-cardtitle acct-tight">修改密码</div>
+                    <div class="us-sub">修改后需使用新密码重新登录</div>
+
+                    <div class="us-form">
+                      <div class="fld">
+                        <label>旧密码</label>
+                        <div class="us-pw">
+                          <input class="inp" type="password" placeholder="输入当前密码" />
+                          <button class="us-eye" title="显示密码">
+                            <svg class="eye-show" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.6"/></svg>
+                            <svg class="eye-hide" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.6"/><path d="m4 4 16 16"/></svg>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div class="fld">
+                        <label>新密码</label>
+                        <div class="us-pw">
+                          <input class="inp" type="password" placeholder="输入新密码（至少6位）" />
+                          <button class="us-eye" title="显示密码">
+                            <svg class="eye-show" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.6"/></svg>
+                            <svg class="eye-hide" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.6"/><path d="m4 4 16 16"/></svg>
+                          </button>
+                        </div>
+                      </div>
+
+                      <div class="fld">
+                        <label>确认新密码</label>
+                        <div class="us-pw">
+                          <input class="inp" type="password" placeholder="再次输入新密码" />
+                          <button class="us-eye" title="显示密码">
+                            <svg class="eye-show" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.6"/></svg>
+                            <svg class="eye-hide" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z"/><circle cx="12" cy="12" r="2.6"/><path d="m4 4 16 16"/></svg>
+                          </button>
+                        </div>
+                      </div>
+
+                      <button class="btn btn-primary us-save" data-save-password>
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+                        保存修改
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="./assets/nav.js"></script>
+
+  <script src="./assets/app.js"></script>
+  <script>
+    (function () {
+      var TABS = ['general', 'ai', 'model', 'health', 'account'];
+
+      function setTab(name) {
+        if (TABS.indexOf(name) < 0) name = 'general';
+        document.querySelectorAll('.set-tab').forEach(function (b) {
+          b.classList.toggle('on', b.getAttribute('data-tab') === name);
+        });
+        document.querySelectorAll('.set-page').forEach(function (p) {
+          p.classList.toggle('on', p.getAttribute('data-page') === name);
+        });
+        var panel = document.querySelector('.set-panel');
+        if (panel) panel.scrollTop = 0;
+        try {
+          var u = new URL(location.href);
+          if (name === 'general') u.searchParams.delete('tab');
+          else u.searchParams.set('tab', name);
+          history.replaceState(null, '', u.toString());
+        } catch (e) { /* ignore */ }
+      }
+
+      document.querySelectorAll('.set-tab').forEach(function (b) {
+        b.addEventListener('click', function () {
+          setTab(b.getAttribute('data-tab'));
+        });
+      });
+
+      /* 分段控件：原型内点击即切换选中态 */
+      document.querySelectorAll('[data-set-seg]').forEach(function (g) {
+        g.addEventListener('click', function (e) {
+          var b = e.target.closest('.set-opt');
+          if (!b) return;
+          g.querySelectorAll('.set-opt').forEach(function (x) {
+            x.classList.toggle('on', x === b);
+          });
+        });
+      });
+
+      /* 开关：原型内点击即切换 */
+      document.querySelectorAll('[data-set-switch]').forEach(function (sw) {
+        sw.addEventListener('click', function () {
+          sw.classList.toggle('on');
+        });
+      });
+
+      /* 管线节点绑定：下拉变更后同步「未绑定」灰态（别名已在选项文本里，不再重复挂 chip） */
+      function syncBind(sel) {
+        var cloud = Array.prototype.some.call(sel.options, function (o) {
+          return /\([^)]*\)\s*$/.test(o.text);
+        });
+        if (!cloud) return;
+        var text = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : '';
+        var m = /\(([^)]+)\)\s*$/.exec(text);
+        var unbound = !m || text.indexOf('未绑定') >= 0;
+        sel.classList.toggle('empty', unbound);
+      }
+      document.querySelectorAll('.set-node .set-select').forEach(function (sel) {
+        syncBind(sel);
+        sel.addEventListener('change', function () { syncBind(sel); });
+      });
+
+      /* 重新检查：对齐真源 HealthPage —— 检测中禁用按钮 + 文案「检测中...」，完成后按实际状态汇总 */
+      var recheck = document.getElementById('setRecheck');
+      if (recheck) {
+        recheck.addEventListener('click', function () {
+          if (recheck.disabled) return;
+          var label = document.getElementById('setRecheckLabel');
+          recheck.disabled = true;
+          recheck.classList.add('spinning');
+          if (label) label.textContent = '检测中...';
+          setTimeout(function () {
+            recheck.disabled = false;
+            recheck.classList.remove('spinning');
+            if (label) label.textContent = '重新检查';
+            var n = { ok: 0, warn: 0, error: 0 };
+            document.querySelectorAll('.set-check .set-status').forEach(function (st) {
+              if (st.classList.contains('ok')) n.ok++;
+              else if (st.classList.contains('warn')) n.warn++;
+              else if (st.classList.contains('error')) n.error++;
+            });
+            var msg = '检查完成 · ' + n.ok + ' 项正常';
+            if (n.warn) msg += ' · ' + n.warn + ' 项警告';
+            if (n.error) msg += ' · ' + n.error + ' 项异常';
+            if (window.ptToast) window.ptToast(msg);
+          }, 900);
+        });
+      }
+
+      /* 重新扫描模型：图标转一圈后提示 */
+      var rescan = document.querySelector('[data-rescan]');
+      if (rescan) {
+        rescan.addEventListener('click', function () {
+          if (rescan.classList.contains('spinning')) return;
+          rescan.classList.add('spinning');
+          setTimeout(function () {
+            rescan.classList.remove('spinning');
+            if (window.ptToast) window.ptToast('扫描完成 · 6 个模块状态已更新');
+          }, 800);
+        });
+      }
+
+      /* 一键安装依赖：模拟 SSE 进度 → 自动重启 AI 运行时 → 状态转正常 */
+      var installBtn = document.getElementById('chkInstall');
+      if (installBtn) {
+        var installLabel = document.getElementById('chkInstallLabel');
+        var prog = document.getElementById('installProg');
+        var fill = document.getElementById('installFill');
+        var pct = document.getElementById('installPct');
+        var msg = document.getElementById('installMsg');
+        var runtimeDetail = document.getElementById('chkRuntimeDetail');
+        var runtimeStatus = document.getElementById('chkRuntimeStatus');
+        var runtimeIco = document.getElementById('chkRuntimeIco');
+        var installing = false;
+
+        var STEPS = [
+          [0, '正在准备 pip 环境…', ''],
+          [12, '正在安装缺失依赖…', 'numpy'],
+          [34, '正在安装缺失依赖…', 'opencv-python'],
+          [58, '正在安装缺失依赖…', 'torch'],
+          [82, '正在安装缺失依赖…', 'transformers'],
+          [100, '安装完成，正在重启 AI 运行时…', '']
+        ];
+
+        var applyProgress = function (p, text, pkg) {
+          prog.hidden = false;
+          fill.style.width = p + '%';
+          pct.textContent = p + '%';
+          msg.innerHTML = text + (pkg ? '<span class="set-ip-pkg">[' + pkg + ']</span>' : '');
+        };
+
+        installBtn.addEventListener('click', function () {
+          if (installing) return;
+          installing = true;
+          installBtn.disabled = true;
+          installLabel.textContent = '安装中...';
+
+          var i = 0;
+          (function tick() {
+            if (i < STEPS.length) {
+              var s = STEPS[i++];
+              applyProgress(s[0], s[1], s[2]);
+              setTimeout(tick, 700);
+              return;
+            }
+            /* 重启完成 */
+            setTimeout(function () {
+              runtimeDetail.textContent = '26/26 个包已装';
+              runtimeStatus.textContent = '正常';
+              runtimeStatus.className = 'set-status ok';
+              if (runtimeIco) {
+                runtimeIco.setAttribute('stroke', 'var(--accent-green)');
+                runtimeIco.innerHTML = '<circle cx="12" cy="12" r="9"/><path d="m8.5 12 2.5 2.5 4.5-5"/>';
+              }
+              applyProgress(100, '安装完成，AI 运行时已重启', '');
+              installBtn.hidden = true;
+              setTimeout(function () { prog.hidden = true; }, 1600);
+              installing = false;
+            }, 1100);
+          })();
+        });
+      }
+
+      var initial = new URLSearchParams(location.search).get('tab') || 'general';
+      if (initial === 'models') initial = 'model';
+      if (initial === 'ai-service') initial = 'ai';
+      setTab(initial);
+    })();
+  </script>
+</body>
+</html>
