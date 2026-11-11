@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Zentect 应用图标 · 折带 Z · 1024 母版 -->
+  <defs>
+    <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="120" y1="80" x2="900" y2="980">
+      <stop offset="0" stop-color="#818cf8" />
+      <stop offset="0.48" stop-color="#6366f1" />
+      <stop offset="1" stop-color="#8b5cf6" />
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0" r="0.92">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.2" />
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+    </radialGradient>
+    <clipPath id="tile"><rect width="1024" height="1024" rx="228" /></clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="1024" height="1024" fill="url(#g)" />
+    <rect width="1024" height="620" fill="url(#glow)" />
+  </g>
+  <g transform="translate(0.8 0.8) scale(42.6)" fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6.4 7H17.6L6.4 17" />
+    <path d="M6.4 17H17.6" opacity="0.62" />
+  </g>
+</svg>

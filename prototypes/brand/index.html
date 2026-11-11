@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Zentect · 品牌图标探索</title>
+<style>
+  /* ============================================================
+     品牌图标探索页（不属于产品界面，只用于选型）
+     所有图形均为 24 网格手写 SVG，只使用品牌双色
+     ============================================================ */
+  :root {
+    --brand-a: #818cf8;
+    --brand-b: #6366f1;
+    --brand-c: #8b5cf6;
+    --bg: #08080a;
+    --card: #101012;
+    --card-2: #16161a;
+    --fg: #f2f2f3;
+    --muted: #8a8a92;
+    --line: rgba(255, 255, 255, 0.07);
+    --line-strong: rgba(255, 255, 255, 0.14);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 56px 32px 96px;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: -20% 30% 60% -10%;
+    background: radial-gradient(circle at 30% 30%, rgba(99, 102, 241, 0.16), transparent 62%);
+    pointer-events: none;
+  }
+
+  .wrap { position: relative; max-width: 1160px; margin: 0 auto; }
+
+  /* ---------- 页头 ---------- */
+  .head { display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; margin-bottom: 8px; }
+  .eyebrow { font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+  h1 { margin: 10px 0 8px; font-size: 26px; font-weight: 650; letter-spacing: -0.01em; }
+  .lede { margin: 0; max-width: 620px; font-size: 14px; line-height: 1.7; color: var(--muted); }
+  .lede b { color: var(--fg); font-weight: 600; }
+
+  .switch {
+    display: inline-flex; flex: none; padding: 3px; gap: 2px;
+    border: 1px solid var(--line); border-radius: 10px; background: rgba(255, 255, 255, 0.03);
+  }
+  .switch button {
+    height: 30px; padding: 0 12px; border: 0; border-radius: 7px; cursor: pointer;
+    background: transparent; color: var(--muted); font-size: 12px; font-weight: 500;
+    transition: background 0.16s ease, color 0.16s ease;
+  }
+  .switch button.on { background: rgba(255, 255, 255, 0.1); color: var(--fg); }
+  .switch button:hover { color: var(--fg); }
+
+  .rule { height: 1px; margin: 28px 0; background: linear-gradient(90deg, var(--line-strong), transparent); }
+
+  /* ---------- 最终形态 ---------- */
+  .finale {
+    display: flex; align-items: center; gap: 36px; flex-wrap: wrap;
+    margin-bottom: 28px; padding: 28px; border: 1px solid var(--line);
+    border-radius: 20px; background: var(--card);
+  }
+  .fin-icon {
+    width: 208px; height: 208px; flex: none; border-radius: 23.5%;
+    background: linear-gradient(135deg, var(--brand-a), var(--brand-b) 46%, var(--brand-c));
+    display: grid; place-items: center;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 18px 48px rgba(99, 102, 241, 0.28);
+  }
+  .fin-icon svg { width: 59.9%; height: 59.9%; filter: brightness(0) invert(1); }
+  .fin-body { min-width: 240px; flex: 1; }
+  .fin-name {
+    font-size: 52px; font-weight: 600; letter-spacing: 0.06em;
+    text-transform: uppercase; line-height: 1.05;
+  }
+  .fin-desc { margin: 12px 0 18px; font-size: 12.5px; line-height: 1.75; color: var(--muted); }
+  .fin-desc b { color: var(--fg); font-weight: 600; }
+  .fin-row { display: flex; align-items: flex-end; gap: 16px; }
+  .fin-row span { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .fin-row em { font-style: normal; font-size: 10px; color: #5c5c64; font-variant-numeric: tabular-nums; }
+
+  /* ---------- 方案卡片 ---------- */
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+
+  .concept {
+    position: relative;
+    padding: 20px 20px 18px;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: var(--card);
+    transition: border-color 0.2s ease, transform 0.2s ease, background 0.2s ease;
+  }
+  .concept:hover { border-color: var(--line-strong); transform: translateY(-2px); background: var(--card-2); }
+
+  .stage { display: flex; align-items: center; gap: 18px; height: 112px; margin-bottom: 16px; }
+
+  /* OS 应用图标：渐变底 + 白色标记 */
+  .app-icon {
+    width: 104px; height: 104px; flex: none;
+    border-radius: 23.5%;
+    background: linear-gradient(135deg, var(--brand-a), var(--brand-b) 46%, var(--brand-c));
+    display: grid; place-items: center;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 14px 34px rgba(99, 102, 241, 0.24);
+  }
+  .app-icon svg { width: 62%; height: 62%; filter: brightness(0) invert(1); opacity: 0.98; }
+
+  /* 站内品牌标记：深底 + 渐变标记 */
+  .brand-mark {
+    width: 64px; height: 64px; flex: none;
+    border-radius: 15px;
+    border: 1px solid var(--line);
+    background: #141417;
+    display: grid; place-items: center;
+  }
+  .brand-mark svg { width: 58%; height: 58%; filter: drop-shadow(0 2px 7px rgba(99, 102, 241, 0.4)); }
+
+  .no { font-size: 11px; font-variant-numeric: tabular-nums; letter-spacing: 0.08em; color: #62626a; }
+  h2 { margin: 6px 0 6px; font-size: 15px; font-weight: 600; letter-spacing: -0.005em; }
+  h2 small { margin-left: 6px; font-size: 11px; font-weight: 500; color: #6f6f78; letter-spacing: 0.04em; }
+  .why { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--muted); min-height: 42px; }
+
+  .sizes { display: flex; align-items: flex-end; gap: 14px; margin-top: 14px; padding-top: 12px; border-top: 1px dashed rgba(255, 255, 255, 0.06); }
+  .sizes span { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+  .sizes em { font-style: normal; font-size: 10px; color: #5c5c64; font-variant-numeric: tabular-nums; }
+  .sizes svg { display: block; filter: drop-shadow(0 1px 4px rgba(99, 102, 241, 0.28)); }
+
+  /* 小尺寸在深底上的真实观感 */
+  .s16 { width: 16px; height: 16px; }
+  .s24 { width: 24px; height: 24px; }
+  .s32 { width: 32px; height: 32px; }
+  .s48 { width: 48px; height: 48px; }
+
+  /* ---------- 应用位示意 ---------- */
+  .section-title { display: flex; align-items: baseline; gap: 12px; margin: 44px 0 18px; }
+  .section-title h3 { margin: 0; font-size: 16px; font-weight: 600; }
+  .section-title span { font-size: 12px; color: var(--muted); }
+
+  .contexts { display: grid; grid-template-columns: 1.35fr 1fr 1fr; gap: 16px; }
+
+  .ctx { border: 1px solid var(--line); border-radius: 16px; background: var(--card); padding: 16px; }
+  .ctx > em { display: block; margin-bottom: 14px; font-style: normal; font-size: 11px; letter-spacing: 0.1em; color: #62626a; text-transform: uppercase; }
+
+  /* 侧栏模拟 */
+  .mini-side {
+    width: 100%; border-radius: 10px; border: 1px solid var(--line);
+    background: #0d0d0f; padding: 10px 10px 14px;
+  }
+  .mini-brand { display: flex; align-items: center; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .mini-logo {
+    width: 24px; height: 24px; flex: none; border-radius: 8px;
+    background: linear-gradient(135deg, var(--brand-a), var(--brand-b) 46%, var(--brand-c));
+    display: grid; place-items: center;
+    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+  }
+  .mini-logo svg { width: 62%; height: 62%; filter: brightness(0) invert(1); }
+  .mini-name { font-size: 14px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .mini-nav { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+  .mini-nav i { display: block; height: 28px; border-radius: 8px; background: rgba(255, 255, 255, 0.035); }
+  .mini-nav i.on { background: rgba(255, 255, 255, 0.1); }
+
+  /* 登录弹窗模拟 */
+  .mini-modal {
+    max-width: 190px; margin: 0 auto; padding: 16px 14px 14px; text-align: center;
+    border: 1px solid var(--line); border-radius: 12px; background: #141417;
+  }
+  .mini-modal .big {
+    width: 48px; height: 48px; margin: 0 auto 10px; border-radius: 12px;
+    background: linear-gradient(135deg, var(--brand-a), var(--brand-b) 46%, var(--brand-c));
+    display: grid; place-items: center; box-shadow: 0 8px 22px rgba(99, 102, 241, 0.3);
+  }
+  .mini-modal .big svg { width: 60%; height: 60%; filter: brightness(0) invert(1); }
+  .mini-modal b { display: block; font-size: 13px; font-weight: 600; }
+  .mini-modal p { margin: 4px 0 10px; font-size: 10px; color: var(--muted); }
+  .mini-modal .field { height: 26px; margin-bottom: 6px; border-radius: 6px; background: #1d1d21; border: 1px solid var(--line); }
+  .mini-modal .go { height: 26px; margin-top: 8px; border-radius: 6px; background: #ededed; }
+
+  /* 任务栏模拟 */
+  .mini-dock {
+    display: flex; align-items: center; justify-content: center; gap: 12px;
+    height: 64px; padding: 0 10px; border-radius: 10px; border: 1px solid var(--line); background: #0d0d0f;
+  }
+  .mini-dock .dot { width: 30px; height: 30px; border-radius: 8px; background: rgba(255, 255, 255, 0.07); }
+  .mini-dock .dot.alt { border-radius: 50%; }
+  .mini-dock .ours { width: 30px; height: 30px; border-radius: 8px; overflow: hidden; box-shadow: 0 3px 10px rgba(99, 102, 241, 0.32); }
+  .mini-dock .ours svg { display: block; width: 100%; height: 100%; }
+
+  /* ---------- 说明 ---------- */
+  .notes { margin-top: 44px; padding: 22px 24px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255, 255, 255, 0.015); }
+  .notes h4 { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+  .notes ul { margin: 0; padding-left: 18px; }
+  .notes li { margin: 6px 0; font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+  .notes b { color: var(--fg); font-weight: 600; }
+
+  /* ---------- 浅色核对模式 ---------- */
+  body.light { background: #f4f4f6; color: #141416; }
+  body.light::before { opacity: 0.5; }
+  body.light .concept, body.light .ctx, body.light .notes { background: #fff; border-color: rgba(0, 0, 0, 0.08); }
+  body.light .finale { background: #fff; border-color: rgba(0, 0, 0, 0.08); }
+  body.light .fin-desc { color: #5c5c66; }
+  body.light .fin-desc b { color: #141416; }
+  body.light .concept:hover { background: #fff; border-color: rgba(0, 0, 0, 0.18); }
+  body.light .brand-mark { background: #f0f0f3; border-color: rgba(0, 0, 0, 0.08); }
+  body.light h2, body.light .lede b, body.light .notes b { color: #141416; }
+  body.light .why, body.light .lede, body.light .notes li { color: #5c5c66; }
+  body.light .mini-side, body.light .mini-dock { background: #fff; }
+  body.light .mini-nav i { background: rgba(0, 0, 0, 0.05); }
+  body.light .mini-nav i.on { background: rgba(0, 0, 0, 0.12); }
+  body.light .mini-modal { background: #fff; }
+  body.light .mini-modal .field { background: #f2f2f5; }
+  body.light .switch button.on { background: rgba(0, 0, 0, 0.08); color: #141416; }
+
+  @media (max-width: 1000px) {
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .contexts { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 680px) {
+    body { padding: 32px 18px 64px; }
+    .grid, .contexts { grid-template-columns: 1fr; }
+    .head { flex-direction: column; align-items: flex-start; }
+  }
+</style>
+  <link rel="icon" type="image/svg+xml" href="app-icon.svg" />
+</head>
+<body>
+<div class="wrap">
+
+  <header class="head">
+    <div>
+      <div class="eyebrow">Zentect · Brand Mark</div>
+      <h1>一个 Z，六种处理</h1>
+      <p class="lede">全部是 <b>24 网格手写 SVG</b>，只用品牌两色（#6366f1 → #8b5cf6），可以缩到 16px 不糊、也可以放到 1024px 做应用图标。左侧是系统图标态，右侧是站内品牌态。</p>
+    </div>
+    <div class="switch" role="group" aria-label="预览底色">
+      <button class="on" data-bg="dark">深色</button>
+      <button data-bg="light">浅色</button>
+    </div>
+  </header>
+
+  <div class="rule"></div>
+
+  <section class="finale">
+    <div class="fin-icon"><svg viewBox="0 0 24 24"><use href="#m1" /></svg></div>
+    <div class="fin-body">
+      <div class="fin-name">Zentect</div>
+      <p class="fin-desc">1024 网格里标记占宽 <b>59.9%</b>、圆角 <b>22%</b>；名称统一<b>全大写 + 0.08em 字距</b>（与图标按 1 : 0.27 配比，行内 14px / 600），去掉 Zen-tect 的大小写交替。缩到 24px 只剩骨架 Z，这是极简标记的取舍。</p>
+      <div class="fin-row">
+        <span><div class="app-icon" style="width:48px;height:48px;border-radius:12px"><svg viewBox="0 0 24 24"><use href="#m1" /></svg></div><em>48</em></span>
+        <span><div class="app-icon" style="width:24px;height:24px;border-radius:8px"><svg viewBox="0 0 24 24"><use href="#m1" /></svg></div><em>24</em></span>
+        <span><div class="app-icon" style="width:16px;height:16px;border-radius:5px"><svg viewBox="0 0 24 24"><use href="#m1" /></svg></div><em>16</em></span>
+      </div>
+    </div>
+  </section>
+
+  <div class="grid">
+
+    <!-- 01 折带 Z -->
+    <article class="concept">
+      <div class="stage">
+        <div class="app-icon"><svg viewBox="0 0 24 24"><use href="#m1" /></svg></div>
+        <div class="brand-mark"><svg viewBox="0 0 24 24"><use href="#m1" /></svg></div>
+      </div>
+      <div class="no">01</div>
+      <h2>折带 Z <small>已选定</small></h2>
+      <p class="why">一笔写完的折带，末段降透明度，像光在折角处衰减一次。极简，但两个色阶让它不平。</p>
+      <div class="sizes">
+        <span><svg class="s16" viewBox="0 0 24 24"><use href="#m1" /></svg><em>16</em></span>
+        <span><svg class="s24" viewBox="0 0 24 24"><use href="#m1" /></svg><em>24</em></span>
+        <span><svg class="s32" viewBox="0 0 24 24"><use href="#m1" /></svg><em>32</em></span>
+        <span><svg class="s48" viewBox="0 0 24 24"><use href="#m1" /></svg><em>48</em></span>
+      </div>
+    </article>
+
+    <!-- 02 渐变 Z -->
+    <article class="concept">
+      <div class="stage">
+        <div class="app-icon"><svg viewBox="0 0 24 24"><use href="#m2" /></svg></div>
+        <div class="brand-mark"><svg viewBox="0 0 24 24"><use href="#m2" /></svg></div>
+      </div>
+      <div class="no">02</div>
+      <h2>渐变 Z <small>最保守</small></h2>
+      <p class="why">最纯的字母骨架：等宽、圆端、无任何修饰。风险为零，辨识度全靠渐变本身。</p>
+      <div class="sizes">
+        <span><svg class="s16" viewBox="0 0 24 24"><use href="#m2" /></svg><em>16</em></span>
+        <span><svg class="s24" viewBox="0 0 24 24"><use href="#m2" /></svg><em>24</em></span>
+        <span><svg class="s32" viewBox="0 0 24 24"><use href="#m2" /></svg><em>32</em></span>
+        <span><svg class="s48" viewBox="0 0 24 24"><use href="#m2" /></svg><em>48</em></span>
+      </div>
+    </article>
+
+    <!-- 03 块面 Z -->
+    <article class="concept">
+      <div class="stage">
+        <div class="app-icon"><svg viewBox="0 0 24 24"><use href="#m3" /></svg></div>
+        <div class="brand-mark"><svg viewBox="0 0 24 24"><use href="#m3" /></svg></div>
+      </div>
+      <div class="no">03</div>
+      <h2>块面 Z <small>最抗缩</small></h2>
+      <p class="why">加粗到 4.4、直角端点，像一块被切出来的实体。16px 任务栏里最清楚的一个。</p>
+      <div class="sizes">
+        <span><svg class="s16" viewBox="0 0 24 24"><use href="#m3" /></svg><em>16</em></span>
+        <span><svg class="s24" viewBox="0 0 24 24"><use href="#m3" /></svg><em>24</em></span>
+        <span><svg class="s32" viewBox="0 0 24 24"><use href="#m3" /></svg><em>32</em></span>
+        <span><svg class="s48" viewBox="0 0 24 24"><use href="#m3" /></svg><em>48</em></span>
+      </div>
+    </article>
+
+    <!-- 04 帧格 Z -->
+    <article class="concept">
+      <div class="stage">
+        <div class="app-icon"><svg viewBox="0 0 24 24"><use href="#m4" /></svg></div>
+        <div class="brand-mark"><svg viewBox="0 0 24 24"><use href="#m4" /></svg></div>
+      </div>
+      <div class="no">04</div>
+      <h2>帧格 Z <small>影像隐喻</small></h2>
+      <p class="why">三段圆角片段拼成 Z，像时间轴上的三帧。表达"剪辑"，但不画任何具体物件。</p>
+      <div class="sizes">
+        <span><svg class="s16" viewBox="0 0 24 24"><use href="#m4" /></svg><em>16</em></span>
+        <span><svg class="s24" viewBox="0 0 24 24"><use href="#m4" /></svg><em>24</em></span>
+        <span><svg class="s32" viewBox="0 0 24 24"><use href="#m4" /></svg><em>32</em></span>
+        <span><svg class="s48" viewBox="0 0 24 24"><use href="#m4" /></svg><em>48</em></span>
+      </div>
+    </article>
+
+    <!-- 05 叠层 Z -->
+    <article class="concept">
+      <div class="stage">
+        <div class="app-icon"><svg viewBox="0 0 24 24"><use href="#m5" /></svg></div>
+        <div class="brand-mark"><svg viewBox="0 0 24 24"><use href="#m5" /></svg></div>
+      </div>
+      <div class="no">05</div>
+      <h2>叠层 Z <small>动感</small></h2>
+      <p class="why">前后两个 Z 错开 1.6px，后层 28% 透明，像轨迹或重影。动起来好看，16px 会略糊。</p>
+      <div class="sizes">
+        <span><svg class="s16" viewBox="0 0 24 24"><use href="#m5" /></svg><em>16</em></span>
+        <span><svg class="s24" viewBox="0 0 24 24"><use href="#m5" /></svg><em>24</em></span>
+        <span><svg class="s32" viewBox="0 0 24 24"><use href="#m5" /></svg><em>32</em></span>
+        <span><svg class="s48" viewBox="0 0 24 24"><use href="#m5" /></svg><em>48</em></span>
+      </div>
+    </article>
+
+    <!-- 06 视窗 Z -->
+    <article class="concept">
+      <div class="stage">
+        <div class="app-icon"><svg viewBox="0 0 24 24"><use href="#m6" /></svg></div>
+        <div class="brand-mark"><svg viewBox="0 0 24 24"><use href="#m6" /></svg></div>
+      </div>
+      <div class="no">06</div>
+      <h2>视窗 Z <small>画幅隐喻</small></h2>
+      <p class="why">圆角画框右上留缺口，Z 落在画幅里。最"作品感"，但小尺寸线框会吃亏，适合 ≥24px。</p>
+      <div class="sizes">
+        <span><svg class="s16" viewBox="0 0 24 24"><use href="#m6" /></svg><em>16</em></span>
+        <span><svg class="s24" viewBox="0 0 24 24"><use href="#m6" /></svg><em>24</em></span>
+        <span><svg class="s32" viewBox="0 0 24 24"><use href="#m6" /></svg><em>32</em></span>
+        <span><svg class="s48" viewBox="0 0 24 24"><use href="#m6" /></svg><em>48</em></span>
+      </div>
+    </article>
+
+  </div>
+
+  <div class="section-title">
+    <h3>放到真实位置看</h3>
+    <span>以 01 折带 Z 为例</span>
+  </div>
+
+  <div class="contexts">
+    <div class="ctx">
+      <em>侧栏 · 24px</em>
+      <div class="mini-side">
+        <div class="mini-brand">
+          <div class="mini-logo"><svg viewBox="0 0 24 24"><use href="#m1" /></svg></div>
+          <span class="mini-name">Zentect</span>
+        </div>
+        <div class="mini-nav"><i class="on"></i><i></i><i></i></div>
+      </div>
+    </div>
+
+    <div class="ctx">
+      <em>登录弹窗 · 48px</em>
+      <div class="mini-modal">
+        <div class="big"><svg viewBox="0 0 24 24"><use href="#m1" /></svg></div>
+        <b>欢迎回来</b>
+        <p>登录以同步你的创作数据</p>
+        <div class="field"></div>
+        <div class="field"></div>
+        <div class="go"></div>
+      </div>
+    </div>
+
+    <div class="ctx">
+      <em>任务栏 / favicon · 16-30px</em>
+      <div class="mini-dock">
+        <div class="dot"></div>
+        <div class="dot alt"></div>
+        <div class="ours"><svg viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="url(#tile)" /><g transform="translate(2.4 2.4) scale(0.8)"><use href="#m1" /></g></svg></div>
+        <div class="dot"></div>
+        <div class="dot alt"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h4>选型结果</h4>
+    <ul>
+      <li><b>已选定 01 折带 Z</b>：侧栏 24、登录弹窗 48、编辑器左上、favicon 全部已换成这一版。</li>
+      <li>应用图标母版：<a href="./app-icon.svg" style="color:#a5b4fc">app-icon.svg</a>（1024 网格），导出位图：<a href="./app-icon-1024.png" style="color:#a5b4fc">app-icon-1024.png</a>。</li>
+      <li>真源已同步：<b>resources/icon.png</b>（1024）、<b>resources/icon.ico</b> 与 <b>build/icon.ico</b>（16/24/32/48/64/128/256 七尺寸）；渲染器用 <b>components/brand-mark.tsx</b> 的 <b>&lt;BrandMark /&gt;</b>。</li>
+      <li>尺寸 / 形态结论：标记留白 55–65%（站内 62/58、系统 59.9%）；图标内不放英文（16–32px 不可辨）；系统图标与 favicon 必须有实底方块。</li>
+    </ul>
+  </div>
+
+  <div class="notes" style="margin-top:16px">
+    <h4>选型时只需要看三件事</h4>
+    <ul>
+      <li><b>16px 还认得出是 Z 吗</b>：01 / 02 / 03 没问题；04 靠三段块面撑住；05 会糊；06 的线框会灰掉。</li>
+      <li><b>有没有第二个含义</b>：04 是"三帧"，06 是"画幅"，都属于结构隐喻，不加实物；01 / 02 / 03 纯字母，最耐看。</li>
+      <li><b>和现有界面冲不冲突</b>：深色界面里，渐变标记只在品牌位出现一次，其余仍是黑白灰，不会破坏主调。</li>
+    </ul>
+  </div>
+
+</div>
+
+<!-- ============ 图形源（24 网格） ============ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <linearGradient id="brand" gradientUnits="userSpaceOnUse" x1="4" y1="4" x2="20" y2="20">
+      <stop offset="0" stop-color="#818cf8" />
+      <stop offset="0.48" stop-color="#6366f1" />
+      <stop offset="1" stop-color="#8b5cf6" />
+    </linearGradient>
+    <linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="24" y2="24">
+      <stop offset="0" stop-color="#818cf8" />
+      <stop offset="0.48" stop-color="#6366f1" />
+      <stop offset="1" stop-color="#8b5cf6" />
+    </linearGradient>
+  </defs>
+
+  <!-- 01 折带：一笔折带 + 末段降透明度 -->
+  <g id="m1">
+    <path d="M6.4 7H17.6L6.4 17" fill="none" stroke="url(#brand)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M6.4 17H17.6" fill="none" stroke="url(#brand)" stroke-width="3.2" stroke-linecap="round" opacity="0.6" />
+  </g>
+
+  <!-- 02 渐变：等宽圆端的纯字母骨架 -->
+  <g id="m2">
+    <path d="M6.4 7H17.6L6.4 17H17.6" fill="none" stroke="url(#brand)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+
+  <!-- 03 块面：加粗直角端点 -->
+  <g id="m3">
+    <path d="M6.2 6.2H17.8L6.2 17.8H17.8" fill="none" stroke="url(#brand)" stroke-width="4.4" stroke-linecap="butt" stroke-linejoin="miter" />
+  </g>
+
+  <!-- 04 帧格：三段圆角片段 -->
+  <g id="m4">
+    <rect x="6" y="4.9" width="12" height="3.3" rx="1.65" fill="url(#brand)" />
+    <rect x="10.35" y="3.95" width="3.3" height="15.6" rx="1.65" fill="url(#brand)" transform="rotate(45 12 11.75)" />
+    <rect x="6" y="15.3" width="12" height="3.3" rx="1.65" fill="url(#brand)" />
+  </g>
+
+  <!-- 05 叠层：前后错开 -->
+  <g id="m5">
+    <path d="M7.2 8.4H18.4L7.2 18.4H18.4" fill="none" stroke="url(#brand)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.28" />
+    <path d="M5.6 6H16.8L5.6 16H16.8" fill="none" stroke="url(#brand)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+
+  <!-- 06 视窗：画框右上留缺口 -->
+  <g id="m6" fill="none" stroke="url(#brand)">
+    <path d="M15.4 3.8H8A4.2 4.2 0 0 0 3.8 8v8A4.2 4.2 0 0 0 8 20.2h8a4.2 4.2 0 0 0 4.2-4.2V8.6" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M8.8 8.8H15.2L8.8 15.2H15.2" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+</svg>
+
+<script>
+  var btns = document.querySelectorAll("[data-bg]");
+  btns.forEach(function (b) {
+    b.addEventListener("click", function () {
+      btns.forEach(function (x) { x.classList.remove("on"); });
+      b.classList.add("on");
+      document.body.classList.toggle("light", b.dataset.bg === "light");
+    });
+  });
+</script>
+</body>
+</html>

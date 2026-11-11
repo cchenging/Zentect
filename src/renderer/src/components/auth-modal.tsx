@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { X, Eye, EyeOff, Loader2, LogIn, UserPlus } from 'lucide-react';
 import { useUserStore } from '../store/useUserStore';
+import { BrandMark } from './brand-mark';
 
 /**
  * 认证模态框组件
@@ -74,8 +75,8 @@ export const AuthModal: React.FC = () => {
 
         {/* 品牌区 */}
         <div className="pt-8 pb-4 px-8 text-center">
-          <div className="w-12 h-12 mx-auto rounded-xl bg-gradient-to-br from-[var(--accent)] to-[var(--accent-purple)] flex items-center justify-center text-white font-bold text-lg shadow-lg shadow-[var(--accent)]/20 mb-4">
-            Z
+          <div className="w-12 h-12 mx-auto rounded-xl bg-gradient-to-br from-[var(--accent)] to-[var(--accent-purple)] flex items-center justify-center text-white shadow-lg shadow-[var(--accent)]/20 mb-4">
+            <BrandMark className="w-[58%] h-[58%]" />
           </div>
           <h2 className="text-xl font-semibold text-white">
             {authModalTab === 'login' ? '欢迎回来' : '创建账号'}
