@@ -5,6 +5,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Home, Crown, LogOut, LogIn, PanelLeftClose, PanelLeftOpen, Users, Film } from 'lucide-react';
 import { AppIcon } from '../../components/app-icon';
 import { BrandMark } from '../../components/brand-mark';
+import { BrandWordmark } from '../../components/brand-wordmark';
 import { useI18n } from '../../store/useI18n';
 import { useUserStore } from '../../store/useUserStore';
 import { useEditorStore } from '../../store/useStore';
@@ -41,16 +42,16 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ className = "" }) => {
     <aside className={`${className} flex flex-col bg-card select-none z-20`}>
       {/* 品牌区：与标题栏齐平 */}
       <div className={`${UI_CONFIG.TOPBAR_HEIGHT_CLASS} flex items-center px-4 shrink-0 gap-3 border-b border-border/50 bg-bg-deep/50 [-webkit-app-region:drag]`}>
-        <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-accent to-accent-purple flex items-center justify-center text-white shadow-md shadow-accent/20 [-webkit-app-region:no-drag] animate-breathe">
-          <BrandMark className="w-[62%] h-[62%]" />
-        </div>
-        {!isSidebarExpanded && (
-          <span className="font-semibold text-[14px] uppercase tracking-[0.08em] text-foreground [-webkit-app-region:no-drag] flex-1">Zentect</span>
+        {!isSidebarExpanded ? (
+          /* W1「首字母即图标」：图标 Z 直接当首字母，后接 ENTECT，界面上 18px 高 */
+          <BrandWordmark className="h-[18px] w-auto shrink-0 text-foreground [-webkit-app-region:no-drag]" />
+        ) : (
+          <BrandMark className="w-6 h-6 shrink-0 text-accent [-webkit-app-region:no-drag]" />
         )}
         {/* 收起/展开按钮 */}
         <button
           onClick={toggleSidebar}
-          className="w-7 h-7 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer outline-none [-webkit-app-region:no-drag] shrink-0"
+          className="ml-auto w-7 h-7 flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer outline-none [-webkit-app-region:no-drag] shrink-0"
           title={isSidebarExpanded ? '展开侧边栏' : '收起侧边栏'}
         >
           {isSidebarExpanded ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
@@ -93,7 +94,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ className = "" }) => {
 
           {/* 用户信息行 */}
           <div className={`flex items-center gap-3 relative z-10 ${isSidebarExpanded ? 'justify-center' : ''}`}>
-            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-accent/20 to-accent-purple/20 border border-accent/20 flex items-center justify-center text-accent overflow-hidden shrink-0">
+            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-accent/20 to-accent-deep/20 border border-accent/20 flex items-center justify-center text-accent overflow-hidden shrink-0">
               {userInfo?.avatar ? (
                 <img src={userInfo.avatar} alt="" className="w-full h-full object-cover" />
               ) : (
@@ -139,7 +140,7 @@ export const AppSidebar: React.FC<AppSidebarProps> = ({ className = "" }) => {
               ) : (
                 <button
                   onClick={() => openAuthModal('login')}
-                  className="flex-1 h-8 rounded-lg bg-gradient-to-r from-accent to-accent-purple text-white text-[12px] font-semibold shadow-md shadow-accent/20 hover:shadow-accent/30 hover:brightness-110 transition-all cursor-pointer outline-none flex items-center justify-center gap-1.5"
+                  className="flex-1 h-8 rounded-lg bg-primary text-primary-foreground text-[12px] font-semibold shadow-md shadow-black/25 hover:brightness-110 transition-all cursor-pointer outline-none flex items-center justify-center gap-1.5"
                 >
                   <LogIn size={13} /> 登录
                 </button>

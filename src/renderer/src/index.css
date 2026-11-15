@@ -46,15 +46,18 @@
   --popover-foreground: #e8e8f0;
 
   /* --- 强调色体系 --- */
-  --accent: #6366f1;
+  --accent: #22c55e;
   --accent-rose: #e11d48;
   --accent-cyan: #00e5ff;
   --accent-purple: #8b5cf6;
   --accent-warm: #f59e0b;
-  --accent-green: #22c55e;
+  --accent-deep: #16a34a;
+  /* 名字沿用历史：语义是「已完成 / 成功」。品牌主色改为绿后，这里让位成青蓝，避免与 --accent 撞色 */
+  --accent-green: #22d3ee;
 
-  --primary: #6366f1;
-  --primary-foreground: #ffffff;
+  /* 主按钮走黑白：深色模式白底深字；绿色只做点缀（品牌 Z / 选中 / 状态点） */
+  --primary: #e8e8f0;
+  --primary-foreground: #0a0a14;
   --muted: #1e1e3a;
   --muted-foreground: #8888aa;
 
@@ -65,8 +68,8 @@
   --border-input: rgba(255,255,255,0.10);
   --border-focus: var(--accent);
   --input: #1e1e3a;
-  --ring: #6366f1;
-  --success: #22c55e;
+  --ring: #22c55e;
+  --success: #22d3ee;
   --warning: #f59e0b;
   --error: #e11d48;
   --info: #00e5ff;
@@ -89,7 +92,7 @@
   --glass-border: rgba(255, 255, 255, 0.06);
 
   /* --- 发光阴影 --- */
-  --glow-accent: 0 0 20px rgba(99, 102, 241, 0.15);
+  --glow-accent: 0 0 20px rgba(34, 197, 94, 0.15);
   --glow-cyan: 0 0 20px rgba(0, 229, 255, 0.15);
   --glow-rose: 0 0 20px rgba(225, 29, 72, 0.15);
 
@@ -100,9 +103,9 @@
   --shadow-xl: 0 12px 40px rgba(0,0,0,0.6);
 
   /* --- 渐变 --- */
-  --gradient-accent: linear-gradient(135deg, #6366f1, #8b5cf6);
-  --gradient-warm: linear-gradient(135deg, #6366f1, #e11d48);
-  --gradient-cyan: linear-gradient(135deg, #00e5ff, #6366f1);
+  --gradient-accent: linear-gradient(135deg, #22c55e, #16a34a);
+  --gradient-warm: linear-gradient(135deg, #22c55e, #e11d48);
+  --gradient-cyan: linear-gradient(135deg, #00e5ff, #22c55e);
 
   /* --- 字体体系 --- */
   --font-display: 'Outfit', 'PingFang SC', sans-serif;
@@ -202,14 +205,17 @@
   --popover: #ffffff;
   --popover-foreground: #1a1a2e;
 
-  --accent: #6366f1;
+  --accent: #16a34a;
   --accent-rose: #e11d48;
   --accent-cyan: #0891b2;
   --accent-purple: #8b5cf6;
   --accent-warm: #d97706;
-  --accent-green: #16a34a;
+  --accent-deep: #15803d;
+  /* 同上：语义是「已完成 / 成功」，不与品牌主色共用 */
+  --accent-green: #0891b2;
 
-  --primary: #6366f1;
+  /* 主按钮走黑白：浅色模式近黑底白字 */
+  --primary: #16161c;
   --primary-foreground: #ffffff;
   --muted: #e8e8f4;
   --muted-foreground: #6b6b8a;
@@ -221,8 +227,8 @@
   --border-input: rgba(0,0,0,0.10);
   --border-focus: var(--accent);
   --input: #d4d4e8;
-  --ring: #6366f1;
-  --success: #16a34a;
+  --ring: #16a34a;
+  --success: #0891b2;
   --warning: #d97706;
   --error: #dc2626;
   --info: #0891b2;
@@ -243,7 +249,7 @@
   --glass-blur: 16px;
   --glass-border: rgba(0, 0, 0, 0.06);
 
-  --glow-accent: 0 0 20px rgba(99, 102, 241, 0.1);
+  --glow-accent: 0 0 20px rgba(34, 197, 94, 0.1);
   --glow-cyan: 0 0 20px rgba(8, 145, 178, 0.1);
   --glow-rose: 0 0 20px rgba(225, 29, 72, 0.1);
 
@@ -253,9 +259,9 @@
   --shadow-lg: 0 8px 24px rgba(0,0,0,0.12);
   --shadow-xl: 0 12px 40px rgba(0,0,0,0.15);
 
-  --gradient-accent: linear-gradient(135deg, #6366f1, #8b5cf6);
-  --gradient-warm: linear-gradient(135deg, #6366f1, #e11d48);
-  --gradient-cyan: linear-gradient(135deg, #0891b2, #6366f1);
+  --gradient-accent: linear-gradient(135deg, #22c55e, #16a34a);
+  --gradient-warm: linear-gradient(135deg, #22c55e, #e11d48);
+  --gradient-cyan: linear-gradient(135deg, #0891b2, #16a34a);
 
   --semi-color-bg-0: #f5f5fc !important;
   --semi-color-bg-1: #ffffff !important;
@@ -313,6 +319,7 @@
   --color-accent-rose: var(--accent-rose);
   --color-accent-cyan: var(--accent-cyan);
   --color-accent-purple: var(--accent-purple);
+  --color-accent-deep: var(--accent-deep);
   --color-accent-warm: var(--accent-warm);
   --color-accent-green: var(--accent-green);
 
@@ -385,8 +392,8 @@ body {
    V3 渐变按钮
 ========================================= */
 .btn-gradient {
-  background: var(--gradient-accent);
-  color: #ffffff;
+  background: var(--foreground);
+  color: var(--background);
   border: none;
   border-radius: 10px;
   font-weight: 600;
@@ -394,7 +401,7 @@ body {
   transition: all 0.2s ease;
 }
 .btn-gradient:hover {
-  box-shadow: 0 0 30px rgba(99, 102, 241, 0.3);
+  box-shadow: 0 0 30px rgba(34, 197, 94, 0.3);
   filter: brightness(1.1);
 }
 
@@ -411,7 +418,7 @@ body {
    V3 发光边框
 ========================================= */
 .glow-border-accent {
-  border: 1px solid rgba(99, 102, 241, 0.3);
+  border: 1px solid rgba(34, 197, 94, 0.3);
   box-shadow: var(--glow-accent);
 }
 .glow-border-cyan {
@@ -439,17 +446,17 @@ body {
   100% { background-position: 200% 0; }
 }
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 8px rgba(99, 102, 241, 0.2); }
-  50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.4); }
+  0%, 100% { box-shadow: 0 0 8px rgba(34, 197, 94, 0.2); }
+  50% { box-shadow: 0 0 20px rgba(34, 197, 94, 0.4); }
 }
 
 @keyframes breathe {
-  0%, 100% { box-shadow: 0 0 8px rgba(99, 102, 241, 0.15), 0 0 16px rgba(99, 102, 241, 0.05); }
-  50% { box-shadow: 0 0 16px rgba(99, 102, 241, 0.3), 0 0 32px rgba(99, 102, 241, 0.15); }
+  0%, 100% { box-shadow: 0 0 8px rgba(34, 197, 94, 0.15), 0 0 16px rgba(34, 197, 94, 0.05); }
+  50% { box-shadow: 0 0 16px rgba(34, 197, 94, 0.3), 0 0 32px rgba(34, 197, 94, 0.15); }
 }
 @keyframes button-pulse {
-  0%, 100% { box-shadow: 0 0 8px rgba(99, 102, 241, 0.2), 0 4px 16px rgba(99, 102, 241, 0.1); }
-  50% { box-shadow: 0 0 20px rgba(99, 102, 241, 0.4), 0 4px 24px rgba(99, 102, 241, 0.2); }
+  0%, 100% { box-shadow: 0 0 8px rgba(34, 197, 94, 0.2), 0 4px 16px rgba(34, 197, 94, 0.1); }
+  50% { box-shadow: 0 0 20px rgba(34, 197, 94, 0.4), 0 4px 24px rgba(34, 197, 94, 0.2); }
 }
 
 .animate-fade-in-up {
@@ -479,8 +486,8 @@ body {
 .badge-accent {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 600;
-  background: rgba(99, 102, 241, 0.15); color: var(--accent);
-  border: 1px solid rgba(99, 102, 241, 0.2);
+  background: rgba(34, 197, 94, 0.15); color: var(--accent);
+  border: 1px solid rgba(34, 197, 94, 0.2);
 }
 .badge-cyan {
   display: inline-flex; align-items: center; gap: 4px;
@@ -525,18 +532,18 @@ body {
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background-color: transparent; border-radius: 3px; }
-*:hover::-webkit-scrollbar-thumb { background-color: rgba(99, 102, 241, 0.2); }
-*:hover::-webkit-scrollbar-thumb:hover { background-color: rgba(99, 102, 241, 0.35); }
+*:hover::-webkit-scrollbar-thumb { background-color: rgba(34, 197, 94, 0.2); }
+*:hover::-webkit-scrollbar-thumb:hover { background-color: rgba(34, 197, 94, 0.35); }
 
 /* 常显滚动条：覆盖全局"悬停才显示"的透明样式，用于文案区等需要明确滚动提示的区域 */
 .visible-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
 .visible-scrollbar::-webkit-scrollbar-track { background: transparent; }
 .visible-scrollbar::-webkit-scrollbar-thumb {
-  background-color: rgba(99, 102, 241, 0.35);
+  background-color: rgba(34, 197, 94, 0.35);
   border-radius: 3px;
 }
-.visible-scrollbar::-webkit-scrollbar-thumb:hover { background-color: rgba(99, 102, 241, 0.55); }
-.visible-scrollbar { scrollbar-width: thin; scrollbar-color: rgba(99, 102, 241, 0.35) transparent; }
+.visible-scrollbar::-webkit-scrollbar-thumb:hover { background-color: rgba(34, 197, 94, 0.55); }
+.visible-scrollbar { scrollbar-width: thin; scrollbar-color: rgba(34, 197, 94, 0.35) transparent; }
 
 /* =========================================
    Allotment 布局覆盖
@@ -604,5 +611,5 @@ div[class*="sash-module"]::before, div[class*="sash-module"]::after { background
 }
 .light .bgm-track-card,
 body[theme-mode='light'] .bgm-track-card {
-  background: linear-gradient(180deg, rgba(99, 102, 241, 0.07), rgba(139, 92, 246, 0.05));
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.07), rgba(22, 163, 74, 0.05));
 }

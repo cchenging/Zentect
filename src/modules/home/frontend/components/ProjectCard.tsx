@@ -63,6 +63,14 @@ const formatBytes = (bytes?: number) => {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 };
 
+/** 步骤5 状态 → 角标文案（states 来自 metadata.stepStatuses[4]：idle / running / completed / failed） */
+const STEP5_STATE_TITLES: Record<string, string> = {
+  completed: '已完成',
+  running: '处理中',
+  failed: '处理失败',
+  idle: '未开始',
+};
+
 export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRename, onDuplicate, onDelete, onBindShow }) => {
   const { t } = useI18n();
   const [imgError, setImgError] = useState(false);
@@ -72,6 +80,11 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRe
   //   后端 getList() 已做转换，但若 coverPath 为裸相对路径，getSafeMediaUrl 会兜底转 magic URL
   const coverUrl = getSafeMediaUrl(project.coverPath) || '';
   const displayName = truncateMiddleSmart(project.name);
+  // 四态：已完成 / 处理中 / 处理失败 / 未开始。此前只有「已完成 vs 其他」两态，
+  // 导致处理中与失败都显示同一个时钟图标，无法区分。
+  const step5State = ['completed', 'running', 'failed'].includes(project.step5Status || '')
+    ? (project.step5Status as string)
+    : 'idle';
 
   // 🎬 封面路径变化时重置加载状态,触发渐现过渡
   // 配合 cache-busting ?t=timestamp,新封面加载完成后淡入,旧封面不闪烁
@@ -109,15 +122,30 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({ project, onClick, onRe
         {/* 护眼遮罩层：防止封面太亮导致白色按钮看不清 */}
         <div className="absolute inset-0 bg-gradient-to-bl from-black/40 via-transparent to-transparent opacity-0 group-hover/cover:opacity-100 transition-opacity duration-300 pointer-events-none" />
         
-        {/* 项目完成状态标签 — 纯图标角标风格 */}
-        {/* 项目完成状态标签 — 纯图标角标风格，主题自适应 */}
+        {/* 项目状态角标 — 四态各自独立形状与颜色：✓完成 / 半环处理中 / ✕失败 / 时钟未开始 */}
         <div className="absolute top-1.5 right-1.5">
-          <div className="w-[22px] h-[22px] flex items-center justify-center rounded-full light:bg-black/25 bg-black/40">
-            {project.step5Status === 'completed' ? (
+          <div
+            title={STEP5_STATE_TITLES[step5State]}
+            className="w-[22px] h-[22px] flex items-center justify-center rounded-full light:bg-black/25 bg-black/40"
+          >
+            {step5State === 'completed' && (
               <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-success">
                 <path d="M3.5 6.5L5.5 9L9.5 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
-            ) : (
+            )}
+            {step5State === 'running' && (
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-accent">
+                <circle cx="6.5" cy="6.5" r="4.8" stroke="currentColor" strokeWidth="1.2" strokeOpacity="0.35"/>
+                <path d="M6.5 1.7A4.8 4.8 0 0 1 11.3 6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+              </svg>
+            )}
+            {step5State === 'failed' && (
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-destructive">
+                <circle cx="6.5" cy="6.5" r="4.8" stroke="currentColor" strokeWidth="1.2"/>
+                <path d="M4.8 4.8L8.2 8.2M8.2 4.8L4.8 8.2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+              </svg>
+            )}
+            {step5State === 'idle' && (
               <svg width="13" height="13" viewBox="0 0 13 13" fill="none" className="text-muted-foreground">
                 <circle cx="6.5" cy="6.5" r="4.8" stroke="currentColor" strokeWidth="1.2"/>
                 <path d="M6.5 4V6.8L8.5 7.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>

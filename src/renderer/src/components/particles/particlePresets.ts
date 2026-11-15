@@ -28,7 +28,7 @@ export const particlePresets: Record<string, ParticlePreset> = {
     name: '星尘',
     shape: 'stardust',
     count: 60,
-    colorTokens: ['--accent', '--accent-purple'],
+    colorTokens: ['--accent', '--accent-deep'],
     // size=光芒长基准：中心圆 size*0.5，光线 size*2.5
     sizeRange: [1.5, 3],
     opacityRange: [0.3, 0.7],

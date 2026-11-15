@@ -75,7 +75,7 @@ export const AuthModal: React.FC = () => {
 
         {/* 品牌区 */}
         <div className="pt-8 pb-4 px-8 text-center">
-          <div className="w-12 h-12 mx-auto rounded-xl bg-gradient-to-br from-[var(--accent)] to-[var(--accent-purple)] flex items-center justify-center text-white shadow-lg shadow-[var(--accent)]/20 mb-4">
+          <div className="w-12 h-12 mx-auto rounded-xl bg-white/[0.06] border border-white/10 flex items-center justify-center text-[var(--accent)] shadow-lg shadow-black/20 mb-4">
             <BrandMark className="w-[58%] h-[58%]" />
           </div>
           <h2 className="text-xl font-semibold text-white">
@@ -92,7 +92,7 @@ export const AuthModal: React.FC = () => {
             onClick={() => switchTab('login')}
             className={`flex-1 h-9 rounded-md text-sm font-medium transition-all cursor-pointer outline-none ${
               authModalTab === 'login'
-                ? 'bg-[var(--accent)] text-white shadow-md shadow-[var(--accent)]/25'
+                ? 'bg-foreground text-background shadow-md shadow-black/25'
                 : 'text-white/50 hover:text-white/80'
             }`}
           >
@@ -102,7 +102,7 @@ export const AuthModal: React.FC = () => {
             onClick={() => switchTab('register')}
             className={`flex-1 h-9 rounded-md text-sm font-medium transition-all cursor-pointer outline-none ${
               authModalTab === 'register'
-                ? 'bg-[var(--accent)] text-white shadow-md shadow-[var(--accent)]/25'
+                ? 'bg-foreground text-background shadow-md shadow-black/25'
                 : 'text-white/50 hover:text-white/80'
             }`}
           >
@@ -177,7 +177,7 @@ export const AuthModal: React.FC = () => {
           <button
             type="submit"
             disabled={isLoading || !username.trim() || !password.trim()}
-            className="h-10 mt-2 rounded-lg bg-gradient-to-r from-[var(--accent)] to-[var(--accent-purple)] text-white text-sm font-semibold shadow-lg shadow-[var(--accent)]/25 hover:shadow-[var(--accent)]/40 hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer outline-none flex items-center justify-center gap-2"
+            className="h-10 mt-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold shadow-lg shadow-black/25 hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition-all cursor-pointer outline-none flex items-center justify-center gap-2"
           >
             {isLoading ? (
               <Loader2 size={16} className="animate-spin" />

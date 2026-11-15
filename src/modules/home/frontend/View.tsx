@@ -66,7 +66,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               <div className="flex items-center gap-3">
                 <button
                   onClick={onCreateProject}
-                  className="h-[60px] px-9 rounded-2xl bg-gradient-to-r from-accent to-accent-rose text-white text-lg font-bold flex items-center gap-2.5 shadow-lg shadow-accent/20 hover:shadow-accent/30 hover:-translate-y-0.5 active:scale-[0.97] transition-all cursor-pointer outline-none relative overflow-hidden animate-button-pulse"
+                  className="h-[60px] px-9 rounded-2xl bg-primary text-primary-foreground text-lg font-bold flex items-center gap-2.5 shadow-lg shadow-black/30 hover:-translate-y-0.5 active:scale-[0.97] transition-all cursor-pointer outline-none relative overflow-hidden animate-button-pulse"
                 >
                   <Play size={22} fill="currentColor" />
                   开始创作
@@ -75,7 +75,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               <span className="text-[13px] text-muted-foreground">点击创建新项目，进入创作工作台</span>
             </div>
             <div className="flex-1 text-right">
-              <div className="text-[26px] font-extrabold leading-tight bg-gradient-to-r from-foreground via-accent to-accent-rose bg-clip-text text-transparent">
+              <div className="text-[26px] font-extrabold leading-tight bg-gradient-to-r from-foreground to-foreground/55 bg-clip-text text-transparent">
                 用 AI，让创作更简单
               </div>
               <div className="text-[15px] text-muted-foreground mt-1.5 leading-relaxed">

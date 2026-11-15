@@ -31,6 +31,12 @@ interface ShowProjectSummary {
   updateTime: string;
 }
 
+/** 项目状态 → 中文标签（DB 原值为 active / analyzed；未登记的值原样显示，避免吞掉未知状态） */
+const PROJECT_STATUS_LABELS: Record<string, string> = {
+  active: '进行中',
+  analyzed: '已分析',
+};
+
 /** 编辑模式 */
 type EditMode = 'create' | 'edit';
 
@@ -327,7 +333,7 @@ const DetailDialog: React.FC<{
                     </div>
                   </div>
                   {/* 状态标签 */}
-                  <span className="text-[12px] text-muted-foreground/70 shrink-0">{proj.status}</span>
+                  <span className="text-[12px] text-muted-foreground/70 shrink-0">{PROJECT_STATUS_LABELS[proj.status] ?? proj.status}</span>
                 </div>
               ))}
             </div>
