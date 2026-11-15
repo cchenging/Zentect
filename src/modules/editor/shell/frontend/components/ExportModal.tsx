@@ -702,11 +702,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
               <DialogPrimitive.Overlay className="fixed inset-0 z-[200] bg-black/70" />
               <DialogPrimitive.Content className="fixed left-[50%] top-[50%] z-[200] w-[460px] translate-x-[-50%] translate-y-[-50%] bg-background border border-border rounded-lg shadow-xl p-5 flex flex-col gap-4 outline-none">
                 <DialogPrimitive.Title className="m-0 text-body font-semibold text-foreground">
-                  部分产物已过期，已阻断导出
+                  有产物需要先重跑
                 </DialogPrimitive.Title>
                 <div className="text-[13px] leading-relaxed text-muted-foreground">
-                  以下产物在上游改动后尚未重新执行：{staleWarnings.join('、')}。
-                  {'\n\n'}直接导出会得到「新文案 + 旧配音/旧画面」的不一致成片，因此本次视频/音频/剪映导出已被阻断。请先重跑对应步骤后再导出。
+                  {staleWarnings.join('、')}在上游改动后尚未重跑，直接导出会出现「新文案 + 旧配音/旧画面」。
                 </div>
                 <div className="flex justify-end gap-3">
                   <Button size="sm" onClick={() => setStaleOpen(false)} className="h-8 shadow-sm">

@@ -15,6 +15,7 @@ import { useStep1Store } from '@modules/pipeline/stores/useStep1Store';
 import { useStep3Store } from '@modules/pipeline/stores/useStep3Store';
 import { useStep4Store } from '@modules/pipeline/stores/useStep4Store';
 import { useStep5Store } from '@modules/pipeline/stores/useStep5Store';
+import { isDefaultStylePack, resolveStylePackPauseMs } from '../../../../shared/types/entities/stylePack';
 import {
   KEY_VERSION,
   artifactSubStepName,
@@ -64,11 +65,17 @@ export function buildArtifactInputContext(): ArtifactInputContext {
       style: step3.scriptStyle,
       speechRate: step3.speechRate,
       pipelineParams: step3.pipelineParams,
+      /** 🎭 风格包：仅非默认包参与指纹。
+       *  旧工程无此字段 ⇒ 归一化为默认包 ⇒ 指纹与升级前一致，不会因新增字段把全链路判成 stale；
+       *  用户切到任何非默认包即改变指纹，步骤3/4/5 立刻过期，必须重跑文案。 */
+      stylePack: isDefaultStylePack(step3.stylePack) ? undefined : step3.stylePack,
     },
     ttsConfig: {
       engine: step4.ttsEngine,
       voiceId: step4.ttsVoiceId,
       speechRate: step4.speechRate,
+      /** 🎭 句尾停顿：仅偏离风格包解析默认值才参与指纹（默认值不因新增字段集体判 stale） */
+      pauseMs: step4.pauseMs === resolveStylePackPauseMs(step3.stylePack) ? undefined : step4.pauseMs,
     },
     asrLines: step1.asrLines,
     roles: project.roles,
@@ -154,6 +161,10 @@ export function evaluateProjectArtifacts(): Array<{
     currentInputKeys,
   });
 
+  // 导出只消费步骤3（文案/字幕）、步骤4（配音）、步骤5（画面匹配）的产物：
+  // 步骤1（抽帧/音频/ASR）与步骤2（画面描述）是「生成输入」，过期不会让成片里出现旧配音/旧画面，
+  // 且它们一旦变化，3/5 的依赖指纹必然同步过期并被下方拦截 ⇒ 1/2 只提示，不做导出硬阻断。
+  const EXPORT_CONSUMING_KEYS = new Set<'1' | '2' | '3' | '4' | '5'>(['3', '4', '5']);
   const result: Array<{
     key: '1' | '2' | '3' | '4' | '5';
     state: ArtifactState;
@@ -163,7 +174,7 @@ export function evaluateProjectArtifacts(): Array<{
     key: '1',
     state: step1.state,
     autoFlow: step1.autoFlow,
-    exportBlocked: step1.exportBlocked,
+    exportBlocked: false,
   }];
 
   (['2', '3', '4', '5'] as const).forEach((key, idx) => {
@@ -177,7 +188,7 @@ export function evaluateProjectArtifacts(): Array<{
       key,
       state: evaluation.state,
       autoFlow: evaluation.autoFlow,
-      exportBlocked: evaluation.exportBlocked,
+      exportBlocked: evaluation.exportBlocked && EXPORT_CONSUMING_KEYS.has(key),
     });
   });
 

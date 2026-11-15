@@ -24,6 +24,7 @@ import { useStepRunner } from '@modules/editor/shell';
 import { usePipelineOrchestrator } from '@modules/editor/shell';
 import { useMediaUpdatedListener } from '@modules/editor/shell';
 import { StepPanel } from '@modules/editor/shell';
+import { EditorStatusBar } from '@modules/editor/shell';
 import { OneClickWizard } from '@modules/editor/shell';
 import PreviewMonitor from '@modules/editor/preview';
 /** 🎬 分镜单面板（editor left「分镜单」tab，展示 S2 ShotSpec 工单） */
@@ -426,6 +427,9 @@ export default function Editor() {
         {/* 右侧区域：步骤导航面板 */}
         <StepPanel onStart={handleStart} onNextStep={handleNextStep} onOpenWizard={() => setWizardOpen(true)} />
       </div>
+
+      {/* 底部全局状态栏：整条管线唯一的进度入口（横跨左右两栏） */}
+      <EditorStatusBar />
 
       <OneClickWizard
         open={wizardOpen}

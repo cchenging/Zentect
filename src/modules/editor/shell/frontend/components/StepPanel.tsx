@@ -7,7 +7,6 @@ import { useStore } from '@renderer/store/useStore';
 import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useEditorNavStore } from '@modules/editor/stores/useEditorNavStore';
 import { STEPS } from '../../utils/pipelineConstants';
-import { PipelineStatusBar } from './PipelineStatusBar';
 import { PropertyBar } from './PropertyBar';
 import { StepMaterialAnalysis } from '@modules/pipeline/step1-material/frontend/Container';
 import { StepVisionDescription } from '@modules/pipeline/step2-vision/frontend/Container';
@@ -119,8 +118,6 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep, onOpe
         </div>
       </div>
 
-      <PipelineStatusBar />
-
       <PropertyBar />
 
       <div className="flex-1 min-h-0 overflow-y-auto p-5 no-scrollbar">
@@ -156,16 +153,16 @@ export const StepPanel: React.FC<StepPanelProps> = ({ onStart, onNextStep, onOpe
       </div>
 
       <div className="flex items-center justify-between px-4 py-2.5 border-t border-border/30 shrink-0 bg-bg-secondary/50">
-        <span className="text-[13px] text-muted-foreground">
-          步骤 {currentStep}/5 · {STEPS[currentStep - 1]?.label ?? '未知'}
-          {stepStatuses[currentStep - 1] === 'completed' && !currentArtifactExpired && <Badge variant="success" className="ml-1">已完成</Badge>}
+        {/* 步骤编号与进度统一由底部全局状态栏承担，这里只保留“需要用户注意”的状态徽标 */}
+        <span className="flex items-center gap-1 text-[13px] text-muted-foreground">
+          {stepStatuses[currentStep - 1] === 'completed' && <Badge variant="success">已完成</Badge>}
           {currentArtifactExpired && (
-            <Badge variant="warning" className="ml-1">
+            <Badge variant="warning">
               {currentArtifactState === 'stale' ? '已过期，需重跑' : '未验证，需重跑'}
             </Badge>
           )}
-          {stepStatuses[currentStep - 1] === 'failed' && <Badge variant="danger" className="ml-1">失败</Badge>}
-          {stepStatuses[currentStep - 1] === 'idle' && <Badge variant="default" className="ml-1">等待管线执行</Badge>}
+          {stepStatuses[currentStep - 1] === 'failed' && <Badge variant="danger">失败</Badge>}
+          {stepStatuses[currentStep - 1] === 'idle' && <Badge variant="default">等待管线执行</Badge>}
         </span>
         <div className="flex items-center gap-2">
           <button onClick={onStart} disabled={pipelineRunning || stepStatuses[currentStep - 1] === 'running'}

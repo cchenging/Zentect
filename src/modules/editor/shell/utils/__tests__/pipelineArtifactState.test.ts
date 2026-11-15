@@ -21,6 +21,7 @@ import {
   beginStepRun,
   buildArtifactInputContext,
   commitArtifacts,
+  evaluateProjectArtifacts,
   failStepRun,
   getArtifactState,
   isStepArtifactValid,
@@ -318,6 +319,22 @@ describe('步骤1 子步骤粒度失效矩阵（阶段5 验收）', () => {
     for (const step of ['3', '4', '5'] as const) {
       expect(getArtifactState(step)).toBe('stale');
     }
+  });
+
+  it('步骤1 过期不再阻断导出（导出只消费步骤3/4/5）', () => {
+    setup();
+    const meta = seedAllArtifacts();
+    // 仅把两个步骤1 子产物的 fromKey 改成旧值 ⇒ 步骤1 判 stale，但 3/4/5 的指纹仍与当前一致
+    meta.stamps['1.frames'] = seedStamp({ rev: 1, fromKey: 'old-frames-key' });
+    meta.stamps['1.audio'] = seedStamp({ rev: 1, fromKey: 'old-audio-key' });
+    usePipelineStore.setState({ artifactMeta: meta });
+
+    const rows = evaluateProjectArtifacts();
+    const step1 = rows.find((r) => r.key === '1')!;
+    expect(step1.state).toBe('stale');
+    // 抽帧/ASR 是生成输入，不参与成片渲染 ⇒ 只提示，不硬阻断导出
+    expect(step1.exportBlocked).toBe(false);
+    expect(rows.filter((r) => r.exportBlocked).map((r) => r.key)).toEqual([]);
   });
 
   it('改音频配置 → audio 与 whisper 及其下游过期，步骤2 仍有效', () => {
