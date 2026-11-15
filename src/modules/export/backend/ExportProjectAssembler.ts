@@ -6,6 +6,7 @@
 import type { ExportProject, ExportShot } from '../contracts/ExportProject';
 import { enrichMatchRelations } from './enrichMatchRelations';
 import { AppError, ErrorCode } from '../../infra/error/AppError';
+import { isIdentitySubtitleTuning, resolveStylePackSubtitleTuning } from '../../../shared/types/entities/stylePack';
 
 // ──────────────────────────────────────────────
 // 外部依赖接口（通过参数传入，避免直接 new main 层实例）
@@ -336,7 +337,26 @@ export function assembleExportProjectSync(
         '装配失败：includeSubtitleStyle=true 时必须注入 deps.settingsService（实现 getSubtitleStyle）',
       );
     }
-    subtitleStyle = deps.settingsService.getSubtitleStyle() as Record<string, unknown>;
+    // 🎭 风格包第三增量：浓度派生字幕排版，叠加在用户全局样式之上（不覆盖用户配置）
+    const tuning = resolveStylePackSubtitleTuning(projectData.stylePack);
+    const baseStyle = deps.settingsService.getSubtitleStyle() as Record<string, unknown>;
+    if (isIdentitySubtitleTuning(tuning)) {
+      subtitleStyle = baseStyle;
+    } else {
+      const scale = (value: unknown, fallback: number, ratio: number): number => {
+        const num = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+        return Math.round(num * ratio * 1000) / 1000;
+      };
+      subtitleStyle = {
+        ...baseStyle,
+        fontSize: scale(baseStyle.fontSize, 3.5, tuning.fontSizeScale),
+        strokeWidth: scale(baseStyle.strokeWidth, 0.02, tuning.strokeWidthScale),
+        ...(typeof baseStyle.fontSizeLandscape === 'number'
+          ? { fontSizeLandscape: scale(baseStyle.fontSizeLandscape, 5, tuning.fontSizeScale) }
+          : {}),
+        lineWidthDelta: tuning.lineWidthDelta,
+      };
+    }
   }
 
   // 8. 组装统一中间模型

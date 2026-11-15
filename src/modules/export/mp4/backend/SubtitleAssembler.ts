@@ -8,7 +8,13 @@ import * as path from 'path';
 import type { ExportProject } from '../../contracts/ExportProject';
 import type { SubtitleStyle } from '../../jianying/types';
 // 🎬 行宽折行 SSOT：按等效显示宽度拆行（剪映导出与 MP4 烧录共用同一口径）
-import { splitSubtitleByWidth } from '../../../../shared/utils/subtitleLayout';
+import { SUBTITLE_LINE_WIDTH_LIMIT, splitSubtitleByWidth } from '../../../../shared/utils/subtitleLayout';
+
+/** 行宽上限 = 横屏基准 16 + 风格包浓度偏移（最低 8 防过度断句） */
+function resolveLineLimit(delta: unknown): number {
+  const d = typeof delta === 'number' && Number.isFinite(delta) ? Math.round(delta) : 0;
+  return Math.max(8, SUBTITLE_LINE_WIDTH_LIMIT + d);
+}
 
 /**
  * 🔤 字幕标点清洗：字幕文本不保留标点符号，标点统一转为空格。
@@ -50,6 +56,7 @@ function formatTimestampMs(ms: number): string {
 export function compileSrt(project: ExportProject): string {
   const blocks: string[] = [];
   let index = 1;
+  const lineLimit = resolveLineLimit((project.subtitleStyle as SubtitleStyle | undefined)?.lineWidthDelta);
 
   for (const shot of project.shots) {
     const raw = shot.aiText || shot.text || '';
@@ -59,7 +66,7 @@ export function compileSrt(project: ExportProject): string {
     const endMs = Math.round(shot.end * 1000);
     // 标点清洗 → 按宽拆行 → SRT Cue 内换行
     const cleanText = sanitizeSubtitlePunctuation(raw);
-    const lines = splitSubtitleByWidth(cleanText);
+    const lines = splitSubtitleByWidth(cleanText, lineLimit);
     const cueText = lines.join('\n');
 
     blocks.push(
@@ -184,6 +191,7 @@ export function compileAss(project: ExportProject, style: SubtitleStyle): string
   ].join('\n');
 
   const dialogues: string[] = [];
+  const lineLimit = resolveLineLimit(style.lineWidthDelta);
   for (const shot of project.shots) {
     const raw = shot.aiText || shot.text || '';
     if (!raw) continue;
@@ -192,7 +200,7 @@ export function compileAss(project: ExportProject, style: SubtitleStyle): string
     const endMs = Math.round(shot.end * 1000);
     // 标点清洗 → 按宽拆行 → ASS 换行符
     const cleanText = sanitizeSubtitlePunctuation(raw);
-    const lines = splitSubtitleByWidth(cleanText);
+    const lines = splitSubtitleByWidth(cleanText, lineLimit);
     const textLine = lines.join('\\N');
     dialogues.push(`Dialogue: 0,${formatAssTime(startMs)},${formatAssTime(endMs)},Default,,0,0,0,,${textLine}`);
   }

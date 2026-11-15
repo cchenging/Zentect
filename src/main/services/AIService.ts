@@ -18,6 +18,8 @@ import { PathManager } from '../utils/pathManager';
 import { musicLibraryService } from './MusicLibraryService';
 import { SemanticAnalyzeStrategy } from '../engine/strategies/SemanticAnalyzeStrategy';
 import { BgmBeatRepository } from '../database/repositories/BgmBeatRepository';
+// 🎭 风格包：人格 → BGM 情绪倾向（第三增量）
+import { STYLE_PERSONAS, STYLE_PERSONA_BGM_PROFILE, isStylePersona } from '../../shared/types/entities/stylePack';
 // 🎬 OP/ED 片头片尾裁剪（P1 源头裁剪：视觉匹配切片池只喂正剧段）
 import { resolveForMedia } from '../engine/utils/MediaTrimPolicy';
 import { TrimmedSourceResolver } from '../engine/utils/TrimmedSourceResolver';
@@ -128,9 +130,15 @@ export class AIService {
     shotTypes?: string[];
     /** P3 多模态：源视频总时长（毫秒），用于推算目标切点密度 */
     videoDurationMs?: number;
+    /** 🎭 风格包人格：决定选曲情绪倾向（缺省/非法时按无人格处理，不改变旧调用行为） */
+    stylePersona?: string;
   }) {
     const { scriptParagraphs, emotionTone, frameEmotions, shotTypes, videoDurationMs } = payload;
     const scriptText = (scriptParagraphs || []).filter(Boolean).join('\n').slice(0, 8000) || '（无文案）';
+    // 🎭 人格 → BGM 倾向：只作为偏好注入，不锁定曲目
+    const persona = isStylePersona(payload.stylePersona) ? payload.stylePersona : null;
+    const personaProfile = persona ? STYLE_PERSONA_BGM_PROFILE[persona] : null;
+    const personaName = persona ? STYLE_PERSONAS[persona].name : '';
 
     // 💥 关键：与脚本生成走【同一条】配置解析链路 —— LLMFactory.createAdapter('script')
     //    （先查「模型映射」绑定表 ProfileBindingRepository，再回退 settings 模型名路由）。
@@ -147,7 +155,12 @@ export class AIService {
     // Step1：生成选曲意图（失败不阻断，降级纯生成）
     let intent: BgmIntent | null = null;
     try {
-      intent = await this.generateBgmIntent(factory, scriptText, emotionTone, frameEmotions, shotTypes, videoDurationMs);
+      intent = await this.generateBgmIntent(factory, scriptText, emotionTone, frameEmotions, shotTypes, videoDurationMs, {
+        name: personaName,
+        moodHint: personaProfile?.moodHint,
+        moodTags: personaProfile?.moodTags,
+        bpmRange: personaProfile?.bpmRange,
+      });
     } catch (e: any) {
       AppLogger.warn(LOG_TAGS.AI_AGENT, `[BGM推荐] 选曲意图生成失败，降级纯生成: ${e?.message}`);
     }
@@ -163,6 +176,9 @@ export class AIService {
           styleNotes: intent.styleNotes || '',
           bpmMin: intent.bpmMin,
           bpmMax: intent.bpmMax,
+          personaLine: personaProfile
+            ? `讲述人格：${personaName}（${personaProfile.moodHint}）；偏好情绪：${personaProfile.moodTags.join('、')}`
+            : '',
         });
         if (selected) {
           AppLogger.info(LOG_TAGS.AI_AGENT, `[BGM推荐] 全网推荐完成: ${selected.tracks?.length ?? 0} 首`);
@@ -266,6 +282,7 @@ export class AIService {
     frameEmotions?: string[],
     shotTypes?: string[],
     videoDurationMs?: number,
+    persona?: { name: string; moodHint?: string; moodTags?: readonly string[]; bpmRange?: readonly [number, number] },
   ): Promise<BgmIntent | null> {
     const { adapter, modelName, temperature } = factory;
     const systemPrompt =
@@ -276,7 +293,11 @@ export class AIService {
     const frameEmotionLine = (frameEmotions || []).length > 0 ? `\n画面情绪分布：${frameEmotions!.join('、')}` : '';
     const shotTypeLine = (shotTypes || []).length > 0 ? `\n镜头景别：${shotTypes!.join('、')}` : '';
     const durationLine = videoDurationMs ? `\n视频总时长：${Math.round(videoDurationMs / 1000)}秒` : '';
-    const userPrompt = `情绪基调：${emotionTone}\n解说文案段落：\n${scriptText}${frameEmotionLine}${shotTypeLine}${durationLine}`;
+    // 🎭 人格偏好：只作为选曲倾向（LLM 可结合文案微调 BPM 与情绪标签）
+    const personaLine = persona?.name
+      ? `\n讲述人格：${persona.name}（${persona.moodHint || ''}）${persona.moodTags?.length ? `\n偏好情绪：${persona.moodTags.join('、')}` : ''}${persona.bpmRange ? `\n参考 BPM 区间：${persona.bpmRange[0]}~${persona.bpmRange[1]}（可按文案微调）` : ''}`
+      : '';
+    const userPrompt = `情绪基调：${emotionTone}\n解说文案段落：\n${scriptText}${frameEmotionLine}${shotTypeLine}${durationLine}${personaLine}`;
     const reply: any = await adapter.chat(
       [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }],
       modelName, temperature,
@@ -303,6 +324,8 @@ export class AIService {
       styleNotes: string;
       bpmMin: number;
       bpmMax: number;
+      /** 🎭 人格偏好行（缺省时不注入） */
+      personaLine?: string;
     },
   ): Promise<any> {
     const { adapter, modelName, temperature } = factory;
@@ -316,6 +339,7 @@ export class AIService {
       context.moodTags.length > 0 ? `选曲情绪标签：${context.moodTags.join('、')}` : '',
       context.styleNotes ? `选曲说明：${context.styleNotes}` : '',
       context.bpmMin > 0 && context.bpmMax > 0 ? `目标 BPM 区间：${context.bpmMin}~${context.bpmMax}` : '',
+      context.personaLine || '',
       `解说文案段落：\n${(context.scriptText || '（无文案）').slice(0, 2000)}`,
     ].filter(Boolean).join('\n');
     const reply: any = await adapter.chat(

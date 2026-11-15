@@ -287,6 +287,8 @@ const STEP_DEFS: Record<RunnableStep, StepDef> = {
         scriptStyle: step3.scriptStyle || '爆款短视频',
         speechRate: step3.speechRate || 4.5,
         pipelineParams: step3.pipelineParams,
+        /** 🎭 风格包（人格 × 浓度）：后端拼接人格指令与禁用词，只改语体 */
+        stylePack: step3.stylePack,
         visionResult: {
           sceneDescriptions: step2.vlmFrames
             ?.map((f: any) => f.description || '')
@@ -332,6 +334,8 @@ const STEP_DEFS: Record<RunnableStep, StepDef> = {
         voiceId: overrides.voiceId || overrides.ttsVoiceId || step4.ttsVoiceId || '',
         /** 步骤4 合成语速：以 store 为准（跨会话稳定），入口显式覆盖时才用 override */
         speechRate: typeof overrides.speechRate === 'number' ? overrides.speechRate : (step4.speechRate ?? 1.0),
+        /** 🎭 句尾停顿（ms）：随风格包配置，仅 Edge 生效 */
+        pauseMs: step4.pauseMs,
         mediaPath: media?.filePath || '',
         mediaId: media?.id || '',
         scriptShots: step3.scriptParagraphs || [],

@@ -135,10 +135,10 @@ export interface ArtifactInputContext {
   extractionConfig?: ExtractionConfig;
   /** 各产物当前 rev（未产出为 0） */
   revs?: Partial<Record<ArtifactKey, number>>;
-  /** 步骤3 文案生成配置（style / 基准语速 / 融合参数） */
-  scriptConfig?: { style?: string; speechRate?: number; pipelineParams?: unknown };
+  /** 步骤3 文案生成配置（style / 基准语速 / 融合参数 / 风格包） */
+  scriptConfig?: { style?: string; speechRate?: number; pipelineParams?: unknown; stylePack?: unknown };
   /** 步骤4 TTS 配置（speechRate 为合成语速倍率，非步骤3 的字/秒） */
-  ttsConfig?: { engine?: string; voiceId?: string; speechRate?: number };
+  ttsConfig?: { engine?: string; voiceId?: string; speechRate?: number; pauseMs?: number };
   /** ASR 台词：改字/删行/改时间轴都会改变指纹 */
   asrLines?: ReadonlyArray<{ startMs?: number; endMs?: number; text?: string }>;
   /** 人物角色名：角色改名影响 3/4/5 的解说人称（不影响步骤2 画面描述） */

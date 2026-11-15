@@ -21,6 +21,8 @@ import {
 } from '../../../shared/utils/scriptMatchUnit';
 // SSOT：三档原声策略 ⇔ 密度折减系数 DR 唯一映射表，直接引用契约层单源（与前端档位切换同表）
 import { DENSITY_RATIO_BY_AUDIO_STRATEGY } from '../../../shared/types/entities/editor';
+// 🎭 风格包（人格 × 浓度）：只重写语体，叙事结构仍由 STYLE_PROMPTS 结构预设决定
+import { buildStylePackDirective, type StylePack } from '../../../shared/types/entities/stylePack';
 
 /** 原声段落占比上限开关：全片 `keepOriginalAudio=true` 段落数 / 总段落数 的上限（0~1）。 */
 export const ORIGINAL_RATIO_MAX_ENV = 'ZENTECT_ORIGINAL_RATIO_MAX';
@@ -66,6 +68,8 @@ export interface ScriptGenInput {
   customPrompt?: string;
   /** 用户选择的文案风格 */
   scriptStyle?: string;
+  /** 🎭 风格包（人格 × 浓度）：只重写语体，与 scriptStyle 的结构预设正交 */
+  stylePack?: StylePack;
   /** 融合方案的解说控制参数（替代旧版 R/S/T/P） */
   pipelineParams?: import('../../../shared/types/entities/editor').PipelineParams;
   /** 用户选择的语速（字/秒） */
@@ -2032,6 +2036,8 @@ ${outlineSourceJson}
     const promptBaseArgs = {
       plotOutline,
       styleName: input.scriptStyle || '爆款短视频',
+      /** 🎭 风格包人格指令：由前端 step3 参数直传（缺省 undefined 时不注入，保持旧行为） */
+      stylePack: input.stylePack,
       hookIntensity,
       /** 解说占比 < 100% 即留了原声空间，才允许 LLM 标记原声段落 */
       allowOriginalMark: narrationRatio < 1,
@@ -3684,9 +3690,13 @@ ${roleMapLines.join('\n')}
     endingDirective?: string;
     /** 👤 真实角色姓名清单（`- 姓名（性别）` 每行一条；空串表示角色库无真实姓名或仅有占位编号） */
     roleLines?: string;
+    /** 🎭 风格包（人格 × 浓度）：缺省不注入人格指令块（旧调用路径保持原行为） */
+    stylePack?: StylePack;
   }): string {
     // 风格词库：用户未选风格时回退默认
     const styleInstruction = STYLE_PROMPTS[args.styleName] || STYLE_PROMPTS['爆款短视频'];
+    // 风格包人格指令：只改语体，显式声明低于剧情/角色/结构规则的优先级
+    const stylePackBlock = args.stylePack ? `\n\n${buildStylePackDirective(args.stylePack)}` : '';
     // 叙事视角 → prompt 指令
     const perspectiveMap: Record<string, string> = {
       'third': '第三人称上帝视角："画面中，张三走进房间..." — 客观叙述，俯视全局',
@@ -3783,7 +3793,7 @@ ${args.plotOutline ? `## 📖 全局剧情大纲（必须首先通读，解说�
 ${JSON.stringify(args.plotOutline, null, 2)}` : ''}
 
 ## 创作风格
-${args.styleName}：${styleInstruction}
+${args.styleName}：${styleInstruction}${stylePackBlock}
 
 ${roleNamingBlock}
 

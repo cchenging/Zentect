@@ -266,7 +266,8 @@ export class ProjectRepository {
       // 🔧 数据字段：以 metadata（管线结果持久化）为准，避免 canvas_data 旧快照覆盖新结果
       'asrLines', 'frameCount', 'framePaths', 'audioSeparated',
       'extractionConfig', 'vlmFrames', 'scriptParagraphs', 'scriptStyle',
-      'speechRate', 'pipelineParams', 'ttsResults', 'ttsEngine', 'ttsVoiceId',
+      'speechRate', 'pipelineParams', 'stylePack', 'ttsResults', 'ttsEngine', 'ttsVoiceId',
+      'ttsSpeechRate', 'ttsPauseMs', 'ttsPauseManual', 'ttsVoiceManual',
       'videoChunks', 'storyboardMode',
       // 🔧 步骤5 匹配数据：以 metadata（步骤5 完成时持久化）为准，不让 canvas_data 瞬态快照覆盖
       'matchResults', 'activeBgm', 'beatTimestamps', 'deepRecommendation',
@@ -447,6 +448,8 @@ export class ProjectRepository {
       if (data.scriptStyle) metadata.scriptStyle = data.scriptStyle;
       if (data.speechRate) metadata.speechRate = data.speechRate;
       if (data.pipelineParams) metadata.pipelineParams = data.pipelineParams;
+      /** 🎭 风格包（人格 × 浓度）：对象型字段，空值判断用 !== undefined（默认包也是合法值） */
+      if (data.stylePack !== undefined) metadata.stylePack = data.stylePack;
       /** 💥 持久化步骤4配音结果，确保重进项目后配音数据不丢失 */
       if (data.ttsResults && Array.isArray(data.ttsResults) && data.ttsResults.length > 0) {
         metadata.ttsResults = data.ttsResults;
@@ -456,6 +459,18 @@ export class ProjectRepository {
       /** 步骤4 合成语速（0.5~2.0）：独立键，避免与步骤3 文案基准语速 speechRate 相互覆盖 */
       if (typeof data.ttsSpeechRate === 'number' && data.ttsSpeechRate > 0) {
         metadata.ttsSpeechRate = data.ttsSpeechRate;
+      }
+      /** 🎭 句尾停顿（ms，0~400）：0 是合法值（不留气口），用 !== undefined 判断 */
+      if (typeof data.ttsPauseMs === 'number' && data.ttsPauseMs >= 0) {
+        metadata.ttsPauseMs = Math.min(400, Math.round(data.ttsPauseMs));
+      }
+      /** 🎭 音色手选标记：false 也是一等状态（恢复跟随），必须落盘 */
+      if (typeof data.ttsVoiceManual === 'boolean') {
+        metadata.ttsVoiceManual = data.ttsVoiceManual;
+      }
+      /** 🎭 句尾停顿手调标记：false 也是一等状态（跟随风格包默认值），必须落盘 */
+      if (typeof data.ttsPauseManual === 'boolean') {
+        metadata.ttsPauseManual = data.ttsPauseManual;
       }
       /** 💥 持久化步骤5镜头匹配数据，确保重进项目后匹配结果/切片池/BGM 节拍不丢失 */
       if (data.matchResults && Array.isArray(data.matchResults) && data.matchResults.length > 0) {

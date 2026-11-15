@@ -34,6 +34,8 @@ export const StepShotMatching: React.FC = () => {
   const scriptParagraphs = useStep3Store((s) => s.scriptParagraphs);
   /** 全局情绪基调（用户可在步骤3设定） */
   const emotionTone = useStep3Store((s) => s.pipelineParams?.emotionTone || 'neutral');
+  /** 🎭 风格包人格：决定 BGM 选曲的情绪倾向（第三增量） */
+  const stylePersona = useStep3Store((s) => s.stylePack.persona);
   /** 已分离的伴奏音频项（原视频做过人声/BGM 分离后生成），可直接选用为 BGM */
   const bgmOptions = useMemo(
     () => mediaItems.filter((m) => m.type === 'audio' && (m as any).extractedBgm),
@@ -185,6 +187,7 @@ export const StepShotMatching: React.FC = () => {
       frameEmotions={frameEmotions}
       shotTypes={shotTypes}
       videoDurationMs={videoDurationMs}
+      stylePersona={stylePersona}
       bgmOptions={bgmOptions}
       onSetBgm={handleSetBgm}
       onRemoveBgm={handleRemoveBgm}

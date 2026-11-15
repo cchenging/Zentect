@@ -116,6 +116,7 @@ function makeProps(overrides: Partial<StepShotMatchingProps> = {}): StepShotMatc
     activeBgm: null,
     scriptParagraphs: [],
     emotionTone: 'neutral',
+    stylePersona: 'dongbei',
     bgmOptions: [],
     onSetBgm: vi.fn(),
     onRemoveBgm: vi.fn(),

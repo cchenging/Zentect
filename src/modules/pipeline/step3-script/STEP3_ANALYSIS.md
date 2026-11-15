@@ -163,7 +163,7 @@ EditorSlice (全局)
 | Container/View 分离 | `StepScriptGeneration.tsx` + `StepScriptGenerationView.tsx` | 已遵循 ✓ |
 | 独立段落编辑组件 | `ScriptParagraphEditor.tsx` 存在但与 View 内联编辑器功能重复 | **冗余**：View 内部和 Editor 都实现了段落卡片编辑 |
 | 段落卡片含 shotId/时长/情绪/文本/匹配按钮 | View 内联实现了大部分，shotId 有但未标准化 | 基本满足 |
-| "匹配画面" 功能 | `handleMatchVision` 是空实现（stub） | **缺失核心功能** |
+| "匹配画面" 功能 | `frontend/bidirectionalMatcher.ts` 纯函数实现（时间 70% + 语义 30%，双向互斥一帧一段），段落卡 Footer 提供候选帧缩略图条与点选 | 已实现 ✓（匹配结果仅会话态，无 DB 字段） |
 
 ### 3.5 后端策略
 
@@ -285,11 +285,11 @@ src/modules/pipeline/step3-script/
 
 - **全局 Store 解耦**：其他步骤（step2/step4/step5）和 `usePipelineResultMapper.ts` 引用了 `EditorSlice` 的 step3 字段，需要同步更新引用方
 - **`ScriptGenParser.ts`**：属于旧节点模型解析器，与新 `ScriptGenStrategy.ts` 不完全对齐，迁移后需评估是否废弃
-- **匹配画面功能**：依赖 `bidirectionalMatcher`（尚未实现），迁移时可保留 stub，不必在本阶段完成
+- **匹配画面功能**：`frontend/bidirectionalMatcher.ts` 已提供渲染层轻量匹配器（步骤5 的 AI 匹配管线仍是正式链路）；段落选中帧目前只存前端会话态，未落库，重开项目会重算建议
 
 ---
 
-> **结论**: step3-script 的核心业务逻辑（风格选择、RSTP 参数、LLM 生成、敏感词过滤、语速约束）已在前端和后端分别实现了 80% 以上。主要差距在**模块结构**（散落多目录）、**Store 架构**（全局而非局部）、**缺失功能**（匹配画面 stub、溢出警告未接入、emotion 非 AI 生成）、**工程规范**（i18n 前缀、AppError、日志、Repository、测试）。迁移风险可控，核心逻辑可复用。
+> **结论**: step3-script 的核心业务逻辑（风格选择、RSTP 参数、LLM 生成、敏感词过滤、语速约束、段落↔画面帧匹配）已在前端和后端分别实现了 80% 以上。主要差距在**模块结构**（散落多目录）、**Store 架构**（全局而非局部）、**缺失功能**（溢出警告未接入、emotion 非 AI 生成）、**工程规范**（i18n 前缀、AppError、日志、Repository、测试）。迁移风险可控，核心逻辑可复用。
 
 ---
 

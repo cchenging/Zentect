@@ -7,8 +7,11 @@
 import { create } from 'zustand';
 import type { AudioStrategy, ScriptParagraph, PipelineParams } from '../../../shared/types/entities/editor';
 import { DENSITY_RATIO_BY_AUDIO_STRATEGY } from '../../../shared/types/entities/editor';
+// 🎭 风格包（人格 × 浓度）：契约层单源，缺省即默认包，持久化随项目 metadata
+import { DEFAULT_STYLE_PACK, type StylePack } from '../../../shared/types/entities/stylePack';
 
 export type { PipelineParams } from '../../../shared/types/entities/editor';
+export type { StylePack } from '../../../shared/types/entities/stylePack';
 
 /**
  * 默认基准语速（字/秒）：新工程首屏默认值（原「爆款爽感」预设档的语速 5.2），
@@ -52,6 +55,8 @@ export interface Step3Store {
   scriptStyle: string;
   speechRate: number;
   pipelineParams: PipelineParams;
+  /** 🎭 风格包（人格 × 浓度）：与 scriptStyle 正交，只管语体，不改叙事结构 */
+  stylePack: StylePack;
   /** 章粒度流式元数据：驱动"正在推演第k/N章"与骨架卡旁的章节进度条 */
   streamMeta: Step3StreamMeta | null;
 
@@ -64,6 +69,7 @@ export interface Step3Store {
   setScriptStyle: (style: string) => void;
   setSpeechRate: (rate: number) => void;
   setPipelineParams: (params: PipelineParams) => void;
+  setStylePack: (pack: StylePack) => void;
 
   reset: () => void;
 }
@@ -73,6 +79,7 @@ export const useStep3Store = create<Step3Store>()((set) => ({
   scriptStyle: '爆款短视频',
   speechRate: DEFAULT_SPEECH_RATE,
   pipelineParams: { ...DEFAULT_PIPELINE_PARAMS },
+  stylePack: { ...DEFAULT_STYLE_PACK },
   streamMeta: null,
 
   setScriptParagraphs: (paragraphs) => set({ scriptParagraphs: paragraphs }),
@@ -102,6 +109,8 @@ export const useStep3Store = create<Step3Store>()((set) => ({
       ),
     })),
   setScriptStyle: (style) => set({ scriptStyle: style }),
+  // 🎭 风格包写入：归一化交给调用方（hydrate 走 normalizeStylePack，UI 只传合法值）
+  setStylePack: (pack) => set({ stylePack: pack }),
   // 语速（字/秒）写入，与 Step3Store 接口一致；缺失时由调用方提供 Number 兜底
   setSpeechRate: (rate) => set({ speechRate: rate }),
   /**
@@ -128,6 +137,7 @@ export const useStep3Store = create<Step3Store>()((set) => ({
     scriptStyle: '爆款短视频',
     speechRate: DEFAULT_SPEECH_RATE,
     pipelineParams: { ...DEFAULT_PIPELINE_PARAMS },
+    stylePack: { ...DEFAULT_STYLE_PACK },
     streamMeta: null,
   }),
 }));

@@ -5,7 +5,6 @@ import React, { useState, useMemo, useCallback } from "react";
 import {
   RefreshCw,
   Tag,
-  Search,
   HelpCircle,
   Lock,
   AlertTriangle,
@@ -19,6 +18,7 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  Image as ImageIcon,
 } from "lucide-react";
 import { Badge, EmptyState, StatHeader } from "@renderer/components/shared";
 import {
@@ -35,8 +35,21 @@ import {
   NARRATIVE_PERSPECTIVE_VALUES,
 } from "../../../../shared/types/entities/editor";
 import type { AudioStrategy, NarrativePerspective, PipelineParams } from "../../../../shared/types/entities/editor";
+// 🎯 段落 ↔ 画面帧 双向匹配（纯函数）：段落卡片「匹配画面帧」的候选帧来源
+import { matchParagraphsToFrames, type ParagraphFrameMatch } from "./bidirectionalMatcher";
+// 帧图是本地绝对路径，需经统一安全转换才能被 <img> 加载
+import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 // 📐 文案风格六选一（SSOT：与后端 STYLE_PROMPTS 词库同源，禁止在前端另起中文风格名）
 import { SCRIPT_STYLES } from "@modules/editor/shell/utils/pipelineConstants";
+// 🎭 风格包（人格 × 浓度）：词库与展示名同源契约层，前后端不得各写一份
+import {
+  STYLE_PACK_LEVEL_LABELS,
+  STYLE_PERSONA_VALUES,
+  STYLE_PERSONAS,
+  resolveStylePackPauseMs,
+  resolveStylePackSubtitleTuning,
+} from "../../../../shared/types/entities/stylePack";
+import type { StylePack } from "../../../../shared/types/entities/stylePack";
 import type { StepScriptGenerationProps } from "../types";
 // 章粒度流式元数据类型：骨架卡旁的"正在推演第k/N章"进度条入参
 import type { Step3StreamMeta } from "../../stores/useStep3Store";
@@ -76,6 +89,23 @@ const EMOTION_TONE_OPTIONS = (["neutral", "emotional", "epic", "suspense", "come
   label: `${EMOTION_TONE_META[v].label} · ${EMOTION_TONE_META[v].hint}`,
 }));
 
+/** 🎭 风格包人格三档（顺序取自契约层 STYLE_PERSONA_VALUES，展示名/说明查 STYLE_PERSONAS） */
+const STYLE_PACK_PERSONA_SHORT: Record<StylePack["persona"], string> = {
+  dongbei: "唠嗑腔",
+  jietou: "卖点前置",
+  animal: "旁白 + 内心OS",
+};
+const STYLE_PACK_PERSONA_OPTIONS = STYLE_PERSONA_VALUES.map((v) => ({
+  value: v,
+  label: STYLE_PERSONAS[v].name,
+  hint: STYLE_PACK_PERSONA_SHORT[v],
+}));
+/** 🎭 风格包浓度三档：0=稳 / 1=正常 / 2=拉满 */
+const STYLE_PACK_LEVEL_OPTIONS = STYLE_PACK_LEVEL_LABELS.map((label, index) => ({
+  value: index as StylePack["level"],
+  label,
+}));
+
 /** 🥁 叙事节奏三档（取值域 = PipelineParams.rhythmMode，决定单句字数上限与节奏折损口径） */
 const RHYTHM_MODE_META: Record<PipelineParams["rhythmMode"], { label: string; hint: string }> = {
   short_fast: { label: "短句快切", hint: "≤18字/句" },
@@ -113,7 +143,8 @@ const EMOTIONS = ["激昂", "温馨", "幽默", "平静", "紧张", "感慨", "�
 /** Tooltips 说明词（具体量化，不模糊） */
 const TOOLTIPS: Record<string, string> = {
   targetDuration: "目标成片篇幅（定律一 T_target，秒）：写作预算 = 篇幅 × 语速 × 解说密度 × 标点停顿折损 0.85。自动 = 跟随原片时长推导；180s 快剪 / 600s 精讲（推荐）/ 1200s 大片，也可输入任意秒数；基准语速在「高级设置」中调整",
-  scriptStyle: "文案风格（六选一）：切换 system prompt 的风格词库与句式模板（爆款短视频/深度解说/评述视角/情感叙事/悬疑推理/硬核科普），只改写法，不改人称/情绪/钩子",
+  scriptStyle: "文案风格 / 结构预设（六选一）：切换 system prompt 的结构词库与句式模板（爆款短视频/深度解说/评述视角/情感叙事/悬疑推理/硬核科普），只改写法，不改人称/情绪/钩子",
+  stylePack: "风格包（人格 × 浓度）：人格决定“谁在说”（东北大姐/街头大爷/动物世界），浓度决定方言·抽象·猎奇指数（稳/正常/拉满）。只重写语体，不改剧情、角色与叙事结构；切包可只重跑文案",
   audioStrategy: "解说与原声的配比策略三选一：智能保留=重点节点解说+完整原声叙事（默认）/ 纯解说=高密度解说覆盖全程 / 原声主打=名场面原声完整保留、解说只在缝隙点睛。选中档位按密度定律统一折减全文写作预算",
   narrativePerspective: "解说人称三选一，直接写入后端 prompt 视角指令：第三人称=上帝视角（他/她）/ 第一人称=主角自述（我）/ 第二人称=对观众对话（你）",
   emotionTone: "情绪基调五选一：平静客观 / 细腻共情 / 高燃热血 / 层层悬疑 / 轻快诙谐。影响步骤3 写作情绪指令，并作为步骤5 BGM 选型依据",
@@ -287,27 +318,28 @@ const SkeletonCard: React.FC = () => (
 );
 
 /**
- * 生成中章节进度条：显示"正在推演第k/N章" + 章节进度条（§五 5.3-C）。
+ * 生成中章节提示：只保留"正在推演第k/N章"文字。
+ * 进度条统一由编辑器底部全局状态栏承担，避免同屏出现两条进度、口径不一致。
  * 单阶段模式 totalChapters=1 时不渲染（无逐章概念，避免无意义闪烁）。
  */
 const ChapterStreamProgress: React.FC<{ meta: Step3StreamMeta }> = ({ meta }) => {
   if (meta.totalChapters <= 1) return null;
-  const pct = Math.round((meta.chapterIndex / meta.totalChapters) * 100);
   return (
     <div className="flex items-center gap-2.5 px-1">
       <Sparkles size={13} className="text-accent shrink-0 animate-pulse" />
       <span className="text-[12px] font-medium text-accent shrink-0">
         正在推演第 <span className="font-mono font-semibold">{meta.chapterIndex}</span>/{meta.totalChapters} 章
       </span>
-      <div className="flex-1 h-1.5 rounded-full bg-bg-tertiary/60 overflow-hidden">
-        <div
-          className="h-full bg-accent rounded-full transition-all duration-500 ease-out"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <span className="text-[11px] font-mono text-muted-foreground/70 shrink-0">{pct}%</span>
     </div>
   );
+};
+
+/** 毫秒 → 00:12.15（与 VLM timeStr 同格式；缺 timeStr 时兜底） */
+const formatFrameTime = (ms?: number): string => {
+  if (typeof ms !== "number" || Number.isNaN(ms) || ms < 0) return "--:--";
+  const m = Math.floor(ms / 60000);
+  const s = (ms % 60000) / 1000;
+  return `${String(m).padStart(2, "0")}:${s.toFixed(2).padStart(5, "0")}`;
 };
 
 export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (props) => {
@@ -316,20 +348,33 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
     scriptStyle,
     speechRate,
     pipelineParams,
+    stylePack,
     vlmFrames,
     isGenerating,
     streamMeta,
     onSetSpeechRate,
     onSetScriptStyle,
+    onSetStylePack,
     onSetPipelineParams,
     onUpdateParagraph,
     onUpdateParagraphEmotion,
     onRegenerate,
-    onMatchVision,
   } = props;
 
-  const [matchingParagraphId, setMatchingParagraphId] = useState<string | null>(null);
   const [copied, setCopied] = useState<boolean>(false);
+  /** 🎞️ 画面帧候选面板展开的段落 id（null = 全部收起） */
+  const [framePickerId, setFramePickerId] = useState<string | null>(null);
+  /** 🎞️ 用户手动点选的帧（段落 id → vlmFrames 下标）；缺省时回落到自动匹配的建议帧 */
+  const [pickedFrameIndex, setPickedFrameIndex] = useState<Record<string, number>>({});
+
+  /** 段落 ↔ 画面帧双向匹配结果（纯函数，文案/帧变化才重算） */
+  const frameMatchByParagraph = useMemo(() => {
+    const map = new Map<string, ParagraphFrameMatch>();
+    for (const m of matchParagraphsToFrames(scriptParagraphs, vlmFrames).matches) {
+      map.set(m.paragraphId, m);
+    }
+    return map;
+  }, [scriptParagraphs, vlmFrames]);
   const [overviewOpen, setOverviewOpen] = useState<boolean>(false);
   /** 🎛️ 高级设置折叠态（节奏 / 钩子强度 / 基准语速；常驻控件只保留篇幅·原声配比·人称·情绪·风格） */
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
@@ -552,11 +597,64 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
               />
             </div>
 
+            {/* 🎭 风格包（人格 × 浓度）：只管语体，结构与剧情仍由下方文案风格与上游产物决定 */}
+            <div className="md:col-span-2 flex flex-col gap-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
+                  <Tag size={12} className="mr-1 text-accent/80" />
+                  风格包
+                  <HelpTip text={TOOLTIPS.stylePack} />
+                </span>
+                <Badge variant="accent" className="text-[12px] py-0 px-1.5">
+                  {STYLE_PERSONAS[stylePack.persona].name} · {STYLE_PACK_LEVEL_LABELS[stylePack.level]}
+                </Badge>
+              </div>
+              <SegmentedControl
+                options={STYLE_PACK_PERSONA_OPTIONS}
+                value={stylePack.persona}
+                onChange={(persona) => onSetStylePack({ ...stylePack, persona })}
+                disabled={isGenerating}
+              />
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-muted-foreground/80 shrink-0">浓度</span>
+                <div className="flex-1">
+                  <SegmentedControl
+                    options={STYLE_PACK_LEVEL_OPTIONS}
+                    value={stylePack.level}
+                    onChange={(level) => onSetStylePack({ ...stylePack, level })}
+                    disabled={isGenerating}
+                  />
+                </div>
+              </div>
+              <div className="px-3 py-2 rounded-xl border border-border/30 bg-bg-tertiary/40">
+                <div className="text-[10.5px] tracking-wide text-muted-foreground/60 mb-1">开头钩子（同素材试写）</div>
+                <p className="text-[12.5px] leading-relaxed text-foreground/90">
+                  {STYLE_PERSONAS[stylePack.persona].samples[stylePack.level]}
+                </p>
+              </div>
+              <p className="text-[11px] leading-relaxed text-muted-foreground/70 px-0.5">
+                风格包管人格与语体，叙事结构仍看下方「文案风格」；切包只重写文案，不重跑抽帧与语音识别。
+              </p>
+              {/* 🎬 成片联动：同一份包同时决定配音气口与字幕排版，数值来自契约层解析，禁止在此另写字面量 */}
+              {(() => {
+                const tuning = resolveStylePackSubtitleTuning(stylePack);
+                const lineLimit = 16 + tuning.lineWidthDelta;
+                return (
+                  <p className="text-[11px] leading-relaxed text-muted-foreground/60 px-0.5">
+                    成片联动：句尾停顿 {resolveStylePackPauseMs(stylePack)}ms · 字幕行宽 {lineLimit} 字
+                    {tuning.fontSizeScale !== 1 && ` · 字号 ×${tuning.fontSizeScale}`}
+                    {tuning.strokeWidthScale !== 1 && ` · 描边 ×${tuning.strokeWidthScale}`}
+                  </p>
+                );
+              })()}
+            </div>
+
             {/* 📐 文案风格六选一：直接决定 system prompt 的风格词库/句式模板（只改写法，不改人称/情绪） */}
             <div className="md:col-span-2 flex flex-col gap-1.5">
               <span className="text-[13px] font-medium text-muted-foreground/90 flex items-center">
                 <BookOpen size={12} className="mr-1 text-accent/80" />
                 文案风格
+                <span className="ml-1.5 text-[10.5px] font-normal text-muted-foreground/60">结构预设</span>
                 <HelpTip text={TOOLTIPS.scriptStyle} />
               </span>
               <CustomSelect
@@ -728,6 +826,14 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
               // 字数统计按判别联合收窄：解说段计 text.length，原声保留段无解说词计 0
               const charCount = p.type === 'narration' ? p.text.length : 0;
 
+              // 🎞️ 本段画面帧：手动点选优先，否则回落到双向匹配的自动建议帧
+              const frameMatch = frameMatchByParagraph.get(pId);
+              const manualIdx = pickedFrameIndex[pId];
+              const pickedIdx = manualIdx ?? frameMatch?.assignedIndex ?? null;
+              const pickedFrame = pickedIdx !== null && vlmFrames[pickedIdx] ? vlmFrames[pickedIdx] : null;
+              const pickerOpen = framePickerId === pId;
+              const frameCandidates = frameMatch?.candidates ?? [];
+
               return (
                 <div
                   key={pId || `idx_${index}`}
@@ -803,21 +909,106 @@ export const StepScriptGenerationView: React.FC<StepScriptGenerationProps> = (pr
                     </div>
                   )}
 
-                  {/* Card Footer */}
-                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/15 text-[12px]">
-                    <button
-                      onClick={() => { setMatchingParagraphId(pId); onMatchVision(pId); }}
-                      disabled={!vlmFrames.length || matchingParagraphId === pId}
-                      className="inline-flex items-center gap-1 text-muted-foreground hover:text-accent transition-colors
-                        cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-                    >
-                      <Search size={11} />
-                      <span>{matchingParagraphId === pId ? "匹配切片中..." : "匹配画面帧"}</span>
-                    </button>
+                  {/* Card Footer：匹配画面帧入口 + 已选帧 chip + 字数 */}
+                  <div className="mt-2 pt-2 border-t border-border/15">
+                    <div className="flex items-center gap-2 text-[12px] min-w-0">
+                      <button
+                        onClick={() => setFramePickerId(pickerOpen ? null : pId)}
+                        disabled={vlmFrames.length === 0}
+                        title={vlmFrames.length === 0 ? "还没有画面帧，请先完成步骤2 的画面分析" : "为这一段挑选要使用的画面帧"}
+                        className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border transition-colors shrink-0
+                          ${pickerOpen
+                            ? "text-accent bg-accent/15 border-accent/40"
+                            : "text-muted-foreground hover:text-accent bg-bg-tertiary/50 border-border/30 hover:border-accent/40"}
+                          disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground disabled:hover:border-border/30`}
+                      >
+                        <ImageIcon size={12} />
+                        <span>{pickedFrame ? "更换画面" : "匹配画面帧"}</span>
+                        {pickerOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                      </button>
 
-                    <span className="text-muted-foreground/60 font-mono">
-                      {charCount} 字
-                    </span>
+                      {pickedFrame && (
+                        <div
+                          className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-md bg-accent/10 border border-accent/25 min-w-0"
+                          title={`${pickedFrame.timeStr ?? formatFrameTime(pickedFrame.timeMs)} · ${pickedFrame.description || "无描述"}`}
+                        >
+                          <img
+                            src={getSafeMediaUrl(pickedFrame.url)}
+                            alt=""
+                            className="w-7 h-[18px] rounded-sm object-cover shrink-0"
+                            loading="lazy"
+                          />
+                          <span className="font-mono text-accent shrink-0">
+                            {pickedFrame.timeStr ?? formatFrameTime(pickedFrame.timeMs)}
+                          </span>
+                          <span className="text-[11px] text-muted-foreground/70 shrink-0">
+                            {manualIdx !== undefined ? "已选" : "建议"}
+                          </span>
+                        </div>
+                      )}
+
+                      <span className="ml-auto text-muted-foreground/60 font-mono shrink-0">
+                        {charCount} 字
+                      </span>
+                    </div>
+
+                    {/* 候选帧条：时间吻合度 + 关键词命中，点选即锁定本段画面 */}
+                    {pickerOpen && (
+                      <div className="mt-2">
+                        {frameCandidates.length > 0 ? (
+                          <div className="grid grid-cols-4 gap-2">
+                            {frameCandidates.map((c) => {
+                              const isPicked = pickedIdx === c.index;
+                              return (
+                                <button
+                                  key={c.index}
+                                  onClick={() => {
+                                    setPickedFrameIndex((prev) => ({ ...prev, [pId]: c.index }));
+                                    setFramePickerId(null);
+                                  }}
+                                  className={`relative rounded-lg overflow-hidden border text-left transition-all
+                                    ${isPicked
+                                      ? "border-accent ring-1 ring-accent/40"
+                                      : "border-border/40 hover:border-accent/50"}`}
+                                  title={c.frame.description || "无画面描述"}
+                                >
+                                  <img
+                                    src={getSafeMediaUrl(c.frame.url)}
+                                    alt=""
+                                    className="w-full h-[52px] object-cover"
+                                    loading="lazy"
+                                  />
+                                  <span className="absolute left-1 top-1 px-1 rounded bg-black/65 text-[10px] font-mono text-white">
+                                    {c.frame.timeStr ?? formatFrameTime(c.frame.timeMs)}
+                                  </span>
+                                  {c.assigned && (
+                                    <span className="absolute right-1 top-1 px-1 rounded bg-accent text-[10px] font-medium text-bg-primary">
+                                      建议
+                                    </span>
+                                  )}
+                                  <div className="px-1.5 py-1 bg-bg-secondary/95">
+                                    <div className="text-[10px] text-muted-foreground">
+                                      时间吻合 {Math.round(c.timeScore * 100)}%
+                                    </div>
+                                    {c.keywordHits.length > 0 && (
+                                      <div className="text-[10px] text-accent/80 truncate">
+                                        {c.keywordHits.join(" · ")}
+                                      </div>
+                                    )}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] leading-relaxed text-muted-foreground/60">
+                            {vlmFrames.length === 0
+                              ? "还没有画面帧，请先完成步骤2 的画面分析。"
+                              : "这一段的时间窗附近没有可用帧，可检查段落起止时间。"}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               );

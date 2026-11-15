@@ -13,6 +13,7 @@ import { useI18n } from "@renderer/store/useI18n";
 import type { StepShotMatchingProps } from "../types";
 import { useStep5Store } from "../../stores/useStep5Store";
 import type { BgmTrack, BgmRecommendation } from "../../stores/useStep5Store";
+import { STYLE_PERSONAS, STYLE_PERSONA_BGM_PROFILE } from "../../../../shared/types/entities/stylePack";
 
 /** 时长毫秒 → 整数秒文案（去掉小数点，如 3500ms → "4s"） */
 const formatIntSeconds = (ms?: number | null): string => {
@@ -156,7 +157,7 @@ const EqBars: React.FC = () => (
 
 export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
   matchResults, videoChunks, mediaItems, ttsResults, hasBgm, isProcessing,
-  activeBgm, scriptParagraphs, emotionTone, frameEmotions, shotTypes, videoDurationMs, bgmOptions,
+  activeBgm, scriptParagraphs, emotionTone, frameEmotions, shotTypes, videoDurationMs, stylePersona, bgmOptions,
   onSetBgm, onRemoveBgm, onUploadBgm,
   onConfirm, onReplace, onRematch, onClearCacheAndRematch, onReorder,
 }) => {
@@ -415,6 +416,8 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
         frameEmotions,
         shotTypes,
         videoDurationMs,
+        // 🎭 风格包人格：让选曲情绪倾向跟随人格（缺省后端按无人格处理）
+        stylePersona,
       };
       const res: any = await API.ai.recommendBgm(payload);
       // 后端明确失败（配置缺失 / LLM 调用异常）→ 透传真实原因，而非笼统提示
@@ -435,7 +438,7 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
     } finally {
       setDeepLoading(false);
     }
-  }, [scriptParagraphs, emotionTone, frameEmotions, shotTypes, videoDurationMs]);
+  }, [scriptParagraphs, emotionTone, frameEmotions, shotTypes, videoDurationMs, stylePersona]);
 
   /** 🔧 打开替换弹窗：记录当前段文案，并按文案检索"相关候选"（默认仅显示相关；检索不到则回落全部） */
   const openReplace = useCallback((m: any) => {
@@ -693,6 +696,14 @@ export const StepShotMatchingView: React.FC<StepShotMatchingProps> = ({
                   : <><Sparkles size={12} /> {deepRecommendation?.tracks?.length ? t["editor.step5.recommend.regenerateAction"] : t["editor.step5.recommend.action"]}</>}
               </button>
             </div>
+          </div>
+
+          {/* 🎭 选曲人格：推荐时把情绪倾向带给 LLM（只影响推荐，不锁定用户手选） */}
+          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <Music size={11} className="text-accent/70 shrink-0" />
+            <span>
+              选曲人格：{STYLE_PERSONAS[stylePersona].name} · {STYLE_PERSONA_BGM_PROFILE[stylePersona].moodTags.join(' / ')} · {STYLE_PERSONA_BGM_PROFILE[stylePersona].bpmRange[0]}–{STYLE_PERSONA_BGM_PROFILE[stylePersona].bpmRange[1]} BPM
+            </span>
           </div>
 
           {deepError && (

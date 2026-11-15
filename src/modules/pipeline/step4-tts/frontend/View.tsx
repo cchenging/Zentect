@@ -2,7 +2,7 @@
 
 import React, { useRef, useEffect, useState } from "react";
 import { Play, Square, Volume2, Mic, User, ChevronDown, ChevronRight } from "lucide-react";
-import { Badge, Progress, StatHeader, EmptyState } from "@renderer/components/shared";
+import { Badge, StatHeader, EmptyState } from "@renderer/components/shared";
 import { VoiceCard } from "@renderer/components/shared/VoiceCard";
 import type { ScriptParagraph, OriginalAudioParagraph } from "../../../../shared/types/entities/editor";
 import type { TTSResult, TtsVoiceOption } from "../types";
@@ -10,12 +10,21 @@ import type { TTSResult, TtsVoiceOption } from "../types";
 export interface StepTTSSynthesisViewProps {
   ttsEngine: string;
   ttsVoiceId: string;
-  ttsProgress: number;
   ttsResults: TTSResult[];
   scriptParagraphs: ScriptParagraph[];
   isProcessing: boolean;
   voices: TtsVoiceOption[];
   speechRate: number;
+  /** 句尾停顿（ms，0~400，仅 Edge 生效） */
+  pauseMs: number;
+  /** 句尾停顿是否已被手调（true = 不跟随风格包，可恢复跟随） */
+  pauseManual: boolean;
+  /** 当前风格包解析出的默认句尾停顿（人格基准 + 浓度偏移） */
+  pauseDefaultMs: number;
+  /** 音色是否已手选（true = 不跟随风格包，可恢复跟随） */
+  voiceManual: boolean;
+  /** 当前风格包人格名（用于「跟随：东北大姐」提示） */
+  personaName: string;
   previewingVoiceId: string | null;
   playingIdx: number | null;
   successCount: number;
@@ -29,6 +38,12 @@ export interface StepTTSSynthesisViewProps {
   onSetTtsEngine: (engine: string) => void;
   onSetTtsVoiceId: (id: string) => void;
   onSetSpeechRate: (rate: number) => void;
+  /** 手调句尾停顿（写值同时停止跟随风格包） */
+  onSelectPauseMs: (pauseMs: number) => void;
+  /** 恢复跟随风格包：清手调标记，停顿回到当前人格/浓度的解析值 */
+  onResetPauseFollow: () => void;
+  /** 恢复跟随风格包：清手选标记，音色按当前人格映射自动回填 */
+  onResetVoiceFollow: () => void;
   onPreview: (idx: number, audioUrl: string) => void;
   onVoicePreview: (voiceId: string) => void;
   onSynthesize: () => void;
@@ -44,10 +59,12 @@ const ENGINE_LABELS: Record<string, string> = {
 };
 
 export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props) => {
-  const { ttsEngine, ttsVoiceId, ttsProgress, ttsResults, scriptParagraphs, isProcessing,
-    voices, speechRate, previewingVoiceId, playingIdx, successCount, failedCount,
+  const { ttsEngine, ttsVoiceId, ttsResults, scriptParagraphs, isProcessing,
+    voices, speechRate, pauseMs, pauseManual, pauseDefaultMs, voiceManual, personaName,
+    previewingVoiceId, playingIdx, successCount, failedCount,
     singleSynthIdx, isSequentialPlaying, sequentialIdx, isPaused,
-    onSetTtsEngine, onSetTtsVoiceId, onSetSpeechRate, onPreview, onVoicePreview,
+    onSetTtsEngine, onSetTtsVoiceId, onSetSpeechRate, onSelectPauseMs, onResetPauseFollow,
+    onResetVoiceFollow, onPreview, onVoicePreview,
     onSingleSynthesize, onOriginalAudioPreview, onSequentialPlay, onSequentialStop } = props;
 
   const currentVoices = voices;
@@ -91,15 +108,34 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
           {voicesCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
         </button>
         {!voicesCollapsed && (
-          <div className="grid grid-cols-3 gap-1.5 max-h-[200px] overflow-y-auto">
-            {currentVoices.map((voice) => (
-              <VoiceCard key={voice.id} id={voice.id} name={voice.name} lang={voice.lang}
-                selected={ttsVoiceId === voice.id} isPreviewing={previewingVoiceId === voice.id}
-                // 🔧 修复 TS2322：VoiceCard onSelect 期望 () => void，用箭头函数包装 id 参数
-                onSelect={() => onSetTtsVoiceId(voice.id)} onPreview={onVoicePreview} />
-            ))}
-            {currentVoices.length === 0 && <div className="col-span-3 text-[12px] text-muted-foreground py-1">暂无可用音色</div>}
-          </div>
+          <>
+            {/* 🎭 跟随状态：未手选时音色随风格包人格自动切换；手选后在此一键恢复 */}
+            {ttsEngine === "edge" && (
+              <div className="flex items-center justify-between gap-2 mb-2 px-0.5">
+                <span className="text-[11px] text-muted-foreground/80">
+                  {voiceManual ? "音色已手选，不再跟随风格包" : `跟随风格包：${personaName}`}
+                </span>
+                {voiceManual && (
+                  <button
+                    onClick={onResetVoiceFollow}
+                    disabled={isProcessing}
+                    className="text-[11px] text-accent-cyan hover:underline disabled:opacity-40 cursor-pointer"
+                  >
+                    恢复跟随
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-1.5 max-h-[200px] overflow-y-auto">
+              {currentVoices.map((voice) => (
+                <VoiceCard key={voice.id} id={voice.id} name={voice.name} lang={voice.lang}
+                  selected={ttsVoiceId === voice.id} isPreviewing={previewingVoiceId === voice.id}
+                  // 🔧 修复 TS2322：VoiceCard onSelect 期望 () => void，用箭头函数包装 id 参数
+                  onSelect={() => onSetTtsVoiceId(voice.id)} onPreview={onVoicePreview} />
+              ))}
+              {currentVoices.length === 0 && <div className="col-span-3 text-[12px] text-muted-foreground py-1">暂无可用音色</div>}
+            </div>
+          </>
         )}
       </div>
 
@@ -115,8 +151,41 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
         </div>
       </div>
 
-      {/* 进度 */}
-      {scriptParagraphs.length > 0 && <Progress value={ttsProgress} color="cyan" size="sm" showLabel />}
+      {/* 🎭 句尾停顿：默认随风格包解析（人格基准 + 浓度偏移），手调后停止跟随 */}
+      <div className="glass-card-sm p-3">
+        <div className="flex items-center gap-2 mb-2 text-[13px] text-muted-foreground">
+          <Mic size={12} /> 句尾停顿
+          <span className="text-[11px] text-muted-foreground/60">仅 Edge 生效</span>
+        </div>
+        <div className="flex items-center justify-between gap-2 mb-1.5 px-0.5">
+          <span className="text-[11px] text-muted-foreground/80">
+            {pauseManual
+              ? `已自定义（风格包默认 ${pauseDefaultMs}ms）`
+              : `跟随风格包：${personaName} · ${pauseDefaultMs}ms`}
+          </span>
+          {pauseManual && (
+            <button
+              onClick={onResetPauseFollow}
+              disabled={isProcessing}
+              className="text-[11px] text-accent-cyan hover:underline disabled:opacity-40 cursor-pointer"
+            >
+              恢复跟随
+            </button>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-[12px] text-muted-foreground">0ms</span>
+          <input type="range" min={0} max={400} step={20} value={pauseMs}
+            onChange={(e) => onSelectPauseMs(parseInt(e.target.value, 10))}
+            disabled={isProcessing || ttsEngine !== "edge"}
+            className="flex-1 h-1 accent-accent-cyan disabled:opacity-40" />
+          <span className="text-[12px] text-accent-cyan font-mono w-12 text-right">{pauseMs}ms</span>
+        </div>
+        <p className="text-[11px] text-muted-foreground/70 mt-1.5 leading-relaxed">
+          每段结尾追加静音，数值越大段落之间气口越长；改完需在下方重新合成才会写入音频。
+        </p>
+      </div>
+
       {ttsResults.length > 0 && (
         <div className="flex items-center gap-3 text-[12px]">
           <span className="text-accent-green">{successCount} 段成功</span>

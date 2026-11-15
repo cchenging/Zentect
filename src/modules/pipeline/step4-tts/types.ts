@@ -11,6 +11,8 @@ export interface Step4Input {
   engine: TTSEngine;
   voiceId: string;
   speechRate: number;
+  /** 句尾停顿（ms，仅 Edge 生效） */
+  pauseMs: number;
 }
 
 /** Step4 输出接口 */

@@ -171,6 +171,8 @@ export const API = {
       frameEmotions?: string[];
       shotTypes?: string[];
       videoDurationMs?: number;
+      /** 🎭 风格包人格：决定选曲情绪倾向（缺省时按无人格推荐） */
+      stylePersona?: string;
     }) => invokeSafe(IPC_CHANNELS.AI_BGM_RECOMMEND, data),
     /** P1 一键应用：下载曲库曲目到本地缓存 */
     bgmDownload: (data: { downloadUrl?: string; libraryId?: string; name?: string }) =>
@@ -340,8 +342,8 @@ export const API = {
       invokeSafe(IPC_CHANNELS.SHOW_UNBIND_PROJECT, { projectId }),
   },
   voice: {
-    preview: (provider: string, voiceId?: string, text?: string, rate?: number) =>
-      invokeSafe<{ audioPath: string }>(IPC_CHANNELS.VOICE_PREVIEW, { provider, voiceId, text, rate }),
+    preview: (provider: string, voiceId?: string, text?: string, rate?: number, pauseMs?: number) =>
+      invokeSafe<{ audioPath: string }>(IPC_CHANNELS.VOICE_PREVIEW, { provider, voiceId, text, rate, pauseMs }),
     listByEngine: (engine: string) =>
       invokeSafe(IPC_CHANNELS.VOICE_LIST_BY_ENGINE, engine),
   },

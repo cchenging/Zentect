@@ -4,6 +4,7 @@
 // 纯数据变换，仅依赖 shared 层纯函数工具（normalizeScriptParagraph），可独立单测
 
 import { normalizeScriptParagraph } from '../../shared/utils/normalizeScriptParagraph';
+import { normalizeStylePack, resolveStylePackPauseMs } from '../../shared/types/entities/stylePack';
 
 /**
  * 组装完整项目载荷：将 DB 原始数据加工为前端可直接消费的结构化数据
@@ -198,6 +199,8 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
   }
 
   const frameCount = rawData.frameCount || framePaths.length || 0;
+  /** 🎭 风格包归一一次，供 stylePack 与句尾停顿兜底共用 */
+  const stylePack = normalizeStylePack(rawData.stylePack);
 
   // 7. 组装最终 payload
   return {
@@ -234,11 +237,17 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
       : [],
     scriptStyle: rawData.scriptStyle,
     speechRate: rawData.speechRate,
+    /** 🎭 风格包（人格 × 浓度）：旧工程缺失即默认包，非法值统一收敛 */
+    stylePack,
     ttsResults: Array.isArray(rawData.ttsResults) ? rawData.ttsResults : [],
     ttsEngine: rawData.ttsEngine,
     ttsVoiceId: rawData.ttsVoiceId,
     /** 步骤4 合成语速（0.5~2.0）：与步骤3 的 speechRate（字/秒）是两个独立字段 */
     ttsSpeechRate: typeof rawData.ttsSpeechRate === 'number' ? rawData.ttsSpeechRate : 1.0,
+    /** 🎭 句尾停顿（ms）：旧工程缺失回退当前风格包解析默认；手调标记缺失由前端按「是否偏离默认」兼容推断 */
+    ttsPauseMs: typeof rawData.ttsPauseMs === 'number' ? rawData.ttsPauseMs : resolveStylePackPauseMs(stylePack),
+    ttsPauseManual: typeof rawData.ttsPauseManual === 'boolean' ? rawData.ttsPauseManual : undefined,
+    ttsVoiceManual: typeof rawData.ttsVoiceManual === 'boolean' ? rawData.ttsVoiceManual : undefined,
     videoChunks: Array.isArray(rawData.videoChunks) ? rawData.videoChunks : [],
     // 步骤5 匹配结果 + BGM 节拍（metadata 持久化，重启恢复）
     matchResults: Array.isArray(rawData.matchResults) ? rawData.matchResults : [],

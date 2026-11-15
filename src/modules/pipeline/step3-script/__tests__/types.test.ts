@@ -25,6 +25,7 @@ describe('Step3 Types', () => {
         ],
         scriptStyle: '硬核科普',
         speechRate: 4.5,
+        stylePack: { persona: 'dongbei', level: 1 },
         pipelineParams: { narrativePerspective:'third', narrationRatio:0.7, rhythmMode:'mixed', emotionTone:'neutral', hookIntensity:0.7 },
       };
 
@@ -39,6 +40,7 @@ describe('Step3 Types', () => {
         vlmFrames: [],
         scriptStyle: '情感叙事',
         speechRate: 3.5,
+        stylePack: { persona: 'dongbei', level: 1 },
         pipelineParams: { narrativePerspective:'first', narrationRatio:0.3, rhythmMode:'slow_soothing', emotionTone:'emotional', hookIntensity:0.3 },
       };
 
@@ -50,6 +52,7 @@ describe('Step3 Types', () => {
         vlmFrames: [{ url: '/f.png', description: 'test', editing: false, confirmed: false }],
         scriptStyle: '悬疑推理',
         speechRate: 0,
+        stylePack: { persona: 'dongbei', level: 1 },
         pipelineParams: { narrativePerspective:'third', narrationRatio:0.7, rhythmMode:'mixed', emotionTone:'neutral', hookIntensity:0.7 },
       };
 
@@ -61,6 +64,7 @@ describe('Step3 Types', () => {
         vlmFrames: [],
         scriptStyle: '爆款短视频',
         speechRate: 4.5,
+        stylePack: { persona: 'dongbei', level: 1 },
         pipelineParams: { narrativePerspective:'second', narrationRatio:1, rhythmMode:'short_fast', emotionTone:'comedy', hookIntensity:0 },
       };
       expect(minInput.pipelineParams.hookIntensity).toBe(0);
@@ -69,6 +73,7 @@ describe('Step3 Types', () => {
         vlmFrames: [],
         scriptStyle: '深度解说',
         speechRate: 4.5,
+        stylePack: { persona: 'dongbei', level: 1 },
         pipelineParams: { narrativePerspective:'third', narrationRatio:0.7, rhythmMode:'mixed', emotionTone:'epic', hookIntensity:1 },
       };
       expect(maxInput.pipelineParams.hookIntensity).toBe(1);
@@ -248,6 +253,7 @@ describe('Step3 Types', () => {
     it('应包含所有 View 需要的回调函数', () => {
       const props: StepScriptGenerationProps = {
         scriptParagraphs: [],
+        vlmFrames: [],
         scriptStyle: '爆款短视频',
         speechRate: 4.5,
         pipelineParams: {
@@ -257,22 +263,21 @@ describe('Step3 Types', () => {
           emotionTone: 'neutral',
           hookIntensity: 0.7,
         },
-        vlmFrames: [],
+        stylePack: { persona: 'dongbei', level: 1 },
         isGenerating: false,
         streamMeta: null,
         onSetSpeechRate: () => {},
         onSetScriptStyle: () => {},
+        onSetStylePack: () => {},
         onSetPipelineParams: () => {},
         onUpdateParagraph: () => {},
         onUpdateParagraphEmotion: () => {},
         onSetScriptParagraphs: () => {},
         onRegenerate: () => {},
-        onMatchVision: () => {},
       };
 
       expect(props.isGenerating).toBe(false);
       expect(typeof props.onRegenerate).toBe('function');
-      expect(typeof props.onMatchVision).toBe('function');
       expect(typeof props.onSetSpeechRate).toBe('function');
       expect(typeof props.onUpdateParagraph).toBe('function');
       expect(typeof props.onUpdateParagraphEmotion).toBe('function');
@@ -281,6 +286,7 @@ describe('Step3 Types', () => {
     it('isGenerating 为 true 时应正常传递', () => {
       const props: StepScriptGenerationProps = {
         scriptParagraphs: [{ id: 's1', type: 'narration', startMs: 0, durationMs: 3000, text: '文案', editing: false }],
+        vlmFrames: [],
         scriptStyle: '情感叙事',
         speechRate: 3.0,
         pipelineParams: {
@@ -290,17 +296,17 @@ describe('Step3 Types', () => {
           emotionTone: 'emotional',
           hookIntensity: 0.3,
         },
-        vlmFrames: [{ url: '/a.jpg', description: 'test', editing: false, confirmed: true }],
+        stylePack: { persona: 'animal', level: 2 },
         isGenerating: true,
         streamMeta: null,
         onSetSpeechRate: () => {},
         onSetScriptStyle: () => {},
+        onSetStylePack: () => {},
         onSetPipelineParams: () => {},
         onUpdateParagraph: () => {},
         onUpdateParagraphEmotion: () => {},
         onSetScriptParagraphs: () => {},
         onRegenerate: () => {},
-        onMatchVision: () => {},
       };
 
       expect(props.isGenerating).toBe(true);

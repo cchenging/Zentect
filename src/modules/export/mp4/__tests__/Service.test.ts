@@ -67,6 +67,26 @@ describe('SubtitleAssembler', () => {
     expect(srt.split('\n\n').length).toBeGreaterThanOrEqual(2);
   });
 
+  it('compileSrt 应按 style.lineWidthDelta 收紧/放宽折行（风格包浓度派生）', () => {
+    const longText = '一二三四五六七八九十甲乙丙丁戊己庚辛'; // 18 等效宽
+    const base = makeProject({
+      shots: [{ id: 's1', text: longText, start: 0, end: 3, duration: 3 }],
+    });
+    // 收紧 3 → 行宽 13：13 字换行
+    const tightened = compileSrt({
+      ...base,
+      subtitleStyle: { ...TEST_STYLE, lineWidthDelta: -3 } as unknown as Record<string, unknown>,
+    });
+    expect(tightened).toContain('一二三四五六七八九十甲乙丙\n丁戊己庚辛');
+    // 放宽 3 → 行宽 19：整条不换行
+    const widened = compileSrt({
+      ...base,
+      subtitleStyle: { ...TEST_STYLE, lineWidthDelta: 3 } as unknown as Record<string, unknown>,
+    });
+    expect(widened).toContain(longText);
+    expect(widened).not.toContain('\n丁');
+  });
+
   it('compileSrt 应跳过无文本的镜头', () => {
     const project = makeProject();
     project.shots[1].text = undefined;

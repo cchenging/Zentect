@@ -4,6 +4,7 @@
 // 同时清理重复 re-export 导致的 TS2300 错误
 import type { MediaItem } from '../../../shared/types';
 import type { ScriptParagraph, VlmFrame, TtsResult, MatchResult, VideoChunk, BgmInfo } from '../../../shared/types/entities/editor';
+import type { StylePersona } from '../../../shared/types/entities/stylePack';
 
 // 🔧 修复 TS2459：re-export 给 backend/Service.ts 使用
 export type { ScriptParagraph, VlmFrame, TtsResult, VideoChunk, BgmInfo } from '../../../shared/types/entities/editor';
@@ -45,6 +46,8 @@ export interface StepShotMatchingProps {
   shotTypes?: string[];
   /** P3 多模态：源视频总时长（毫秒），用于推算目标切点密度 */
   videoDurationMs?: number;
+  /** 🎭 风格包人格：决定 BGM 选曲的情绪倾向（第三增量） */
+  stylePersona: StylePersona;
   /** 已分离的伴奏音频项（mediaItems type=audio 且 extractedBgm），可直接选用 */
   bgmOptions: MediaItem[];
   /** 设置/更换 BGM */

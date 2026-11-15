@@ -465,10 +465,10 @@ export class EngineController {
     });
 
     // V1.1: 音色试听 — 使用指定引擎/音色合成示例文本，返回音频路径
-    IpcRouter.handle(IPC_CHANNELS.VOICE_PREVIEW, async (_, payload: { provider: string; voiceId?: string; text?: string; rate?: number }) => {
+    IpcRouter.handle(IPC_CHANNELS.VOICE_PREVIEW, async (_, payload: { provider: string; voiceId?: string; text?: string; rate?: number; pauseMs?: number }) => {
       const provider = new TTSProvider();
       const sampleText = payload.text || '欢迎使用 Zentect 智能剪辑，这是一段测试语音合成效果。';
-      const audioPath = await provider.synthesize(sampleText, payload.provider as any, undefined, payload.voiceId || undefined, payload.rate);
+      const audioPath = await provider.synthesize(sampleText, payload.provider as any, undefined, payload.voiceId || undefined, payload.rate, payload.pauseMs);
       return { audioPath };
     });
 
@@ -733,6 +733,8 @@ async function getVoicesForEngine(engine: string): Promise<Array<{ id: string; n
         { id: 'zh-CN-XiaoyiNeural', name: '晓伊 (女)', gender: 'female', locale: 'zh-CN' },
         { id: 'zh-CN-YunjianNeural', name: '云健 (男·体育)', gender: 'male', locale: 'zh-CN' },
         { id: 'zh-CN-XiaochenNeural', name: '晓辰 (女·温柔)', gender: 'female', locale: 'zh-CN' },
+        // 🎭 风格包「东北大姐」推荐音色：微软官方东北官话女声（latitude/liaoning）
+        { id: 'zh-CN-liaoning-XiaobeiNeural', name: '辽宁小北 (女·东北)', gender: 'female', locale: 'zh-CN-liaoning' },
       ];
     case 'doubao':
       return [

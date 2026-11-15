@@ -1,9 +1,10 @@
 // Module: pipeline/step3-script - Container
-// @migrated 阶段三：从 useStore → useStep3Store + useStep2Store + usePipelineStore + useProjectStore
+// @migrated 阶段三：从 useStore → useStep3Store + usePipelineStore + useProjectStore
 // 阶段四：移除 mapPipelineResultToState 的 useStore fallback
 
 import React, { useCallback, useEffect, useRef } from "react";
 import type { PipelineParams } from "../../../../shared/types/entities/editor";
+import type { StylePack } from "../../../../shared/types/entities/stylePack";
 import { useStep3Store } from "../../stores/useStep3Store";
 import { useStep2Store } from "../../stores/useStep2Store";
 import { usePipelineStore } from "@renderer/store/usePipelineStore";
@@ -15,17 +16,20 @@ import { StepScriptGenerationView } from "./View";
 
 export const StepScriptGeneration: React.FC = () => {
   const scriptParagraphs = useStep3Store((s) => s.scriptParagraphs);
+  // 段落卡「匹配画面帧」的候选帧来源（步骤2 VLM 产物）
+  const vlmFrames = useStep2Store((s) => s.vlmFrames);
   const scriptStyle = useStep3Store((s) => s.scriptStyle);
   const speechRate = useStep3Store((s) => s.speechRate);
   const pipelineParams = useStep3Store((s) => s.pipelineParams);
+  const stylePack = useStep3Store((s) => s.stylePack);
   const streamMeta = useStep3Store((s) => s.streamMeta);
   const setSpeechRate = useStep3Store((s) => s.setSpeechRate);
   const setScriptStyle = useStep3Store((s) => s.setScriptStyle);
   const setPipelineParams = useStep3Store((s) => s.setPipelineParams);
+  const setStylePack = useStep3Store((s) => s.setStylePack);
   const updateScriptParagraph = useStep3Store((s) => s.updateScriptParagraph);
   const setScriptParagraphs = useStep3Store((s) => s.setScriptParagraphs);
 
-  const vlmFrames = useStep2Store((s) => s.vlmFrames);
   // P2：运行态只看步骤3 自己，避免步骤2/4/5 运行时本步按钮也误显示「生成中」
   const step3Running = usePipelineStore((s) => s.stepStatuses[2] === 'running');
 
@@ -66,10 +70,6 @@ export const StepScriptGeneration: React.FC = () => {
     await runStep(3, { force: true });
   }, []);
 
-  const handleMatchVision = useCallback((_paragraphId: string) => {
-    // delegated to bidirectionalMatcher utility if available
-  }, []);
-
   // ── 步骤3 参数即时持久化 ──
   // 根因：pipelineParams / scriptStyle / speechRate 此前只在管线执行/重新生成时落盘，
   //       用户仅修改参数（填时长、切调性预设、换风格）不点生成就切走/关窗 → DB 从未写入新值 → 重进项目回退默认。
@@ -85,6 +85,7 @@ export const StepScriptGeneration: React.FC = () => {
       pipelineParams: s3.pipelineParams,
       speechRate: s3.speechRate,
       scriptStyle: s3.scriptStyle,
+      stylePack: s3.stylePack,
     }).catch((err) => {
       console.error("[步骤3] 参数落盘失败:", err);
     });
@@ -109,6 +110,10 @@ export const StepScriptGeneration: React.FC = () => {
     setScriptStyle(style);
     scheduleSave();
   }, [setScriptStyle, scheduleSave]);
+  const handleSetStylePack = useCallback((pack: StylePack) => {
+    setStylePack(pack);
+    scheduleSave();
+  }, [setStylePack, scheduleSave]);
   // 组件卸载时清理未触发的防抖定时器，避免泄漏；段落编辑的版本提交需在卸载前冲刷
   useEffect(() => () => {
     if (saveTimerRef.current) {
@@ -125,20 +130,21 @@ export const StepScriptGeneration: React.FC = () => {
   return (
     <StepScriptGenerationView
       scriptParagraphs={scriptParagraphs}
+      vlmFrames={vlmFrames}
       scriptStyle={scriptStyle}
       speechRate={speechRate}
       pipelineParams={pipelineParams}
-      vlmFrames={vlmFrames}
+      stylePack={stylePack}
       isGenerating={step3Running}
       streamMeta={streamMeta}
       onSetSpeechRate={handleSetSpeechRate}
       onSetScriptStyle={handleSetScriptStyle}
+      onSetStylePack={handleSetStylePack}
       onSetPipelineParams={handleSetPipelineParams}
       onUpdateParagraph={handleUpdateParagraph}
       onUpdateParagraphEmotion={updateParagraphEmotion}
       onSetScriptParagraphs={setScriptParagraphs}
       onRegenerate={handleRegenerate}
-      onMatchVision={handleMatchVision}
     />
   );
 };

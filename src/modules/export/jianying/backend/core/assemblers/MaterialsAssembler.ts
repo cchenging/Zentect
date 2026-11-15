@@ -908,10 +908,16 @@ export function assembleMaterials(
   const subtitleStyle = options.subtitleStyle ?? DEFAULT_SUBTITLE_STYLE;
   // 🎬 字幕行宽随画幅取向：竖屏画布更窄，行宽收紧到 12 等效宽（横屏 16）。
   // 与 DraftContentAssembler 的 isPortrait 同判据（宽 < 高即竖屏）；无画布尺寸时按横屏处理。
-  const subtitleLineLimit =
+  // 🎭 风格包浓度派生：lineWidthDelta 叠加在基准行宽上（最低 8 防过度断句）。
+  const lineWidthDelta =
+    typeof subtitleStyle.lineWidthDelta === 'number' && Number.isFinite(subtitleStyle.lineWidthDelta)
+      ? Math.round(subtitleStyle.lineWidthDelta)
+      : 0;
+  const baseLineLimit =
     options.canvasSize && options.canvasSize.height > options.canvasSize.width
       ? SUBTITLE_LINE_WIDTH_LIMIT_PORTRAIT
       : SUBTITLE_LINE_WIDTH_LIMIT;
+  const subtitleLineLimit = Math.max(8, baseLineLimit + lineWidthDelta);
   const safeMediaPath = (mediaPath || '').replace(/\\/g, '/');
   const videos: unknown[] = [];
   const audios: unknown[] = [];

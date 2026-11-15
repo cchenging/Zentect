@@ -104,6 +104,12 @@ export interface SubtitleStyle {
    * 可在此单独放大而不影响竖屏。缺省时横屏用 fontSize。
    */
   fontSizeLandscape?: number;
+  /**
+   * 单行等效宽度偏移（风格包浓度派生，正数=少断行、负数=强断句）。
+   * 叠加在 `SUBTITLE_LINE_WIDTH_LIMIT`（横屏 16 / 竖屏 12）之上，
+   * 由 MP4 烧录与剪映导出共用；缺省 = 不偏移（旧配置行为不变）。
+   */
+  lineWidthDelta?: number;
 }
 
 /** 字幕样式默认值（按用户参数表：字号 3.5、描边 0.02、底部居中） */

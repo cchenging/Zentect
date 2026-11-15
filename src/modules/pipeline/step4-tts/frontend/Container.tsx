@@ -2,7 +2,7 @@
 // @migrated 阶段三：从 useStore → useStep4Store + useStep3Store + usePipelineStore + useProjectStore
 // 阶段四：移除 mapPipelineResultToState 的 useStore fallback
 
-import React, { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import { useStep4Store } from "../../stores/useStep4Store";
 import { useStep3Store } from "../../stores/useStep3Store";
 import { useProjectStore } from "@modules/editor/stores/useProjectStore";
@@ -14,9 +14,12 @@ import { getSafeMediaUrl } from "@renderer/utils/formatUrl";
 import { StepTTSSynthesisView } from "./View";
 import type { TtsVoiceOption } from "../types";
 import type { OriginalAudioParagraph } from "../../../../shared/types/entities/editor";
+// 🎭 风格包 → Edge 推荐音色：跟随/手选切换的唯一映射源
+import { STYLE_PERSONAS, STYLE_PERSONA_EDGE_VOICE, resolveStylePackPauseMs } from "../../../../shared/types/entities/stylePack";
 
 const VOICE_OPTIONS: Record<string, TtsVoiceOption[]> = {
   edge: [
+    { id: "zh-CN-liaoning-XiaobeiNeural", name: "辽宁小北", lang: "中文·女·东北" },
     { id: "zh-CN-XiaoxiaoNeural", name: "晓晓", lang: "中文·女" },
     { id: "zh-CN-YunxiNeural", name: "云希", lang: "中文·男" },
     { id: "zh-CN-YunyangNeural", name: "云扬", lang: "中文·男" },
@@ -44,10 +47,23 @@ const VOICE_OPTIONS: Record<string, TtsVoiceOption[]> = {
 export const StepTTSSynthesis: React.FC = () => {
   const ttsEngine = useStep4Store((s) => s.ttsEngine);
   const ttsVoiceId = useStep4Store((s) => s.ttsVoiceId);
-  const ttsProgress = useStep4Store((s) => s.ttsProgress);
   const ttsResults = useStep4Store((s) => s.ttsResults);
   const setTtsEngine = useStep4Store((s) => s.setTtsEngine);
   const setTtsVoiceId = useStep4Store((s) => s.setTtsVoiceId);
+  const selectVoiceManual = useStep4Store((s) => s.selectVoiceManual);
+  const resetVoiceFollow = useStep4Store((s) => s.resetVoiceFollow);
+  const pauseMs = useStep4Store((s) => s.pauseMs);
+  const setPauseMs = useStep4Store((s) => s.setPauseMs);
+  const selectPauseMs = useStep4Store((s) => s.selectPauseMs);
+  const resetPauseFollow = useStep4Store((s) => s.resetPauseFollow);
+  const pauseManual = useStep4Store((s) => s.pauseManual);
+  const voiceManual = useStep4Store((s) => s.voiceManual);
+  const stylePack = useStep3Store((s) => s.stylePack);
+
+  /** 当前风格包对应的 Edge 推荐音色（仅 Edge 有东北女声，其他引擎不参与跟随） */
+  const recommendedVoiceId = STYLE_PERSONA_EDGE_VOICE[stylePack.persona];
+  /** 当前风格包解析出的默认句尾停顿（人格基准 + 浓度偏移） */
+  const pauseDefaultMs = resolveStylePackPauseMs(stylePack);
 
   const scriptParagraphs = useStep3Store((s) => s.scriptParagraphs);
 
@@ -63,6 +79,70 @@ export const StepTTSSynthesis: React.FC = () => {
   const [isPaused, setIsPaused] = useState(false);
   // 单段配音：当前正在合成的段落索引（null 表示无单段合成进行中）
   const [singleSynthIdx, setSingleSynthIdx] = useState<number | null>(null);
+
+  // ── 步骤4 参数即时持久化 ──
+  // 根因同步骤3：音色/语速/停顿只在管线执行时落盘，用户改完不合成直接关窗 → 重开回退默认。
+  // 修复：任一参数变更即 500ms 防抖写入 metadata；不依赖合成动作。
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleTtsSave = useCallback(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      const projectId = useProjectStore.getState().projectId;
+      if (!projectId) return;
+      const s4 = useStep4Store.getState();
+      API.project.saveData(projectId, {
+        ttsEngine: s4.ttsEngine,
+        ttsVoiceId: s4.ttsVoiceId,
+        ttsSpeechRate: s4.speechRate,
+        ttsPauseMs: s4.pauseMs,
+        ttsPauseManual: s4.pauseManual,
+        ttsVoiceManual: s4.voiceManual,
+      }).catch((err) => {
+        console.error("[步骤4] 参数落盘失败:", err);
+      });
+    }, 500);
+  }, []);
+
+  // 🎭 跟随风格包：Edge 引擎下未手选音色时，人格切换即同步推荐音色（只 Edge 有东北女声）
+  useEffect(() => {
+    if (ttsEngine !== "edge" || voiceManual) return;
+    if (ttsVoiceId === recommendedVoiceId) return;
+    setTtsVoiceId(recommendedVoiceId);
+    scheduleTtsSave();
+  }, [ttsEngine, voiceManual, recommendedVoiceId, ttsVoiceId, setTtsVoiceId, scheduleTtsSave]);
+
+  // 🎭 跟随风格包：未手调句尾停顿时，人格/浓度变化即同步解析默认值
+  useEffect(() => {
+    if (pauseManual) return;
+    if (pauseMs === pauseDefaultMs) return;
+    setPauseMs(pauseDefaultMs);
+    scheduleTtsSave();
+  }, [pauseManual, pauseMs, pauseDefaultMs, setPauseMs, scheduleTtsSave]);
+
+  const handleSetEngine = useCallback((engine: string) => {
+    setTtsEngine(engine);
+    scheduleTtsSave();
+  }, [setTtsEngine, scheduleTtsSave]);
+  const handleSelectVoice = useCallback((voiceId: string) => {
+    selectVoiceManual(voiceId);
+    scheduleTtsSave();
+  }, [selectVoiceManual, scheduleTtsSave]);
+  const handleResetVoiceFollow = useCallback(() => {
+    resetVoiceFollow();
+    scheduleTtsSave();
+  }, [resetVoiceFollow, scheduleTtsSave]);
+  const handleSelectPause = useCallback((value: number) => {
+    selectPauseMs(value);
+    scheduleTtsSave();
+  }, [selectPauseMs, scheduleTtsSave]);
+  const handleResetPauseFollow = useCallback(() => {
+    resetPauseFollow();
+    scheduleTtsSave();
+  }, [resetPauseFollow, scheduleTtsSave]);
+  const handleSetSpeechRate = useCallback((rate: number) => {
+    setSpeechRate(rate);
+    scheduleTtsSave();
+  }, [setSpeechRate, scheduleTtsSave]);
 
   const PREVIEW_TEXT_MAP: Record<string, string> = {
     zh: '欢迎使用 Zentect 智能剪辑，这是一段语音合成测试。',
@@ -168,8 +248,8 @@ export const StepTTSSynthesis: React.FC = () => {
       const voiceList = VOICE_OPTIONS[step4State.ttsEngine] || [];
       const voice = voiceList.find((v) => v.id === voiceId);
       const previewText = getPreviewText(voiceId, voice?.lang);
-      // 传 speechRate 让后端按当前语速合成试听音频
-      const result = await API.voice.preview(step4State.ttsEngine, voiceId, previewText, speechRate);
+      // 传 speechRate / pauseMs 让后端按当前语速与句尾停顿合成试听音频
+      const result = await API.voice.preview(step4State.ttsEngine, voiceId, previewText, speechRate, pauseMs);
       // token 校验：等待期间若有新播放启动（列表播放或切换试听），放弃此次试听结果
       if (playTokenRef.current !== token) return;
       if (result?.audioPath) {
@@ -325,6 +405,7 @@ export const StepTTSSynthesis: React.FC = () => {
         text: p.text,
         voiceId: step4State.ttsVoiceId || undefined,
         speechRate: step4State.speechRate ?? 1.0,
+        pauseMs: step4State.pauseMs,
         provider: step4State.ttsEngine || 'edge',
       });
       const audioPath = result?.audioPath || '';
@@ -375,14 +456,19 @@ export const StepTTSSynthesis: React.FC = () => {
 
   return (
     <StepTTSSynthesisView
-      ttsEngine={ttsEngine} ttsVoiceId={ttsVoiceId} ttsProgress={ttsProgress} ttsResults={ttsResults}
+      ttsEngine={ttsEngine} ttsVoiceId={ttsVoiceId} ttsResults={ttsResults}
       scriptParagraphs={scriptParagraphs} isProcessing={isProcessing}
       voices={VOICE_OPTIONS[ttsEngine] || []}
-      speechRate={speechRate} previewingVoiceId={previewingVoiceId} playingIdx={playingIdx}
+      speechRate={speechRate} pauseMs={pauseMs} voiceManual={voiceManual}
+      pauseManual={pauseManual} pauseDefaultMs={pauseDefaultMs}
+      personaName={STYLE_PERSONAS[stylePack.persona].name}
+      previewingVoiceId={previewingVoiceId} playingIdx={playingIdx}
       successCount={successCount} failedCount={failedCount}
       singleSynthIdx={singleSynthIdx}
       isSequentialPlaying={isSequentialPlaying} sequentialIdx={sequentialIdx} isPaused={isPaused}
-      onSetTtsEngine={setTtsEngine} onSetTtsVoiceId={setTtsVoiceId} onSetSpeechRate={setSpeechRate}
+      onSetTtsEngine={handleSetEngine} onSetTtsVoiceId={handleSelectVoice}
+      onSetSpeechRate={handleSetSpeechRate} onSelectPauseMs={handleSelectPause}
+      onResetVoiceFollow={handleResetVoiceFollow} onResetPauseFollow={handleResetPauseFollow}
       onPreview={handlePreview} onVoicePreview={handleVoicePreview} onSynthesize={handleSynthesize}
       onSingleSynthesize={handleSingleSynthesize}
       onOriginalAudioPreview={handleOriginalAudioPreview}

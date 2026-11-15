@@ -71,11 +71,17 @@ export async function persistProjectSnapshot(projectId: string): Promise<void> {
       scriptStyle: step3Final.scriptStyle,
       speechRate: step3Final.speechRate,
       pipelineParams: step3Final.pipelineParams,
+      /** 🎭 风格包（人格 × 浓度）：与 scriptStyle 同批落盘，重进项目保持同一套语体 */
+      stylePack: step3Final.stylePack,
       ttsResults: step4Final.ttsResults,
       ttsEngine: step4Final.ttsEngine,
       ttsVoiceId: step4Final.ttsVoiceId,
       /** 步骤4 合成语速：必须落盘，否则重开项目后输入指纹漂移、下游误判过期 */
       ttsSpeechRate: step4Final.speechRate,
+      /** 🎭 句尾停顿与手选/手调标记：与语速同理必须落盘，否则重开指纹漂移 */
+      ttsPauseMs: step4Final.pauseMs,
+      ttsPauseManual: step4Final.pauseManual,
+      ttsVoiceManual: step4Final.voiceManual,
       /** 步骤5 数据持久化：匹配结果/切片池/BGM 节拍，重启后从 metadata 恢复 */
       matchResults: step5Final.matchResults,
       videoChunks: step5Final.videoChunks,
