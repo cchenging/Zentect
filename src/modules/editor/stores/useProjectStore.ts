@@ -16,6 +16,7 @@ import { usePipelineStore } from '@renderer/store/usePipelineStore';
 import { useStep1Store } from '../../pipeline/stores/useStep1Store';
 import { useStep2Store } from '../../pipeline/stores/useStep2Store';
 import { useStep3Store, DEFAULT_SPEECH_RATE } from '../../pipeline/stores/useStep3Store';
+import { normalizeStylePack, resolveStylePackPauseMs, DEFAULT_TTS_PAUSE_MS } from '../../../shared/types/entities/stylePack';
 import { useStep4Store } from '../../pipeline/stores/useStep4Store';
 import { useStep5Store } from '../../pipeline/stores/useStep5Store';
 import { useEditorNavStore } from './useEditorNavStore';
@@ -772,6 +773,9 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     // 缺省回退与 store 默认态同源（DEFAULT_SPEECH_RATE），避免旧工程/缺字段时语速回退值与前缀不一致
     if (typeof s3.setSpeechRate === 'function') s3.setSpeechRate(Number(d.speechRate) || DEFAULT_SPEECH_RATE);
     if (d.pipelineParams && typeof s3.setPipelineParams === 'function') s3.setPipelineParams(d.pipelineParams as any);
+    // 🎭 风格包：旧工程无此字段即默认包（normalizeStylePack 统一收敛非法值）
+    const restoredStylePack = normalizeStylePack(d.stylePack);
+    if (typeof s3.setStylePack === 'function') s3.setStylePack(restoredStylePack);
 
     // ── Step4Store ──
     const s4 = useStep4Store.getState();
@@ -802,11 +806,39 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
     // ttsEngine 是引擎选择偏好：项目未保存（新项目/旧数据）时保持默认 'edge'，而非设为 '' 导致 UI 无选中
     // 不设 '' 是为了避免「UI 显示无引擎但合成 fallback 到设置默认引擎」的显示/执行不一致
     if (typeof s4.setTtsEngine === 'function') s4.setTtsEngine((d.ttsEngine as string) || 'edge');
-    if (typeof s4.setTtsVoiceId === 'function') s4.setTtsVoiceId((d.ttsVoiceId as string) || '');
+    if (typeof s4.setTtsVoiceId === 'function') {
+      const restoredVoice = (d.ttsVoiceId as string) || '';
+      // 🎭 手选标记：旧工程无此字段但有音色 ⇒ 视为已手选（升级后不得静默改掉用户音色）；
+      // 新工程按 ttsVoiceManual 恢复，false 时由步骤4 的跟随逻辑按人格回填推荐音色。
+      const hasManualFlag = d.ttsVoiceManual === true || d.ttsVoiceManual === false;
+      const restoredManual = hasManualFlag ? d.ttsVoiceManual === true : !!restoredVoice;
+      if (restoredManual && restoredVoice && typeof s4.selectVoiceManual === 'function') {
+        s4.selectVoiceManual(restoredVoice);
+      } else {
+        s4.setTtsVoiceId(restoredVoice);
+        if (typeof s4.resetVoiceFollow === 'function') s4.resetVoiceFollow();
+      }
+    }
     // 步骤4 合成语速：旧项目无此字段时回退 1.0，保证输入指纹跨会话稳定
     if (typeof s4.setSpeechRate === 'function') {
       const restoredRate = Number(d.ttsSpeechRate);
       s4.setSpeechRate(Number.isFinite(restoredRate) && restoredRate > 0 ? restoredRate : 1.0);
+    }
+    // 🎭 句尾停顿：缺失时回退当前风格包的解析值；手调标记旧工程按「既非解析默认、也非旧版全局默认」推断
+    //   （统一策略前默认恒为 180：落在该值上的旧工程视为「跟随」，升级后自动采用人格/浓度解析值）
+    if (typeof s4.setPauseMs === 'function') {
+      const packDefault = resolveStylePackPauseMs(restoredStylePack);
+      const hasPause = typeof d.ttsPauseMs === 'number';
+      const hasManualFlag = d.ttsPauseManual === true || d.ttsPauseManual === false;
+      const restoredPauseManual = hasManualFlag
+        ? d.ttsPauseManual === true
+        : hasPause && d.ttsPauseMs !== packDefault && d.ttsPauseMs !== DEFAULT_TTS_PAUSE_MS;
+      s4.setPauseMs(hasPause ? d.ttsPauseMs : packDefault);
+      if (restoredPauseManual && typeof s4.selectPauseMs === 'function') {
+        s4.selectPauseMs(hasPause ? d.ttsPauseMs : packDefault);
+      } else if (typeof s4.resetPauseFollow === 'function') {
+        s4.resetPauseFollow();
+      }
     }
 
     // ── Step5Store ──
