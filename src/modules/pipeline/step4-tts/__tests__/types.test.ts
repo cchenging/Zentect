@@ -19,6 +19,7 @@ describe('Step4 Types', () => {
         engine: 'edge',
         voiceId: 'zh-CN-XiaoxiaoNeural',
         speechRate: 1.0,
+        pauseMs: 180,
       };
       expect(input.engine).toBe('edge');
       expect(input.scriptParagraphs).toHaveLength(1);
@@ -32,6 +33,7 @@ describe('Step4 Types', () => {
         engine: 'doubao',
         voiceId: 'v1',
         speechRate: 1.0,
+        pauseMs: 180,
       };
       expect(input.scriptParagraphs).toHaveLength(0);
     });
@@ -42,6 +44,7 @@ describe('Step4 Types', () => {
         engine: 'edge',
         voiceId: '',
         speechRate: 0,
+        pauseMs: 0,
       };
       expect(input.speechRate).toBe(0);
     });

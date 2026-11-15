@@ -11,6 +11,7 @@ import { ttsEngine } from '../../../../main/engine/TTSEngine';
 import { ProviderManager } from '../../../../main/engine/config/ProviderManager';
 import { PathManager } from '../../../../main/utils/pathManager';
 import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
+import { clampPauseMs } from '../../../../shared/types/entities/stylePack';
 
 /**
  * 🎵 P2 声画同步：ffprobe 读取配音音频真实时长（秒）
@@ -139,6 +140,8 @@ export class TTSStrategy extends BaseNodeStrategy {
     const voiceId: string | undefined = input.voiceId || undefined;
     // 语速倍率(0.5~2.0)，默认 1.0，传给 TTS 引擎控制合成速度
     const speechRate: number = typeof input.speechRate === 'number' ? input.speechRate : 1.0;
+    // 🎭 句尾停顿（ms，0~400）：仅 Edge 通过 SSML break 生效，其余引擎忽略
+    const pauseMs: number = typeof input.pauseMs === 'number' ? clampPauseMs(input.pauseMs) : 0;
 
     // 🐛 临时诊断：确证 scriptShots 是否真正到达后端（排查"未找到前置剧本"空配音问题）
     AppLogger.warn(LOG_TAGS.AI_AGENT, `[TTS诊断] input.scriptShots=${JSON.stringify(Array.isArray(input.scriptShots) ? { len: input.scriptShots.length, first: input.scriptShots[0] ?? null } : input.scriptShots)} input.keys=${JSON.stringify(Object.keys(input))}`);
@@ -210,12 +213,18 @@ export class TTSStrategy extends BaseNodeStrategy {
       concurrency,
       // 单段合成执行器
       async (shot, _idx) => {
+        // 句尾停顿不参与合成（微软会掐断带 break 的会话），只在下面的修剪阶段用 tailPadMs 保留尾部静音
         const audioPath = await ttsEngine.generateTTS(shot.text, provider, cacheDir, voiceId, speechRate);
         // 🎬 素材修剪：裁掉 TTS 首尾静音/气口（吸气口、句尾拖音），回填"真实有效发音时长"，
         //   替代"含前导停顿的整段时长"，让步骤5 不必为了凑虚高时长去强拉/拉伸视频（消除一顿一顿）。
         //   修剪产物写入 cacheDir 旁的 trim 目录，避免污染 TTS 缓存；ffmpeg 缺失或源文件缺失时返回源状态。
         const trimOutPath = path.join(cacheDir, 'trim', `trim_${path.basename(audioPath)}`);
-        const trimmed = await AudioProcessor.trimAudioEdges(audioPath, trimOutPath);
+        const trimmed = await AudioProcessor.trimAudioEdges(
+          audioPath,
+          trimOutPath,
+          // 尾部保护边距 = 默认 80ms + 风格包句尾停顿，避免停顿被静音修剪吃掉
+          pauseMs > 0 ? { tailPadMs: 80 + pauseMs } : undefined
+        );
         const effectiveAudioPath = trimmed.outputPath; // 有静音则修剪版，无静音则原文件
         // 🎵 P2 声画同步：合成后立即用 ffprobe 读真实音频时长回填（秒），
         //   替代步骤3 的"字数/语速"估算值，让步骤5 的时长惩罚与变速基于真实声画时长

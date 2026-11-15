@@ -7,6 +7,7 @@ import fs from 'fs'
 import path from 'path'
 import crypto from 'crypto'
 import { AppError, ErrorCode } from '@modules/infra/error/AppError'
+import { clampPauseMs } from '../../../../shared/types/entities/stylePack'
 
 export type TTSVendor = 'doubao' | 'edge' | 'kokoro'
 
@@ -44,7 +45,8 @@ export class TTSProvider {
     saveDir?: string,
     voiceOverride?: string,
     rate?: number,
-    preferredProvider?: TTSVendor
+    preferredProvider?: TTSVendor,
+    pauseMs?: number
   ): Promise<{ path: string; provider: TTSVendor }> {
     // 用户指定引擎 → 只用该引擎（失败即抛错暴露）；未指定 → edge 兜底（历史默认，免费无需配置）
     const fallbackChain: TTSVendor[] = preferredProvider ? [preferredProvider] : ['edge'];
@@ -52,7 +54,7 @@ export class TTSProvider {
 
     for (const provider of fallbackChain) {
       try {
-        const audioPath = await this.synthesize(text, provider, saveDir, voiceOverride, rate);
+        const audioPath = await this.synthesize(text, provider, saveDir, voiceOverride, rate, pauseMs);
         return { path: audioPath, provider };
       } catch (err: any) {
         lastError = err;
@@ -70,6 +72,7 @@ export class TTSProvider {
    * @param saveDir       保存目录 (默认项目目录下的 tts_output)
    * @param voiceOverride 覆写音色 (角色/voice type)
    * @param rate 语速倍率 (0.5~2.0)，默认 1.0
+   * @param pauseMs 句尾停顿（ms），仅 Edge 生效；参与缓存键，改停顿不会命中旧音频
    * @returns 音频文件绝对路径
    */
   async synthesize(
@@ -77,12 +80,15 @@ export class TTSProvider {
     provider: TTSVendor,
     saveDir?: string,
     voiceOverride?: string,
-    rate?: number
+    rate?: number,
+    pauseMs?: number
   ): Promise<string> {
     const config = ProviderManager.getTTSConfig(provider)
     const targetDir = saveDir || PathManager.getTTSOutputDir()
     // 语速倍率归一化，默认 1.0
     const speedRate = typeof rate === 'number' && rate > 0 ? rate : 1.0
+    // 句尾停顿归一化（0~400ms 整数），仅 Edge 消费
+    const pause = typeof pauseMs === 'number' ? clampPauseMs(pauseMs) : 0
 
     // 统一清洗文本，去除 LLM 生成的舞台指示标记
     const cleanedText = text
@@ -92,7 +98,7 @@ export class TTSProvider {
 
     /** 缓存查找：相同清洗后文本+引擎+音色+语速 的合成结果直接复用 */
     const voiceKey = voiceOverride || config.voice || 'default'
-    const cacheHash = crypto.createHash('md5').update(`${cleanedText}|${provider}|${voiceKey}|${speedRate}`).digest('hex').substring(0, 12)
+    const cacheHash = crypto.createHash('md5').update(`${cleanedText}|${provider}|${voiceKey}|${speedRate}|p${pause}`).digest('hex').substring(0, 12)
     // 引擎扩展名：本地 Kokoro 输出 24kHz WAV，在线引擎输出 MP3
     const ext = provider === 'kokoro' ? 'wav' : 'mp3'
     const cachedFile = path.join(targetDir, `tts_${provider}_${voiceKey}_${cacheHash}.${ext}`)
@@ -133,6 +139,7 @@ export class TTSProvider {
             voiceOverride ||
             (/^[a-zA-Z0-9\s.,!?'-]+$/.test(cleanedText) ? 'en-US-JennyNeural' : 'zh-CN-XiaoxiaoNeural')
           // 微软官方 Edge TTS（免费、无需 key），替代已失效的第三方代理 api.tts.quest（实测返回 404）
+          // 注意：句尾停顿不走 SSML（微软会掐断），由 Strategy 的 trimAudioEdges(tailPadMs) 在音频层补
           audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate })
           break
         }

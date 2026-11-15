@@ -87,6 +87,8 @@ const buildStep4Sequence = (step3State: any, step4State: any, speechRate: number
     ttsEngine: step4State.ttsEngine || 'edge',
     voiceId: step4State.ttsVoiceId || '',
     speechRate,
+    // 句尾停顿随参数透传（与 pipelineStepRunner.buildParams 同口径）
+    pauseMs: step4State.pauseMs,
     mediaPath,
     scriptShots: step3State.scriptParagraphs || [],
   },
@@ -222,6 +224,25 @@ describe('Step4 TTS 端到端集成测试', () => {
 
     // ✅ speechRate=1.5 应原样传递
     expect(mockGenerateTTS).toHaveBeenCalledWith('语速测试', 'edge', '/cache', 'zh-CN-XiaoxiaoNeural', 1.5);
+  });
+
+  it('案例5b：句尾停顿 pauseMs 不进 SSML，改由修剪阶段保留尾部静音', async () => {
+    // 微软 Edge TTS 会直接掐断带 <break>/mstts:silence 的会话，停顿只能在音频层用 tailPadMs 实现
+    useStep3Store.getState().setScriptParagraphs([
+      { id: 'p1', type: 'narration', startMs: 0, durationMs: 2000, text: '停顿测试', shotId: 's1', duration: 2, editing: false },
+    ]);
+    useStep4Store.setState({ ttsEngine: 'edge', ttsVoiceId: 'zh-CN-liaoning-XiaobeiNeural' });
+
+    const step3State = useStep3Store.getState();
+    const step4State = useStep4Store.getState();
+    const sequence = buildStep4Sequence(step3State, step4State, 1.0, '/video.mp4');
+    sequence[0].params.pauseMs = 240;
+
+    mockGenerateTTS.mockResolvedValue('/cache/pause.wav');
+    await strategy.performTask(sequence[0].params, { bus: new Map() } as any, '/cache', vi.fn());
+
+    // ✅ 合成调用只带 5 个参数，pauseMs 不得出现在 TTS 请求里（否则服务端掐断连接）
+    expect(mockGenerateTTS).toHaveBeenCalledWith('停顿测试', 'edge', '/cache', 'zh-CN-liaoning-XiaobeiNeural', 1.0);
   });
 
   it('案例6：step3 breakLongParagraphs 切分后子句共享 shotId，step4 应为每段子句生成独立音频且可区分', async () => {

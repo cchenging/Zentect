@@ -45,6 +45,7 @@ export class TTSEngine {
         case 'edge': {
           const voiceType = voiceOverride || (/^[a-zA-Z0-9\s.,!?'-]+$/.test(cleanedText) ? 'en-US-JennyNeural' : 'zh-CN-XiaoxiaoNeural');
           // 微软官方 Edge TTS（免费、无需 key），替代已失效的第三方代理 api.tts.quest（实测返回 404）
+          // 句尾停顿不走 SSML（微软会掐断连接），由修剪阶段 tailPadMs 保留尾部静音实现
           audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate });
           break;
         }
@@ -103,12 +104,14 @@ export class TTSEngine {
 
     const voiceId = shot.voiceId || undefined;
     const rate = typeof shot.speechRate === 'number' && shot.speechRate > 0 ? shot.speechRate : undefined;
+    // 句尾停顿（ms）：仅 Edge 生效，随风格包一起透传
+    const pauseMs = typeof shot.pauseMs === 'number' ? shot.pauseMs : undefined;
     // 前端透传的用户引擎选择（如 kokoro/doubao）；未指定时 synthesizeWithFallback 内部兜底 edge
     const preferredProvider: 'doubao' | 'edge' | 'kokoro' | undefined =
       shot.provider === 'doubao' || shot.provider === 'edge' || shot.provider === 'kokoro' ? shot.provider : undefined;
 
     try {
-      const { path: audioPath, provider } = await ttsProvider.synthesizeWithFallback(text, saveDir, voiceId, rate, preferredProvider);
+      const { path: audioPath, provider } = await ttsProvider.synthesizeWithFallback(text, saveDir, voiceId, rate, preferredProvider, pauseMs);
       AppLogger.info(LOG_TAGS.AI_ENGINE, `TTS 合成完成: shot=${shot.id}, provider=${provider}`);
       return { shotId: shot.id, audioPath, provider };
     } catch (err: any) {

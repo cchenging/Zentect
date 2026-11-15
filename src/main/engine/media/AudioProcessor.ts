@@ -457,7 +457,7 @@ export class AudioProcessor {
   public static async trimAudioEdges(
     inputPath: string,
     outputPath: string,
-    options?: { noiseDb?: number; padMs?: number }
+    options?: { noiseDb?: number; padMs?: number; tailPadMs?: number }
   ): Promise<{ outputPath: string; durationSec: number; trimmed: boolean }> {
     const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
     const ffprobeExe = PathManager.getBinPath('ffprobe.exe');
@@ -469,6 +469,9 @@ export class AudioProcessor {
 
     const noiseDb = options?.noiseDb ?? -40;
     const padSec = (options?.padMs ?? 80) / 1000;
+    // 尾部保护边距可单独指定：风格包句尾停顿靠保留结尾静音实现（Edge TTS 本身尾部静音充足），
+    // 若仍按默认 80ms 回填则停顿被吃掉，故调用方传入「默认边距 + 用户停顿」保住气口。
+    const tailPadSec = (options?.tailPadMs ?? options?.padMs ?? 80) / 1000;
 
     // 1. silencedetect 探测首尾静音
     const detectArgs = ['-y', '-i', inputPath, '-af', `silencedetect=noise=${noiseDb}dB:d=0.15`, '-f', 'null', '-'];
@@ -493,7 +496,7 @@ export class AudioProcessor {
 
     // 2. 加安全边距（避免切断辅音起音/尾音），并夹取到合法区间
     startSec = Math.max(0, startSec - padSec);
-    endSec = Math.min(totalSec, endSec + padSec);
+    endSec = Math.min(totalSec, endSec + tailPadSec);
 
     // 3. 无需修剪（首尾本就是语音，或检测失效）：原样返回
     if (startSec <= 0.05 && endSec >= totalSec - 0.05) {

@@ -4,19 +4,22 @@
 // 因为 Node 原生 WebSocket 无法自定义请求头，而微软服务校验 Origin/User-Agent。
 //
 // 协议要点（已实测打通，参考 edge-tts 开源实现）：
-//   1. 握手带 TrustedClientToken + 动态 Sec-MS-GEC（5 分钟时间窗哈希）
+//   1. 握手带 TrustedClientToken + 动态 Sec-MS-GEC（v2 签名，5 分钟时间窗）
 //   2. 发送帧必须是带 Path 头的 Message 文本帧（speech.config / ssml）
 //   3. 音频二进制消息 = [2B headerLen BE][header 文本 X-RequestId...Path:audio][MP3 数据直接开始]
 //   4. 结束信号 = 文本帧 Path:turn.end
-//   5. 版本号/UA 必须保持较新（旧版会被微软拒连，2026-09 起需 ≥153）
+//   5. 签名版本号与 UA 的 Chromium 版本必须跟随 Edge 内核更新，否则握手直接 403
+//      （2026-10 起微软把 Sec-MS-GEC 换成 v2，旧的纯 SHA256 签名一律被拒）
 
 import crypto from 'crypto'
 import https from 'https'
 import type { Socket } from 'net'
 
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4'
-// 微软要求较新的 Chromium 版本号（旧版本会被拒连；当前用到 Edge Stable 153.0.4234.32）
-const SEC_MS_GEC_VERSION = '1-153.0.4234.32'
+// 签名版本前缀 2 = v2 算法；Chromium 版本需跟随 Edge 内核（2026-11 对应 143.0.3650.75）
+const CHROMIUM_FULL_VERSION = '143.0.3650.75'
+const CHROMIUM_MAJOR_VERSION = CHROMIUM_FULL_VERSION.split('.')[0]
+const SEC_MS_GEC_VERSION = `2-${CHROMIUM_FULL_VERSION}`
 const OUTPUT_FORMAT = 'audio-24khz-48kbitrate-mono-mp3'
 const WSS_HOST = 'speech.platform.bing.com'
 const WSS_PATH = '/consumer/speech/synthesize/readaloud/edge/v1'
@@ -30,20 +33,252 @@ const WSS_HEADERS = {
   'Origin': 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
   'Sec-WebSocket-Version': '13',
   'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0',
+    `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROMIUM_MAJOR_VERSION}.0.0.0 Safari/537.36 Edg/${CHROMIUM_MAJOR_VERSION}.0.0.0`,
 }
 
 // RFC 6455 握手魔数
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
 
+// ── Sec-MS-GEC v2 签名 ───────────────────────────────────────────────────────
+// 微软私有接口：v2 =「CS64 8 字节摘要 + 改造版 SHA-256」双摘要，输入是
+// 「对齐到 5 分钟的 Windows 文件时间字符串 + TrustedClientToken」。
+// 常量逐字对齐 edge-tts/src/edge_tts/drm.py —— 这不是标准 SHA-256，不能替换成 crypto 实现。
+const U32_MASK_BIG = 0xffffffffn
+
+const SHA256_INITIAL = [
+  0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+] as const
+/** 改造版起始状态：替代标准 IV（words 0~13 被置零，等价于起始轮次从 14 开始） */
+const SHA256_STATE = [
+  0xfd9fbea2, 0x91243ce7, 0xbe499094, 0xcd2e1e0a, 0x6c006f49, 0x04bd35ab, 0xfeb0a7e4, 0x03effbd2,
+] as const
+/** 前 14 个消息字由自定义常量代替（标准算法里它们来自输入的前 56 字节） */
+const SHA256_SCHEDULE = [
+  0xeb24bf9e, 0x1558691f, 0xa0c09ee2, 0x0cfa32ba, 0xa622ee8c, 0xd1dd9491, 0xc0dd25a0, 0xf9e70ab6,
+  0xf0c31573, 0x7058ce4e, 0x7188e606, 0x00e5ab33, 0xd258b060, 0x72766564,
+] as const
+const SHA256_ROUND_CONSTANTS = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+] as const
+/** 第 14 轮常量被替换（标准值 0x9bdc06a7 → 0xc9dc06a7） */
+const SHA256_ADJUSTMENT = 0xc9dc06a7
+const SHA256_BLOCK_CONSTANTS = SHA256_ROUND_CONSTANTS.map((value, index) =>
+  index === 14 ? SHA256_ADJUSTMENT : value
+)
+const SHA256_SIGMA0_ADJUSTMENT = 0x059c0b80
+const SHA256_SIGMA1_ADJUSTMENT = 0x000b92c0
+
+const CS64_COEFFICIENTS: ReadonlyArray<readonly [number, number]> = [
+  [0xe82e91b1, 0xb32700d0],
+  [0x44de24c6, 0x88dff51d],
+  [0x3beb65bc, 0x29514038],
+  [0xc89c5933, 0xb328cbdf],
+  [0x8d1ec211, 0xd405b4d5],
+  [0x314ef5d5, 0x26e55f3c],
+  [0xe92491b1, 0x607801c6],
+  [0xf0a5b9d5, 0x82b2c1fb],
+  [0x06064cf3, 0xfa51a3da],
+  [0xda79fa60, 0x207cc464],
+  [0xbed20560, 0x3c3c74f3],
+  [0x89f9c9f8, 0xd2d14b61],
+  [0x35fa38c6, 0xbb04a2c1],
+  [0xcb49e3c6, 0xc5626167],
+]
+const CS64_FACTOR = 0x82893933
+const CS64_ADJUSTMENT0 = 0xf2f90b1a
+const CS64_ADJUSTMENT1 = 0x0b1a0000
+
+function rotr32(value: number, bits: number): number {
+  return ((value >>> bits) | (value << (32 - bits))) >>> 0
+}
+
+function smallSigma0(value: number): number {
+  return (rotr32(value, 7) ^ rotr32(value, 18) ^ (value >>> 3)) >>> 0
+}
+
+function smallSigma1(value: number): number {
+  return (rotr32(value, 17) ^ rotr32(value, 19) ^ (value >>> 10)) >>> 0
+}
+
+/** 消息扩展：from 之前的下标由调用方填好 */
+function expandSchedule(words: number[], from: number): void {
+  for (let i = from; i < 64; i++) {
+    words[i] = (smallSigma1(words[i - 2]) + words[i - 7] + smallSigma0(words[i - 15]) + words[i - 16]) >>> 0
+  }
+}
+
+/** 压缩函数的 64 轮（可从中途开始，v2 从第 14 轮起跑） */
+function runRounds(
+  state: readonly number[],
+  words: readonly number[],
+  constants: readonly number[],
+  firstRound: number
+): number[] {
+  let [a, b, c, d, e, f, g, h] = state
+  for (let i = firstRound; i < 64; i++) {
+    const s1 = (rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25)) >>> 0
+    const ch = ((e & f) ^ (~e & g)) >>> 0
+    const t1 = (h + s1 + ch + constants[i] + words[i]) >>> 0
+    const s0 = (rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22)) >>> 0
+    const maj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0
+    const t2 = (s0 + maj) >>> 0
+    h = g
+    g = f
+    f = e
+    e = (d + t1) >>> 0
+    d = c
+    c = b
+    b = a
+    a = (t1 + t2) >>> 0
+  }
+  return [a, b, c, d, e, f, g, h]
+}
+
+/** 改造版初始状态：前 7 个字节进消息字，其余由自定义常量与调整值填充 */
+function sha256Init(prefix: Buffer): number[] {
+  const words: number[] = new Array(64).fill(0)
+  words[14] = prefix.readUIntBE(0, 3)
+  words[15] = prefix.readUIntBE(3, 4)
+  for (let i = 16; i < 30; i++) {
+    let value = SHA256_SCHEDULE[i - 16]
+    value += i === 16 ? smallSigma1(words[14]) ^ SHA256_SIGMA1_ADJUSTMENT : smallSigma1(words[i - 2])
+    if (i >= 21) value += words[i - 7]
+    if (i === 29) value += smallSigma0(words[14]) ^ SHA256_SIGMA0_ADJUSTMENT
+    words[i] = value >>> 0
+  }
+  words[30] =
+    (smallSigma1(words[28]) +
+      words[23] +
+      smallSigma0(words[15]) +
+      words[14] +
+      SHA256_ADJUSTMENT -
+      SHA256_ROUND_CONSTANTS[14]) >>>
+    0
+  expandSchedule(words, 31)
+  const working = runRounds(SHA256_STATE, words, SHA256_BLOCK_CONSTANTS, 14)
+  return SHA256_INITIAL.map((value, index) => (value + working[index]) >>> 0)
+}
+
+/** 改造版摘要：前 7 字节走自定义初始状态，其余按自定义填充规则喂入 */
+function sha256Digest(data: Buffer): Buffer {
+  if (data.length < 7) throw new Error('Sec-MS-GEC 输入至少 7 字节')
+  const messageLength = 57 + data.length
+  const padLength = (((55 - messageLength) % 64) + 64) % 64
+  const lengthField = Buffer.alloc(8)
+  lengthField.writeBigUInt64BE(BigInt(messageLength * 8))
+  const padded = Buffer.concat([data.subarray(7), Buffer.from([0x80]), Buffer.alloc(padLength), lengthField])
+
+  let state = sha256Init(data.subarray(0, 7))
+  for (let offset = 0; offset < padded.length; offset += 64) {
+    const words: number[] = []
+    for (let i = 0; i < 16; i++) words.push(padded.readUInt32BE(offset + i * 4))
+    expandSchedule(words, 16)
+    const working = runRounds(state, words, SHA256_ROUND_CONSTANTS, 0)
+    state = state.map((value, index) => (value + working[index]) >>> 0)
+  }
+
+  const digest = Buffer.alloc(32)
+  state.forEach((value, index) => digest.writeUInt32BE(value, index * 4))
+  return digest
+}
+
+function rol16(value: bigint): bigint {
+  return ((value << 16n) | (value >> 16n)) & U32_MASK_BIG
+}
+
+/** CS64 摘要：以摘要前 8 字节为密钥的 32 位混合函数，返回两个 32 位分量 */
+function cs64Digest(data: Buffer, digest: Buffer): [number, number] {
+  const keyA = BigInt((digest.readUInt32LE(0) | 1) >>> 0)
+  const keyB = BigInt((digest.readUInt32LE(4) | 1) >>> 0)
+  const factors = [
+    (keyA * BigInt(CS64_FACTOR)) & U32_MASK_BIG,
+    (keyB * BigInt(CS64_FACTOR)) & U32_MASK_BIG,
+  ]
+  const terms: bigint[] = CS64_COEFFICIENTS.map(
+    ([coefficient], index) => (BigInt(coefficient) * factors[index % 2]) & U32_MASK_BIG
+  )
+  const offsets: bigint[] = CS64_COEFFICIENTS.map(([, offset]) => BigInt(offset))
+
+  // 输入 = 0x00 前缀 + 完整哈希原文，按 4 字节小端切词（词数为奇数时补 0）
+  const raw = Buffer.concat([Buffer.from([0]), data])
+  const words: number[] = []
+  for (let offset = 0; offset < raw.length; offset += 4) {
+    const chunk = Buffer.alloc(4)
+    raw.copy(chunk, 0, offset, Math.min(offset + 4, raw.length))
+    words.push(chunk.readUInt32LE(0))
+  }
+  if (words.length % 2 === 1) words.push(0)
+
+  words.forEach((word, index) => {
+    const value = BigInt(word)
+    let term = value * (index % 2 === 0 ? keyA : keyB)
+    let offset = rol16(value) * (index % 2 === 0 ? 0xef0569fbn : 0xc31713dbn)
+    if (index === 0) {
+      term += BigInt(CS64_ADJUSTMENT0) * factors[0]
+      offset += BigInt(CS64_ADJUSTMENT1)
+    }
+    terms.push(term & U32_MASK_BIG)
+    offsets.push(offset & U32_MASK_BIG)
+  })
+
+  let swapAcc = 0n
+  let swapLast = 0n
+  let state = 0n
+  let acc = 0n
+  for (let i = 0; i < terms.length; i += 2) {
+    const x = terms[i]
+    const y = terms[i + 1]
+
+    let t = rol16((offsets[i] + x) & U32_MASK_BIG)
+    let q = (t * 0x76f50f34n) & U32_MASK_BIG
+    swapAcc = (swapAcc + ((rol16(q) * 0xc3efea97n + q) & U32_MASK_BIG)) & U32_MASK_BIG
+
+    t = rol16((offsets[i + 1] + y) & U32_MASK_BIG)
+    q = (t * 0x1881ce3cn) & U32_MASK_BIG
+    swapLast = (rol16(q) * 0x35bd1ec9n + q) & U32_MASK_BIG
+    swapAcc = (swapAcc + swapLast) & U32_MASK_BIG
+
+    state = (state * keyA + x) & U32_MASK_BIG
+    state = (rol16(state) * 0xcf98b111n) & U32_MASK_BIG
+    state = (rol16(state) * 0x87085b9fn) & U32_MASK_BIG
+    state = (rol16(state) * 0x12ceb96dn) & U32_MASK_BIG
+    state = (rol16(state) * 0x257e1d83n) & U32_MASK_BIG
+    acc = (acc + state) & U32_MASK_BIG
+
+    t = (state * keyB + y) & U32_MASK_BIG
+    t = (rol16(t) * 0xa27416f5n) & U32_MASK_BIG
+    t = (rol16(t) * 0xd38396ffn) & U32_MASK_BIG
+    state = (rol16((rol16(t) * 0x7c932b89n) & U32_MASK_BIG) * 0xbfa49f69n) & U32_MASK_BIG
+    acc = (acc + state) & U32_MASK_BIG
+  }
+
+  return [
+    Number((swapLast ^ state) & U32_MASK_BIG),
+    Number((swapAcc ^ acc) & U32_MASK_BIG),
+  ]
+}
+
 /**
- * 计算 Sec-MS-GEC 动态令牌：5 分钟时间窗取整 + token 哈希（微软要求，防止伪造请求）
+ * 计算 Sec-MS-GEC 动态令牌（v2）：5 分钟时间窗对齐的 Windows 文件时间 + 双摘要
+ * 输出格式 `<CS64 16 位 hex>-<SHA256 64 位 hex>`（大写）
  */
-function computeSecMsGec(date: Date = new Date()): string {
-  const ticks = 116444736000000000 + date.getTime() * 10000
-  const roundedTicks = ticks - (ticks % 3000000000)
-  const hash = crypto.createHash('sha256').update(`${roundedTicks}${TRUSTED_CLIENT_TOKEN}`).digest('hex')
-  return hash.toUpperCase()
+export function computeSecMsGec(date: Date = new Date()): string {
+  const seconds = date.getTime() / 1000 + 11644473600
+  const ticks = (seconds - (seconds % 300)) * 1e7
+  const input = Buffer.from(`${ticks.toFixed(0)}${TRUSTED_CLIENT_TOKEN}`, 'ascii')
+  const digest = sha256Digest(input)
+  const [high, low] = cs64Digest(input, digest)
+  const cs64 = Buffer.alloc(8)
+  cs64.writeUInt32LE(high, 0)
+  cs64.writeUInt32LE(low, 4)
+  return `${cs64.toString('hex').toUpperCase()}-${digest.toString('hex').toUpperCase()}`
 }
 
 /** 转义 SSML 特殊字符，防止注入/破坏 XML 结构 */
@@ -67,6 +302,17 @@ function buildEdgeMessage(requestId: string, timestamp: string, path: string, co
     `Path:${path}\r\n\r\n` +
     data
   )
+}
+
+/** 握手被服务端拒绝（未返回 101）：通常意味着微软轮换了签名算法或版本号 */
+export class EdgeTtsHandshakeRejectedError extends Error {
+  constructor(public readonly httpStatus: number) {
+    super(
+      `微软 Edge TTS 握手被拒绝（HTTP ${httpStatus}）：签名校验规则可能已随 Edge 内核更新，` +
+        `需要更新客户端签名版本后才能继续使用`
+    )
+    this.name = 'EdgeTtsHandshakeRejectedError'
+  }
 }
 
 interface WssCallbacks {
@@ -183,6 +429,13 @@ function wssConnect(url: string, headers: Record<string, string>, callbacks: Wss
     socket.on('close', () => callbacks.onClose())
   })
 
+  req.on('response', (res) => {
+    // 服务端没有升级成 WebSocket：握手被拒（典型 403 —— 签名算法/版本号已过期）
+    res.resume()
+    callbacks.onError(new EdgeTtsHandshakeRejectedError(res.statusCode ?? 0))
+    req.destroy()
+  })
+
   req.on('error', (err) => callbacks.onError(err))
   req.end()
 
@@ -243,6 +496,9 @@ export function synthesizeEdgeTts(opts: EdgeTtsOptions): Promise<Buffer> {
   // 语速倍率 → SSML rate 百分比（如 1.3 → +30%，0.8 → -20%）
   const ratePercent = Math.round((rate - 1) * 100)
   const rateStr = ratePercent >= 0 ? `+${ratePercent}%` : `${ratePercent}%`
+
+  // 句尾停顿不在 SSML 里做：微软会直接掐断带 <break>/mstts:silence 的会话（实测 turn.start 后即关闭），
+  // 改由 step4 的 AudioProcessor.trimAudioEdges(tailPadMs) 在音频层补静音
 
   const url =
     `wss://${WSS_HOST}${WSS_PATH}` +
