@@ -134,6 +134,8 @@ export interface GeneratedShot {
     sourceEndMs: number;
     transcript: string;
     duckingBgm: boolean;
+    /** 逐行台词（含起止时间，源坐标）：导出层按行拆字幕条；行级归属去重按它做排他 */
+    asrSubLines?: OriginalOwnershipLine[];
   };
 }
 
@@ -823,6 +825,185 @@ export function dedupeDuplicateOriginalSegments<T extends {
     kept.push(p);
   }
   return { paragraphs: kept, removedIds };
+}
+
+/** 行级归属去重用的单行台词（源坐标，已由 `_asrSubLines` 裁剪到原声窗内） */
+export interface OriginalOwnershipLine {
+  text: string;
+  startMs: number;
+  endMs: number;
+}
+
+/** 单个原声段的归属决策：keep=原样 / trim=按剩余行收窄 / drop=整段删除 */
+export interface OriginalOwnershipPlan {
+  id: string;
+  action: 'keep' | 'trim' | 'drop';
+  reason: 'not-original' | 'no-lines' | 'first' | 'trimmed' | 'all-claimed' | 'too-short';
+  /** trim 时的新源窗起点/终点（源坐标 ms） */
+  newStartMs?: number;
+  newEndMs?: number;
+  /** trim 时保留的台词行 */
+  newLines?: OriginalOwnershipLine[];
+  /** trim 时的新台词（保留行以「，」连接，与逐字抄录同口径） */
+  newTranscript?: string;
+}
+
+/** 行级归属默认参数：最短保留 800ms；连续块间隔 1000ms（与 findAsrWindowByTime 同口径） */
+const OWNERSHIP_MIN_MS = 800;
+const OWNERSHIP_GAP_MS = 1000;
+
+/** 归一化行文本：去空白，避免 ASR 空格差异导致同一行被当成两行 */
+function normalizeOwnershipLineText(raw: unknown): string {
+  return String(raw ?? '').replace(/\s+/g, '');
+}
+
+/** 计算一行与已占用区间并集的交集时长（ms），用于「≥60% 已被占用」判定 */
+function overlapWithClaimedMs(
+  line: OriginalOwnershipLine,
+  claimed: Array<{ start: number; end: number }>,
+): number {
+  const parts = claimed
+    .map((c) => [Math.max(line.startMs, c.start), Math.min(line.endMs, c.end)] as [number, number])
+    .filter(([s, e]) => e > s)
+    .sort((a, b) => a[0] - b[0]);
+  let total = 0;
+  let curStart = Number.NaN;
+  let curEnd = Number.NaN;
+  for (const [s, e] of parts) {
+    if (!Number.isFinite(curEnd) || s > curEnd) {
+      if (curEnd > curStart) total += curEnd - curStart;
+      curStart = s;
+      curEnd = e;
+    } else if (e > curEnd) {
+      curEnd = e;
+    }
+  }
+  if (curEnd > curStart) total += curEnd - curStart;
+  return total;
+}
+
+/**
+ * 函数级中文注释：原声段「行级归属」规划（2026-11-16，修「原声段重复镜头」）。
+ *
+ * 背景：脚本按章滑窗生成时，章间重叠会把同一段 ASR 台词写进相邻两个原声段；
+ * 两段各自用 findAsrWindowByTime 收敛到同一块 ASR 行，源时间窗高度重叠
+ * （实测 11-05 项目 seg_33/34 重叠 4.2s、seg_35/36 重叠 4.65s），导出按窗切源片即重复镜头。
+ * 现有同窗同文去重只认「窗口完全相同 + 台词完全相同」，挡不住包含关系。
+ *
+ * 口径：
+ *  - 只处理原声段；作用域 = 连续原声段游程（遇非原声段重置已占用集合），
+ *    避免误删跨场景的同一句台词回顾/复现。
+ *  - 行身份 = `startMs + 归一化文本`（不用 endMs：_asrSubLines 会按窗裁剪 end）。
+ *  - 一行身份命中已占用行，或 ≥60% 落在已占用区间内，判为已占用。
+ *  - 剩余行按间隔 ≤gapMs 合并连续块，取最长块；剩余不足 minMs 则整段删除。
+ *
+ * @param shots 段落/分镜数组（需带 audioSource.asrSubLines 才可参与归属）
+ * @param opts minMs=最短保留时长(默认 800) / gapMs=连续块间隔(默认 1000)
+ * @returns 与输入等长的决策数组（按下标一一对应）
+ */
+export function planOriginalAudioOwnership<T extends {
+  id?: string;
+  keepOriginalAudio?: boolean;
+  type?: string;
+  audioSource?: {
+    sourceStartMs?: unknown;
+    sourceEndMs?: unknown;
+    transcript?: unknown;
+    asrSubLines?: unknown;
+  } | null;
+}>(shots: T[], opts?: { minMs?: number; gapMs?: number }): OriginalOwnershipPlan[] {
+  if (!Array.isArray(shots)) return [];
+  const minMs = Number.isFinite(Number(opts?.minMs)) && Number(opts?.minMs) >= 0
+    ? Number(opts?.minMs)
+    : OWNERSHIP_MIN_MS;
+  const gapMs = Number.isFinite(Number(opts?.gapMs)) && Number(opts?.gapMs) >= 0
+    ? Number(opts?.gapMs)
+    : OWNERSHIP_GAP_MS;
+
+  const plans: OriginalOwnershipPlan[] = [];
+  let claimed: Array<{ key: string; start: number; end: number }> = [];
+
+  for (const shot of shots) {
+    const id = String(shot?.id ?? '?');
+    const isOriginal = shot?.keepOriginalAudio === true || shot?.type === 'original_audio';
+    if (!isOriginal) {
+      claimed = [];
+      plans.push({ id, action: 'keep', reason: 'not-original' });
+      continue;
+    }
+
+    const rawLines = Array.isArray(shot?.audioSource?.asrSubLines) ? shot.audioSource!.asrSubLines! : [];
+    const lines: OriginalOwnershipLine[] = (rawLines as any[])
+      .map((l) => ({
+        text: normalizeOwnershipLineText(l?.text),
+        startMs: Number(l?.startMs),
+        endMs: Number(l?.endMs),
+      }))
+      .filter((l) => l.text && Number.isFinite(l.startMs) && Number.isFinite(l.endMs) && l.endMs > l.startMs)
+      .sort((a, b) => a.startMs - b.startMs);
+
+    if (lines.length === 0) {
+      // 无逐行台词（窗口兜底/无 ASR）：无法安全拆分，原样保留且不占用任何行
+      plans.push({ id, action: 'keep', reason: 'no-lines' });
+      continue;
+    }
+
+    const claimedKeys = new Set(claimed.map((c) => c.key));
+    const free = lines.filter((l) => {
+      if (claimedKeys.has(`${Math.round(l.startMs)}|${l.text}`)) return false;
+      const covered = overlapWithClaimedMs(l, claimed);
+      return covered < (l.endMs - l.startMs) * 0.6;
+    });
+
+    const claim = (arr: OriginalOwnershipLine[]) => {
+      for (const l of arr) claimed.push({ key: `${Math.round(l.startMs)}|${l.text}`, start: l.startMs, end: l.endMs });
+    };
+
+    if (free.length === lines.length) {
+      claim(lines);
+      plans.push({ id, action: 'keep', reason: 'first' });
+      continue;
+    }
+
+    // 剩余行按间隔合并连续块（与 findAsrWindowByTime 同口径），取最长块，等长取最早
+    const runs: OriginalOwnershipLine[][] = [];
+    for (const line of free) {
+      const last = runs[runs.length - 1];
+      if (last && line.startMs - last[last.length - 1].endMs <= gapMs) last.push(line);
+      else runs.push([line]);
+    }
+    let best: OriginalOwnershipLine[] | null = null;
+    let bestMs = -1;
+    for (const run of runs) {
+      const span = run[run.length - 1].endMs - run[0].startMs;
+      if (span > bestMs) {
+        best = run;
+        bestMs = span;
+      }
+    }
+
+    if (!best || bestMs <= 0) {
+      plans.push({ id, action: 'drop', reason: 'all-claimed' });
+      continue;
+    }
+    if (bestMs < minMs) {
+      plans.push({ id, action: 'drop', reason: 'too-short' });
+      continue;
+    }
+
+    claim(best);
+    plans.push({
+      id,
+      action: 'trim',
+      reason: 'trimmed',
+      newStartMs: best[0].startMs,
+      newEndMs: best[best.length - 1].endMs,
+      newLines: best,
+      newTranscript: best.map((l) => l.text).join('，'),
+    });
+  }
+
+  return plans;
 }
 
 /**
@@ -2963,6 +3144,65 @@ ${roleMapLines.join('\n')}
         LOG_TAGS.AI_AGENT,
         `[文案生成][原声] 字幕逐字抄录：${verbatimStat.copied}/${originalCount} 段用原声窗 ASR 原文覆盖 LLM 文本`,
       );
+    }
+
+    // 🎙️ 原声段「行级归属」去重（2026-11-16，修「原声段重复镜头」）：
+    //   同一 ASR 行只能被一个原声段占用；后来段剔除已占用行后按剩余行重算窗口，
+    //   剩余不足 800ms 则整段丢弃。作用域 = 连续原声段游程（遇解说段重置），
+    //   避免误删跨场景的同一句台词回顾/复现。
+    //   详见 docs/designs/2026-11-16-原声段落行级归属去重设计方案.md
+    {
+      const plans = planOriginalAudioOwnership(parsedShots);
+      const kept: GeneratedShot[] = [];
+      const droppedIds: string[] = [];
+      const trimmedIds: string[] = [];
+      let noLines = 0;
+      for (let i = 0; i < parsedShots.length; i++) {
+        const shot = parsedShots[i];
+        const plan = plans[i];
+        if (!plan) {
+          kept.push(shot);
+          continue;
+        }
+        if (plan.action === 'drop') {
+          droppedIds.push(`${plan.id}:${plan.reason}`);
+          continue;
+        }
+        if (plan.reason === 'no-lines') noLines++;
+        if (plan.action === 'trim' && shot.audioSource
+          && Number.isFinite(plan.newStartMs) && Number.isFinite(plan.newEndMs)) {
+          const before = `${shot.audioSource.sourceStartMs}~${shot.audioSource.sourceEndMs}`;
+          shot.audioSource.sourceStartMs = plan.newStartMs!;
+          shot.audioSource.sourceEndMs = plan.newEndMs!;
+          shot.audioSource.transcript = plan.newTranscript || '';
+          shot.audioSource.asrSubLines = plan.newLines || [];
+          // 台词变短后重跑词表标记，保证 text/cleanText/lexiconMarks 与保留台词一致
+          const scanned = lexiconFilter.scan(shot.audioSource.transcript);
+          shot.text = scanned.original;
+          shot.cleanText = scanned.cleanText;
+          shot.flagged = scanned.flagged;
+          shot.replaced = scanned.replaced;
+          shot.lexiconMarks = scanned.matches.map((m) => ({
+            word: m.word,
+            level: m.level,
+            replaced: m.replaced,
+          }));
+          trimmedIds.push(`${plan.id} ${before}→${plan.newStartMs}~${plan.newEndMs}`);
+        }
+        kept.push(shot);
+      }
+      if (kept.length !== parsedShots.length) {
+        parsedShots.length = 0;
+        parsedShots.push(...kept);
+      }
+      if (droppedIds.length > 0 || trimmedIds.length > 0) {
+        AppLogger.info(
+          LOG_TAGS.AI_AGENT,
+          `[文案生成][原声归属] 裁剪=${trimmedIds.length}${trimmedIds.length ? `（${trimmedIds.join('；')}）` : ''}`
+          + ` 删除=${droppedIds.length}${droppedIds.length ? `（${droppedIds.join('；')}）` : ''}`
+          + ` 无ASR跳过=${noLines}，剩余 ${parsedShots.length} 段`,
+        );
+      }
     }
 
     // 🎙️ 逐字抄录后再去重（2026-10-23，修「原声重复太多」）：抄录前各份 LLM 文本不同，

@@ -82,6 +82,7 @@ import {
   applySemanticDedupRewrites,
   isSentenceFinished,
   dedupeDuplicateOriginalSegments,
+  planOriginalAudioOwnership,
   originalWindowSec,
   verifyOutlineGrounding,
   allocateChapterShotChunkIndex,
@@ -1616,6 +1617,123 @@ describe('dedupeDuplicateOriginalSegments — 原声同窗同文去重', () => {
       { id: 'seg_2', keepOriginalAudio: true, audioSource: { sourceStartMs: 900, sourceEndMs: 900, transcript: '无窗台词' } },
     ]);
     expect(r.paragraphs).toHaveLength(2);
+  });
+});
+
+describe('planOriginalAudioOwnership — 原声段行级归属', () => {
+  type Line = [string, number, number];
+  const orig = (id: string, lines: Line[]) => ({
+    id,
+    keepOriginalAudio: true,
+    audioSource: {
+      sourceStartMs: lines[0][1],
+      sourceEndMs: lines[lines.length - 1][2],
+      transcript: lines.map((l) => l[0]).join('，'),
+      asrSubLines: lines.map(([text, startMs, endMs]) => ({ text, startMs, endMs })),
+    },
+  });
+
+  it('后段全部行已被占用（11-05 seg_33/34 形态）→ 整段删除', () => {
+    const plans = planOriginalAudioOwnership([
+      orig('seg_33', [
+        ['顺便一提', 1862057, 1864357],
+        ['找到小三试试也很重要', 1864157, 1866577],
+        ['一个人的言语会骗人但气味不会', 1866577, 1868357],
+      ]),
+      orig('seg_34', [
+        ['找到小三试试也很重要', 1864157, 1866577],
+        ['一个人的言语会骗人但气味不会', 1866577, 1868357],
+      ]),
+    ]);
+    expect(plans.map((p) => p.action)).toEqual(['keep', 'drop']);
+    expect(plans[1].reason).toBe('all-claimed');
+  });
+
+  it('前缀重叠但保留新尾句（11-05 seg_35/36 形态）→ 按剩余行收窄', () => {
+    const plans = planOriginalAudioOwnership([
+      orig('seg_35', [
+        ['现在这么早你去哪儿了', 1883497, 1886317],
+        ['我这不正准备去买菜', 1886857, 1888857],
+        ['你这几天脸色不好', 1889507, 1891507],
+      ]),
+      orig('seg_36', [
+        ['我这不正准备去买菜', 1886857, 1888857],
+        ['你这几天脸色不好', 1889507, 1891507],
+        ['暖胃汤都给你备好了', 1892357, 1893607],
+      ]),
+    ]);
+    expect(plans[0].action).toBe('keep');
+    expect(plans[1].action).toBe('trim');
+    expect(plans[1].newStartMs).toBe(1892357);
+    expect(plans[1].newEndMs).toBe(1893607);
+    expect(plans[1].newTranscript).toBe('暖胃汤都给你备好了');
+    expect(plans[1].newLines).toHaveLength(1);
+  });
+
+  it('无重叠 → 全部原样保留', () => {
+    const plans = planOriginalAudioOwnership([
+      orig('seg_1', [['你来了', 1000, 3000]]),
+      orig('seg_2', [['我没来', 50000, 52000]]),
+    ]);
+    expect(plans.map((p) => p.action)).toEqual(['keep', 'keep']);
+    expect(plans.map((p) => p.reason)).toEqual(['first', 'first']);
+  });
+
+  it('中间行被占用 → 取剩余最长连续块，等长取最早', () => {
+    const plans = planOriginalAudioOwnership([
+      orig('seg_1', [['中间句', 3000, 5000]]),
+      orig('seg_2', [
+        ['前句', 1000, 2500],
+        ['中间句', 3000, 5000],
+        ['后句', 6000, 7500],
+      ]),
+    ]);
+    expect(plans[1].action).toBe('trim');
+    expect(plans[1].newStartMs).toBe(1000);
+    expect(plans[1].newEndMs).toBe(2500);
+    expect(plans[1].newTranscript).toBe('前句');
+  });
+
+  it('两段原声之间夹解说段 → 分开两个游程，均保留', () => {
+    const plans = planOriginalAudioOwnership([
+      orig('seg_1', [['你来了', 1000, 3000]]),
+      { id: 'seg_2', text: '解说一句' },
+      orig('seg_3', [['你来了', 1000, 3000]]),
+    ]);
+    expect(plans.map((p) => p.action)).toEqual(['keep', 'keep', 'keep']);
+    expect(plans[2].reason).toBe('first');
+  });
+
+  it('无 asrSubLines（窗口兜底）→ 原样保留，不占用任何行', () => {
+    const plans = planOriginalAudioOwnership([
+      { id: 'seg_1', keepOriginalAudio: true, audioSource: { sourceStartMs: 1000, sourceEndMs: 3000, transcript: '无行台词' } },
+      orig('seg_2', [['你来了', 1000, 3000]]),
+    ]);
+    expect(plans[0].action).toBe('keep');
+    expect(plans[0].reason).toBe('no-lines');
+    expect(plans[1].action).toBe('keep');
+    expect(plans[1].reason).toBe('first');
+  });
+
+  it('剩余块 < 最短保留时长（800ms）→ 整段删除', () => {
+    const plans = planOriginalAudioOwnership([
+      orig('seg_1', [['你来了', 0, 1000]]),
+      orig('seg_2', [
+        ['你来了', 0, 1000],
+        ['嗯', 1100, 1500],
+      ]),
+    ]);
+    expect(plans[1].action).toBe('drop');
+    expect(plans[1].reason).toBe('too-short');
+  });
+
+  it('同窗同文 + 逐行台词 → 后段所有行被占用而删除', () => {
+    const plans = planOriginalAudioOwnership([
+      orig('seg_5', [['哪只有短短几天的相遇', 376238, 380118]]),
+      orig('seg_6', [['哪只有短短几天的相遇', 376238, 380118]]),
+    ]);
+    expect(plans.map((p) => p.action)).toEqual(['keep', 'drop']);
+    expect(plans[1].reason).toBe('all-claimed');
   });
 });
 
