@@ -55,7 +55,8 @@ export const HomeContainer: React.FC = () => {
     FrontendLogger.info('HomeManager', 'User requested to create project', traceId);
     try {
       const newId = await createProject('video');
-      if (newId) navigate(`/editor/${newId}`);
+      // justCreated：告诉编辑器这次是「新建」而非「回看」，只有新建才自动弹一键成片向导
+      if (newId) navigate(`/editor/${newId}`, { state: { justCreated: true } });
     } catch (error: any) {
       FrontendLogger.error('HomeManager', 'Failed to create project', traceId, error.message);
     }

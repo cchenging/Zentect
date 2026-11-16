@@ -4,7 +4,7 @@
  * 子组件已迁移至 @modules/editor/{shell,preview,storyboard}
  */
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useLocation } from 'react-router-dom';
 import { getSafeMediaUrl } from '@renderer/utils/formatUrl';
 import { useStore } from '@renderer/store/useStore';
 import { Music, Image, Check } from 'lucide-react';
@@ -35,6 +35,9 @@ import { formatTime } from '@modules/editor/preview';
 
 export default function Editor() {
   const { id } = useParams();
+  const location = useLocation();
+  /** 本次进场是否由首页「新建项目」跳转而来（路由 state 只在新建那一次带）：回看已有项目一律不自动弹向导 */
+  const justCreated = (location.state as { justCreated?: boolean } | null)?.justCreated === true;
 
   /** 一键成片浮层：新项目（无素材）进入编辑器时自动打开 */
   const projectName = useProjectStore((s) => s.projectName) || '未命名项目';
@@ -166,12 +169,13 @@ export default function Editor() {
   /** 缓存过滤结果，避免每次渲染重复过滤 */
   const videoCount = useMemo(() => mediaItems.filter((m: any) => m.type === 'video').length, [mediaItems]);
 
-  /** 仅在新项目（无视频、非回看）首次装载完成时自动弹出一次，避免打断已有项目 */
+  /** 仅「本次新建」的项目（首页新建跳转 + 无视频）首次装载完成时自动弹出一次；
+   *  从首页点开已有项目（哪怕没有素材）属于回看，一律不弹，避免误以为在新建项目 */
   useEffect(() => {
     if (wizardAutoOpened.current || hydrationStatus !== 'READY') return;
     wizardAutoOpened.current = true;
-    if (videoCount === 0) setWizardOpen(true);
-  }, [hydrationStatus, videoCount]);
+    if (justCreated && videoCount === 0) setWizardOpen(true);
+  }, [hydrationStatus, videoCount, justCreated]);
   const audioCount = useMemo(() => mediaItems.filter((m: any) => m.type === 'audio').length, [mediaItems]);
   /** 视频切片池：优先从 Store 的 videoChunks 取，回退到 mediaItems 过滤 */
   const chunkItems = useMemo(() => {
