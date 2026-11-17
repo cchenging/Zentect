@@ -8,8 +8,17 @@ import path from 'path'
 import crypto from 'crypto'
 import { AppError, ErrorCode } from '@modules/infra/error/AppError'
 import { clampPauseMs } from '../../../../shared/types/entities/stylePack'
+import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor'
 
 export type TTSVendor = 'doubao' | 'edge' | 'kokoro'
+
+/** 情绪韵律 / 响度统一扩展参数（两条合成路径共用，保证缓存键与产物口径一致） */
+export interface TtsSynthesizeExtras {
+  /** 情绪音高偏移（Hz，仅 Edge 生效） */
+  pitchHz?: number
+  /** 是否对终态音频做 loudnorm 响度统一（解说段 TTS） */
+  loudnessNorm?: boolean
+}
 
 /**
  * 判断错误消息是否为"网络/连接中断"类错误。
@@ -46,7 +55,8 @@ export class TTSProvider {
     voiceOverride?: string,
     rate?: number,
     preferredProvider?: TTSVendor,
-    pauseMs?: number
+    pauseMs?: number,
+    extras?: TtsSynthesizeExtras
   ): Promise<{ path: string; provider: TTSVendor }> {
     // 用户指定引擎 → 只用该引擎（失败即抛错暴露）；未指定 → edge 兜底（历史默认，免费无需配置）
     const fallbackChain: TTSVendor[] = preferredProvider ? [preferredProvider] : ['edge'];
@@ -54,7 +64,7 @@ export class TTSProvider {
 
     for (const provider of fallbackChain) {
       try {
-        const audioPath = await this.synthesize(text, provider, saveDir, voiceOverride, rate, pauseMs);
+        const audioPath = await this.synthesize(text, provider, saveDir, voiceOverride, rate, pauseMs, extras);
         return { path: audioPath, provider };
       } catch (err: any) {
         lastError = err;
@@ -81,7 +91,8 @@ export class TTSProvider {
     saveDir?: string,
     voiceOverride?: string,
     rate?: number,
-    pauseMs?: number
+    pauseMs?: number,
+    extras?: TtsSynthesizeExtras
   ): Promise<string> {
     const config = ProviderManager.getTTSConfig(provider)
     const targetDir = saveDir || PathManager.getTTSOutputDir()
@@ -89,6 +100,9 @@ export class TTSProvider {
     const speedRate = typeof rate === 'number' && rate > 0 ? rate : 1.0
     // 句尾停顿归一化（0~400ms 整数），仅 Edge 消费
     const pause = typeof pauseMs === 'number' ? clampPauseMs(pauseMs) : 0
+    // 🎭 情绪音高（Hz，仅 Edge 消费）与响度统一开关
+    const pitchHz = Math.round(typeof extras?.pitchHz === 'number' ? extras.pitchHz : 0)
+    const loudnessNorm = extras?.loudnessNorm === true
 
     // 统一清洗文本，去除 LLM 生成的舞台指示标记
     const cleanedText = text
@@ -96,9 +110,13 @@ export class TTSProvider {
       .replace(/\s+/g, ' ')
       .trim()
 
-    /** 缓存查找：相同清洗后文本+引擎+音色+语速 的合成结果直接复用 */
+    /** 缓存查找：相同清洗后文本+引擎+音色+语速+停顿+音高+响度口径 的合成结果直接复用 */
     const voiceKey = voiceOverride || config.voice || 'default'
-    const cacheHash = crypto.createHash('md5').update(`${cleanedText}|${provider}|${voiceKey}|${speedRate}|p${pause}`).digest('hex').substring(0, 12)
+    const cacheHash = crypto
+      .createHash('md5')
+      .update(`${cleanedText}|${provider}|${voiceKey}|${speedRate}|p${pause}|hz${pitchHz}|${loudnessNorm ? 'ln16' : 'raw'}`)
+      .digest('hex')
+      .substring(0, 12)
     // 引擎扩展名：本地 Kokoro 输出 24kHz WAV，在线引擎输出 MP3
     const ext = provider === 'kokoro' ? 'wav' : 'mp3'
     const cachedFile = path.join(targetDir, `tts_${provider}_${voiceKey}_${cacheHash}.${ext}`)
@@ -107,6 +125,9 @@ export class TTSProvider {
     }
 
     let audioData: Buffer
+    // 响度统一开启时：原始合成音频先落 raw 临时文件，loudnorm 后再写终态缓存文件
+    const rawTarget = loudnessNorm ? path.join(targetDir, `tts_raw_${cacheHash}.${ext}`) : cachedFile
+    if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true })
 
     try {
       switch (provider) {
@@ -140,7 +161,8 @@ export class TTSProvider {
             (/^[a-zA-Z0-9\s.,!?'-]+$/.test(cleanedText) ? 'en-US-JennyNeural' : 'zh-CN-XiaoxiaoNeural')
           // 微软官方 Edge TTS（免费、无需 key），替代已失效的第三方代理 api.tts.quest（实测返回 404）
           // 注意：句尾停顿不走 SSML（微软会掐断），由 Strategy 的 trimAudioEdges(tailPadMs) 在音频层补
-          audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate })
+          // 🎭 情绪音高：仅 Edge 支持 prosody pitch（火山/Kokoro 本轮不传，见设计方案 D3）
+          audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate, pitchHz })
           break
         }
         case 'kokoro': {
@@ -157,23 +179,28 @@ export class TTSProvider {
               text: cleanedText,
               voice: voiceOverride || 'zf_xiaobei',
               speed: speedRate,
-              out_path: cachedFile,
+              out_path: rawTarget,
             }),
           })
           const json: any = await res.json()
           if (!json?.success || !json?.audioPath) {
             throw new AppError(ErrorCode.AI_PROCESS_FAILED, json?.error || 'Kokoro 合成失败')
           }
-          // Python 端已写盘（缓存文件即最终产物），直接返回路径
-          return cachedFile
+          // Python 端已写盘；未开响度统一时 rawTarget 即终态缓存文件
+          if (!loudnessNorm) return cachedFile
+          return await TTSProvider._applyLoudness(rawTarget, cachedFile)
         }
         default:
           throw new AppError(ErrorCode.SYS_ENV_ERROR, `未知的 TTS 引擎: ${provider}`)
       }
 
-      if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true })
-      fs.writeFileSync(cachedFile, audioData)
-      return cachedFile
+      if (!loudnessNorm) {
+        fs.writeFileSync(cachedFile, audioData)
+        return cachedFile
+      }
+      // 响度统一：原始音频落 raw → loudnorm → 终态缓存文件（保持源采样率/声道）
+      fs.writeFileSync(rawTarget, audioData)
+      return await TTSProvider._applyLoudness(rawTarget, cachedFile)
     } catch (err: any) {
       const msg = err?.message || '';
       // 网络/连接中断类错误（如守护进程被重启导致 fetch failed）≠ 依赖缺失，不能误提示装依赖
@@ -186,6 +213,19 @@ export class TTSProvider {
         kokoro: '（请到 设置 → 健康检查 → AI 运行时依赖 安装 Kokoro 依赖）',
       }
       throw new AppError(ErrorCode.AI_PROCESS_FAILED, `${msg || '语音合成失败'}${hints[provider] || ''}`)
+    }
+  }
+
+  /**
+   * 响度统一：raw 合成音频 → loudnorm → 终态缓存文件，随后清理 raw 临时文件。
+   * 失败直接抛错（错就错），不返回未标准化的 raw 掩盖 ffmpeg 异常。
+   */
+  private static async _applyLoudness(rawPath: string, outputPath: string): Promise<string> {
+    try {
+      await AudioProcessor.normalizeLoudness(rawPath, outputPath)
+      return outputPath
+    } finally {
+      try { fs.unlinkSync(rawPath) } catch { /* raw 临时文件清理失败不影响终态产物 */ }
     }
   }
 }

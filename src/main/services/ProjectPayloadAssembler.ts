@@ -248,6 +248,13 @@ export function assembleProjectPayload(rawData: any, projectId: string): any {
     ttsPauseMs: typeof rawData.ttsPauseMs === 'number' ? rawData.ttsPauseMs : resolveStylePackPauseMs(stylePack),
     ttsPauseManual: typeof rawData.ttsPauseManual === 'boolean' ? rawData.ttsPauseManual : undefined,
     ttsVoiceManual: typeof rawData.ttsVoiceManual === 'boolean' ? rawData.ttsVoiceManual : undefined,
+    /** 🎭 情绪语气 / 🔊 响度统一：旧工程缺省按默认开启，非法强度档收敛为 normal */
+    ttsEmotionProsody: typeof rawData.ttsEmotionProsody === 'boolean' ? rawData.ttsEmotionProsody : true,
+    ttsEmotionStrength:
+      rawData.ttsEmotionStrength === 'weak' || rawData.ttsEmotionStrength === 'strong'
+        ? rawData.ttsEmotionStrength
+        : 'normal',
+    ttsLoudnessNorm: typeof rawData.ttsLoudnessNorm === 'boolean' ? rawData.ttsLoudnessNorm : true,
     videoChunks: Array.isArray(rawData.videoChunks) ? rawData.videoChunks : [],
     // 步骤5 匹配结果 + BGM 节拍（metadata 持久化，重启恢复）
     matchResults: Array.isArray(rawData.matchResults) ? rawData.matchResults : [],

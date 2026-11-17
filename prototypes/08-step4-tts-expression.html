@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>步骤4 TTS · 情绪语气 + 响度统一（原型）</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#161b22; --panel-2:#1c232c; --line:#28313b;
+    --text:#e6edf3; --muted:#8b98a5; --accent:#4cc2ff; --accent-2:#ffb454;
+    --ok:#3fb950; --bad:#f85149; --warn:#d29922;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:13px;line-height:1.6}
+  header{padding:22px 28px 14px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#141a21,#0f1216)}
+  h1{margin:0 0 6px;font-size:17px;font-weight:600;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12px}
+  .tag{display:inline-block;margin-left:8px;padding:1px 7px;border:1px solid var(--line);border-radius:99px;
+    color:var(--accent-2);font-size:11px}
+  .wrap{display:grid;grid-template-columns:300px 1fr 300px;gap:16px;padding:16px 28px 28px;align-items:start}
+  @media (max-width:1180px){.wrap{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .panel h2{margin:0 0 10px;font-size:12px;font-weight:600;color:var(--muted);letter-spacing:.6px;text-transform:uppercase}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px dashed #202934}
+  .row:last-child{border-bottom:none}
+  .switch{position:relative;width:38px;height:20px;border-radius:99px;background:#2b3540;cursor:pointer;transition:.18s;flex:0 0 auto}
+  .switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#8b98a5;transition:.18s}
+  .switch.on{background:rgba(76,194,255,.25)}
+  .switch.on::after{left:20px;background:var(--accent)}
+  .seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;flex:0 0 auto}
+  .seg button{border:0;background:transparent;color:var(--muted);padding:4px 10px;font-size:12px;cursor:pointer;font-family:inherit}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.active{background:rgba(76,194,255,.16);color:var(--accent)}
+  .emo{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);
+    border-radius:8px;margin-bottom:7px;cursor:pointer;transition:.15s;background:var(--panel-2)}
+  .emo:hover{border-color:#3a4653}
+  .emo.active{border-color:var(--accent);box-shadow:0 0 0 1px rgba(76,194,255,.35) inset}
+  .emo .nm{font-weight:600}
+  .emo .kv{color:var(--muted);font-size:11.5px;font-variant-numeric:tabular-nums}
+  .meter{height:6px;border-radius:99px;background:#0b0f13;overflow:hidden;margin-top:6px}
+  .meter > i{display:block;height:100%;background:linear-gradient(90deg,#2d7ff9,#4cc2ff)}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:7px 8px;border-bottom:1px solid #1e262f;text-align:left;vertical-align:middle}
+  th{color:var(--muted);font-weight:500;font-size:11.5px}
+  td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .pill{display:inline-block;padding:0 7px;border-radius:99px;font-size:11px;border:1px solid var(--line);color:var(--muted)}
+  .pill.hit{border-color:rgba(255,180,84,.5);color:var(--accent-2)}
+  .pill.neutral{opacity:.7}
+  .bar{position:relative;height:8px;background:#0b0f13;border-radius:99px;overflow:hidden;min-width:110px}
+  .bar > i{position:absolute;top:0;bottom:0;left:0;border-radius:99px}
+  .bar > b{position:absolute;top:-2px;bottom:-2px;width:1px;background:rgba(63,185,80,.9)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .stat{background:var(--panel-2);border:1px solid var(--line);border-radius:8px;padding:9px 10px}
+  .stat .k{color:var(--muted);font-size:11px}
+  .stat .v{font-size:17px;font-weight:600;font-variant-numeric:tabular-nums}
+  .stat .v small{font-size:11px;font-weight:400;color:var(--muted);margin-left:4px}
+  .hint{color:var(--muted);font-size:11.5px;margin-top:8px}
+  .target{display:flex;justify-content:space-between;color:var(--muted);font-size:11px;margin-top:6px}
+  .legend{display:flex;gap:14px;color:var(--muted);font-size:11px;margin-top:8px;flex-wrap:wrap}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}
+</style>
+</head>
+<body>
+<header>
+  <h1>步骤4 TTS · 情绪语气 + 响度统一<span class="tag">原型 · 参数映射演示</span></h1>
+  <div class="sub">演示 emotion → rate/pitch 的映射与响度收敛后的读数变化；不产生真实音频。数值为设计口径，非最终实现。</div>
+</header>
+
+<div class="wrap">
+  <!-- 左：控制 + 情绪桶 -->
+  <section class="panel">
+    <h2>开关与强度</h2>
+    <div class="row">
+      <div>情绪语气<small style="color:var(--muted)">（emotion → 参数）</small></div>
+      <div class="switch on" id="swEmo"></div>
+    </div>
+    <div class="row">
+      <div>强度</div>
+      <div class="seg" id="strength">
+        <button data-v="weak">弱</button>
+        <button data-v="normal" class="active">中</button>
+        <button data-v="strong">强</button>
+      </div>
+    </div>
+    <div class="row">
+      <div>响度统一<small style="color:var(--muted)">（loudnorm）</small></div>
+      <div class="switch on" id="swLoud"></div>
+    </div>
+    <div class="hint">情绪只改 rate / pitch，不改音量；音量口径统一由 loudnorm 负责，两者互不抵消。</div>
+
+    <h2 style="margin-top:18px">情绪分桶（点击查看参数）</h2>
+    <div id="emoList"></div>
+    <div class="hint">按关键词命中数取最高分桶；同分取表中靠前者；无命中 = 中性（不传任何参数）。</div>
+  </section>
+
+  <!-- 中：段落 -->
+  <section class="panel">
+    <h2>份例：12 段文案</h2>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:44%">段落</th>
+          <th>情绪</th>
+          <th>桶</th>
+          <th class="num">rate</th>
+          <th class="num">pitch</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--accent-2)"></i>命中情绪桶</span>
+      <span><i class="dot" style="background:#3a4653"></i>中性（保持原样）</span>
+      <span>rate 全局基准 1.00，最终夹取 0.80–1.25；pitch 夹取 ±4Hz</span>
+    </div>
+  </section>
+
+  <!-- 右：响度 -->
+  <section class="panel">
+    <h2>响度（integrated LUFS）</h2>
+    <div class="grid2">
+      <div class="stat">
+        <div class="k">统一前极差</div>
+        <div class="v" id="rangeBefore">—<small>dB</small></div>
+      </div>
+      <div class="stat">
+        <div class="k">统一后极差</div>
+        <div class="v" id="rangeAfter">—<small>dB</small></div>
+      </div>
+    </div>
+    <div class="target"><span>−24</span><span>目标 −16 LUFS</span><span>−8</span></div>
+    <div id="loudRows" style="margin-top:10px"></div>
+    <div class="legend">
+      <span><i class="dot" style="background:#f85149"></i>统一前</span>
+      <span><i class="dot" style="background:#3fb950"></i>统一后</span>
+      <span>绿线 = −16 LUFS</span>
+    </div>
+    <div class="hint">目标带 −16 ± 1 LUFS（TP −1.5 / LRA 11），只作用于解说段 TTS；原声段仍走导出侧 volume=1.5，不受影响。</div>
+  </section>
+</div>
+
+<script>
+/* ---------- 设计常量（改这里即可试不同口径） ---------- */
+const BUCKETS = [
+  { id:'tense',  name:'紧张·悬疑', kws:['紧张','悬疑','不安','警觉','压迫','窒息','惊惧'], rate:1.04, pitch: 1 },
+  { id:'angry',  name:'愤怒·冲突', kws:['愤怒','怒','爆发','吼','对峙','冲突','狠'],        rate:1.06, pitch:-1 },
+  { id:'sad',    name:'悲伤·压抑', kws:['悲','哭','落泪','绝望','压抑','沉重','心碎'],      rate:0.94, pitch:-2 },
+  { id:'warm',   name:'温情·治愈', kws:['温暖','温情','治愈','柔和','安心','甜蜜','怀旧'],  rate:0.96, pitch: 0 },
+  { id:'shock',  name:'惊讶·反转', kws:['惊讶','震惊','错愕','反转','意外'],                rate:1.08, pitch: 3 },
+  { id:'hype',   name:'高燃·热血', kws:['燃','热血','激昂','振奋','燃爆','决战'],            rate:1.05, pitch: 2 },
+  { id:'neutral',name:'中性',      kws:[],                                                  rate:1.00, pitch: 0 },
+];
+const STRENGTH = { weak:0.5, normal:1.0, strong:1.5 };
+const RATE_MIN = 0.8, RATE_MAX = 1.25, PITCH_LIMIT = 4;
+
+/* ---------- 示例段落 ---------- */
+const SEGMENTS = [
+  { text:'他推开门的那一刻，屋里的空气几乎是凝固的。', emo:'紧张' },
+  { text:'桌上那杯水，还在微微晃动。',               emo:'悬疑' },
+  { text:'“你到底是什么人？”他压着嗓子问。',         emo:'压迫' },
+  { text:'对方没有回答，只是慢慢抬起了头。',           emo:'阴沉' },
+  { text:'那一瞬间，他终于看清了那张脸。',             emo:'震惊' },
+  { text:'原来，一切早在三年前就已经写好。',           emo:'反转' },
+  { text:'他想起母亲在灶台边忙碌的背影。',             emo:'温暖' },
+  { text:'那碗汤，是他在这个城市里唯一的念想。',       emo:'怀旧' },
+  { text:'可如今，连这点温度也要被夺走了。',           emo:'绝望' },
+  { text:'他攥紧拳头，指节一点一点发白。',             emo:'愤怒' },
+  { text:'“这一次，我不会再退了。”',                 emo:'爆发' },
+  { text:'镜头拉远，城市的灯一盏一盏亮起来。',         emo:'平静' },
+];
+
+/* 响度 mock：统一前分布在 −20 ~ −13，统一后落在 −16 ± 0.4 */
+const LOUD_BEFORE = [-19.4,-17.8,-13.6,-18.9,-14.2,-16.5,-20.1,-15.1,-17.2,-13.9,-19.8,-16.0];
+const LOUD_AFTER  = [-16.2,-16.0,-15.8,-16.1,-15.9,-16.0,-16.3,-15.9,-16.1,-15.7,-16.2,-16.0];
+
+const state = { emoOn:true, strength:'normal', loudOn:true, selected:'tense' };
+
+/* ---------- 映射函数（与设计稿 §4 对齐） ---------- */
+function pickBucket(emotion){
+  const e = String(emotion || '').trim();
+  if(!e) return { bucket:BUCKETS[6], hits:0 };
+  let best = BUCKETS[6], bestHits = 0;
+  for(const b of BUCKETS){
+    if(b.id === 'neutral') continue;
+    const hits = b.kws.reduce((n,k)=> e.includes(k) ? n+1 : n, 0);
+    if(hits > bestHits){ best = b; bestHits = hits; }
+  }
+  return { bucket:best, hits:bestHits };
+}
+function resolveParams(emotion){
+  if(!state.emoOn) return { bucket:BUCKETS[6], hits:0, rate:1.0, pitch:0, applied:false };
+  const { bucket, hits } = pickBucket(emotion);
+  const s = STRENGTH[state.strength];
+  const rawRate  = 1 + (bucket.rate - 1) * s;
+  const rawPitch = bucket.pitch * s;
+  const rate  = Math.min(RATE_MAX, Math.max(RATE_MIN, +rawRate.toFixed(3)));
+  const pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, Math.round(rawPitch)));
+  return { bucket, hits, rate, pitch, applied: hits > 0 };
+}
+const fmtRate = v => v.toFixed(2) + '×';
+const fmtPitch = v => (v > 0 ? '+' : '') + v + 'Hz';
+
+/* ---------- 渲染 ---------- */
+function renderEmoList(){
+  const el = document.getElementById('emoList');
+  el.innerHTML = BUCKETS.map(b=>{
+    const s = STRENGTH[state.strength];
+    const rate = Math.min(RATE_MAX, Math.max(RATE_MIN, 1 + (b.rate-1)*s));
+    const pitch = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, Math.round(b.pitch*s)));
+    const pct = Math.round((rate - RATE_MIN) / (RATE_MAX - RATE_MIN) * 100);
+    return `<div class="emo ${state.selected===b.id?'active':''}" data-id="${b.id}">
+      <div>
+        <div class="nm">${b.name}</div>
+        <div class="kv">${b.id==='neutral'?'不传参数':`rate ${fmtRate(rate)} · pitch ${fmtPitch(pitch)}`}</div>
+        <div class="meter"><i style="width:${b.id==='neutral'?50:pct}%"></i></div>
+      </div>
+      <div class="kv">${b.kws.slice(0,3).join('/')||'—'}</div>
+    </div>`;
+  }).join('');
+  el.querySelectorAll('.emo').forEach(n=>{
+    n.onclick = ()=>{ state.selected = n.dataset.id; renderEmoList(); };
+  });
+}
+
+function renderRows(){
+  const tbody = document.getElementById('rows');
+  tbody.innerHTML = SEGMENTS.map(seg=>{
+    const p = resolveParams(seg.emo);
+    const isNeutral = !p.applied;
+    return `<tr>
+      <td>${seg.text}</td>
+      <td class="num" style="color:var(--muted)">${seg.emo}</td>
+      <td><span class="pill ${isNeutral?'neutral':'hit'}">${isNeutral?'中性':p.bucket.name}</span></td>
+      <td class="num">${isNeutral?'1.00×':fmtRate(p.rate)}</td>
+      <td class="num">${isNeutral?'+0Hz':fmtPitch(p.pitch)}</td>
+    </tr>`;
+  }).join('');
+}
+
+const LB_MIN = -24, LB_MAX = -8;
+const pos = v => Math.max(0, Math.min(100, (v - LB_MIN) / (LB_MAX - LB_MIN) * 100));
+
+function renderLoud(){
+  const el = document.getElementById('loudRows');
+  el.innerHTML = SEGMENTS.map((seg,i)=>{
+    const before = LOUD_BEFORE[i], after = LOUD_AFTER[i];
+    const target = pos(-16);
+    return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:7px">
+      <div style="width:22px;color:var(--muted);font-variant-numeric:tabular-nums">${i+1}</div>
+      <div style="flex:1">
+        <div class="bar" style="margin-bottom:3px">
+          <i style="width:${pos(before)}%;background:${state.loudOn?'rgba(248,81,73,.35)':'rgba(248,81,73,.85)'}"></i>
+          <b style="left:${target}%"></b>
+        </div>
+        <div class="bar">
+          <i style="width:${pos(state.loudOn?after:before)}%;background:${state.loudOn?'#3fb950':'rgba(139,152,165,.35)'}"></i>
+          <b style="left:${target}%"></b>
+        </div>
+      </div>
+      <div style="width:52px;text-align:right;color:var(--muted);font-variant-numeric:tabular-nums">${before.toFixed(1)}</div>
+      <div style="width:52px;text-align:right;font-variant-numeric:tabular-nums">${(state.loudOn?after:before).toFixed(1)}</div>
+    </div>`;
+  }).join('');
+
+  const beforeRange = (Math.max(...LOUD_BEFORE) - Math.min(...LOUD_BEFORE)).toFixed(1);
+  const afterRange  = (Math.max(...LOUD_AFTER)  - Math.min(...LOUD_AFTER)).toFixed(1);
+  document.getElementById('rangeBefore').innerHTML = `${beforeRange}<small>dB</small>`;
+  document.getElementById('rangeAfter').innerHTML  = state.loudOn ? `${afterRange}<small>dB</small>` : `${beforeRange}<small>dB</small>`;
+}
+
+function renderAll(){ renderEmoList(); renderRows(); renderLoud(); }
+
+/* ---------- 交互 ---------- */
+document.getElementById('swEmo').onclick = (e)=>{
+  state.emoOn = !state.emoOn;
+  e.currentTarget.classList.toggle('on', state.emoOn);
+  renderAll();
+};
+document.getElementById('swLoud').onclick = (e)=>{
+  state.loudOn = !state.loudOn;
+  e.currentTarget.classList.toggle('on', state.loudOn);
+  renderLoud();
+};
+document.querySelectorAll('#strength button').forEach(btn=>{
+  btn.onclick = ()=>{
+    state.strength = btn.dataset.v;
+    document.querySelectorAll('#strength button').forEach(b=>b.classList.toggle('active', b===btn));
+    renderAll();
+  };
+});
+
+renderAll();
+</script>
+</body>
+</html>

@@ -343,6 +343,67 @@ describe('TTSStrategy', () => {
     });
   });
 
+  describe('performTask - 情绪语气', () => {
+    it('开启时应按段落 emotion 调整语速并传音高', async () => {
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
+      mockGenerateTTS.mockResolvedValue('/cache/emotion.mp3');
+
+      await strategy.performTask(
+        {
+          ttsEngine: 'edge',
+          emotionProsody: true,
+          emotionStrength: 'normal',
+          scriptShots: [{ shotId: 's1', text: '危险正在逼近', emotion: '紧张' }],
+        },
+        { bus: new Map() } as any,
+        '/cache',
+        vi.fn(),
+      );
+
+      const call = mockGenerateTTS.mock.calls[0];
+      expect(call[0]).toBe('危险正在逼近');
+      // 紧张桶：语速 ×1.04（1.0 → 1.04），音高 +1Hz
+      expect(call[4] as number).toBeCloseTo(1.04, 2);
+      expect(call[5]).toEqual({ pitchHz: 1 });
+    });
+
+    it('关闭时保持全局语速且不传音高', async () => {
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
+      mockGenerateTTS.mockResolvedValue('/cache/no-emotion.mp3');
+
+      await strategy.performTask(
+        {
+          ttsEngine: 'edge',
+          emotionProsody: false,
+          scriptShots: [{ shotId: 's1', text: '危险正在逼近', emotion: '紧张' }],
+        },
+        { bus: new Map() } as any,
+        '/cache',
+        vi.fn(),
+      );
+
+      expect(mockGenerateTTS).toHaveBeenCalledWith('危险正在逼近', 'edge', '/cache', undefined, 1.0);
+    });
+
+    it('无情绪词时按中性处理（不传音高）', async () => {
+      const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);
+      mockGenerateTTS.mockResolvedValue('/cache/neutral.mp3');
+
+      await strategy.performTask(
+        {
+          ttsEngine: 'edge',
+          emotionProsody: true,
+          scriptShots: [{ shotId: 's1', text: '平铺直叙的一句', emotion: '阴沉' }],
+        },
+        { bus: new Map() } as any,
+        '/cache',
+        vi.fn(),
+      );
+
+      expect(mockGenerateTTS).toHaveBeenCalledWith('平铺直叙的一句', 'edge', '/cache', undefined, 1.0);
+    });
+  });
+
   describe('performTask - 引擎默认值', () => {
     it('不传 ttsEngine 时应回退到 ProviderManager 配置', async () => {
       const mockGenerateTTS = vi.mocked(ttsEngine.generateTTS);

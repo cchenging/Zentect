@@ -436,6 +436,9 @@ export class AudioProcessor {
   private static readonly SILENCE_START_REGEX = /silence_start:\s*([\d.]+)/g;
   private static readonly SILENCE_END_REGEX = /silence_end:\s*([\d.]+)/g;
 
+  /** 解说段 TTS 响度统一目标（短视频口播口径）：integrated -16 LUFS / true peak -1.5 dBTP / LRA 11 */
+  public static readonly TTS_LOUDNORM_FILTER = 'loudnorm=I=-16:TP=-1.5:LRA=11';
+
   /**
    * 🎬 素材修剪：检测并裁掉 TTS 配音/原声段首尾的静音与气口（吸气口、句尾拖音、空白），
    * 返回修剪后的音频路径与有效时长。
@@ -457,7 +460,7 @@ export class AudioProcessor {
   public static async trimAudioEdges(
     inputPath: string,
     outputPath: string,
-    options?: { noiseDb?: number; padMs?: number; tailPadMs?: number }
+    options?: { noiseDb?: number; padMs?: number; tailPadMs?: number; extraAudioFilter?: string }
   ): Promise<{ outputPath: string; durationSec: number; trimmed: boolean }> {
     const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
     const ffprobeExe = PathManager.getBinPath('ffprobe.exe');
@@ -506,8 +509,9 @@ export class AudioProcessor {
       return { outputPath: inputPath, durationSec: totalSec, trimmed: false };
     }
 
-    // 4. 按有效边界重编码回原容器
+    // 4. 按有效边界重编码回原容器（可合并响度统一等附加 filter，避免二次编码）
     const args: string[] = ['-y', '-i', inputPath, '-ss', startSec.toFixed(3), '-to', endSec.toFixed(3)];
+    if (options?.extraAudioFilter) args.push('-af', options.extraAudioFilter);
     AudioProcessor._pushTrimEncoder(args, outputPath);
     const outDir = path.dirname(outputPath);
     if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
@@ -519,6 +523,41 @@ export class AudioProcessor {
     }
     const trimmedSec = await AudioProcessor._probeSec(outputPath, ffprobeExe);
     return { outputPath, durationSec: trimmedSec, trimmed: true };
+  }
+
+  /**
+   * 🔊 响度统一（EBU R128 loudnorm）：把单段音频标准化到统一目标响度。
+   *
+   * 用于步骤4 解说段 TTS 的终态音频（静音裁剪之后），消除跨段/跨引擎的忽大忽小；
+   * 输出保持源采样率与声道数（Edge/Kokoro 均为 24kHz mono），不强制升采样。
+   * 有静音裁剪时由 trimAudioEdges(extraAudioFilter) 合并进同一次编码，本方法只处理「无需裁剪」的情形。
+   *
+   * @param inputPath  源音频
+   * @param outputPath 标准化产物（扩展名决定编码器，应与源一致）
+   * @param filter     loudnorm 滤镜串，默认 TTS_LOUDNORM_FILTER
+   * @returns 产物路径
+   * @throws ffmpeg 不可用 / 执行失败 / 产物为空时抛错（错就错，不静默返回源文件）
+   */
+  public static async normalizeLoudness(
+    inputPath: string,
+    outputPath: string,
+    filter?: string
+  ): Promise<string> {
+    const ffmpegExe = PathManager.getBinPath('ffmpeg.exe');
+    if (!ffmpegExe || !fs.existsSync(inputPath)) {
+      throw new Error(`音频响度统一失败：ffmpeg 或源文件不可用: ${inputPath}`);
+    }
+    const outDir = path.dirname(outputPath);
+    if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+    const args: string[] = ['-y', '-i', inputPath, '-af', filter || AudioProcessor.TTS_LOUDNORM_FILTER];
+    AudioProcessor._pushTrimEncoder(args, outputPath);
+
+    const code = await AudioProcessor._runFfmpegExit(ffmpegExe, args);
+    if (code !== 0 || !fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
+      throw new Error(`音频响度统一失败（ffmpeg 退出码 ${code}）: ${inputPath}`);
+    }
+    return outputPath;
   }
 
   /** 按源扩展名选择修剪重编码的音频编码器（容量与下游渲染兼容） */

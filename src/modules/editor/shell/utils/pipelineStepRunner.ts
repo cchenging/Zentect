@@ -336,6 +336,11 @@ const STEP_DEFS: Record<RunnableStep, StepDef> = {
         speechRate: typeof overrides.speechRate === 'number' ? overrides.speechRate : (step4.speechRate ?? 1.0),
         /** 🎭 句尾停顿（ms）：随风格包配置，仅 Edge 生效 */
         pauseMs: step4.pauseMs,
+        /** 🎭 情绪语气：按段落 emotion 微调语速/音高 */
+        emotionProsody: step4.emotionProsody,
+        emotionStrength: step4.emotionStrength,
+        /** 🔊 响度统一：解说段 TTS 终态音频过 loudnorm */
+        loudnessNorm: step4.loudnessNorm,
         mediaPath: media?.filePath || '',
         mediaId: media?.id || '',
         scriptShots: step3.scriptParagraphs || [],

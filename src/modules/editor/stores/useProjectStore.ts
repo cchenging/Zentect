@@ -824,6 +824,18 @@ export const useProjectStore = create<ProjectStore>()((set, get) => ({
       const restoredRate = Number(d.ttsSpeechRate);
       s4.setSpeechRate(Number.isFinite(restoredRate) && restoredRate > 0 ? restoredRate : 1.0);
     }
+    // 🎭 情绪语气 / 🔊 响度统一：旧工程缺省开启（与 store 默认一致），非法强度档收敛为 normal
+    if (typeof s4.setEmotionProsody === 'function') {
+      s4.setEmotionProsody(d.ttsEmotionProsody !== false);
+    }
+    if (typeof s4.setEmotionStrength === 'function') {
+      s4.setEmotionStrength(
+        d.ttsEmotionStrength === 'weak' || d.ttsEmotionStrength === 'strong' ? d.ttsEmotionStrength : 'normal'
+      );
+    }
+    if (typeof s4.setLoudnessNorm === 'function') {
+      s4.setLoudnessNorm(d.ttsLoudnessNorm !== false);
+    }
     // 🎭 句尾停顿：缺失时回退当前风格包的解析值；手调标记旧工程按「既非解析默认、也非旧版全局默认」推断
     //   （统一策略前默认恒为 180：落在该值上的旧工程视为「跟随」，升级后自动采用人格/浓度解析值）
     if (typeof s4.setPauseMs === 'function') {

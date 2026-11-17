@@ -58,6 +58,13 @@ export const StepTTSSynthesis: React.FC = () => {
   const resetPauseFollow = useStep4Store((s) => s.resetPauseFollow);
   const pauseManual = useStep4Store((s) => s.pauseManual);
   const voiceManual = useStep4Store((s) => s.voiceManual);
+  // 🎭 情绪语气 / 🔊 响度统一（默认开启，随项目设置持久化）
+  const emotionProsody = useStep4Store((s) => s.emotionProsody);
+  const emotionStrength = useStep4Store((s) => s.emotionStrength);
+  const loudnessNorm = useStep4Store((s) => s.loudnessNorm);
+  const setEmotionProsody = useStep4Store((s) => s.setEmotionProsody);
+  const setEmotionStrength = useStep4Store((s) => s.setEmotionStrength);
+  const setLoudnessNorm = useStep4Store((s) => s.setLoudnessNorm);
   const stylePack = useStep3Store((s) => s.stylePack);
 
   /** 当前风格包对应的 Edge 推荐音色（仅 Edge 有东北女声，其他引擎不参与跟随） */
@@ -97,6 +104,9 @@ export const StepTTSSynthesis: React.FC = () => {
         ttsPauseMs: s4.pauseMs,
         ttsPauseManual: s4.pauseManual,
         ttsVoiceManual: s4.voiceManual,
+        ttsEmotionProsody: s4.emotionProsody,
+        ttsEmotionStrength: s4.emotionStrength,
+        ttsLoudnessNorm: s4.loudnessNorm,
       }).catch((err) => {
         console.error("[步骤4] 参数落盘失败:", err);
       });
@@ -143,6 +153,18 @@ export const StepTTSSynthesis: React.FC = () => {
     setSpeechRate(rate);
     scheduleTtsSave();
   }, [setSpeechRate, scheduleTtsSave]);
+  const handleSetEmotionProsody = useCallback((enabled: boolean) => {
+    setEmotionProsody(enabled);
+    scheduleTtsSave();
+  }, [setEmotionProsody, scheduleTtsSave]);
+  const handleSetEmotionStrength = useCallback((strength: 'weak' | 'normal' | 'strong') => {
+    setEmotionStrength(strength);
+    scheduleTtsSave();
+  }, [setEmotionStrength, scheduleTtsSave]);
+  const handleSetLoudnessNorm = useCallback((enabled: boolean) => {
+    setLoudnessNorm(enabled);
+    scheduleTtsSave();
+  }, [setLoudnessNorm, scheduleTtsSave]);
 
   const PREVIEW_TEXT_MAP: Record<string, string> = {
     zh: '欢迎使用 Zentect 智能剪辑，这是一段语音合成测试。',
@@ -407,6 +429,11 @@ export const StepTTSSynthesis: React.FC = () => {
         speechRate: step4State.speechRate ?? 1.0,
         pauseMs: step4State.pauseMs,
         provider: step4State.ttsEngine || 'edge',
+        // 🎭 情绪语气 / 🔊 响度统一：单段重合成与批量同口径
+        emotion: p.emotion,
+        emotionProsody: step4State.emotionProsody,
+        emotionStrength: step4State.emotionStrength,
+        loudnessNorm: step4State.loudnessNorm,
       });
       const audioPath = result?.audioPath || '';
       // 本地绝对路径 → magic://local/ URL 供 Audio 标签播放
@@ -461,6 +488,7 @@ export const StepTTSSynthesis: React.FC = () => {
       voices={VOICE_OPTIONS[ttsEngine] || []}
       speechRate={speechRate} pauseMs={pauseMs} voiceManual={voiceManual}
       pauseManual={pauseManual} pauseDefaultMs={pauseDefaultMs}
+      emotionProsody={emotionProsody} emotionStrength={emotionStrength} loudnessNorm={loudnessNorm}
       personaName={STYLE_PERSONAS[stylePack.persona].name}
       previewingVoiceId={previewingVoiceId} playingIdx={playingIdx}
       successCount={successCount} failedCount={failedCount}
@@ -468,6 +496,8 @@ export const StepTTSSynthesis: React.FC = () => {
       isSequentialPlaying={isSequentialPlaying} sequentialIdx={sequentialIdx} isPaused={isPaused}
       onSetTtsEngine={handleSetEngine} onSetTtsVoiceId={handleSelectVoice}
       onSetSpeechRate={handleSetSpeechRate} onSelectPauseMs={handleSelectPause}
+      onSetEmotionProsody={handleSetEmotionProsody} onSetEmotionStrength={handleSetEmotionStrength}
+      onSetLoudnessNorm={handleSetLoudnessNorm}
       onResetVoiceFollow={handleResetVoiceFollow} onResetPauseFollow={handleResetPauseFollow}
       onPreview={handlePreview} onVoicePreview={handleVoicePreview} onSynthesize={handleSynthesize}
       onSingleSynthesize={handleSingleSynthesize}

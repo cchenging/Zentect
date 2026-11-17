@@ -82,6 +82,10 @@ export async function persistProjectSnapshot(projectId: string): Promise<void> {
       ttsPauseMs: step4Final.pauseMs,
       ttsPauseManual: step4Final.pauseManual,
       ttsVoiceManual: step4Final.voiceManual,
+      /** 🎭 情绪语气 / 🔊 响度统一：与语速同理落盘，否则重开指纹漂移 */
+      ttsEmotionProsody: step4Final.emotionProsody,
+      ttsEmotionStrength: step4Final.emotionStrength,
+      ttsLoudnessNorm: step4Final.loudnessNorm,
       /** 步骤5 数据持久化：匹配结果/切片池/BGM 节拍，重启后从 metadata 恢复 */
       matchResults: step5Final.matchResults,
       videoChunks: step5Final.videoChunks,

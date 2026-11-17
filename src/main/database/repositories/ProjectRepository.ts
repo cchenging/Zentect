@@ -268,6 +268,7 @@ export class ProjectRepository {
       'extractionConfig', 'vlmFrames', 'scriptParagraphs', 'scriptStyle',
       'speechRate', 'pipelineParams', 'stylePack', 'ttsResults', 'ttsEngine', 'ttsVoiceId',
       'ttsSpeechRate', 'ttsPauseMs', 'ttsPauseManual', 'ttsVoiceManual',
+      'ttsEmotionProsody', 'ttsEmotionStrength', 'ttsLoudnessNorm',
       'videoChunks', 'storyboardMode',
       // 🔧 步骤5 匹配数据：以 metadata（步骤5 完成时持久化）为准，不让 canvas_data 瞬态快照覆盖
       'matchResults', 'activeBgm', 'beatTimestamps', 'deepRecommendation',
@@ -467,6 +468,16 @@ export class ProjectRepository {
       /** 🎭 音色手选标记：false 也是一等状态（恢复跟随），必须落盘 */
       if (typeof data.ttsVoiceManual === 'boolean') {
         metadata.ttsVoiceManual = data.ttsVoiceManual;
+      }
+      /** 🎭 情绪语气 / 🔊 响度统一：false 也是一等状态（用户主动关闭），用 typeof boolean 判断 */
+      if (typeof data.ttsEmotionProsody === 'boolean') {
+        metadata.ttsEmotionProsody = data.ttsEmotionProsody;
+      }
+      if (data.ttsEmotionStrength === 'weak' || data.ttsEmotionStrength === 'normal' || data.ttsEmotionStrength === 'strong') {
+        metadata.ttsEmotionStrength = data.ttsEmotionStrength;
+      }
+      if (typeof data.ttsLoudnessNorm === 'boolean') {
+        metadata.ttsLoudnessNorm = data.ttsLoudnessNorm;
       }
       /** 🎭 句尾停顿手调标记：false 也是一等状态（跟随风格包默认值），必须落盘 */
       if (typeof data.ttsPauseManual === 'boolean') {

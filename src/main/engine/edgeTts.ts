@@ -482,6 +482,7 @@ export interface EdgeTtsOptions {
   text: string
   voice: string // 如 zh-CN-XiaoxiaoNeural / en-US-JennyNeural
   rate?: number // 语速倍率 0.5~2.0，默认 1.0，映射为 SSML rate 百分比
+  pitchHz?: number // 音高偏移（Hz，整数，通常 -4~+4），默认 0，映射为 SSML prosody pitch
   timeoutMs?: number // 请求超时，默认 30s
 }
 
@@ -490,12 +491,16 @@ export interface EdgeTtsOptions {
  * 错误直接抛出（连接失败 / 超时 / 空音频），由调用方 fallback 链处理
  */
 export function synthesizeEdgeTts(opts: EdgeTtsOptions): Promise<Buffer> {
-  const { text, voice, rate = 1.0, timeoutMs = 30000 } = opts
+  const { text, voice, rate = 1.0, pitchHz = 0, timeoutMs = 30000 } = opts
   if (!text.trim()) return Promise.reject(new Error('Edge TTS 合成文本不能为空'))
 
   // 语速倍率 → SSML rate 百分比（如 1.3 → +30%，0.8 → -20%）
   const ratePercent = Math.round((rate - 1) * 100)
   const rateStr = ratePercent >= 0 ? `+${ratePercent}%` : `${ratePercent}%`
+
+  // 音高偏移 → SSML prosody pitch（以 Hz 为单位；0 → +0Hz 保持原有中性行为）
+  const pitchValue = Math.round(pitchHz)
+  const pitchStr = `${pitchValue >= 0 ? '+' : ''}${pitchValue}Hz`
 
   // 句尾停顿不在 SSML 里做：微软会直接掐断带 <break>/mstts:silence 的会话（实测 turn.start 后即关闭），
   // 改由 step4 的 AudioProcessor.trimAudioEdges(tailPadMs) 在音频层补静音
@@ -559,7 +564,7 @@ export function synthesizeEdgeTts(opts: EdgeTtsOptions): Promise<Buffer> {
       'ssml',
       'application/ssml+xml',
       `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'>` +
-        `<voice name='${voice}'><prosody pitch='+0Hz' rate='${rateStr}' volume='+0%'>${escapeXml(text)}</prosody></voice></speak>`
+        `<voice name='${voice}'><prosody pitch='${pitchStr}' rate='${rateStr}' volume='+0%'>${escapeXml(text)}</prosody></voice></speak>`
     )
 
     // 连接与帧收发

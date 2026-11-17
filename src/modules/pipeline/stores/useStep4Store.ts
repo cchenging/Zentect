@@ -11,6 +11,9 @@ import { create } from 'zustand';
 import type { TtsResult } from '../../../shared/types/entities/editor';
 import { DEFAULT_TTS_PAUSE_MS, clampPauseMs } from '../../../shared/types/entities/stylePack';
 
+/** 情绪强度档：weak 半幅 / normal 原幅 / strong 1.5 倍（与 main/engine/ttsEmotion 的插值系数一一对应） */
+export type TtsEmotionStrength = 'weak' | 'normal' | 'strong';
+
 export interface Step4Store {
   // 步骤4专属数据
   ttsEngine: string;
@@ -25,6 +28,12 @@ export interface Step4Store {
   voiceManual: boolean;
   /** 句尾停顿是否已被手调：true = 不再跟随风格包默认值，面板显示「已自定义」并可恢复跟随 */
   pauseManual: boolean;
+  /** 🎭 情绪语气：按段落 emotion 微调语速/音高（默认开） */
+  emotionProsody: boolean;
+  /** 🎭 情绪强度档（默认 normal） */
+  emotionStrength: TtsEmotionStrength;
+  /** 🔊 响度统一：解说段 TTS 终态音频过 loudnorm（默认开） */
+  loudnessNorm: boolean;
 
   // TTS 操作
   setTtsEngine: (engine: string) => void;
@@ -42,6 +51,12 @@ export interface Step4Store {
   selectPauseMs: (pauseMs: number) => void;
   /** 恢复跟随风格包默认停顿 */
   resetPauseFollow: () => void;
+  /** 情绪语气开关 */
+  setEmotionProsody: (enabled: boolean) => void;
+  /** 情绪强度档 */
+  setEmotionStrength: (strength: TtsEmotionStrength) => void;
+  /** 响度统一开关 */
+  setLoudnessNorm: (enabled: boolean) => void;
 
   /** 重置步骤4状态 */
   reset: () => void;
@@ -56,6 +71,9 @@ export const useStep4Store = create<Step4Store>()((set) => ({
   pauseMs: DEFAULT_TTS_PAUSE_MS,
   voiceManual: false,
   pauseManual: false,
+  emotionProsody: true,
+  emotionStrength: 'normal',
+  loudnessNorm: true,
 
   // 切引擎清空音色：不同引擎音色 id 不通用；并恢复「跟随风格包」语义
   setTtsEngine: (engine) => set({ ttsEngine: engine, ttsVoiceId: '', voiceManual: false }),
@@ -68,6 +86,9 @@ export const useStep4Store = create<Step4Store>()((set) => ({
   setPauseMs: (pauseMs) => set({ pauseMs: clampPauseMs(pauseMs) }),
   selectPauseMs: (pauseMs) => set({ pauseMs: clampPauseMs(pauseMs), pauseManual: true }),
   resetPauseFollow: () => set({ pauseManual: false }),
+  setEmotionProsody: (enabled) => set({ emotionProsody: enabled }),
+  setEmotionStrength: (strength) => set({ emotionStrength: strength }),
+  setLoudnessNorm: (enabled) => set({ loudnessNorm: enabled }),
 
   reset: () => set({
     ttsEngine: 'edge',
@@ -78,5 +99,8 @@ export const useStep4Store = create<Step4Store>()((set) => ({
     pauseMs: DEFAULT_TTS_PAUSE_MS,
     voiceManual: false,
     pauseManual: false,
+    emotionProsody: true,
+    emotionStrength: 'normal',
+    loudnessNorm: true,
   }),
 }));

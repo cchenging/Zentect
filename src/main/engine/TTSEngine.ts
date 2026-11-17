@@ -7,6 +7,7 @@ import { synthesizeEdgeTts } from './edgeTts';
 import { PathManager } from '../utils/pathManager';
 import { AppLogger } from '../core/AppLogger';
 import { LOG_TAGS } from '../../modules/infra/logger/LogConstants';
+import { resolveEmotionProsody } from './ttsEmotion';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -17,7 +18,14 @@ export class TTSEngine {
   // ---------------------------------------------------------------------------
   // 🔊 语音合成中枢 (彻底消灭 SettingsRepository)
   // ---------------------------------------------------------------------------
-  public async generateTTS(text: string, provider: 'doubao' | 'edge' | 'kokoro', saveDir?: string, voiceOverride?: string, rate?: number): Promise<string> {
+  public async generateTTS(
+    text: string,
+    provider: 'doubao' | 'edge' | 'kokoro',
+    saveDir?: string,
+    voiceOverride?: string,
+    rate?: number,
+    options?: { pitchHz?: number }
+  ): Promise<string> {
     const config = ProviderManager.getTTSConfig(provider);
     const targetDir = saveDir || os.tmpdir();
     let ext = 'mp3'; let audioData: Buffer;
@@ -46,7 +54,8 @@ export class TTSEngine {
           const voiceType = voiceOverride || (/^[a-zA-Z0-9\s.,!?'-]+$/.test(cleanedText) ? 'en-US-JennyNeural' : 'zh-CN-XiaoxiaoNeural');
           // 微软官方 Edge TTS（免费、无需 key），替代已失效的第三方代理 api.tts.quest（实测返回 404）
           // 句尾停顿不走 SSML（微软会掐断连接），由修剪阶段 tailPadMs 保留尾部静音实现
-          audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate });
+          // 🎭 情绪音高：仅 Edge 支持 prosody pitch（火山/Kokoro 本轮不传，见设计方案 D3）
+          audioData = await synthesizeEdgeTts({ text: cleanedText, voice: voiceType, rate: speedRate, pitchHz: options?.pitchHz ?? 0 });
           break;
         }
         case 'kokoro': {
@@ -106,12 +115,23 @@ export class TTSEngine {
     const rate = typeof shot.speechRate === 'number' && shot.speechRate > 0 ? shot.speechRate : undefined;
     // 句尾停顿（ms）：仅 Edge 生效，随风格包一起透传
     const pauseMs = typeof shot.pauseMs === 'number' ? shot.pauseMs : undefined;
+    // 🎭 情绪语气 / 响度统一：单段重合成与批量同口径（前端显式传 true 才开启，缺省保持历史行为）
+    const emotionProsody = shot.emotionProsody === true;
+    const emotionStrength = shot.emotionStrength === 'weak' || shot.emotionStrength === 'strong' ? shot.emotionStrength : 'normal';
+    const loudnessNorm = shot.loudnessNorm === true;
+    const prosody = resolveEmotionProsody(emotionProsody ? shot.emotion : '', rate ?? 1.0, emotionStrength);
+    if (prosody.hit) {
+      AppLogger.info(LOG_TAGS.AI_ENGINE, `[TTS][情绪] ${shot.id} 情绪=${shot.emotion} → 桶=${prosody.label}（语速 ${(rate ?? 1.0).toFixed(2)} → ${prosody.rate.toFixed(2)}，音高 ${prosody.pitchHz >= 0 ? '+' : ''}${prosody.pitchHz}Hz）`);
+    }
     // 前端透传的用户引擎选择（如 kokoro/doubao）；未指定时 synthesizeWithFallback 内部兜底 edge
     const preferredProvider: 'doubao' | 'edge' | 'kokoro' | undefined =
       shot.provider === 'doubao' || shot.provider === 'edge' || shot.provider === 'kokoro' ? shot.provider : undefined;
 
     try {
-      const { path: audioPath, provider } = await ttsProvider.synthesizeWithFallback(text, saveDir, voiceId, rate, preferredProvider, pauseMs);
+      const { path: audioPath, provider } = await ttsProvider.synthesizeWithFallback(
+        text, saveDir, voiceId, prosody.rate, preferredProvider, pauseMs,
+        { pitchHz: prosody.pitchHz, loudnessNorm }
+      );
       AppLogger.info(LOG_TAGS.AI_ENGINE, `TTS 合成完成: shot=${shot.id}, provider=${provider}`);
       return { shotId: shot.id, audioPath, provider };
     } catch (err: any) {

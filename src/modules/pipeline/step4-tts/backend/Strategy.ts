@@ -11,6 +11,7 @@ import { ttsEngine } from '../../../../main/engine/TTSEngine';
 import { ProviderManager } from '../../../../main/engine/config/ProviderManager';
 import { PathManager } from '../../../../main/utils/pathManager';
 import { AudioProcessor } from '../../../../main/engine/media/AudioProcessor';
+import { resolveEmotionProsody, type TtsEmotionStrength } from '../../../../main/engine/ttsEmotion';
 import { clampPauseMs } from '../../../../shared/types/entities/stylePack';
 
 /**
@@ -142,12 +143,18 @@ export class TTSStrategy extends BaseNodeStrategy {
     const speechRate: number = typeof input.speechRate === 'number' ? input.speechRate : 1.0;
     // 🎭 句尾停顿（ms，0~400）：仅 Edge 通过 SSML break 生效，其余引擎忽略
     const pauseMs: number = typeof input.pauseMs === 'number' ? clampPauseMs(input.pauseMs) : 0;
+    // 🎭 情绪语气 / 🔊 响度统一：前端显式传 true 才开启（前端默认开；旧调用方缺省保持历史行为，
+    //    与 D6「旧项目不自动重合成」同口径——重跑步骤4 时由前端带参生效）
+    const emotionProsody: boolean = input.emotionProsody === true;
+    const emotionStrength: TtsEmotionStrength =
+      input.emotionStrength === 'weak' || input.emotionStrength === 'strong' ? input.emotionStrength : 'normal';
+    const loudnessNorm: boolean = input.loudnessNorm === true;
 
     // 🐛 临时诊断：确证 scriptShots 是否真正到达后端（排查"未找到前置剧本"空配音问题）
     AppLogger.warn(LOG_TAGS.AI_AGENT, `[TTS诊断] input.scriptShots=${JSON.stringify(Array.isArray(input.scriptShots) ? { len: input.scriptShots.length, first: input.scriptShots[0] ?? null } : input.scriptShots)} input.keys=${JSON.stringify(Object.keys(input))}`);
 
     // 收集待合成的段落列表（keepOriginalAudio 为内部拦截标记，非持久化契约）
-    let shots: Array<{ id: string; shotId: string; text: string; duration: number; keepOriginalAudio?: boolean }> = [];
+    let shots: Array<{ id: string; shotId: string; text: string; duration: number; emotion: string; keepOriginalAudio?: boolean }> = [];
 
     // 优先从前端注入的 scriptShots 参数获取（步骤独立执行时 context.bus 为空）
     if (input.scriptShots && Array.isArray(input.scriptShots) && input.scriptShots.length > 0) {
@@ -159,6 +166,8 @@ export class TTSStrategy extends BaseNodeStrategy {
         text: s.text || '',
         /** 时长双源兜底：新契约段落经 Normalizer 净化后仅携带 durationMs（毫秒），老项目段落为秒制 duration */
         duration: s.duration || (typeof s.durationMs === 'number' ? +(s.durationMs / 1000).toFixed(2) : 3),
+        /** 🎭 段落情绪（步骤3 产出）：驱动逐段语速/音高，缺失视为中性 */
+        emotion: typeof s.emotion === 'string' ? s.emotion : '',
         /** 原声判定双口径：净化的新契约段落只有 type 判别标记，老项目段落仍是 legacy keepOriginalAudio 布尔 */
         keepOriginalAudio: s.type === 'original_audio' || s.keepOriginalAudio === true,
       }))
@@ -183,6 +192,8 @@ export class TTSStrategy extends BaseNodeStrategy {
               text: s.text || '',
               /** 时长双源兜底：同上，durationMs（毫秒）优先于 legacy 秒制 duration */
               duration: s.duration || (typeof s.durationMs === 'number' ? +(s.durationMs / 1000).toFixed(2) : 3),
+              /** 🎭 段落情绪（步骤3 产出）：驱动逐段语速/音高，缺失视为中性 */
+              emotion: typeof s.emotion === 'string' ? s.emotion : '',
               /** 原声判定双口径：type 判别标记（新契约）与 keepOriginalAudio 布尔（老项目）并重 */
               keepOriginalAudio: s.type === 'original_audio' || s.keepOriginalAudio === true,
             }))
@@ -213,8 +224,18 @@ export class TTSStrategy extends BaseNodeStrategy {
       concurrency,
       // 单段合成执行器
       async (shot, _idx) => {
+        // 🎭 情绪语气：把段落情绪解析为 per-段 rate/pitch（关闭时传空情绪 → 中性，完全不改现行为）
+        const prosody = resolveEmotionProsody(emotionProsody ? shot.emotion : '', speechRate, emotionStrength);
+        if (prosody.hit) {
+          AppLogger.info(LOG_TAGS.AI_AGENT, `[TTS][情绪] ${shot.shotId} 情绪=${shot.emotion} → 桶=${prosody.label}（语速 ${speechRate.toFixed(2)} → ${prosody.rate.toFixed(2)}，音高 ${prosody.pitchHz >= 0 ? '+' : ''}${prosody.pitchHz}Hz）`);
+        } else {
+          AppLogger.info(LOG_TAGS.AI_AGENT, `[TTS][情绪] ${shot.shotId} 情绪=${shot.emotion || '空'} → 中性（无命中，保持全局语速 ${speechRate.toFixed(2)}）`);
+        }
         // 句尾停顿不参与合成（微软会掐断带 break 的会话），只在下面的修剪阶段用 tailPadMs 保留尾部静音
-        const audioPath = await ttsEngine.generateTTS(shot.text, provider, cacheDir, voiceId, speechRate);
+        // 中性段（pitchHz=0）保持 5 参调用形态，与历史调用一致
+        const audioPath = prosody.pitchHz === 0
+          ? await ttsEngine.generateTTS(shot.text, provider, cacheDir, voiceId, prosody.rate)
+          : await ttsEngine.generateTTS(shot.text, provider, cacheDir, voiceId, prosody.rate, { pitchHz: prosody.pitchHz });
         // 🎬 素材修剪：裁掉 TTS 首尾静音/气口（吸气口、句尾拖音），回填"真实有效发音时长"，
         //   替代"含前导停顿的整段时长"，让步骤5 不必为了凑虚高时长去强拉/拉伸视频（消除一顿一顿）。
         //   修剪产物写入 cacheDir 旁的 trim 目录，避免污染 TTS 缓存；ffmpeg 缺失或源文件缺失时返回源状态。
@@ -222,13 +243,23 @@ export class TTSStrategy extends BaseNodeStrategy {
         const trimmed = await AudioProcessor.trimAudioEdges(
           audioPath,
           trimOutPath,
-          // 尾部保护边距 = 默认 80ms + 风格包句尾停顿，避免停顿被静音修剪吃掉
-          pauseMs > 0 ? { tailPadMs: 80 + pauseMs } : undefined
+          {
+            // 尾部保护边距 = 默认 80ms + 风格包句尾停顿，避免停顿被静音修剪吃掉
+            ...(pauseMs > 0 ? { tailPadMs: 80 + pauseMs } : {}),
+            // 🔊 有静音裁剪时把 loudnorm 合并进同一次编码（无裁剪时下面单独标准化）
+            ...(loudnessNorm ? { extraAudioFilter: AudioProcessor.TTS_LOUDNORM_FILTER } : {}),
+          }
         );
-        const effectiveAudioPath = trimmed.outputPath; // 有静音则修剪版，无静音则原文件
+        let effectiveAudioPath = trimmed.outputPath; // 有静音则修剪版，无静音则原文件
         // 🎵 P2 声画同步：合成后立即用 ffprobe 读真实音频时长回填（秒），
         //   替代步骤3 的"字数/语速"估算值，让步骤5 的时长惩罚与变速基于真实声画时长
-        const realDuration = trimmed.trimmed ? trimmed.durationSec : await probeAudioDurationSec(effectiveAudioPath);
+        let realDuration = trimmed.trimmed ? trimmed.durationSec : await probeAudioDurationSec(effectiveAudioPath);
+        if (loudnessNorm && !trimmed.trimmed) {
+          // 无首尾静音可裁 → 单独跑一次 loudnorm（输出到 norm 目录，避免覆盖 TTS 缓存）
+          const normOutPath = path.join(cacheDir, 'norm', `ln_${path.basename(audioPath)}`);
+          effectiveAudioPath = await AudioProcessor.normalizeLoudness(audioPath, normOutPath);
+          realDuration = await probeAudioDurationSec(effectiveAudioPath);
+        }
         AppLogger.info(LOG_TAGS.AI_AGENT, `[TTS] ${shot.shotId} 真实时长 ${realDuration.toFixed(2)}s 修剪=${trimmed.trimmed}（预估 ${shot.duration}s，偏差 ${((realDuration - (shot.duration || 0)) / Math.max(realDuration, 0.1) * 100).toFixed(0)}%）`);
         return { id: shot.id, shotId: shot.shotId, text: shot.text, audioPath: effectiveAudioPath, duration: realDuration } as TTSItemResult;
       },

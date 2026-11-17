@@ -25,6 +25,12 @@ export interface StepTTSSynthesisViewProps {
   voiceManual: boolean;
   /** 当前风格包人格名（用于「跟随：东北大姐」提示） */
   personaName: string;
+  /** 🎭 情绪语气：按段落 emotion 微调语速/音高（默认开） */
+  emotionProsody: boolean;
+  /** 🎭 情绪强度档：weak 轻 / normal 中 / strong 强 */
+  emotionStrength: "weak" | "normal" | "strong";
+  /** 🔊 响度统一：解说段 TTS 终态音频过 loudnorm（默认开） */
+  loudnessNorm: boolean;
   previewingVoiceId: string | null;
   playingIdx: number | null;
   successCount: number;
@@ -38,6 +44,12 @@ export interface StepTTSSynthesisViewProps {
   onSetTtsEngine: (engine: string) => void;
   onSetTtsVoiceId: (id: string) => void;
   onSetSpeechRate: (rate: number) => void;
+  /** 情绪语气开关 */
+  onSetEmotionProsody: (enabled: boolean) => void;
+  /** 情绪强度档 */
+  onSetEmotionStrength: (strength: "weak" | "normal" | "strong") => void;
+  /** 响度统一开关 */
+  onSetLoudnessNorm: (enabled: boolean) => void;
   /** 手调句尾停顿（写值同时停止跟随风格包） */
   onSelectPauseMs: (pauseMs: number) => void;
   /** 恢复跟随风格包：清手调标记，停顿回到当前人格/浓度的解析值 */
@@ -61,9 +73,11 @@ const ENGINE_LABELS: Record<string, string> = {
 export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props) => {
   const { ttsEngine, ttsVoiceId, ttsResults, scriptParagraphs, isProcessing,
     voices, speechRate, pauseMs, pauseManual, pauseDefaultMs, voiceManual, personaName,
+    emotionProsody, emotionStrength, loudnessNorm,
     previewingVoiceId, playingIdx, successCount, failedCount,
     singleSynthIdx, isSequentialPlaying, sequentialIdx, isPaused,
     onSetTtsEngine, onSetTtsVoiceId, onSetSpeechRate, onSelectPauseMs, onResetPauseFollow,
+    onSetEmotionProsody, onSetEmotionStrength, onSetLoudnessNorm,
     onResetVoiceFollow, onPreview, onVoicePreview,
     onSingleSynthesize, onOriginalAudioPreview, onSequentialPlay, onSequentialStop } = props;
 
@@ -148,6 +162,48 @@ export const StepTTSSynthesisView: React.FC<StepTTSSynthesisViewProps> = (props)
             onChange={(e) => onSetSpeechRate(parseFloat(e.target.value))}
             className="flex-1 h-1 accent-accent-cyan disabled:opacity-40" />
           <span className="text-[12px] text-accent-cyan font-mono w-8 text-right">{speechRate.toFixed(1)}x</span>
+        </div>
+      </div>
+
+      {/* 🎭 情绪语气 + 🔊 响度统一：默认开启，改完需重新合成才会写入音频 */}
+      <div className="glass-card-sm p-3 flex flex-col gap-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+            <Mic size={12} /> 情绪语气
+            <span className="text-[11px] text-muted-foreground/60">按段落情绪微调语速/音高</span>
+          </div>
+          <Badge variant={emotionProsody ? "accent" : "default"} interactive="selectable" selected={emotionProsody}
+            onClick={() => onSetEmotionProsody(!emotionProsody)} disabled={isProcessing}>
+            {emotionProsody ? "已开启" : "已关闭"}
+          </Badge>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] text-muted-foreground shrink-0">强度:</span>
+          <div className="flex items-center gap-1">
+            {([
+              { value: "weak", label: "轻" },
+              { value: "normal", label: "中" },
+              { value: "strong", label: "强" },
+            ] as const).map((opt) => (
+              <Badge key={opt.value} variant={emotionStrength === opt.value ? "accent" : "default"} interactive="selectable"
+                selected={emotionStrength === opt.value}
+                onClick={() => onSetEmotionStrength(opt.value)}
+                disabled={isProcessing || !emotionProsody}>
+                {opt.label}
+              </Badge>
+            ))}
+          </div>
+          <span className="text-[11px] text-muted-foreground/60 ml-auto">音高偏移仅 Edge 生效</span>
+        </div>
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+            <Volume2 size={12} /> 响度统一
+            <span className="text-[11px] text-muted-foreground/60">目标 -16 LUFS，消除忽大忽小</span>
+          </div>
+          <Badge variant={loudnessNorm ? "accent" : "default"} interactive="selectable" selected={loudnessNorm}
+            onClick={() => onSetLoudnessNorm(!loudnessNorm)} disabled={isProcessing}>
+            {loudnessNorm ? "已开启" : "已关闭"}
+          </Badge>
         </div>
       </div>
 
